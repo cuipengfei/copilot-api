@@ -94,10 +94,12 @@ The Gemini integration (`src/routes/messages/gemini-*`) provides:
 - Support for generation configuration (temperature, max tokens, top-p, stop sequences)
 
 **Critical Gemini Translation Details**:
-- Gemini CLI sends function responses as **nested arrays** in contents, requiring special handling
+- Gemini CLI sends function responses as **nested arrays** in contents, requiring special handling in `translateGeminiContentsToOpenAI()`
+- The type definition must support both `GeminiContent` and `Array<{functionResponse: {id?: string; name: string; response: unknown}}>` formats
 - `parametersJsonSchema` field takes precedence over `parameters` in function declarations
-- Tool call ID mapping must be maintained between assistant tool calls and user tool responses
-- Function response arrays need extraction with `processFunctionResponseArray()` helper
+- Tool call ID mapping must be maintained between assistant tool calls and user tool responses using `pendingToolCalls` Map
+- Function response arrays need extraction with `processFunctionResponseArray()` helper to maintain tool_call_id consistency
+- **Critical Bug Fix**: Both nested array processing and direct function response handling must use the same tool_call_id lookup pattern (`pendingToolCalls.get(functionName)`) to avoid OpenAI API validation errors
 - Debug logs in `logs/gemini-*.log` files are essential for troubleshooting translation issues
 
 ## Code Style & Conventions
@@ -123,7 +125,9 @@ The Gemini integration (`src/routes/messages/gemini-*`) provides:
 - **Function calls fail while text prompts work**: Check `logs/gemini-translation.log` for missing `parameters` in translated tools
 - **Tool response mapping errors**: Verify tool_call_id consistency between assistant tool calls and user tool responses
 - **Nested array handling**: Gemini CLI sends function responses as nested arrays requiring `processFunctionResponseArray()` extraction
+- **tool_call_id mismatch errors**: Ensure both `processFunctionResponseArray()` and direct function response handling use `pendingToolCalls.get(functionName)` consistently
 - **HTTPError from create-chat-completions**: Usually indicates parameter validation failure in OpenAI translation layer
+- **ESLint max-depth violations**: Extract helper functions when nested loops exceed 4 levels of depth
 
 **Key Log Files**:
 - `logs/gemini-errors.log`: HTTP errors and stack traces
