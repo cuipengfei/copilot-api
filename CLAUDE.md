@@ -93,14 +93,16 @@ The Gemini integration (`src/routes/messages/gemini-*`) provides:
 - Error handling with appropriate HTTP status codes and Gemini-formatted error responses
 - Support for generation configuration (temperature, max tokens, top-p, stop sequences)
 
+**Key Architectural Patterns**:
+- **Comprehensive Logging**: The `gemini-handler.ts` implements a robust, file-based logging system. All requests, responses, translations, and errors are logged to `logs/`. Pay special attention to `gemini-translation.log` for debugging payload transformations. The system automatically truncates large data fields in logs to maintain readability.
+- **Non-Streaming to Streaming Conversion**: For streaming endpoints, if the upstream Copilot service returns a non-streaming response, the `handleNonStreamingToStreaming` function in `gemini-handler.ts` intelligently converts the complete response back into a Gemini-compatible stream. This handles API behavior inconsistencies gracefully.
+- **Route Matching Strategy**: The router in `gemini-route.ts` uses ordered, overlapping wildcard paths (`/v1beta/models/*`). The order of registration is critical: more specific endpoints like `:streamGenerateContent` must be registered before the general `:generateContent` endpoint to ensure correct handler invocation.
+
 **Critical Gemini Translation Details**:
-- Gemini CLI sends function responses as **nested arrays** in contents, requiring special handling in `translateGeminiContentsToOpenAI()`
-- The type definition must support both `GeminiContent` and `Array<{functionResponse: {id?: string; name: string; response: unknown}}>` formats
-- `parametersJsonSchema` field takes precedence over `parameters` in function declarations
-- Tool call ID mapping must be maintained between assistant tool calls and user tool responses using `pendingToolCalls` Map
-- Function response arrays need extraction with `processFunctionResponseArray()` helper to maintain tool_call_id consistency
-- **Critical Bug Fix**: Both nested array processing and direct function response handling must use the same tool_call_id lookup pattern (`pendingToolCalls.get(functionName)`) to avoid OpenAI API validation errors
-- Debug logs in `logs/gemini-*.log` files are essential for troubleshooting translation issues
+- **Dynamic Tool Call ID Generation**: The `tool_call_id` required by the OpenAI format is not present in the Gemini request. It is dynamically generated during translation by the `generateToolCallId` function. This ID is then temporarily stored in the `pendingToolCalls` map (keyed by function name) to correctly associate a subsequent `functionResponse` with the original `functionCall`.
+- Gemini CLI sends function responses as **nested arrays** in `contents`, requiring special handling in `translateGeminiContentsToOpenAI()` via the `processFunctionResponseArray` helper.
+- The `parametersJsonSchema` field takes precedence over `parameters` in function declarations to align with modern JSON Schema standards.
+- **Critical Bug Fix**: Both the nested array (`processFunctionResponseArray`) and direct `functionResponse` part handling must use the same tool_call_id lookup pattern (`pendingToolCalls.get(functionName)`) to avoid OpenAI API validation errors when a user responds to a tool call.
 
 ## Code Style & Conventions
 
