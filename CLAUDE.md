@@ -93,6 +93,13 @@ The Gemini integration (`src/routes/messages/gemini-*`) provides:
 - Error handling with appropriate HTTP status codes and Gemini-formatted error responses
 - Support for generation configuration (temperature, max tokens, top-p, stop sequences)
 
+**Critical Gemini Translation Details**:
+- Gemini CLI sends function responses as **nested arrays** in contents, requiring special handling
+- `parametersJsonSchema` field takes precedence over `parameters` in function declarations
+- Tool call ID mapping must be maintained between assistant tool calls and user tool responses
+- Function response arrays need extraction with `processFunctionResponseArray()` helper
+- Debug logs in `logs/gemini-*.log` files are essential for troubleshooting translation issues
+
 ## Code Style & Conventions
 
 - **TypeScript**: Strict mode enabled, avoid `any` types
@@ -109,3 +116,20 @@ The Gemini integration (`src/routes/messages/gemini-*`) provides:
 - Token counting uses GPT-4o tokenizer regardless of the actual model being proxied
 - All API translations maintain compatibility with OpenAI, Anthropic, and Gemini client libraries
 - Gemini API debugging logs are written to `logs/` directory for troubleshooting translation issues
+
+## Debugging & Troubleshooting
+
+**Common Gemini API Issues**:
+- **Function calls fail while text prompts work**: Check `logs/gemini-translation.log` for missing `parameters` in translated tools
+- **Tool response mapping errors**: Verify tool_call_id consistency between assistant tool calls and user tool responses
+- **Nested array handling**: Gemini CLI sends function responses as nested arrays requiring `processFunctionResponseArray()` extraction
+- **HTTPError from create-chat-completions**: Usually indicates parameter validation failure in OpenAI translation layer
+
+**Key Log Files**:
+- `logs/gemini-errors.log`: HTTP errors and stack traces
+- `logs/gemini-debug.log`: Request/response flow with full JSON payloads
+- `logs/gemini-translation.log`: Translation pipeline details showing input/output transformations
+
+**Debugging Commands**:
+- `bun run lint && bun run typecheck && bun run build`: Full validation pipeline
+- Check error reports in `C:\Users\39764\AppData\Local\Temp\gemini-client-error-*.json` for client-side failures
