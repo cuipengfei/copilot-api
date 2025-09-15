@@ -17,14 +17,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Project Architecture
 
 ### High-Level Structure
-This is a GitHub Copilot API proxy server that exposes Copilot as both OpenAI-compatible and Anthropic-compatible APIs. The server is built with Hono framework and uses Bun as the runtime.
+This is a GitHub Copilot API proxy server that exposes Copilot as OpenAI-compatible, Anthropic-compatible, and Gemini-compatible APIs. The server is built with Hono framework and uses Bun as the runtime.
 
 ### Core Architecture Components
 
 **API Translation Layer** (`src/routes/messages/`):
 - Translates between Anthropic Messages API format and OpenAI Chat Completions format
+- Translates between Gemini API format and OpenAI Chat Completions format
 - Handles both streaming and non-streaming responses
 - Key files: `handler.ts`, `anthropic-types.ts`, `stream-translation.ts`, `non-stream-translation.ts`
+- Gemini files: `gemini-handler.ts`, `gemini-translation.ts`, `gemini-types.ts`, `gemini-route.ts`
 
 **Token Counting for Anthropic Models** (`src/lib/tokenizer.ts`):
 - Uses `gpt-tokenizer/model/gpt-4o` for token counting
@@ -54,6 +56,11 @@ This is a GitHub Copilot API proxy server that exposes Copilot as both OpenAI-co
 - `/v1/messages` - Message completions (translates to/from OpenAI format)
 - `/v1/messages/count_tokens` - Token counting for Anthropic format
 
+**Gemini Compatible**:
+- `/v1beta/models/{model}:generateContent` - Standard generation
+- `/v1beta/models/{model}:streamGenerateContent` - Streaming generation
+- `/v1beta/models/{model}:countTokens` - Token counting
+
 **Monitoring**:
 - `/usage` - GitHub Copilot usage dashboard
 - `/token` - Current Copilot token info
@@ -70,10 +77,21 @@ The `getTokenCount()` function in `src/lib/tokenizer.ts` implements token counti
 **Message Translation**:
 - OpenAI → Anthropic: Converts chat completion responses to Anthropic message format
 - Anthropic → OpenAI: Converts Anthropic message requests to OpenAI chat completion format
-- Handles tool calls, system messages, and content blocks appropriately
+- OpenAI → Gemini: Converts chat completion responses to Gemini response format
+- Gemini → OpenAI: Converts Gemini requests to OpenAI chat completion format
+- Handles tool calls, system messages, and content blocks appropriately for all formats
 
 **Streaming Translation**:
-Real-time conversion of OpenAI SSE chunks to Anthropic streaming events, maintaining state for proper message reconstruction.
+Real-time conversion of OpenAI SSE chunks to both Anthropic streaming events and Gemini streaming responses, maintaining state for proper message reconstruction.
+
+**Gemini API Implementation**:
+The Gemini integration (`src/routes/messages/gemini-*`) provides:
+- Full compatibility with Google's Gemini API specification
+- Comprehensive request/response translation between Gemini and OpenAI formats
+- Support for function calling, multimodal content (text + images), and streaming
+- Extensive debug logging with file-based logs in `logs/` directory
+- Error handling with appropriate HTTP status codes and Gemini-formatted error responses
+- Support for generation configuration (temperature, max tokens, top-p, stop sequences)
 
 ## Code Style & Conventions
 
@@ -89,4 +107,5 @@ Real-time conversion of OpenAI SSE chunks to Anthropic streaming events, maintai
 - Server uses GitHub Copilot as the underlying LLM provider
 - Rate limiting and manual approval features help avoid GitHub abuse detection
 - Token counting uses GPT-4o tokenizer regardless of the actual model being proxied
-- All API translations maintain compatibility with both OpenAI and Anthropic client libraries
+- All API translations maintain compatibility with OpenAI, Anthropic, and Gemini client libraries
+- Gemini API debugging logs are written to `logs/` directory for troubleshooting translation issues
