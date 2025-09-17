@@ -46,7 +46,9 @@ export interface GeminiFunctionResponsePart {
 }
 
 export interface GeminiTool {
-  functionDeclarations: Array<GeminiFunctionDeclaration>
+  functionDeclarations?: Array<GeminiFunctionDeclaration>
+  googleSearch?: Record<string, unknown>
+  urlContext?: Record<string, unknown>
 }
 
 export interface GeminiFunctionDeclaration {

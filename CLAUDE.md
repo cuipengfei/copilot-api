@@ -120,6 +120,7 @@ The Gemini integration (`src/routes/messages/gemini-*`) provides:
 - Token counting uses GPT-4o tokenizer regardless of the actual model being proxied
 - All API translations maintain compatibility with OpenAI, Anthropic, and Gemini client libraries
 - Gemini API debugging logs are written to `logs/` directory for troubleshooting translation issues
+- **Development Workflow**: Claude should NOT run the server. The user will handle server testing and provide results for analysis.
 
 ## Debugging & Troubleshooting
 

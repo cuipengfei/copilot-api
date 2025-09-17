@@ -5,6 +5,7 @@ import {
   type ContentPart,
   type Message,
   type Tool,
+  type ToolCall,
 } from "~/services/copilot/create-chat-completions"
 
 import {
@@ -22,6 +23,18 @@ import {
   type GeminiUsageMetadata,
 } from "./gemini-types"
 
+// Model mapping for Gemini models to supported Copilot models
+function mapGeminiModelToCopilot(geminiModel: string): string {
+  const modelMap: Record<string, string> = {
+    "gemini-2.5-flash": "gemini-2.0-flash-001",
+    "gemini-2.5-pro": "gemini-2.5-pro", // Already supported
+    "gemini-2.0-flash": "gemini-2.0-flash-001",
+    "gemini-2.0-flash-001": "gemini-2.0-flash-001", // Already supported
+  }
+
+  return modelMap[geminiModel] || geminiModel
+}
+
 // Request translation: Gemini -> OpenAI
 
 export function translateGeminiToOpenAINonStream(
@@ -29,7 +42,7 @@ export function translateGeminiToOpenAINonStream(
   model: string,
 ): ChatCompletionsPayload {
   return {
-    model, // Always use the model from the URL
+    model: mapGeminiModelToCopilot(model), // Map to supported model
     messages: translateGeminiContentsToOpenAI(
       payload.contents,
       payload.systemInstruction,
@@ -49,7 +62,7 @@ export function translateGeminiToOpenAIStream(
   model: string,
 ): ChatCompletionsPayload {
   const result = {
-    model, // Always use the model from the URL
+    model: mapGeminiModelToCopilot(model), // Map to supported model
     messages: translateGeminiContentsToOpenAI(
       payload.contents,
       payload.systemInstruction,
@@ -88,6 +101,73 @@ function processFunctionResponseArray(
       }
     }
   }
+}
+
+// Helper function to check if tool calls have corresponding tool responses
+function hasCorrespondingToolResponses(
+  messages: Array<Message>,
+  toolCalls: Array<ToolCall>,
+): boolean {
+  const toolCallIds = new Set(toolCalls.map((call) => call.id))
+
+  // Look for tool messages that respond to these tool calls
+  for (const message of messages) {
+    if (message.role === "tool" && message.tool_call_id) {
+      toolCallIds.delete(message.tool_call_id)
+    }
+  }
+
+  // If any tool call ID remains, it means there's no corresponding response
+  return toolCallIds.size === 0
+}
+
+// Helper function to process function responses in content
+function processFunctionResponses(
+  functionResponses: Array<GeminiFunctionResponsePart>,
+  pendingToolCalls: Map<string, string>,
+  messages: Array<Message>,
+): void {
+  for (const funcResponse of functionResponses) {
+    const functionName = funcResponse.functionResponse.name
+    const toolCallId = pendingToolCalls.get(functionName)
+    if (toolCallId) {
+      messages.push({
+        role: "tool",
+        tool_call_id: toolCallId,
+        content: JSON.stringify(funcResponse.functionResponse.response),
+      })
+      pendingToolCalls.delete(functionName)
+    }
+  }
+}
+
+// Helper function to process function calls and create assistant message
+function processFunctionCalls(options: {
+  functionCalls: Array<GeminiFunctionCallPart>
+  content: GeminiContent
+  pendingToolCalls: Map<string, string>
+  messages: Array<Message>
+}): void {
+  const { functionCalls, content, pendingToolCalls, messages } = options
+  const textContent = extractTextFromGeminiContent(content)
+  const toolCalls = functionCalls.map((call) => {
+    const toolCallId = generateToolCallId(call.functionCall.name)
+    // Remember this tool call for later matching with responses
+    pendingToolCalls.set(call.functionCall.name, toolCallId)
+    return {
+      id: toolCallId,
+      type: "function" as const,
+      function: {
+        name: call.functionCall.name,
+        arguments: JSON.stringify(call.functionCall.args),
+      },
+    }
+  })
+  messages.push({
+    role: "assistant",
+    content: textContent || null,
+    tool_calls: toolCalls,
+  })
 }
 
 function translateGeminiContentsToOpenAI(
@@ -130,41 +210,15 @@ function translateGeminiContentsToOpenAI(
     )
 
     if (functionResponses.length > 0) {
-      // Add tool result messages
-      for (const funcResponse of functionResponses) {
-        const functionName = funcResponse.functionResponse.name
-        const toolCallId = pendingToolCalls.get(functionName)
-        if (toolCallId) {
-          messages.push({
-            role: "tool",
-            tool_call_id: toolCallId,
-            content: JSON.stringify(funcResponse.functionResponse.response),
-          })
-          pendingToolCalls.delete(functionName)
-        }
-      }
+      processFunctionResponses(functionResponses, pendingToolCalls, messages)
     }
 
     if (functionCalls.length > 0 && role === "assistant") {
-      // Assistant message with tool calls
-      const textContent = extractTextFromGeminiContent(content)
-      const toolCalls = functionCalls.map((call) => {
-        const toolCallId = generateToolCallId(call.functionCall.name)
-        // Remember this tool call for later matching with responses
-        pendingToolCalls.set(call.functionCall.name, toolCallId)
-        return {
-          id: toolCallId,
-          type: "function" as const,
-          function: {
-            name: call.functionCall.name,
-            arguments: JSON.stringify(call.functionCall.args),
-          },
-        }
-      })
-      messages.push({
-        role: "assistant",
-        content: textContent || null,
-        tool_calls: toolCalls,
+      processFunctionCalls({
+        functionCalls,
+        content,
+        pendingToolCalls,
+        messages,
       })
     } else {
       // Regular message
@@ -172,6 +226,29 @@ function translateGeminiContentsToOpenAI(
       if (messageContent) {
         messages.push({ role, content: messageContent })
       }
+    }
+  }
+
+  // Post-process: Remove incomplete assistant messages from cancelled tool calls
+  // When Gemini CLI cancels a tool call stream, it includes the incomplete assistant
+  // message in conversation history. This message contains functionCall but lacks
+  // corresponding functionResponse, causing OpenAI API validation errors.
+  // We need to check ALL assistant messages, not just the last one, because cancelled
+  // tool calls can be anywhere in the conversation history.
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i]
+    if (
+      message.role === "assistant"
+      && message.tool_calls
+      && !hasCorrespondingToolResponses(messages, message.tool_calls)
+    ) {
+      const toolCallNames = message.tool_calls
+        .map((call) => call.function.name)
+        .join(", ")
+      console.log(
+        `[DEBUG] Removing incomplete assistant message at index ${i} with unmatched tool calls: ${toolCallNames}`,
+      )
+      messages.splice(i, 1)
     }
   }
 
@@ -222,15 +299,51 @@ function translateGeminiToolsToOpenAI(
 
   const tools: Array<Tool> = []
   for (const tool of geminiTools) {
-    for (const func of tool.functionDeclarations) {
+    // Handle standard function declarations
+    if (tool.functionDeclarations) {
+      for (const func of tool.functionDeclarations) {
+        tools.push({
+          type: "function",
+          function: {
+            name: func.name,
+            description: func.description,
+            parameters: func.parametersJsonSchema || func.parameters,
+          },
+        })
+      }
+    }
+
+    // Handle googleSearch tool (special case)
+    if (tool.googleSearch !== undefined) {
       tools.push({
         type: "function",
         function: {
-          name: func.name,
-          description: func.description,
-          parameters: func.parametersJsonSchema || func.parameters,
+          name: "google_web_search",
+          description:
+            "Performs a web search using Google Search (via the Gemini API) and returns the results. This tool is useful for finding information on the internet based on a query.",
+          parameters: {
+            type: "object",
+            properties: {
+              query: {
+                type: "string",
+                description: "The search query to find information on the web.",
+              },
+            },
+            required: ["query"],
+          },
         },
       })
+    }
+
+    // Handle urlContext tool (special case for web_fetch)
+    // Note: GitHub Copilot API doesn't support web_fetch functionality
+    // Skip this tool to avoid "Failed to create chat completions" errors
+    if (tool.urlContext !== undefined) {
+      // Log that we're skipping this unsupported tool
+      console.warn(
+        "Skipping urlContext tool - not supported by GitHub Copilot API",
+      )
+      continue
     }
   }
 
@@ -468,7 +581,7 @@ export function translateGeminiCountTokensToOpenAI(
   model: string,
 ): ChatCompletionsPayload {
   return {
-    model,
+    model: mapGeminiModelToCopilot(model), // Map to supported model
     messages: translateGeminiContentsToOpenAI(
       request.contents,
       request.systemInstruction,

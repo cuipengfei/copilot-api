@@ -7,6 +7,7 @@ import { promises as fs } from "node:fs"
 import path from "node:path"
 
 import { awaitApproval } from "~/lib/approval"
+import { HTTPError } from "~/lib/error"
 import { checkRateLimit } from "~/lib/rate-limit"
 import { state } from "~/lib/state"
 import { getTokenCount } from "~/lib/tokenizer"
@@ -63,7 +64,16 @@ async function writeLogToFile(logEntry: GeminiDebugLog) {
     // Ensure logs directory exists
     await fs.mkdir(logsDir, { recursive: true })
 
-    const logLine = JSON.stringify(logEntry) + "\n"
+    // Truncate large data before logging
+    const truncatedEntry = {
+      ...logEntry,
+      data: truncateData(logEntry.data),
+      copilotRequest: truncateData(logEntry.copilotRequest),
+      copilotResponse: truncateData(logEntry.copilotResponse),
+      finalResponse: truncateData(logEntry.finalResponse),
+    }
+
+    const logLine = JSON.stringify(truncatedEntry) + "\n"
 
     // Write to main debug log
     await fs.appendFile(path.join(logsDir, "gemini-debug.log"), logLine)
@@ -82,8 +92,34 @@ async function writeLogToFile(logEntry: GeminiDebugLog) {
   }
 }
 
+// NEW: Write incoming request logs to separate file for detailed analysis
+async function writeIncomingRequestLogToFile(logEntry: GeminiDebugLog) {
+  const logsDir = path.join(process.cwd(), "logs")
+
+  try {
+    // Ensure logs directory exists
+    await fs.mkdir(logsDir, { recursive: true })
+
+    // For incoming requests, we want more detail but still truncate huge payloads
+    const truncatedEntry = {
+      ...logEntry,
+      data: truncateData(logEntry.data, 500), // Allow more detail for incoming requests
+    }
+
+    const logLine = JSON.stringify(truncatedEntry) + "\n"
+
+    // Write to dedicated incoming requests log
+    await fs.appendFile(
+      path.join(logsDir, "gemini-incoming-requests.log"),
+      logLine,
+    )
+  } catch (error) {
+    consola.error("Failed to write incoming request log file:", error)
+  }
+}
+
 // Helper function to truncate data for logging
-function truncateData(data: unknown, maxLength = 200): unknown {
+function truncateData(data: unknown, maxLength = 100): unknown {
   if (typeof data === "string") {
     return data.length > maxLength ? `${data.slice(0, maxLength)}...` : data
   }
@@ -161,8 +197,50 @@ function logGeminiDebug(
   )
 }
 
+// NEW: Enhanced logging function for incoming Gemini requests
+function logGeminiIncomingRequest({
+  type,
+  endpoint,
+  rawPayload,
+  translatedPayload,
+}: {
+  type: string
+  endpoint: string
+  rawPayload: unknown
+  translatedPayload?: unknown
+}) {
+  const logEntry: GeminiDebugLog = {
+    timestamp: new Date().toISOString(),
+    type: type as GeminiDebugLog["type"],
+    endpoint,
+    data: {
+      incomingRequest: rawPayload, // Full incoming request from Gemini CLI
+      translatedRequest: translatedPayload, // Our translation to OpenAI format
+    },
+  }
+
+  const endpointPath = new URL(endpoint).pathname
+  consola.debug(`[GEMINI-INCOMING-${type.toUpperCase()}] ${endpointPath}`)
+
+  // Write to special incoming requests log file
+  writeIncomingRequestLogToFile(logEntry).catch((error: unknown) =>
+    consola.error("Incoming request log file write error:", error),
+  )
+}
+
 function logGeminiError(endpoint: string, error: unknown, data?: unknown) {
   const truncatedData = data ? truncateData(data) : undefined
+
+  // Extract HTTP error details if it's an HTTPError
+  let httpErrorDetails: Record<string, unknown> | undefined
+  if (error instanceof HTTPError) {
+    httpErrorDetails = {
+      status: error.response.status,
+      statusText: error.response.statusText,
+      url: error.response.url,
+      headers: Object.fromEntries(error.response.headers.entries()),
+    }
+  }
 
   const logEntry: GeminiDebugLog = {
     timestamp: new Date().toISOString(),
@@ -171,6 +249,7 @@ function logGeminiError(endpoint: string, error: unknown, data?: unknown) {
     data: {
       error: error instanceof Error ? error.message : String(error),
       stack: error instanceof Error ? error.stack : undefined,
+      httpDetails: httpErrorDetails,
       data: truncatedData,
     },
   }
@@ -185,58 +264,6 @@ function logGeminiError(endpoint: string, error: unknown, data?: unknown) {
   writeLogToFile(logEntry).catch((logError: unknown) =>
     consola.error("Log file write error:", logError),
   )
-}
-
-// Helper function to process stream chunk
-async function processStreamChunk(
-  rawEvent: { data?: string },
-  endpoint: string,
-  stream: SSEStreamingApi,
-): Promise<boolean> {
-  if (rawEvent.data === "[DONE]") {
-    return false // Signal to stop processing
-  }
-
-  if (!rawEvent.data) {
-    return true // Continue processing
-  }
-
-  try {
-    const chunkData = JSON.parse(rawEvent.data) as unknown
-    const chunk = chunkData as ChatCompletionChunk
-    const geminiResponse = translateOpenAIChunkToGemini(chunk)
-
-    if (geminiResponse) {
-      consola.debug("Streaming geminiResponse object:", geminiResponse)
-      const jsonLine = JSON.stringify(geminiResponse)
-      consola.debug("Streaming JSON line:", jsonLine)
-      consola.debug("About to send SSE data:", jsonLine.slice(0, 100))
-
-      // Validate JSON before sending
-      try {
-        JSON.parse(jsonLine)
-      } catch (validateError) {
-        logGeminiError(endpoint, validateError, {
-          rawEvent,
-          context: "JSON validation failed before sending",
-          jsonLine: jsonLine.slice(0, 200),
-        })
-        return true // Continue processing
-      }
-
-      await stream.writeSSE({
-        data: jsonLine,
-      })
-      return true // Continue processing
-    }
-    return true // Continue processing
-  } catch (chunkError) {
-    logGeminiError(endpoint, chunkError, {
-      rawEvent,
-      context: "JSON.parse failed in stream",
-    })
-    return true // Continue processing
-  }
 }
 
 // Error handling helper
@@ -309,6 +336,15 @@ export async function handleGeminiGeneration(c: Context) {
     logGeminiDebug("request", endpoint, { data: geminiPayload })
 
     const openAIPayload = translateGeminiToOpenAINonStream(geminiPayload, model)
+
+    // NEW: Log detailed incoming request with full context
+    logGeminiIncomingRequest({
+      type: "generation_request",
+      endpoint,
+      rawPayload: geminiPayload,
+      translatedPayload: openAIPayload,
+    })
+
     logGeminiDebug("translation", endpoint, {
       data: openAIPayload,
       extra: { copilotRequest: openAIPayload },
@@ -454,83 +490,37 @@ function handleStreamingResponse(
   endpoint: string,
 ) {
   return streamSSE(c, async (stream) => {
-    let hasDataSent = false
-
     try {
       for await (const rawEvent of response) {
         logGeminiDebug("stream_chunk", endpoint, { data: rawEvent })
 
-        const shouldContinue = await processStreamChunk(
-          rawEvent,
-          endpoint,
-          stream,
-        )
-        if (!shouldContinue) {
+        if (rawEvent.data === "[DONE]") {
           break
         }
 
-        if (rawEvent.data && rawEvent.data !== "[DONE]") {
-          hasDataSent = true
+        if (!rawEvent.data) {
+          continue
+        }
+
+        const chunk = JSON.parse(rawEvent.data) as ChatCompletionChunk
+        const geminiChunk = translateOpenAIChunkToGemini(chunk)
+
+        if (geminiChunk) {
+          logGeminiDebug("stream_translation", endpoint, { data: geminiChunk })
+          await stream.writeSSE({
+            data: JSON.stringify(geminiChunk),
+          })
         }
       }
     } catch (streamError) {
-      await handleStreamError(stream, endpoint, streamError)
+      logGeminiError(endpoint, streamError, { context: "streaming_loop" })
     } finally {
-      await ensureCompleteStream(stream, hasDataSent, endpoint)
-      await stream.close()
+      // Log that stream processing ended (either completed or cancelled)
+      logGeminiDebug("stream_cleanup", endpoint, {
+        data: { context: "Stream processing completed or cancelled" },
+      })
     }
   })
-}
-
-// Helper function to handle stream errors
-async function handleStreamError(
-  stream: SSEStreamingApi,
-  endpoint: string,
-  streamError: unknown,
-) {
-  logGeminiError(endpoint, streamError, { context: "streaming_loop" })
-
-  try {
-    await stream.writeSSE({
-      data: JSON.stringify({
-        error: {
-          message: "Stream processing error",
-          type: "internal_error",
-        },
-      }),
-    })
-  } catch (writeError) {
-    logGeminiError(endpoint, writeError, {
-      context: "stream_error_write",
-    })
-  }
-}
-
-// Helper function to ensure complete stream
-async function ensureCompleteStream(
-  stream: SSEStreamingApi,
-  hasDataSent: boolean,
-  endpoint: string,
-) {
-  if (!hasDataSent) {
-    try {
-      await stream.writeSSE({
-        data: JSON.stringify({
-          candidates: [
-            {
-              content: { parts: [{ text: "" }], role: "model" },
-              finishReason: "STOP",
-              index: 0,
-            },
-          ],
-        }),
-      })
-    } catch (finalError) {
-      logGeminiError(endpoint, finalError, {
-        context: "final_empty_response",
-      })
-    }
-  }
 }
 
 // Streaming generation endpoint
@@ -557,6 +547,14 @@ export async function handleGeminiStreamGeneration(c: Context) {
     logGeminiDebug("request", endpoint, { data: geminiPayload })
 
     const openAIPayload = translateGeminiToOpenAIStream(geminiPayload, model)
+
+    // NEW: Log detailed incoming request with full context
+    logGeminiIncomingRequest({
+      type: "stream_request",
+      endpoint,
+      rawPayload: geminiPayload,
+      translatedPayload: openAIPayload,
+    })
 
     logGeminiDebug("translation", endpoint, {
       data: openAIPayload,

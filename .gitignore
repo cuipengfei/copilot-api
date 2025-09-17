@@ -16,3 +16,4 @@ logs/gemini-debug.log
 logs/gemini-translation.log
 .env
 logs/gemini-errors.log
+logs/gemini-incoming-requests.log

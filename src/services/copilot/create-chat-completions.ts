@@ -8,6 +8,7 @@ import { state } from "~/lib/state"
 
 export const createChatCompletions = async (
   payload: ChatCompletionsPayload,
+  abortSignal?: AbortSignal,
 ) => {
   if (!state.copilotToken) throw new Error("Copilot token not found")
 
@@ -35,10 +36,20 @@ export const createChatCompletions = async (
     method: "POST",
     headers,
     body: JSON.stringify(payload),
+    signal: abortSignal,
   })
 
   if (!response.ok) {
-    consola.error("Failed to create chat completions", response)
+    // Clone response to avoid body consumption conflict
+    const responseClone = response.clone()
+    const errorBody = await responseClone.text()
+    consola.error("Failed to create chat completions", {
+      status: response.status,
+      statusText: response.statusText,
+      body: errorBody,
+      headers: Object.fromEntries(response.headers.entries()),
+      requestPayload: JSON.stringify(payload, null, 2),
+    })
     throw new HTTPError("Failed to create chat completions", response)
   }
 
