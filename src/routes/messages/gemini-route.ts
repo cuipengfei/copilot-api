@@ -1,5 +1,7 @@
 import { Hono } from "hono"
 
+import { forwardError } from "~/lib/error"
+
 import {
   handleGeminiGeneration,
   handleGeminiStreamGeneration,
@@ -8,38 +10,47 @@ import {
 
 const router = new Hono()
 
-// IMPORTANT: Most specific routes FIRST to avoid pattern conflicts
-// Use wildcard patterns to handle colons properly
-
-// Streaming generation endpoint - MOST specific (to avoid conflicts)
-// POST /v1beta/{model=models/*}:streamGenerateContent
+// Streaming generation endpoint
+// POST /v1beta/models/{model}:streamGenerateContent
 router.post("/v1beta/models/*", async (c, next) => {
   const url = c.req.url
   if (url.includes(":streamGenerateContent")) {
-    return handleGeminiStreamGeneration(c)
+    try {
+      return await handleGeminiStreamGeneration(c)
+    } catch (error) {
+      return await forwardError(c, error)
+    }
   }
   await next()
 })
 
-// Token counting endpoint - Second most specific
-// POST /v1beta/{model=models/*}:countTokens
+// Token counting endpoint
+// POST /v1beta/models/{model}:countTokens
 router.post("/v1beta/models/*", async (c, next) => {
   const url = c.req.url
   if (url.includes(":countTokens")) {
-    return handleGeminiCountTokens(c)
+    try {
+      return await handleGeminiCountTokens(c)
+    } catch (error) {
+      return await forwardError(c, error)
+    }
   }
   await next()
 })
 
-// Standard generation endpoint - Least specific
-// POST /v1beta/{model=models/*}:generateContent
+// Standard generation endpoint
+// POST /v1beta/models/{model}:generateContent
 router.post("/v1beta/models/*", async (c, next) => {
   const url = c.req.url
   if (
     url.includes(":generateContent")
     && !url.includes(":streamGenerateContent")
   ) {
-    return handleGeminiGeneration(c)
+    try {
+      return await handleGeminiGeneration(c)
+    } catch (error) {
+      return await forwardError(c, error)
+    }
   }
   await next()
 })

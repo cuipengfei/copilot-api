@@ -17,6 +17,14 @@ import {
   type ChatCompletionResponse,
 } from "~/services/copilot/create-chat-completions"
 
+// Helper function to extract model from URL path
+function extractModelFromUrl(url: string): string {
+  const match = url.match(/\/v1beta\/models\/([^:]+):/)
+  if (!match) {
+    throw new Error("Model name is required in URL path")
+  }
+  return match[1]
+}
 import {
   translateGeminiToOpenAINonStream,
   translateGeminiToOpenAIStream,
@@ -31,13 +39,6 @@ import {
   type GeminiStreamResponse,
   type GeminiResponse,
 } from "./gemini-types"
-
-// Helper function to extract model from URL path
-function extractModelFromUrl(url: string): string | undefined {
-  const path = new URL(url).pathname
-  const match = path.match(/^\/v1beta\/models\/([^:]+):/)
-  return match?.[1]
-}
 
 // Debug logging interface
 interface GeminiDebugLog {
@@ -266,58 +267,13 @@ function logGeminiError(endpoint: string, error: unknown, data?: unknown) {
   )
 }
 
-// Error handling helper
-function getErrorStatusAndMessage(error: unknown): {
-  status: number
-  message: string
-} {
-  if (!(error instanceof Error)) {
-    return { status: 500, message: "Internal server error" }
-  }
-
-  const errorMappings = [
-    {
-      condition: (err: Error) =>
-        err.name === "RateLimitError" || err.message.includes("rate limit"),
-      status: 429,
-      message: "Rate limit exceeded",
-    },
-    {
-      condition: (err: Error) =>
-        err.name === "ValidationError" || err.message.includes("validation"),
-      status: 400,
-      message: "Invalid request",
-    },
-    {
-      condition: (err: Error) =>
-        err.name === "AuthenticationError" || err.message.includes("auth"),
-      status: 401,
-      message: "Authentication failed",
-    },
-    {
-      condition: (err: Error) =>
-        err.name === "NotFoundError" || err.message.includes("not found"),
-      status: 404,
-      message: "Resource not found",
-    },
-  ]
-
-  for (const mapping of errorMappings) {
-    if (mapping.condition(error)) {
-      return { status: mapping.status, message: mapping.message }
-    }
-  }
-
-  return { status: 500, message: "Internal server error" }
-}
-
 // Standard generation endpoint
 export async function handleGeminiGeneration(c: Context) {
   const endpoint = c.req.url
   const model = extractModelFromUrl(endpoint)
 
   if (!model) {
-    return c.json({ error: "Model name is required in URL path" }, 400)
+    throw new Error("Model name is required in URL path")
   }
 
   // IMMEDIATE DEBUG: Log that we entered this handler
@@ -329,59 +285,53 @@ export async function handleGeminiGeneration(c: Context) {
     },
   })
 
-  try {
-    await checkRateLimit(state)
+  await checkRateLimit(state)
 
-    const geminiPayload = await c.req.json<GeminiRequest>()
-    logGeminiDebug("request", endpoint, { data: geminiPayload })
+  const geminiPayload = await c.req.json<GeminiRequest>()
+  logGeminiDebug("request", endpoint, { data: geminiPayload })
 
-    const openAIPayload = translateGeminiToOpenAINonStream(geminiPayload, model)
+  const openAIPayload = translateGeminiToOpenAINonStream(geminiPayload, model)
 
-    // NEW: Log detailed incoming request with full context
-    logGeminiIncomingRequest({
-      type: "generation_request",
-      endpoint,
-      rawPayload: geminiPayload,
-      translatedPayload: openAIPayload,
-    })
+  // NEW: Log detailed incoming request with full context
+  logGeminiIncomingRequest({
+    type: "generation_request",
+    endpoint,
+    rawPayload: geminiPayload,
+    translatedPayload: openAIPayload,
+  })
 
-    logGeminiDebug("translation", endpoint, {
-      data: openAIPayload,
-      extra: { copilotRequest: openAIPayload },
-    })
+  logGeminiDebug("translation", endpoint, {
+    data: openAIPayload,
+    extra: { copilotRequest: openAIPayload },
+  })
 
-    if (state.manualApprove) {
-      await awaitApproval()
-    }
-
-    const response = await createChatCompletions(openAIPayload)
-
-    if (isNonStreaming(response)) {
-      logGeminiDebug("response", endpoint, {
-        data: response,
-        extra: { copilotResponse: response },
-      })
-
-      const geminiResponse = translateOpenAIToGemini(response)
-      logGeminiDebug("translation", endpoint, {
-        data: geminiResponse,
-        extra: { finalResponse: geminiResponse },
-      })
-
-      return c.json(geminiResponse)
-    }
-
-    // This shouldn't happen for non-streaming endpoint
-    logGeminiError(
-      endpoint,
-      new Error("Unexpected streaming response for non-streaming endpoint"),
-    )
-    return c.json({ error: "Internal error" }, 500)
-  } catch (error) {
-    logGeminiError(endpoint, error)
-    const { status, message } = getErrorStatusAndMessage(error)
-    return c.json({ error: message }, status as 400 | 401 | 404 | 429 | 500)
+  if (state.manualApprove) {
+    await awaitApproval()
   }
+
+  const response = await createChatCompletions(openAIPayload)
+
+  if (isNonStreaming(response)) {
+    logGeminiDebug("response", endpoint, {
+      data: response,
+      extra: { copilotResponse: response },
+    })
+
+    const geminiResponse = translateOpenAIToGemini(response)
+    logGeminiDebug("translation", endpoint, {
+      data: geminiResponse,
+      extra: { finalResponse: geminiResponse },
+    })
+
+    return c.json(geminiResponse)
+  }
+
+  // This shouldn't happen for non-streaming endpoint
+  logGeminiError(
+    endpoint,
+    new Error("Unexpected streaming response for non-streaming endpoint"),
+  )
+  throw new Error("Unexpected streaming response for non-streaming endpoint")
 }
 
 // Helper function to handle non-streaming response conversion
@@ -529,7 +479,7 @@ export async function handleGeminiStreamGeneration(c: Context) {
   const model = extractModelFromUrl(endpoint)
 
   if (!model) {
-    return c.json({ error: "Model name is required in URL path" }, 400)
+    throw new Error("Model name is required in URL path")
   }
 
   logGeminiDebug("handler_entry", endpoint, {
@@ -540,55 +490,49 @@ export async function handleGeminiStreamGeneration(c: Context) {
     },
   })
 
-  try {
-    await checkRateLimit(state)
+  await checkRateLimit(state)
 
-    const geminiPayload = await c.req.json<GeminiRequest>()
-    logGeminiDebug("request", endpoint, { data: geminiPayload })
+  const geminiPayload = await c.req.json<GeminiRequest>()
+  logGeminiDebug("request", endpoint, { data: geminiPayload })
 
-    const openAIPayload = translateGeminiToOpenAIStream(geminiPayload, model)
+  const openAIPayload = translateGeminiToOpenAIStream(geminiPayload, model)
 
-    // NEW: Log detailed incoming request with full context
-    logGeminiIncomingRequest({
-      type: "stream_request",
-      endpoint,
-      rawPayload: geminiPayload,
-      translatedPayload: openAIPayload,
-    })
+  // NEW: Log detailed incoming request with full context
+  logGeminiIncomingRequest({
+    type: "stream_request",
+    endpoint,
+    rawPayload: geminiPayload,
+    translatedPayload: openAIPayload,
+  })
 
-    logGeminiDebug("translation", endpoint, {
-      data: openAIPayload,
-      extra: { copilotRequest: openAIPayload },
-    })
+  logGeminiDebug("translation", endpoint, {
+    data: openAIPayload,
+    extra: { copilotRequest: openAIPayload },
+  })
 
-    if (state.manualApprove) {
-      await awaitApproval()
-    }
-
-    const response = await createChatCompletions(openAIPayload)
-
-    if (isNonStreaming(response)) {
-      const geminiResponse = translateOpenAIToGemini(response)
-      logGeminiDebug("response", endpoint, {
-        data: geminiResponse,
-        extra: {
-          copilotResponse: response,
-          finalResponse: geminiResponse,
-        },
-      })
-
-      return handleNonStreamingToStreaming(c, geminiResponse, endpoint)
-    }
-
-    logGeminiDebug("response", endpoint, {
-      data: "streaming_response_started",
-    })
-    return handleStreamingResponse(c, response, endpoint)
-  } catch (error) {
-    logGeminiError(endpoint, error)
-    const { status, message } = getErrorStatusAndMessage(error)
-    return c.json({ error: message }, status as 400 | 401 | 404 | 429 | 500)
+  if (state.manualApprove) {
+    await awaitApproval()
   }
+
+  const response = await createChatCompletions(openAIPayload)
+
+  if (isNonStreaming(response)) {
+    const geminiResponse = translateOpenAIToGemini(response)
+    logGeminiDebug("response", endpoint, {
+      data: geminiResponse,
+      extra: {
+        copilotResponse: response,
+        finalResponse: geminiResponse,
+      },
+    })
+
+    return handleNonStreamingToStreaming(c, geminiResponse, endpoint)
+  }
+
+  logGeminiDebug("response", endpoint, {
+    data: "streaming_response_started",
+  })
+  return handleStreamingResponse(c, response, endpoint)
 }
 
 // Token counting endpoint
@@ -597,7 +541,7 @@ export async function handleGeminiCountTokens(c: Context) {
   const model = extractModelFromUrl(endpoint)
 
   if (!model) {
-    return c.json({ error: "Model name is required in URL path" }, 400)
+    throw new Error("Model name is required in URL path")
   }
 
   // IMMEDIATE DEBUG: Log that we entered this handler
@@ -609,34 +553,26 @@ export async function handleGeminiCountTokens(c: Context) {
     },
   })
 
-  try {
-    const geminiPayload = await c.req.json<GeminiCountTokensRequest>()
-    logGeminiDebug("request", endpoint, { data: geminiPayload })
+  const geminiPayload = await c.req.json<GeminiCountTokensRequest>()
+  logGeminiDebug("request", endpoint, { data: geminiPayload })
 
-    const openAIPayload = translateGeminiCountTokensToOpenAI(
-      geminiPayload,
-      model,
-    )
-    logGeminiDebug("translation", endpoint, {
-      data: openAIPayload,
-      extra: { copilotRequest: openAIPayload },
-    })
+  const openAIPayload = translateGeminiCountTokensToOpenAI(geminiPayload, model)
+  logGeminiDebug("translation", endpoint, {
+    data: openAIPayload,
+    extra: { copilotRequest: openAIPayload },
+  })
 
-    const tokenCounts = getTokenCount(openAIPayload.messages)
-    logGeminiDebug("token_count", endpoint, { data: tokenCounts })
+  const tokenCounts = getTokenCount(openAIPayload.messages)
+  logGeminiDebug("token_count", endpoint, { data: tokenCounts })
 
-    const geminiResponse = translateTokenCountToGemini(tokenCounts.input)
-    logGeminiDebug("response", endpoint, {
-      data: geminiResponse,
-      extra: { finalResponse: geminiResponse },
-    })
+  const totalTokens = tokenCounts.input + tokenCounts.output
+  const geminiResponse = translateTokenCountToGemini(totalTokens)
+  logGeminiDebug("response", endpoint, {
+    data: geminiResponse,
+    extra: { finalResponse: geminiResponse },
+  })
 
-    return c.json(geminiResponse)
-  } catch (error) {
-    logGeminiError(endpoint, error)
-    const { status, message } = getErrorStatusAndMessage(error)
-    return c.json({ error: message }, status as 400 | 401 | 404 | 429 | 500)
-  }
+  return c.json(geminiResponse)
 }
 
 const isNonStreaming = (

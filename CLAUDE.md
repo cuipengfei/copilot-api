@@ -111,8 +111,14 @@ The Gemini integration (`src/routes/messages/gemini-*`) provides:
 - **Imports**: Use `~/*` path aliases for `src/*` imports
 - **Error Handling**: Use explicit error classes from `src/lib/error.ts`
 - **Testing**: Place tests in `tests/` directory with `*.test.ts` naming
-- **Formatting**: Prettier with package.json plugin
+- **Formatting**: Prettier with package.json plugin (NO semicolons)
 - **Linting**: @echristian/eslint-config with strict rules
+
+**Critical Code Style Rules**:
+- **No semicolons**: Project uses Prettier without semicolons - removing semicolons will fix many lint errors
+- **Operator placement**: Use `&&` and `||` operators at the start of continuation lines, not at the end
+- **String quotes**: Use double quotes consistently (`"text"` not `'text'`)
+- **Import sorting**: Group imports with proper spacing between different import sources
 
 ## Important Notes
 
@@ -122,6 +128,34 @@ The Gemini integration (`src/routes/messages/gemini-*`) provides:
 - All API translations maintain compatibility with OpenAI, Anthropic, and Gemini client libraries
 - Gemini API debugging logs are written to `logs/` directory for troubleshooting translation issues
 - **Development Workflow**: Claude should NOT run the server. The user will handle server testing and provide results for analysis.
+
+## Common TypeScript and Lint Issues
+
+**Routing and Path Parameter Issues**:
+- **Gemini route patterns**: Cannot use standard Hono path parameters (`:model`) for routes containing colons like `/v1beta/models/gemini-2.5-pro:countTokens`
+- **Solution**: Use wildcard routes (`/v1beta/models/*`) with URL string matching (`url.includes(":countTokens")`)
+- **Model extraction**: Use regex pattern `/\/v1beta\/models\/([^:]+):/` to extract model name from URL
+- **Route order**: More specific routes (streamGenerateContent) must be registered before general routes (generateContent)
+
+**Token Counting Semantic Issues**:
+- **Problem**: `handleGeminiCountTokens` was only returning `tokenCounts.input` instead of total tokens
+- **Solution**: Calculate `totalTokens = tokenCounts.input + tokenCounts.output` before passing to `translateTokenCountToGemini()`
+- **Context**: `getTokenCount()` returns `{input: number, output: number}` but Gemini expects total count
+
+**Error Handling Patterns**:
+- **Standard pattern**: Always use `forwardError(c, error)` from `~/lib/error` instead of custom error handling
+- **Route level**: Wrap handler calls in try-catch blocks at route level, not inside handler functions
+- **Avoid**: Custom error status mapping functions - use repository standard patterns
+
+**Circular Import Prevention**:
+- **Problem**: Importing utility functions between route and handler files creates circular dependencies
+- **Solution**: Duplicate simple utility functions rather than sharing between tightly coupled modules
+- **Example**: `extractModelFromUrl()` function should be in handler file, not shared from route file
+
+**Shared Utility Reuse**:
+- **Stop reason mapping**: Use `mapOpenAIFinishReasonToGemini` from `~/routes/messages/utils.ts` instead of duplicating
+- **Pattern**: Check `utils.ts` for existing functions before implementing new utility functions
+- **Import order**: Ensure proper import grouping when adding shared utility imports
 
 ## Debugging & Troubleshooting
 

@@ -17,3 +17,5 @@ logs/gemini-translation.log
 .env
 logs/gemini-errors.log
 logs/gemini-incoming-requests.log
+tmp/gemini_vs_anthropic_review_by_cc.md
+tmp/gemini_vs_anthropic_review.md
