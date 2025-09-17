@@ -103,6 +103,7 @@ The Gemini integration (`src/routes/messages/gemini-*`) provides:
 - Gemini CLI sends function responses as **nested arrays** in `contents`, requiring special handling in `translateGeminiContentsToOpenAI()` via the `processFunctionResponseArray` helper.
 - The `parametersJsonSchema` field takes precedence over `parameters` in function declarations to align with modern JSON Schema standards.
 - **Critical Bug Fix**: Both the nested array (`processFunctionResponseArray`) and direct `functionResponse` part handling must use the same tool_call_id lookup pattern (`pendingToolCalls.get(functionName)`) to avoid OpenAI API validation errors when a user responds to a tool call.
+- **Cancelled Tool Call Handling**: The `translateGeminiContentsToOpenAI` function includes post-processing logic to remove incomplete assistant messages with cancelled tool calls from ANY position in conversation history (not just the last message). This prevents 400 Bad Request errors when Gemini CLI includes cancelled tool calls in context.
 
 ## Code Style & Conventions
 
@@ -129,6 +130,7 @@ The Gemini integration (`src/routes/messages/gemini-*`) provides:
 - **Tool response mapping errors**: Verify tool_call_id consistency between assistant tool calls and user tool responses
 - **Nested array handling**: Gemini CLI sends function responses as nested arrays requiring `processFunctionResponseArray()` extraction
 - **tool_call_id mismatch errors**: Ensure both `processFunctionResponseArray()` and direct function response handling use `pendingToolCalls.get(functionName)` consistently
+- **Cancelled tool call errors**: 400 Bad Request errors may occur when Gemini CLI includes cancelled tool calls in conversation history. The post-processing logic in `translateGeminiContentsToOpenAI()` removes these incomplete assistant messages from all positions in the conversation.
 - **HTTPError from create-chat-completions**: Usually indicates parameter validation failure in OpenAI translation layer
 - **ESLint max-depth violations**: Extract helper functions when nested loops exceed 4 levels of depth
 
