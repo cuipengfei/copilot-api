@@ -22,39 +22,6 @@ function extractModelFromUrl(url: string): string {
   return match[1]
 }
 
-// Helper function to safely get array length
-function getArrayLength(arr: unknown): number {
-  return Array.isArray(arr) ? arr.length : 0
-}
-
-// Helper function to safely get model string
-function getModelString(data: unknown): string {
-  return (data as { model?: string }).model || "unknown"
-}
-
-// Helper function to create summary object
-function createDataSummary(data: unknown) {
-  const dataObj = data as Record<string, unknown>
-  return {
-    hasContents: Boolean(dataObj.contents),
-    contentsLength: getArrayLength(dataObj.contents),
-    hasGenerationConfig: Boolean(dataObj.generationConfig),
-    hasTools: Boolean(dataObj.tools),
-    toolsLength: getArrayLength(dataObj.tools),
-    hasCandidates: Boolean(dataObj.candidates),
-    candidatesLength: getArrayLength(dataObj.candidates),
-    hasUsageMetadata: Boolean(dataObj.usageMetadata),
-    hasChoices: Boolean(dataObj.choices),
-    choicesLength: getArrayLength(dataObj.choices),
-    model: getModelString(data),
-  }
-}
-
-// Helper function to log request/response structure without content details
-function logStructure(data: unknown, label: string) {
-  const summary = createDataSummary(data)
-  console.info(`[GEMINI_${label}]`, summary)
-}
 import {
   translateGeminiToOpenAINonStream,
   translateGeminiToOpenAIStream,
@@ -81,21 +48,17 @@ export async function handleGeminiGeneration(c: Context) {
   await checkRateLimit(state)
 
   const geminiPayload = await c.req.json<GeminiRequest>()
-  logStructure(geminiPayload, "INCOMING_REQUEST")
 
   const openAIPayload = translateGeminiToOpenAINonStream(geminiPayload, model)
-  logStructure(openAIPayload, "TRANSLATED_TO_OPENAI")
 
   if (state.manualApprove) {
     await awaitApproval()
   }
 
   const response = await createChatCompletions(openAIPayload)
-  logStructure(response, "COPILOT_RESPONSE")
 
   if (isNonStreaming(response)) {
     const geminiResponse = translateOpenAIToGemini(response)
-    logStructure(geminiResponse, "FINAL_TO_CLIENT")
 
     return c.json(geminiResponse)
   }
@@ -129,9 +92,6 @@ function handleNonStreamingToStreaming(
     } finally {
       try {
         await stream.close()
-        console.info(
-          "[GEMINI_STREAM] Non-streaming conversion stream closed successfully",
-        )
       } catch (closeError) {
         console.error(
           "[GEMINI_STREAM] Error closing non-streaming conversion stream",
@@ -202,7 +162,6 @@ async function processAndWriteChunk(
   lastWritePromise: Promise<void>,
 ): Promise<{ newWritePromise: Promise<void>; hasFinishReason: boolean }> {
   if (!rawEvent.data) {
-    console.info("[GEMINI_STREAM] Skipping empty chunk")
     return { newWritePromise: lastWritePromise, hasFinishReason: false }
   }
 
@@ -216,21 +175,6 @@ async function processAndWriteChunk(
         (c) => c.finishReason && c.finishReason !== "FINISH_REASON_UNSPECIFIED",
       )
 
-      if (chunkHasFinishReason) {
-        console.info("[GEMINI_STREAM] Detected finish reason in chunk", {
-          finishReason: geminiChunk.candidates[0].finishReason,
-        })
-      }
-
-      console.info("[GEMINI_STREAM] Writing SSE chunk", {
-        candidatesCount: geminiChunk.candidates.length || 0,
-        hasUsageMetadata: Boolean(geminiChunk.usageMetadata),
-        hasFinishReason: chunkHasFinishReason,
-      })
-
-      // Log structure of each chunk sent to client (but only once per chunk)
-      logStructure(geminiChunk, "STREAM_CHUNK_TO_CLIENT")
-
       // Wait for previous write to complete before writing new chunk
       await lastWritePromise
       const newWritePromise = stream.writeSSE({
@@ -239,7 +183,6 @@ async function processAndWriteChunk(
 
       return { newWritePromise, hasFinishReason: chunkHasFinishReason }
     } else {
-      console.info("[GEMINI_STREAM] Skipping null gemini chunk")
       return { newWritePromise: lastWritePromise, hasFinishReason: false }
     }
   } catch (parseError) {
@@ -254,21 +197,11 @@ function handleStreamingResponse(
   response: AsyncIterable<{ data?: string }>,
 ) {
   return streamSSE(c, async (stream) => {
-    console.info("[GEMINI_STREAM] Starting streaming response processing")
-    let chunkCount = 0
-    let hasFinishReason = false
     let lastWritePromise: Promise<void> = Promise.resolve()
 
     try {
       for await (const rawEvent of response) {
-        chunkCount++
-        console.info(`[GEMINI_STREAM] Processing chunk ${chunkCount}`, {
-          hasData: Boolean(rawEvent.data),
-          isDone: rawEvent.data === "[DONE]",
-        })
-
         if (rawEvent.data === "[DONE]") {
-          console.info("[GEMINI_STREAM] Received [DONE] signal, breaking")
           break
         }
 
@@ -278,9 +211,6 @@ function handleStreamingResponse(
           lastWritePromise,
         )
         lastWritePromise = result.newWritePromise
-        if (result.hasFinishReason) {
-          hasFinishReason = true
-        }
       }
 
       // Wait for all writes to complete before closing
@@ -288,21 +218,6 @@ function handleStreamingResponse(
 
       // Add a small delay to ensure all data is flushed
       await new Promise((resolve) => setTimeout(resolve, 50))
-
-      // Ensure we properly signal completion - if we had a finish reason, we're done
-      if (hasFinishReason) {
-        console.info(
-          "[GEMINI_STREAM] Stream completed with finish reason - proper termination",
-        )
-      } else {
-        console.info(
-          "[GEMINI_STREAM] Stream completed without finish reason - possible incomplete stream",
-        )
-      }
-
-      console.info(
-        `[GEMINI_STREAM] Streaming complete, processed ${chunkCount} chunks, closing stream`,
-      )
     } catch (error) {
       console.error("[GEMINI_STREAM] Error in streaming processing", error)
       // Ensure we don't leave the stream hanging
@@ -310,7 +225,6 @@ function handleStreamingResponse(
       // Always close the stream, but with proper cleanup
       try {
         await stream.close()
-        console.info("[GEMINI_STREAM] Stream closed successfully")
       } catch (closeError) {
         console.error("[GEMINI_STREAM] Error closing stream", closeError)
       }
@@ -329,19 +243,14 @@ export async function handleGeminiStreamGeneration(c: Context) {
   await checkRateLimit(state)
 
   const geminiPayload = await c.req.json<GeminiRequest>()
-  logStructure(geminiPayload, "INCOMING_STREAM_REQUEST")
 
   const openAIPayload = translateGeminiToOpenAIStream(geminiPayload, model)
-  logStructure(openAIPayload, "TRANSLATED_STREAM_TO_OPENAI")
 
   if (state.manualApprove) {
     await awaitApproval()
   }
 
   const response = await createChatCompletions(openAIPayload)
-  console.info(
-    "[GEMINI_COPILOT_STREAM_RESPONSE] Received streaming response from Copilot",
-  )
 
   if (isNonStreaming(response)) {
     const geminiResponse = translateOpenAIToGemini(response)

@@ -1,113 +1,9 @@
-import consola from "consola"
 import { events } from "fetch-event-stream"
 
 import { copilotHeaders, copilotBaseUrl } from "~/lib/api-config"
 import { HTTPError } from "~/lib/error"
 import { generateSessionHeaders } from "~/lib/headers"
 import { state } from "~/lib/state"
-
-// Error info type
-type ErrorInfo = {
-  status: number
-  statusText: string
-  body: string
-  headers: Record<string, string>
-  hasTools: boolean
-  toolCount: number
-  toolNames: Array<string>
-  toolChoice: ChatCompletionsPayload["tool_choice"]
-}
-
-// Helper function to create error info object
-function createErrorInfo(
-  response: Response,
-  errorBody: string,
-  payload: ChatCompletionsPayload,
-): ErrorInfo {
-  const hasTools = Boolean(payload.tools && payload.tools.length > 0)
-  return {
-    status: response.status,
-    statusText: response.statusText,
-    body: errorBody,
-    headers: Object.fromEntries(response.headers.entries()),
-    hasTools,
-    toolCount: hasTools && payload.tools ? payload.tools.length : 0,
-    toolNames:
-      hasTools && payload.tools ?
-        payload.tools.map((tool) => tool.function.name)
-      : [],
-    toolChoice: payload.tool_choice,
-  }
-}
-
-// Helper function to handle error logging
-function handleErrorLogging(
-  errorBody: string,
-  errorInfo: ErrorInfo,
-  payload: ChatCompletionsPayload,
-) {
-  // Check if this is the specific "Tool name is required" error
-  if (
-    errorBody.includes("Tool name is required")
-    || errorBody.includes("invalid_tool_call_format")
-  ) {
-    consola.error("[COPILOT_TOOLS] Tool validation error detected", {
-      ...errorInfo,
-      detailedPayload: JSON.stringify(
-        {
-          model: payload.model,
-          tools: payload.tools,
-          tool_choice: payload.tool_choice,
-          messages: payload.messages.map((msg) => ({
-            role: msg.role,
-            hasContent: Boolean(msg.content),
-            hasToolCalls: Boolean(msg.tool_calls),
-            toolCallsCount: msg.tool_calls?.length || 0,
-          })),
-        },
-        null,
-        2,
-      ),
-    })
-  } else {
-    consola.error("Failed to create chat completions", errorInfo)
-  }
-}
-
-// Helper function to validate and log tools
-function validateAndLogTools(payload: ChatCompletionsPayload) {
-  if (!payload.tools || payload.tools.length === 0) return
-
-  consola.info("[COPILOT_TOOLS] Request contains tools", {
-    toolCount: payload.tools.length,
-    toolNames: payload.tools.map((tool) => tool.function.name),
-    toolChoice: payload.tool_choice,
-  })
-
-  // Validate all tools have required fields
-  for (const [index, tool] of payload.tools.entries()) {
-    const toolInfo = {
-      index,
-      type: tool.type,
-      functionName: tool.function.name,
-      hasName: Boolean(tool.function.name),
-      nameType: typeof tool.function.name,
-      nameLength: tool.function.name.length || 0,
-      hasDescription: Boolean(tool.function.description),
-      hasParameters: Boolean(tool.function.parameters),
-    }
-
-    if (
-      !tool.function.name
-      || typeof tool.function.name !== "string"
-      || tool.function.name.trim() === ""
-    ) {
-      consola.error("[COPILOT_TOOLS] Invalid tool detected", toolInfo)
-    } else {
-      consola.debug("[COPILOT_TOOLS] Tool validation passed", toolInfo)
-    }
-  }
-}
 
 export const createChatCompletions = async (
   payload: ChatCompletionsPayload,
@@ -130,14 +26,6 @@ export const createChatCompletions = async (
     ...sessionHeaders, // This includes X-Initiator
   }
 
-  // Optional: Add debug logging for all modes
-  consola.debug(
-    `Headers (${state.headerMode} mode): X-Initiator=${sessionHeaders["X-Initiator"]}`,
-  )
-
-  // Enhanced logging for tool-related requests
-  validateAndLogTools(payload)
-
   const response = await fetch(`${copilotBaseUrl(state)}/chat/completions`, {
     method: "POST",
     headers,
@@ -146,21 +34,6 @@ export const createChatCompletions = async (
   })
 
   if (!response.ok) {
-    // Clone response to avoid body consumption conflict
-    const responseClone = response.clone()
-    const errorBody = await responseClone.text()
-
-    // Enhanced error logging for tool-related issues
-    const errorInfo = createErrorInfo(response, errorBody, payload)
-    handleErrorLogging(errorBody, errorInfo, payload)
-
-    // Always include full request payload for debugging in verbose mode
-    if (state.manualApprove || process.env.NODE_ENV === "development") {
-      consola.debug("[COPILOT_REQUEST] Full request payload for debugging", {
-        requestPayload: JSON.stringify(payload, null, 2),
-      })
-    }
-
     throw new HTTPError("Failed to create chat completions", response)
   }
 
