@@ -1,5 +1,3 @@
-import { consola } from "consola"
-
 import {
   type ChatCompletionResponse,
   type ChatCompletionChunk,
@@ -42,14 +40,6 @@ export function translateGeminiToOpenAINonStream(
   payload: GeminiRequest,
   model: string,
 ): ChatCompletionsPayload {
-  consola.info("[GEMINI_TRANSLATE] Starting non-stream translation", {
-    model,
-    hasTools: Boolean(payload.tools),
-    toolsLength: payload.tools?.length || 0,
-    hasToolConfig: Boolean(payload.toolConfig),
-    contentsLength: payload.contents.length,
-  })
-
   const result = {
     model: mapGeminiModelToCopilot(model), // Map unsupported model variants to supported ones
     messages: translateGeminiContentsToOpenAI(
@@ -65,14 +55,6 @@ export function translateGeminiToOpenAINonStream(
     tool_choice: translateGeminiToolConfigToOpenAI(payload.toolConfig),
   }
 
-  consola.info("[GEMINI_TRANSLATE] Non-stream translation completed", {
-    finalModel: result.model,
-    messagesCount: result.messages.length,
-    hasTools: Boolean(result.tools),
-    toolsCount: result.tools?.length || 0,
-    toolChoice: result.tool_choice,
-  })
-
   return result
 }
 
@@ -80,14 +62,6 @@ export function translateGeminiToOpenAIStream(
   payload: GeminiRequest,
   model: string,
 ): ChatCompletionsPayload {
-  consola.info("[GEMINI_TRANSLATE] Starting stream translation", {
-    model,
-    hasTools: Boolean(payload.tools),
-    toolsLength: payload.tools?.length || 0,
-    hasToolConfig: Boolean(payload.toolConfig),
-    contentsLength: payload.contents.length,
-  })
-
   const result = {
     model: mapGeminiModelToCopilot(model), // Map unsupported model variants to supported ones
     messages: translateGeminiContentsToOpenAI(
@@ -102,14 +76,6 @@ export function translateGeminiToOpenAIStream(
     tools: translateGeminiToolsToOpenAI(payload.tools),
     tool_choice: translateGeminiToolConfigToOpenAI(payload.toolConfig),
   }
-
-  consola.info("[GEMINI_TRANSLATE] Stream translation completed", {
-    finalModel: result.model,
-    messagesCount: result.messages.length,
-    hasTools: Boolean(result.tools),
-    toolsCount: result.tools?.length || 0,
-    toolChoice: result.tool_choice,
-  })
 
   return result
 }
@@ -185,29 +151,11 @@ function processFunctionCalls(options: {
 }): void {
   const { functionCalls, content, pendingToolCalls, messages } = options
 
-  consola.info("[GEMINI_FUNCTION_CALLS] Processing function calls", {
-    functionCallCount: functionCalls.length,
-    functionNames: functionCalls.map((call) => call.functionCall.name),
-    functionCallDetails: functionCalls.map((call) => ({
-      name: call.functionCall.name,
-      hasName: Boolean(call.functionCall.name),
-      nameType: typeof call.functionCall.name,
-      hasArgs: Boolean(call.functionCall.args),
-      argsKeys: Object.keys(call.functionCall.args),
-    })),
-  })
-
   const textContent = extractTextFromGeminiContent(content)
   const toolCalls = functionCalls.map((call) => {
     const toolCallId = generateToolCallId(call.functionCall.name)
     // Remember this tool call for later matching with responses
     pendingToolCalls.set(call.functionCall.name, toolCallId)
-
-    consola.info("[GEMINI_FUNCTION_CALLS] Creating tool call", {
-      functionName: call.functionCall.name,
-      toolCallId,
-      argumentsString: JSON.stringify(call.functionCall.args),
-    })
 
     return {
       id: toolCallId,
@@ -217,13 +165,6 @@ function processFunctionCalls(options: {
         arguments: JSON.stringify(call.functionCall.args),
       },
     }
-  })
-
-  consola.info("[GEMINI_FUNCTION_CALLS] Final assistant message", {
-    toolCallCount: toolCalls.length,
-    hasTextContent: Boolean(textContent),
-    toolCallIds: toolCalls.map((tc) => tc.id),
-    toolCallNames: toolCalls.map((tc) => tc.function.name),
   })
 
   messages.push({
@@ -354,45 +295,17 @@ function translateGeminiToolsToOpenAI(
 ): Array<Tool> | undefined {
   if (!geminiTools || geminiTools.length === 0) return undefined
 
-  consola.info("[GEMINI_TOOLS] Starting translation", {
-    toolCount: geminiTools.length,
-  })
-
   const tools: Array<Tool> = []
   for (const tool of geminiTools) {
-    consola.info("[GEMINI_TOOLS] Processing tool", {
-      hasFunctionDeclarations: Boolean(tool.functionDeclarations),
-      hasGoogleSearch: Boolean(tool.googleSearch),
-      hasUrlContext: Boolean(tool.urlContext),
-      functionDeclarationsCount: tool.functionDeclarations?.length || 0,
-    })
-
     // Handle standard function declarations
     if (tool.functionDeclarations) {
       for (const func of tool.functionDeclarations) {
-        consola.info("[GEMINI_TOOLS] Processing function declaration", {
-          name: func.name,
-          hasName: Boolean(func.name),
-          nameType: typeof func.name,
-          hasDescription: Boolean(func.description),
-          hasParameters: Boolean(func.parameters),
-          hasParametersJsonSchema: Boolean(func.parametersJsonSchema),
-        })
-
         // Validate that function name exists and is not empty
         if (
           !func.name
           || typeof func.name !== "string"
           || func.name.trim() === ""
         ) {
-          consola.warn(
-            "[GEMINI_TOOLS] Skipping function declaration - invalid or missing name",
-            {
-              name: func.name,
-              nameType: typeof func.name,
-              description: func.description,
-            },
-          )
           continue
         }
 
@@ -437,18 +350,9 @@ function translateGeminiToolsToOpenAI(
     // Note: GitHub Copilot API doesn't support web_fetch functionality
     // Skip this tool to avoid "Failed to create chat completions" errors
     if (tool.urlContext !== undefined) {
-      // Log that we're skipping this unsupported tool
-      console.warn(
-        "Skipping urlContext tool - not supported by GitHub Copilot API",
-      )
       continue
     }
   }
-
-  consola.info("[GEMINI_TOOLS] Translation completed", {
-    finalToolCount: tools.length,
-    toolNames: tools.map((t) => t.function.name),
-  })
 
   return tools
 }
@@ -569,35 +473,10 @@ function processToolCalls(
     }
   }>,
 ): Array<GeminiPart> {
-  consola.info("[GEMINI_STREAM_TOOLS] Processing streaming tool calls", {
-    toolCallCount: toolCalls.length,
-    toolCallDetails: toolCalls.map((tc) => ({
-      index: tc.index,
-      id: tc.id,
-      type: tc.type,
-      functionName: tc.function?.name,
-      hasFunctionName: Boolean(tc.function?.name),
-      hasArguments: Boolean(tc.function?.arguments),
-      argumentsLength: tc.function?.arguments?.length || 0,
-    })),
-  })
-
   const parts: Array<GeminiPart> = []
 
   for (const toolCall of toolCalls) {
     if (!toolCall.function?.name) {
-      consola.info(
-        "[GEMINI_STREAM_TOOLS] Skipping tool call - no function name",
-        {
-          toolCall: {
-            index: toolCall.index,
-            id: toolCall.id,
-            type: toolCall.type,
-            functionName: toolCall.function?.name,
-            hasFunction: Boolean(toolCall.function),
-          },
-        },
-      )
       continue
     }
 
@@ -610,20 +489,8 @@ function processToolCalls(
     } catch {
       // In streaming, arguments might be incomplete JSON
       // Skip this chunk and wait for complete arguments
-      consola.info(
-        "[GEMINI_STREAM_TOOLS] Skipping tool call - invalid JSON arguments",
-        {
-          functionName: toolCall.function.name,
-          arguments: toolCall.function.arguments,
-        },
-      )
       continue
     }
-
-    consola.info("[GEMINI_STREAM_TOOLS] Adding function call part", {
-      functionName: toolCall.function.name,
-      parsedArgs: args,
-    })
 
     parts.push({
       functionCall: {
@@ -632,13 +499,6 @@ function processToolCalls(
       },
     })
   }
-
-  consola.info("[GEMINI_STREAM_TOOLS] Completed processing", {
-    finalPartsCount: parts.length,
-    functionNames: parts.map((p) =>
-      "functionCall" in p ? p.functionCall.name : "unknown",
-    ),
-  })
 
   return parts
 }
@@ -727,18 +587,12 @@ function processParts(choice: {
   const parts = processChunkParts(choice)
 
   if (parts.length === 0 && !choice.finish_reason) {
-    consola.info(
-      "[GEMINI_CHUNK_TRANSLATE] No parts and no finish reason, returning null",
-    )
     return null
   }
 
   // If we have a finish reason but no parts, add an empty text part
   // This ensures Gemini CLI receives a properly formatted completion chunk
   if (parts.length === 0 && choice.finish_reason) {
-    consola.info(
-      "[GEMINI_CHUNK_TRANSLATE] Adding empty text part for finish reason chunk",
-    )
     parts.push({ text: "" })
   }
 
@@ -763,11 +617,6 @@ function buildGeminiResponse(
 
   if (shouldInclude) {
     response.usageMetadata = createUsageMetadata(chunk)
-    consola.info("[GEMINI_CHUNK_TRANSLATE] Added usage metadata", {
-      promptTokens: chunk.usage?.prompt_tokens || 0,
-      completionTokens: chunk.usage?.completion_tokens || 0,
-      totalTokens: chunk.usage?.total_tokens || 0,
-    })
   }
 
   return response
@@ -778,27 +627,11 @@ export function translateOpenAIChunkToGemini(chunk: ChatCompletionChunk): {
   candidates: Array<GeminiCandidate>
   usageMetadata?: GeminiUsageMetadata
 } | null {
-  consola.info("[GEMINI_CHUNK_TRANSLATE] Processing OpenAI chunk", {
-    choicesCount: chunk.choices.length,
-    chunkId: chunk.id,
-    model: chunk.model,
-  })
-
   if (chunk.choices.length === 0) {
-    consola.info("[GEMINI_CHUNK_TRANSLATE] No choices, returning null")
     return null
   }
 
   const choice = chunk.choices[0]
-  consola.info("[GEMINI_CHUNK_TRANSLATE] Processing choice", {
-    index: choice.index,
-    hasContent: Boolean(choice.delta.content),
-    hasToolCalls: Boolean(choice.delta.tool_calls),
-    finishReason: choice.finish_reason,
-    finishReasonType: typeof choice.finish_reason,
-    contentLength: choice.delta.content?.length || 0,
-    toolCallsCount: choice.delta.tool_calls?.length || 0,
-  })
 
   const parts = processParts(choice)
   if (!parts) {
@@ -811,25 +644,12 @@ export function translateOpenAIChunkToGemini(chunk: ChatCompletionChunk): {
       mapOpenAIFinishReasonToGemini(choice.finish_reason)
     : undefined
 
-  consola.info("[GEMINI_CHUNK_TRANSLATE] Mapped finish reason", {
-    original: choice.finish_reason,
-    mapped: mappedFinishReason,
-    shouldIncludeFinishReason: shouldInclude,
-  })
-
   const candidate = createGeminiCandidate(
     parts,
     mappedFinishReason,
     choice.index,
   )
   const response = buildGeminiResponse(candidate, shouldInclude, chunk)
-
-  consola.info("[GEMINI_CHUNK_TRANSLATE] Final response", {
-    candidatesCount: response.candidates.length,
-    hasUsageMetadata: Boolean(response.usageMetadata),
-    partsCount: parts.length,
-    finishReason: mappedFinishReason,
-  })
 
   return response
 }
