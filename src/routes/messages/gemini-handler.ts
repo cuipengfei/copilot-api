@@ -1,13 +1,9 @@
 import type { Context } from "hono"
 import type { SSEStreamingApi } from "hono/streaming"
 
-import consola from "consola"
 import { streamSSE } from "hono/streaming"
-import { promises as fs } from "node:fs"
-import path from "node:path"
 
 import { awaitApproval } from "~/lib/approval"
-import { HTTPError } from "~/lib/error"
 import { checkRateLimit } from "~/lib/rate-limit"
 import { state } from "~/lib/state"
 import { getTokenCount } from "~/lib/tokenizer"
@@ -25,6 +21,40 @@ function extractModelFromUrl(url: string): string {
   }
   return match[1]
 }
+
+// Helper function to safely get array length
+function getArrayLength(arr: unknown): number {
+  return Array.isArray(arr) ? arr.length : 0
+}
+
+// Helper function to safely get model string
+function getModelString(data: unknown): string {
+  return (data as { model?: string }).model || "unknown"
+}
+
+// Helper function to create summary object
+function createDataSummary(data: unknown) {
+  const dataObj = data as Record<string, unknown>
+  return {
+    hasContents: Boolean(dataObj.contents),
+    contentsLength: getArrayLength(dataObj.contents),
+    hasGenerationConfig: Boolean(dataObj.generationConfig),
+    hasTools: Boolean(dataObj.tools),
+    toolsLength: getArrayLength(dataObj.tools),
+    hasCandidates: Boolean(dataObj.candidates),
+    candidatesLength: getArrayLength(dataObj.candidates),
+    hasUsageMetadata: Boolean(dataObj.usageMetadata),
+    hasChoices: Boolean(dataObj.choices),
+    choicesLength: getArrayLength(dataObj.choices),
+    model: getModelString(data),
+  }
+}
+
+// Helper function to log request/response structure without content details
+function logStructure(data: unknown, label: string) {
+  const summary = createDataSummary(data)
+  console.info(`[GEMINI_${label}]`, summary)
+}
 import {
   translateGeminiToOpenAINonStream,
   translateGeminiToOpenAIStream,
@@ -40,297 +70,37 @@ import {
   type GeminiResponse,
 } from "./gemini-types"
 
-// Debug logging interface
-interface GeminiDebugLog {
-  timestamp: string
-  type:
-    | "request"
-    | "response"
-    | "translation"
-    | "error"
-    | "stream_chunk"
-    | "stream_translation"
-  endpoint: string
-  data: unknown
-  copilotRequest?: unknown
-  copilotResponse?: unknown
-  finalResponse?: unknown
-}
-
-// File logging functions
-async function writeLogToFile(logEntry: GeminiDebugLog) {
-  const logsDir = path.join(process.cwd(), "logs")
-
-  try {
-    // Ensure logs directory exists
-    await fs.mkdir(logsDir, { recursive: true })
-
-    // Truncate large data before logging
-    const truncatedEntry = {
-      ...logEntry,
-      data: truncateData(logEntry.data),
-      copilotRequest: truncateData(logEntry.copilotRequest),
-      copilotResponse: truncateData(logEntry.copilotResponse),
-      finalResponse: truncateData(logEntry.finalResponse),
-    }
-
-    const logLine = JSON.stringify(truncatedEntry) + "\n"
-
-    // Write to main debug log
-    await fs.appendFile(path.join(logsDir, "gemini-debug.log"), logLine)
-
-    // Write to specific logs based on type
-    if (logEntry.type === "error") {
-      await fs.appendFile(path.join(logsDir, "gemini-errors.log"), logLine)
-    } else if (
-      logEntry.type === "translation"
-      || logEntry.type === "stream_translation"
-    ) {
-      await fs.appendFile(path.join(logsDir, "gemini-translation.log"), logLine)
-    }
-  } catch (error) {
-    consola.error("Failed to write log file:", error)
-  }
-}
-
-// NEW: Write incoming request logs to separate file for detailed analysis
-async function writeIncomingRequestLogToFile(logEntry: GeminiDebugLog) {
-  const logsDir = path.join(process.cwd(), "logs")
-
-  try {
-    // Ensure logs directory exists
-    await fs.mkdir(logsDir, { recursive: true })
-
-    // For incoming requests, we want more detail but still truncate huge payloads
-    const truncatedEntry = {
-      ...logEntry,
-      data: truncateData(logEntry.data, 500), // Allow more detail for incoming requests
-    }
-
-    const logLine = JSON.stringify(truncatedEntry) + "\n"
-
-    // Write to dedicated incoming requests log
-    await fs.appendFile(
-      path.join(logsDir, "gemini-incoming-requests.log"),
-      logLine,
-    )
-  } catch (error) {
-    consola.error("Failed to write incoming request log file:", error)
-  }
-}
-
-// Helper function to truncate data for logging
-function truncateData(data: unknown, maxLength = 100): unknown {
-  if (typeof data === "string") {
-    return data.length > maxLength ? `${data.slice(0, maxLength)}...` : data
-  }
-
-  if (Array.isArray(data)) {
-    return data.map((item) => truncateData(item, maxLength))
-  }
-
-  if (data && typeof data === "object") {
-    const obj = data as Record<string, unknown>
-    const result: Record<string, unknown> = {}
-
-    for (const [key, value] of Object.entries(obj)) {
-      if (key === "messages" && Array.isArray(value)) {
-        result[key] = value.map((msg: { role: string; content: unknown }) => ({
-          role: msg.role,
-          content: getContentDisplay(msg.content),
-        }))
-      } else if (key === "contents" && Array.isArray(value)) {
-        result[key] = value.map(
-          (content: { role: string; parts?: Array<unknown> }) => ({
-            role: content.role,
-            parts:
-              Array.isArray(content.parts) && content.parts.length > 0 ?
-                `[${content.parts.length} parts]`
-              : content.parts,
-          }),
-        )
-      } else {
-        result[key] = truncateData(value, maxLength)
-      }
-    }
-    return result
-  }
-
-  return data
-}
-
-// Helper function to display content for logging
-function getContentDisplay(content: unknown): unknown {
-  if (typeof content === "string") {
-    return truncateData(content, 100)
-  }
-  if (Array.isArray(content) && content.length > 0) {
-    return `[content array: ${content.length} items]`
-  }
-  return content
-}
-
-// Debug logging functions
-function logGeminiDebug(
-  type: string,
-  endpoint: string,
-  options: { data: unknown; extra?: Record<string, unknown> },
-) {
-  const { data, extra } = options
-  const truncatedData = truncateData(data)
-  const truncatedExtra = extra ? truncateData(extra) : undefined
-
-  const logEntry: GeminiDebugLog = {
-    timestamp: new Date().toISOString(),
-    type: type as GeminiDebugLog["type"],
-    endpoint,
-    data: truncatedData,
-    ...(truncatedExtra as Record<string, unknown>),
-  }
-
-  // Console logging - more concise
-  const endpointPath = new URL(endpoint).pathname
-  consola.debug(`[GEMINI-${type.toUpperCase()}] ${endpointPath}`)
-
-  // File logging (async, don't wait) - now always write but with truncated data
-  writeLogToFile(logEntry).catch((error: unknown) =>
-    consola.error("Log file write error:", error),
-  )
-}
-
-// NEW: Enhanced logging function for incoming Gemini requests
-function logGeminiIncomingRequest({
-  type,
-  endpoint,
-  rawPayload,
-  translatedPayload,
-}: {
-  type: string
-  endpoint: string
-  rawPayload: unknown
-  translatedPayload?: unknown
-}) {
-  const logEntry: GeminiDebugLog = {
-    timestamp: new Date().toISOString(),
-    type: type as GeminiDebugLog["type"],
-    endpoint,
-    data: {
-      incomingRequest: rawPayload, // Full incoming request from Gemini CLI
-      translatedRequest: translatedPayload, // Our translation to OpenAI format
-    },
-  }
-
-  const endpointPath = new URL(endpoint).pathname
-  consola.debug(`[GEMINI-INCOMING-${type.toUpperCase()}] ${endpointPath}`)
-
-  // Write to special incoming requests log file
-  writeIncomingRequestLogToFile(logEntry).catch((error: unknown) =>
-    consola.error("Incoming request log file write error:", error),
-  )
-}
-
-function logGeminiError(endpoint: string, error: unknown, data?: unknown) {
-  const truncatedData = data ? truncateData(data) : undefined
-
-  // Extract HTTP error details if it's an HTTPError
-  let httpErrorDetails: Record<string, unknown> | undefined
-  if (error instanceof HTTPError) {
-    httpErrorDetails = {
-      status: error.response.status,
-      statusText: error.response.statusText,
-      url: error.response.url,
-      headers: Object.fromEntries(error.response.headers.entries()),
-    }
-  }
-
-  const logEntry: GeminiDebugLog = {
-    timestamp: new Date().toISOString(),
-    type: "error",
-    endpoint,
-    data: {
-      error: error instanceof Error ? error.message : String(error),
-      stack: error instanceof Error ? error.stack : undefined,
-      httpDetails: httpErrorDetails,
-      data: truncatedData,
-    },
-  }
-
-  // Console logging - more concise
-  const endpointPath = new URL(endpoint).pathname
-  consola.error(
-    `[GEMINI-ERROR] ${endpointPath}: ${error instanceof Error ? error.message : String(error)}`,
-  )
-
-  // File logging (async, don't wait)
-  writeLogToFile(logEntry).catch((logError: unknown) =>
-    consola.error("Log file write error:", logError),
-  )
-}
-
 // Standard generation endpoint
 export async function handleGeminiGeneration(c: Context) {
-  const endpoint = c.req.url
-  const model = extractModelFromUrl(endpoint)
+  const model = extractModelFromUrl(c.req.url)
 
   if (!model) {
     throw new Error("Model name is required in URL path")
   }
 
-  // IMMEDIATE DEBUG: Log that we entered this handler
-  logGeminiDebug("handler_entry_GENERATION", endpoint, {
-    data: {
-      endpoint: endpoint,
-      model: model,
-      context: "Entered handleGeminiGeneration handler (NON-STREAMING)",
-    },
-  })
-
   await checkRateLimit(state)
 
   const geminiPayload = await c.req.json<GeminiRequest>()
-  logGeminiDebug("request", endpoint, { data: geminiPayload })
+  logStructure(geminiPayload, "INCOMING_REQUEST")
 
   const openAIPayload = translateGeminiToOpenAINonStream(geminiPayload, model)
-
-  // NEW: Log detailed incoming request with full context
-  logGeminiIncomingRequest({
-    type: "generation_request",
-    endpoint,
-    rawPayload: geminiPayload,
-    translatedPayload: openAIPayload,
-  })
-
-  logGeminiDebug("translation", endpoint, {
-    data: openAIPayload,
-    extra: { copilotRequest: openAIPayload },
-  })
+  logStructure(openAIPayload, "TRANSLATED_TO_OPENAI")
 
   if (state.manualApprove) {
     await awaitApproval()
   }
 
   const response = await createChatCompletions(openAIPayload)
+  logStructure(response, "COPILOT_RESPONSE")
 
   if (isNonStreaming(response)) {
-    logGeminiDebug("response", endpoint, {
-      data: response,
-      extra: { copilotResponse: response },
-    })
-
     const geminiResponse = translateOpenAIToGemini(response)
-    logGeminiDebug("translation", endpoint, {
-      data: geminiResponse,
-      extra: { finalResponse: geminiResponse },
-    })
+    logStructure(geminiResponse, "FINAL_TO_CLIENT")
 
     return c.json(geminiResponse)
   }
 
   // This shouldn't happen for non-streaming endpoint
-  logGeminiError(
-    endpoint,
-    new Error("Unexpected streaming response for non-streaming endpoint"),
-  )
   throw new Error("Unexpected streaming response for non-streaming endpoint")
 }
 
@@ -338,30 +108,37 @@ export async function handleGeminiGeneration(c: Context) {
 function handleNonStreamingToStreaming(
   c: Context,
   geminiResponse: GeminiResponse,
-  endpoint: string,
 ) {
   return streamSSE(c, async (stream) => {
-    logGeminiDebug("non_streaming_conversion", endpoint, {
-      data: {
-        geminiResponse: truncateData(geminiResponse),
-        context: "Converting non-streaming response to streaming",
-      },
-    })
+    try {
+      const firstPart = geminiResponse.candidates[0]?.content?.parts?.[0]
+      // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+      const hasTextContent = firstPart && "text" in firstPart
 
-    const textContent = geminiResponse.candidates[0]?.content?.parts?.[0]
+      // eslint-disable-next-line unicorn/prefer-ternary
+      if (hasTextContent) {
+        await sendTextInChunks(stream, firstPart.text, geminiResponse)
+      } else {
+        await sendFallbackResponse(stream, geminiResponse)
+      }
 
-    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
-    await (textContent && "text" in textContent ?
-      sendTextInChunks(stream, textContent.text, {
-        geminiResponse,
-        endpoint,
-      })
-    : sendFallbackResponse(stream, geminiResponse, endpoint))
-
-    logGeminiDebug("stream_closing", endpoint, {
-      data: { context: "Closing non-streaming to streaming conversion" },
-    })
-    await stream.close()
+      // Add a small delay to ensure all data is flushed
+      await new Promise((resolve) => setTimeout(resolve, 50))
+    } catch (error) {
+      console.error("[GEMINI_STREAM] Error in non-streaming conversion", error)
+    } finally {
+      try {
+        await stream.close()
+        console.info(
+          "[GEMINI_STREAM] Non-streaming conversion stream closed successfully",
+        )
+      } catch (closeError) {
+        console.error(
+          "[GEMINI_STREAM] Error closing non-streaming conversion stream",
+          closeError,
+        )
+      }
+    }
   })
 }
 
@@ -369,17 +146,10 @@ function handleNonStreamingToStreaming(
 async function sendTextInChunks(
   stream: SSEStreamingApi,
   text: string,
-  options: { geminiResponse: GeminiResponse; endpoint: string },
+  geminiResponse: GeminiResponse,
 ) {
-  const { geminiResponse, endpoint } = options
-  logGeminiDebug("text_chunking", endpoint, {
-    data: {
-      text: text,
-      textLength: text.length,
-      context: "Processing text for chunking",
-    },
-  })
   const chunkSize = Math.max(1, Math.min(50, text.length))
+  let lastWritePromise: Promise<void> = Promise.resolve()
 
   for (let i = 0; i < text.length; i += chunkSize) {
     const chunk = text.slice(i, i + chunkSize)
@@ -401,30 +171,22 @@ async function sendTextInChunks(
       : {}),
     }
 
-    logGeminiDebug("chunk_sending", endpoint, {
-      data: {
-        chunkNumber: Math.floor(i / chunkSize) + 1,
-        chunk: chunk,
-        isLast: isLast,
-        streamResponse: truncateData(streamResponse),
-      },
+    // Wait for previous write to complete before writing new chunk
+    await lastWritePromise
+    lastWritePromise = stream.writeSSE({
+      data: JSON.stringify(streamResponse),
     })
-    await stream.writeSSE({ data: JSON.stringify(streamResponse) })
   }
+
+  // Wait for final write to complete
+  await lastWritePromise
 }
 
 // Helper function to send fallback response
 async function sendFallbackResponse(
   stream: SSEStreamingApi,
   geminiResponse: GeminiResponse,
-  endpoint: string,
 ) {
-  logGeminiDebug("fallback_processing", endpoint, {
-    data: {
-      candidates: truncateData(geminiResponse.candidates),
-      context: "Using fallback for non-text or empty content",
-    },
-  })
   const streamResponse: GeminiStreamResponse = {
     candidates: geminiResponse.candidates,
     usageMetadata: geminiResponse.usageMetadata,
@@ -433,144 +195,179 @@ async function sendFallbackResponse(
   await stream.writeSSE({ data: JSON.stringify(streamResponse) })
 }
 
+// Helper function to process chunk and write to stream
+async function processAndWriteChunk(
+  rawEvent: { data?: string },
+  stream: SSEStreamingApi,
+  lastWritePromise: Promise<void>,
+): Promise<{ newWritePromise: Promise<void>; hasFinishReason: boolean }> {
+  if (!rawEvent.data) {
+    console.info("[GEMINI_STREAM] Skipping empty chunk")
+    return { newWritePromise: lastWritePromise, hasFinishReason: false }
+  }
+
+  try {
+    const chunk = JSON.parse(rawEvent.data) as ChatCompletionChunk
+    const geminiChunk = translateOpenAIChunkToGemini(chunk)
+
+    if (geminiChunk) {
+      // Check if this chunk contains a finish reason
+      const chunkHasFinishReason = geminiChunk.candidates.some(
+        (c) => c.finishReason && c.finishReason !== "FINISH_REASON_UNSPECIFIED",
+      )
+
+      if (chunkHasFinishReason) {
+        console.info("[GEMINI_STREAM] Detected finish reason in chunk", {
+          finishReason: geminiChunk.candidates[0].finishReason,
+        })
+      }
+
+      console.info("[GEMINI_STREAM] Writing SSE chunk", {
+        candidatesCount: geminiChunk.candidates.length || 0,
+        hasUsageMetadata: Boolean(geminiChunk.usageMetadata),
+        hasFinishReason: chunkHasFinishReason,
+      })
+
+      // Log structure of each chunk sent to client (but only once per chunk)
+      logStructure(geminiChunk, "STREAM_CHUNK_TO_CLIENT")
+
+      // Wait for previous write to complete before writing new chunk
+      await lastWritePromise
+      const newWritePromise = stream.writeSSE({
+        data: JSON.stringify(geminiChunk),
+      })
+
+      return { newWritePromise, hasFinishReason: chunkHasFinishReason }
+    } else {
+      console.info("[GEMINI_STREAM] Skipping null gemini chunk")
+      return { newWritePromise: lastWritePromise, hasFinishReason: false }
+    }
+  } catch (parseError) {
+    console.error("[GEMINI_STREAM] Error parsing chunk", parseError)
+    return { newWritePromise: lastWritePromise, hasFinishReason: false }
+  }
+}
+
 // Helper function to handle streaming response processing
 function handleStreamingResponse(
   c: Context,
   response: AsyncIterable<{ data?: string }>,
-  endpoint: string,
 ) {
   return streamSSE(c, async (stream) => {
+    console.info("[GEMINI_STREAM] Starting streaming response processing")
+    let chunkCount = 0
+    let hasFinishReason = false
+    let lastWritePromise: Promise<void> = Promise.resolve()
+
     try {
       for await (const rawEvent of response) {
-        logGeminiDebug("stream_chunk", endpoint, { data: rawEvent })
+        chunkCount++
+        console.info(`[GEMINI_STREAM] Processing chunk ${chunkCount}`, {
+          hasData: Boolean(rawEvent.data),
+          isDone: rawEvent.data === "[DONE]",
+        })
 
         if (rawEvent.data === "[DONE]") {
+          console.info("[GEMINI_STREAM] Received [DONE] signal, breaking")
           break
         }
 
-        if (!rawEvent.data) {
-          continue
-        }
-
-        const chunk = JSON.parse(rawEvent.data) as ChatCompletionChunk
-        const geminiChunk = translateOpenAIChunkToGemini(chunk)
-
-        if (geminiChunk) {
-          logGeminiDebug("stream_translation", endpoint, { data: geminiChunk })
-          await stream.writeSSE({
-            data: JSON.stringify(geminiChunk),
-          })
+        const result = await processAndWriteChunk(
+          rawEvent,
+          stream,
+          lastWritePromise,
+        )
+        lastWritePromise = result.newWritePromise
+        if (result.hasFinishReason) {
+          hasFinishReason = true
         }
       }
-    } catch (streamError) {
-      logGeminiError(endpoint, streamError, { context: "streaming_loop" })
+
+      // Wait for all writes to complete before closing
+      await lastWritePromise
+
+      // Add a small delay to ensure all data is flushed
+      await new Promise((resolve) => setTimeout(resolve, 50))
+
+      // Ensure we properly signal completion - if we had a finish reason, we're done
+      if (hasFinishReason) {
+        console.info(
+          "[GEMINI_STREAM] Stream completed with finish reason - proper termination",
+        )
+      } else {
+        console.info(
+          "[GEMINI_STREAM] Stream completed without finish reason - possible incomplete stream",
+        )
+      }
+
+      console.info(
+        `[GEMINI_STREAM] Streaming complete, processed ${chunkCount} chunks, closing stream`,
+      )
+    } catch (error) {
+      console.error("[GEMINI_STREAM] Error in streaming processing", error)
+      // Ensure we don't leave the stream hanging
     } finally {
-      // Log that stream processing ended (either completed or cancelled)
-      logGeminiDebug("stream_cleanup", endpoint, {
-        data: { context: "Stream processing completed or cancelled" },
-      })
+      // Always close the stream, but with proper cleanup
+      try {
+        await stream.close()
+        console.info("[GEMINI_STREAM] Stream closed successfully")
+      } catch (closeError) {
+        console.error("[GEMINI_STREAM] Error closing stream", closeError)
+      }
     }
   })
 }
 
 // Streaming generation endpoint
 export async function handleGeminiStreamGeneration(c: Context) {
-  const endpoint = c.req.url
-  const model = extractModelFromUrl(endpoint)
+  const model = extractModelFromUrl(c.req.url)
 
   if (!model) {
     throw new Error("Model name is required in URL path")
   }
 
-  logGeminiDebug("handler_entry", endpoint, {
-    data: {
-      endpoint: endpoint,
-      model: model,
-      context: "Entered handleGeminiStreamGeneration handler",
-    },
-  })
-
   await checkRateLimit(state)
 
   const geminiPayload = await c.req.json<GeminiRequest>()
-  logGeminiDebug("request", endpoint, { data: geminiPayload })
+  logStructure(geminiPayload, "INCOMING_STREAM_REQUEST")
 
   const openAIPayload = translateGeminiToOpenAIStream(geminiPayload, model)
-
-  // NEW: Log detailed incoming request with full context
-  logGeminiIncomingRequest({
-    type: "stream_request",
-    endpoint,
-    rawPayload: geminiPayload,
-    translatedPayload: openAIPayload,
-  })
-
-  logGeminiDebug("translation", endpoint, {
-    data: openAIPayload,
-    extra: { copilotRequest: openAIPayload },
-  })
+  logStructure(openAIPayload, "TRANSLATED_STREAM_TO_OPENAI")
 
   if (state.manualApprove) {
     await awaitApproval()
   }
 
   const response = await createChatCompletions(openAIPayload)
+  console.info(
+    "[GEMINI_COPILOT_STREAM_RESPONSE] Received streaming response from Copilot",
+  )
 
   if (isNonStreaming(response)) {
     const geminiResponse = translateOpenAIToGemini(response)
-    logGeminiDebug("response", endpoint, {
-      data: geminiResponse,
-      extra: {
-        copilotResponse: response,
-        finalResponse: geminiResponse,
-      },
-    })
 
-    return handleNonStreamingToStreaming(c, geminiResponse, endpoint)
+    return handleNonStreamingToStreaming(c, geminiResponse)
   }
 
-  logGeminiDebug("response", endpoint, {
-    data: "streaming_response_started",
-  })
-  return handleStreamingResponse(c, response, endpoint)
+  return handleStreamingResponse(c, response)
 }
 
 // Token counting endpoint
 export async function handleGeminiCountTokens(c: Context) {
-  const endpoint = c.req.url
-  const model = extractModelFromUrl(endpoint)
+  const model = extractModelFromUrl(c.req.url)
 
   if (!model) {
     throw new Error("Model name is required in URL path")
   }
 
-  // IMMEDIATE DEBUG: Log that we entered this handler
-  logGeminiDebug("handler_entry_TOKENS", endpoint, {
-    data: {
-      endpoint: endpoint,
-      model: model,
-      context: "Entered handleGeminiCountTokens handler",
-    },
-  })
-
   const geminiPayload = await c.req.json<GeminiCountTokensRequest>()
-  logGeminiDebug("request", endpoint, { data: geminiPayload })
 
   const openAIPayload = translateGeminiCountTokensToOpenAI(geminiPayload, model)
-  logGeminiDebug("translation", endpoint, {
-    data: openAIPayload,
-    extra: { copilotRequest: openAIPayload },
-  })
 
   const tokenCounts = getTokenCount(openAIPayload.messages)
-  logGeminiDebug("token_count", endpoint, { data: tokenCounts })
 
   const totalTokens = tokenCounts.input + tokenCounts.output
   const geminiResponse = translateTokenCountToGemini(totalTokens)
-  logGeminiDebug("response", endpoint, {
-    data: geminiResponse,
-    extra: { finalResponse: geminiResponse },
-  })
 
   return c.json(geminiResponse)
 }
