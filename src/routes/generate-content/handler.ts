@@ -9,8 +9,8 @@ import { state } from "~/lib/state"
 import { getTokenCount } from "~/lib/tokenizer"
 import {
   createChatCompletions,
-  type ChatCompletionChunk,
   type ChatCompletionResponse,
+  type ChatCompletionChunk,
 } from "~/services/copilot/create-chat-completions"
 
 // Helper function to extract model from URL path
@@ -155,19 +155,65 @@ async function sendFallbackResponse(
   await stream.writeSSE({ data: JSON.stringify(streamResponse) })
 }
 
+// Accumulative JSON parser for handling incomplete chunks (based on LiteLLM research)
+class StreamingJSONParser {
+  private accumulatedData = ""
+  private parseMode: "direct" | "accumulated" = "direct"
+
+  parseChunk(rawData: string): unknown {
+    if (this.parseMode === "direct") {
+      try {
+        return JSON.parse(rawData)
+      } catch {
+        // Switch to accumulated mode on first failure (LiteLLM pattern)
+        this.parseMode = "accumulated"
+        this.accumulatedData = rawData
+        return null
+      }
+    } else {
+      // Accumulated mode - keep building until valid JSON
+      this.accumulatedData += rawData
+      try {
+        const result = JSON.parse(this.accumulatedData) as unknown
+        // Success - reset for next chunk
+        this.accumulatedData = ""
+        this.parseMode = "direct" // Can switch back to direct mode
+        return result
+      } catch {
+        // Continue accumulating
+        return null
+      }
+    }
+  }
+}
+
+// Global parser instance for the stream
+// let streamParser = new StreamingJSONParser()
+
 // Helper function to process chunk and write to stream
-async function processAndWriteChunk(
-  rawEvent: { data?: string },
-  stream: SSEStreamingApi,
-  lastWritePromise: Promise<void>,
-): Promise<{ newWritePromise: Promise<void>; hasFinishReason: boolean }> {
+async function processAndWriteChunk(params: {
+  rawEvent: { data?: string }
+  stream: SSEStreamingApi
+  lastWritePromise: Promise<void>
+  streamParser: StreamingJSONParser
+}): Promise<{ newWritePromise: Promise<void>; hasFinishReason: boolean }> {
+  const { rawEvent, stream, lastWritePromise, streamParser } = params
+
   if (!rawEvent.data) {
     return { newWritePromise: lastWritePromise, hasFinishReason: false }
   }
 
   try {
-    const chunk = JSON.parse(rawEvent.data) as ChatCompletionChunk
-    const geminiChunk = translateOpenAIChunkToGemini(chunk)
+    const chunk = streamParser.parseChunk(rawEvent.data)
+
+    // If parser returns null, we're still accumulating
+    if (!chunk) {
+      return { newWritePromise: lastWritePromise, hasFinishReason: false }
+    }
+
+    const geminiChunk = translateOpenAIChunkToGemini(
+      chunk as ChatCompletionChunk,
+    )
 
     if (geminiChunk) {
       // Check if this chunk contains a finish reason
@@ -197,6 +243,8 @@ function handleStreamingResponse(
   response: AsyncIterable<{ data?: string }>,
 ) {
   return streamSSE(c, async (stream) => {
+    // Create a parser instance for this stream (each request gets its own parser)
+    const streamParser = new StreamingJSONParser()
     let lastWritePromise: Promise<void> = Promise.resolve()
 
     try {
@@ -205,11 +253,12 @@ function handleStreamingResponse(
           break
         }
 
-        const result = await processAndWriteChunk(
+        const result = await processAndWriteChunk({
           rawEvent,
           stream,
           lastWritePromise,
-        )
+          streamParser,
+        })
         lastWritePromise = result.newWritePromise
       }
 

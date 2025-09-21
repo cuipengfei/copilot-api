@@ -40,8 +40,11 @@ export function translateGeminiToOpenAINonStream(
   payload: GeminiRequest,
   model: string,
 ): ChatCompletionsPayload {
+  const tools =
+    translateGeminiToolsToOpenAI(payload.tools)
+    || synthesizeToolsFromContents(payload.contents)
   const result = {
-    model: mapGeminiModelToCopilot(model), // Map unsupported model variants to supported ones
+    model: mapGeminiModelToCopilot(model),
     messages: translateGeminiContentsToOpenAI(
       payload.contents,
       payload.systemInstruction,
@@ -51,8 +54,9 @@ export function translateGeminiToOpenAINonStream(
     stream: false,
     temperature: payload.generationConfig?.temperature,
     top_p: payload.generationConfig?.topP,
-    tools: translateGeminiToolsToOpenAI(payload.tools),
-    tool_choice: translateGeminiToolConfigToOpenAI(payload.toolConfig),
+    tools,
+    tool_choice:
+      tools ? translateGeminiToolConfigToOpenAI(payload.toolConfig) : undefined,
   }
 
   return result
@@ -62,8 +66,11 @@ export function translateGeminiToOpenAIStream(
   payload: GeminiRequest,
   model: string,
 ): ChatCompletionsPayload {
+  const tools =
+    translateGeminiToolsToOpenAI(payload.tools)
+    || synthesizeToolsFromContents(payload.contents)
   const result = {
-    model: mapGeminiModelToCopilot(model), // Map unsupported model variants to supported ones
+    model: mapGeminiModelToCopilot(model),
     messages: translateGeminiContentsToOpenAI(
       payload.contents,
       payload.systemInstruction,
@@ -73,8 +80,9 @@ export function translateGeminiToOpenAIStream(
     stream: true,
     temperature: payload.generationConfig?.temperature,
     top_p: payload.generationConfig?.topP,
-    tools: translateGeminiToolsToOpenAI(payload.tools),
-    tool_choice: translateGeminiToolConfigToOpenAI(payload.toolConfig),
+    tools,
+    tool_choice:
+      tools ? translateGeminiToolConfigToOpenAI(payload.toolConfig) : undefined,
   }
 
   return result
@@ -174,6 +182,59 @@ function processFunctionCalls(options: {
   })
 }
 
+// Helper function to merge consecutive messages with same role
+function mergeConsecutiveSameRoleMessages(
+  messages: Array<Message>,
+): Array<Message> {
+  const mergedMessages: Array<Message> = []
+  for (const message of messages) {
+    const lastMessage = mergedMessages.at(-1)
+
+    if (
+      lastMessage
+      && lastMessage.role === message.role
+      && !lastMessage.tool_calls
+      && !message.tool_calls
+    ) {
+      // Merge with previous message of same role
+      if (
+        typeof lastMessage.content === "string"
+        && typeof message.content === "string"
+      ) {
+        lastMessage.content = lastMessage.content + "\n\n" + message.content
+      } else {
+        // Can't merge complex content, keep separate
+        mergedMessages.push(message)
+      }
+    } else {
+      // Add content validation for user messages (based on LiteLLM research)
+      if (
+        message.role === "user"
+        && typeof message.content === "string"
+        && !message.content.trim()
+      ) {
+        message.content = " " // Add minimal text content as fallback
+      }
+      mergedMessages.push(message)
+    }
+  }
+  return mergedMessages
+}
+
+// Helper function to remove incomplete assistant messages
+function removeIncompleteAssistantMessages(messages: Array<Message>): void {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i]
+    if (
+      message.role === "assistant"
+      && message.tool_calls
+      && !hasCorrespondingToolResponses(messages, message.tool_calls)
+    ) {
+      messages.splice(i, 1)
+    }
+  }
+}
+
 function translateGeminiContentsToOpenAI(
   contents: Array<
     | GeminiContent
@@ -234,23 +295,34 @@ function translateGeminiContentsToOpenAI(
   }
 
   // Post-process: Remove incomplete assistant messages from cancelled tool calls
-  // When Gemini CLI cancels a tool call stream, it includes the incomplete assistant
-  // message in conversation history. This message contains functionCall but lacks
-  // corresponding functionResponse, causing OpenAI API validation errors.
-  // We need to check ALL assistant messages, not just the last one, because cancelled
-  // tool calls can be anywhere in the conversation history.
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const message = messages[i]
-    if (
-      message.role === "assistant"
-      && message.tool_calls
-      && !hasCorrespondingToolResponses(messages, message.tool_calls)
-    ) {
-      messages.splice(i, 1)
+  removeIncompleteAssistantMessages(messages)
+
+  // Post-process: Merge consecutive messages with same role (based on LiteLLM research)
+  return mergeConsecutiveSameRoleMessages(messages)
+}
+
+function synthesizeToolsFromContents(
+  contents: Array<
+    | GeminiContent
+    | Array<{
+        functionResponse: { id?: string; name: string; response: unknown }
+      }>
+  >,
+): Array<Tool> | undefined {
+  const names = new Set<string>()
+  for (const item of contents) {
+    if (Array.isArray(item)) continue
+    for (const part of item.parts) {
+      if ("functionCall" in part && part.functionCall.name) {
+        names.add(part.functionCall.name)
+      }
     }
   }
-
-  return messages
+  if (names.size === 0) return undefined
+  return Array.from(names).map((name) => ({
+    type: "function",
+    function: { name, parameters: { type: "object", properties: {} } },
+  }))
 }
 
 function translateGeminiContentToOpenAI(
@@ -311,7 +383,8 @@ function translateGeminiToolsToOpenAI(
 
         // Ensure parameters is always a valid object
 
-        const validParameters = func.parametersJsonSchema || func.parameters
+        const validParameters = func.parametersJsonSchema
+          || func.parameters || { type: "object", properties: {} }
 
         tools.push({
           type: "function",
@@ -354,7 +427,7 @@ function translateGeminiToolsToOpenAI(
     }
   }
 
-  return tools
+  return tools.length > 0 ? tools : undefined
 }
 
 function translateGeminiToolConfigToOpenAI(
@@ -660,14 +733,17 @@ export function translateGeminiCountTokensToOpenAI(
   request: GeminiCountTokensRequest,
   model: string,
 ): ChatCompletionsPayload {
+  const tools =
+    translateGeminiToolsToOpenAI(request.tools)
+    || synthesizeToolsFromContents(request.contents)
   return {
-    model: mapGeminiModelToCopilot(model), // Map unsupported model variants to supported ones
+    model: mapGeminiModelToCopilot(model),
     messages: translateGeminiContentsToOpenAI(
       request.contents,
       request.systemInstruction,
     ),
-    max_tokens: 1, // Minimal for token counting
-    tools: translateGeminiToolsToOpenAI(request.tools),
+    max_tokens: 1,
+    tools,
   }
 }
 

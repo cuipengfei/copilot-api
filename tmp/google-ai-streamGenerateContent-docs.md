@@ -237,6 +237,27 @@
 }
 ```
 
+### FinishReason 枚举定义
+
+定义模型停止生成tokens的原因：
+
+| 枚举值 | 描述 |
+|--------|------|
+| `FINISH_REASON_UNSPECIFIED` | 默认值，未使用 |
+| `STOP` | 模型的自然停止点或提供的停止序列 |
+| `MAX_TOKENS` | 达到请求中指定的最大token数量 |
+| `SAFETY` | 响应候选内容因安全原因被标记 |
+| `RECITATION` | 响应候选内容因背诵原因被标记 |
+| `LANGUAGE` | 响应候选内容因使用不支持的语言被标记 |
+| `OTHER` | 未知原因 |
+| `BLOCKLIST` | token生成停止，因为内容包含禁止的术语 |
+| `PROHIBITED_CONTENT` | token生成停止，因为可能包含禁止的内容 |
+| `SPII` | token生成停止，因为内容可能包含敏感个人身份信息 |
+| `MALFORMED_FUNCTION_CALL` | 模型生成的函数调用无效 |
+| `IMAGE_SAFETY` | token生成停止，因为生成的图像包含安全违规 |
+| `UNEXPECTED_TOOL_CALL` | 模型生成了工具调用，但请求中未启用工具 |
+| `TOO_MANY_TOOL_CALLS` | 模型连续调用太多工具，系统退出执行 |
+
 ## 请求示例
 
 ### 基本文本生成（流式）

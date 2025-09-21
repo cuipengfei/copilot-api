@@ -54,7 +54,7 @@ export interface GeminiTool {
 export interface GeminiFunctionDeclaration {
   name: string
   description?: string
-  parameters: Record<string, unknown>
+  parameters?: Record<string, unknown>
   parametersJsonSchema?: Record<string, unknown>
 }
 
@@ -82,6 +82,17 @@ export interface GeminiGenerationConfig {
 export interface GeminiResponse {
   candidates: Array<GeminiCandidate>
   usageMetadata?: GeminiUsageMetadata
+  promptFeedback?: GeminiPromptFeedback
+}
+
+export interface GeminiPromptFeedback {
+  blockReason?:
+    | "BLOCK_REASON_UNSPECIFIED"
+    | "SAFETY"
+    | "OTHER"
+    | "BLOCKLIST"
+    | "PROHIBITED_CONTENT"
+  safetyRatings?: Array<GeminiSafetyRating>
 }
 
 export interface GeminiCandidate {
@@ -92,7 +103,15 @@ export interface GeminiCandidate {
     | "MAX_TOKENS"
     | "SAFETY"
     | "RECITATION"
+    | "LANGUAGE"
     | "OTHER"
+    | "BLOCKLIST"
+    | "PROHIBITED_CONTENT"
+    | "SPII"
+    | "MALFORMED_FUNCTION_CALL"
+    | "IMAGE_SAFETY"
+    | "UNEXPECTED_TOOL_CALL"
+    | "TOO_MANY_TOOL_CALLS"
   index: number
   safetyRatings?: Array<GeminiSafetyRating>
 }
