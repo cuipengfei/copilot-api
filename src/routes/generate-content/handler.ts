@@ -29,13 +29,13 @@ import {
   translateGeminiCountTokensToOpenAI,
   translateTokenCountToGemini,
   translateOpenAIChunkToGemini,
-} from "./gemini-translation"
+} from "./translation"
 import {
   type GeminiRequest,
   type GeminiCountTokensRequest,
   type GeminiStreamResponse,
   type GeminiResponse,
-} from "./gemini-types"
+} from "./types"
 
 // Standard generation endpoint
 export async function handleGeminiGeneration(c: Context) {

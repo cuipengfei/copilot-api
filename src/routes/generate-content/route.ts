@@ -6,7 +6,7 @@ import {
   handleGeminiGeneration,
   handleGeminiStreamGeneration,
   handleGeminiCountTokens,
-} from "./gemini-handler"
+} from "./handler"
 
 const router = new Hono()
 

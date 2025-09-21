@@ -21,7 +21,7 @@ import {
   type GeminiCountTokensRequest,
   type GeminiCountTokensResponse,
   type GeminiUsageMetadata,
-} from "./gemini-types"
+} from "./types"
 import { mapOpenAIFinishReasonToGemini } from "./utils"
 
 // Model mapping for Gemini models - only map unsupported variants to supported ones
