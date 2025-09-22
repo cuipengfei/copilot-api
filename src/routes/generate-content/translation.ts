@@ -29,6 +29,7 @@ function mapGeminiModelToCopilot(geminiModel: string): string {
   const modelMap: Record<string, string> = {
     "gemini-2.5-flash": "gemini-2.0-flash-001", // Map to supported Gemini model
     "gemini-2.0-flash": "gemini-2.0-flash-001", // Map to full model name
+    "gemini-2.5-flash-lite": "gemini-2.0-flash-001", // Map to full model name
   }
 
   return modelMap[geminiModel] || geminiModel // Return original if supported
