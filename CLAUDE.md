@@ -4,249 +4,113 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Development Commands
 
-- **Build**: `bun run build` (uses tsdown)
-- **Development**: `bun run dev` (with file watching)
-- **Production**: `bun run start` (sets NODE_ENV=production)
-- **Lint**: `bun run lint` (uses @echristian/eslint-config with cache)
-- **Lint fix**: `bunx lint-staged` (fixes staged files)
-- **Typecheck**: `bun run typecheck` (runs TypeScript compiler)
-- **Test all**: `bun test`
-- **Test single file**: `bun test tests/[filename].test.ts`
-- **Package**: `bun run prepack` (builds before packaging)
+- Build: `bun run build`
+- Dev (watch): `bun run dev`
+- Start (production env): `bun run start`
+- Lint (with cache): `bun run lint`
+- Lint fix on staged: `bunx lint-staged`
+- Typecheck: `bun run typecheck`
+- Test all: `bun test`
+- Test single file: `bun test tests/[filename].test.ts`
+- Package (prepack builds): `bun run prepack`
+
+Notes:
+- 不要手动运行 Prettier；风格遵循 eslint 规则与现有配置，修复交给 lint-staged。
+- 本仓库的命令使用 bash 运行。
 
 ## Project Architecture
 
-### High-Level Structure
+High-level
+- 这是一个 GitHub Copilot API 代理，统一暴露 OpenAI-compatible、Anthropic-compatible、Gemini-compatible API。基于 Hono + Bun。
 
-This is a GitHub Copilot API proxy server that exposes Copilot as OpenAI-compatible, Anthropic-compatible, and Gemini-compatible APIs. The server is built with Hono framework and uses Bun as the runtime.
+Core components
+- API Translation Layer
+  - OpenAI ↔ Anthropic: `src/routes/messages/*`
+  - OpenAI ↔ Gemini: `src/routes/generate-content/*`
+- Token counting for Anthropic: `src/lib/tokenizer.ts`
+- GitHub Copilot integration: `src/services/*`
+- Controls: `src/lib/rate-limit.ts`, `src/lib/approval.ts`, `src/lib/state.ts`
+- Server routes mounting: `src/server.ts`
 
-### Core Architecture Components
+API endpoints
+- OpenAI compatible
+  - `POST /v1/chat/completions`
+  - `GET /v1/models`
+  - `POST /v1/embeddings`
+- Anthropic compatible
+  - `POST /v1/messages`
+  - `POST /v1/messages/count_tokens`
+- Gemini compatible
+  - `POST /v1beta/models/{model}:generateContent`
+  - `POST /v1beta/models/{model}:streamGenerateContent`
+  - `POST /v1beta/models/{model}:countTokens`
+- Monitoring
+  - `GET /usage`
+  - `GET /token`
 
-**API Translation Layer** (`src/routes/messages/`):
+## Key Implementation Details
 
-- Translates between Anthropic Messages API format and OpenAI Chat Completions format
-- Translates between Gemini API format and OpenAI Chat Completions format
-- Handles both streaming and non-streaming responses
-- Key files: `handler.ts`, `anthropic-types.ts`, `stream-translation.ts`, `non-stream-translation.ts`
-- Gemini files: `gemini-handler.ts`, `gemini-translation.ts`, `gemini-types.ts`, `gemini-route.ts`
+Gemini integration
+- 路由装载与匹配
+  - `src/server.ts:35` 将 `geminiRouter` 挂在根路径 `server.route("/", geminiRouter)`
+  - 路由定义使用通配符与顺序匹配，必须先注册 stream，再注册 countTokens，最后才是 generateContent
+    - `src/routes/generate-content/route.ts:15-25, 29-39, 43-56`
+  - 型号提取通过 URL 正则，不能用 Hono 的 `:param` 方式处理冒号语法
 
-**Token Counting for Anthropic Models** (`src/lib/tokenizer.ts`):
+- 请求翻译（Gemini → OpenAI）
+  - `translateGeminiToOpenAINonStream/Stream` 生成 `ChatCompletionsPayload`，必要时从 `contents` 合成最小工具声明以满足 Copilot 的 tool schema 要求
+  - 工具声明优先使用 `parametersJsonSchema`，否则回退 `parameters`，最终兜底为 `{type:"object",properties:{}}`
+  - 取消的 tool call 会在后处理阶段从任意位置清理，以避免 400
+  - 代码位置：
+    - `translateGeminiToOpenAINonStream/Stream`: `src/routes/generate-content/translation.ts:39-63, 65-89`
+    - `synthesizeToolsFromContents`: `translation.ts:304-326`
+    - `translateGeminiToolsToOpenAI`: `translation.ts:365-431`
+    - 取消工具调用清理与消息合并: `translation.ts:185-236, 297-302`
 
-- Uses `gpt-tokenizer/model/gpt-4o` for token counting
-- Separates input tokens (all messages except last assistant message) from output tokens (last assistant message)
-- Filters out tool messages and extracts text content from multipart messages
-- Used by `/v1/messages/count_tokens` endpoint for Anthropic compatibility
+- 响应翻译与流式（OpenAI → Gemini）
+  - 非流→流式回退：当上游返回非流响应时，拆分为小块 SSE 返回，保证 CLI 一致性
+    - `handleNonStreamingToStreaming/sendTextInChunks`: `src/routes/generate-content/handler.ts:71-104, 106-143`
+  - 流式 JSON 累积解析：`StreamingJSONParser` 先尝试直接解析，失败后切换累积模式直到形成完整 JSON，避免半包导致崩流
+    - `StreamingJSONParser`: `handler.ts:158-188`
+    - 逐块处理：`processAndWriteChunk/handleStreamingResponse`: `handler.ts:194-238, 241-282`
+  - 工具调用的增量参数：不完整 JSON `arguments` 跳过当次块，等待后续完整块
+    - `processToolCalls`: `translation.ts:537-577`
+  - 终止原因映射
+    - OpenAI → Gemini: `mapOpenAIFinishReasonToGemini` in `src/routes/generate-content/utils.ts:3-23`
+    - Gemini → OpenAI: `mapGeminiFinishReasonToOpenAI` in `utils.ts:26-50`
 
-**GitHub Copilot Integration** (`src/services/`):
+- 计数（Gemini countTokens）
+  - `getTokenCount` 返回 `{input, output}`；Gemini 期望 total
+  - `totalTokens = input + output`，`translation.ts` 提供 `translateGeminiCountTokensToOpenAI` 与 `translateTokenCountToGemini`
+    - handler: `src/routes/generate-content/handler.ts:314-336`
+    - translation: `src/routes/generate-content/translation.ts:732-756`
 
-- Authentication flow using device code OAuth
-- Token management and refresh
-- API requests to GitHub Copilot endpoints
-- Usage monitoring and quota tracking
+Model mapping
+- 仅映射不被 Copilot 支持的 Gemini 型号到已知等价（例如 `gemini-2.5-flash` → `gemini-2.0-flash-001`），已支持的型号保持原样
+  - `translation.ts:27-35`
 
-**Rate Limiting & Controls** (`src/lib/`):
-
-- Rate limiting between requests (`rate-limit.ts`)
-- Manual approval system for requests (`approval.ts`)
-- State management for server configuration (`state.ts`)
-
-### API Endpoints Structure
-
-**OpenAI Compatible**:
-
-- `/v1/chat/completions` - Chat completions
-- `/v1/models` - Available models
-- `/v1/embeddings` - Text embeddings
-
-**Anthropic Compatible**:
-
-- `/v1/messages` - Message completions (translates to/from OpenAI format)
-- `/v1/messages/count_tokens` - Token counting for Anthropic format
-
-**Gemini Compatible**:
-
-- `/v1beta/models/{model}:generateContent` - Standard generation
-- `/v1beta/models/{model}:streamGenerateContent` - Streaming generation
-- `/v1beta/models/{model}:countTokens` - Token counting
-
-**Monitoring**:
-
-- `/usage` - GitHub Copilot usage dashboard
-- `/token` - Current Copilot token info
-
-### Key Implementation Details
-
-**Anthropic Token Counting**:
-The `getTokenCount()` function in `src/lib/tokenizer.ts` implements token counting specifically for Anthropic compatibility:
-
-- Converts multipart content to text-only for counting
-- Splits messages into input (all except last assistant) and output (last assistant message only)
-- Uses GPT-4o tokenizer as the underlying counting mechanism
-- Returns `{input: number, output: number}` format
-
-**Message Translation**:
-
-- OpenAI → Anthropic: Converts chat completion responses to Anthropic message format
-- Anthropic → OpenAI: Converts Anthropic message requests to OpenAI chat completion format
-- OpenAI → Gemini: Converts chat completion responses to Gemini response format
-- Gemini → OpenAI: Converts Gemini requests to OpenAI chat completion format
-- Handles tool calls, system messages, and content blocks appropriately for all formats
-
-**Streaming Translation**:
-Real-time conversion of OpenAI SSE chunks to both Anthropic streaming events and Gemini streaming responses, maintaining state for proper message reconstruction.
-
-**Gemini API Implementation**:
-The Gemini integration (`src/routes/messages/gemini-*`) provides:
-
-- Full compatibility with Google's Gemini API specification
-- Comprehensive request/response translation between Gemini and OpenAI formats
-- Support for function calling, multimodal content (text + images), and streaming
-- Extensive debug logging with file-based logs in `logs/` directory
-- Error handling with appropriate HTTP status codes and Gemini-formatted error responses
-- Support for generation configuration (temperature, max tokens, top-p, stop sequences)
-
-**Key Architectural Patterns**:
-
-- **Comprehensive Logging**: The `gemini-handler.ts` implements a robust, file-based logging system. All requests, responses, translations, and errors are logged to `logs/`. Pay special attention to `gemini-translation.log` for debugging payload transformations. The system automatically truncates large data fields in logs to maintain readability.
-- **Non-Streaming to Streaming Conversion**: For streaming endpoints, if the upstream Copilot service returns a non-streaming response, the `handleNonStreamingToStreaming` function in `gemini-handler.ts` intelligently converts the complete response back into a Gemini-compatible stream. This handles API behavior inconsistencies gracefully.
-- **Route Matching Strategy**: The router in `gemini-route.ts` uses ordered, overlapping wildcard paths (`/v1beta/models/*`). The order of registration is critical: more specific endpoints like `:streamGenerateContent` must be registered before the general `:generateContent` endpoint to ensure correct handler invocation.
-
-**Critical Gemini Translation Details**:
-
-- **Dynamic Tool Call ID Generation**: The `tool_call_id` required by the OpenAI format is not present in the Gemini request. It is dynamically generated during translation by the `generateToolCallId` function. This ID is then temporarily stored in the `pendingToolCalls` map (keyed by function name) to correctly associate a subsequent `functionResponse` with the original `functionCall`.
-- Gemini CLI sends function responses as **nested arrays** in `contents`, requiring special handling in `translateGeminiContentsToOpenAI()` via the `processFunctionResponseArray` helper.
-- The `parametersJsonSchema` field takes precedence over `parameters` in function declarations to align with modern JSON Schema standards.
-- **Critical Bug Fix**: Both the nested array (`processFunctionResponseArray`) and direct `functionResponse` part handling must use the same tool_call_id lookup pattern (`pendingToolCalls.get(functionName)`) to avoid OpenAI API validation errors when a user responds to a tool call.
-- **Cancelled Tool Call Handling**: The `translateGeminiContentsToOpenAI` function includes post-processing logic to remove incomplete assistant messages with cancelled tool calls from ANY position in conversation history (not just the last message). This prevents 400 Bad Request errors when Gemini CLI includes cancelled tool calls in context.
+Error handling
+- 路由层 try/catch 并使用 `forwardError` 规范转发
+  - `src/routes/generate-content/route.ts:15-22, 29-36, 49-53`
 
 ## Code Style & Conventions
 
-- **TypeScript**: Strict mode enabled, avoid `any` types
-- **Imports**: Use `~/*` path aliases for `src/*` imports
-- **Error Handling**: Use explicit error classes from `src/lib/error.ts`
-- **Testing**: Place tests in `tests/` directory with `*.test.ts` naming
-- **Formatting**: Prettier with package.json plugin (NO semicolons)
-- **Linting**: @echristian/eslint-config with strict rules
-
-**Critical Code Style Rules**:
-
-- **No semicolons**: Project uses Prettier without semicolons - removing semicolons will fix many lint errors
-- **Operator placement**: Use `&&` and `||` operators at the start of continuation lines, not at the end
-- **String quotes**: Use double quotes consistently (`"text"` not `'text'`)
-- **Import sorting**: Group imports with proper spacing between different import sources
-
-## Important Notes
-
-- Server uses GitHub Copilot as the underlying LLM provider
-- Rate limiting and manual approval features help avoid GitHub abuse detection
-- Token counting uses GPT-4o tokenizer regardless of the actual model being proxied
-- All API translations maintain compatibility with OpenAI, Anthropic, and Gemini client libraries
-- Gemini API debugging logs are written to `logs/` directory for troubleshooting translation issues
-- **Development Workflow**: Claude should NOT run the server. The user will handle server testing and provide results for analysis.
-
-## Common TypeScript and Lint Issues
-
-**Routing and Path Parameter Issues**:
-
-- **Gemini route patterns**: Cannot use standard Hono path parameters (`:model`) for routes containing colons like `/v1beta/models/gemini-2.5-pro:countTokens`
-- **Solution**: Use wildcard routes (`/v1beta/models/*`) with URL string matching (`url.includes(":countTokens")`)
-- **Model extraction**: Use regex pattern `/\/v1beta\/models\/([^:]+):/` to extract model name from URL
-- **Route order**: More specific routes (streamGenerateContent) must be registered before general routes (generateContent)
-
-**Token Counting Semantic Issues**:
-
-- **Problem**: `handleGeminiCountTokens` was only returning `tokenCounts.input` instead of total tokens
-- **Solution**: Calculate `totalTokens = tokenCounts.input + tokenCounts.output` before passing to `translateTokenCountToGemini()`
-- **Context**: `getTokenCount()` returns `{input: number, output: number}` but Gemini expects total count
-
-**Error Handling Patterns**:
-
-- **Standard pattern**: Always use `forwardError(c, error)` from `~/lib/error` instead of custom error handling
-- **Route level**: Wrap handler calls in try-catch blocks at route level, not inside handler functions
-- **Avoid**: Custom error status mapping functions - use repository standard patterns
-
-**Circular Import Prevention**:
-
-- **Problem**: Importing utility functions between route and handler files creates circular dependencies
-- **Solution**: Duplicate simple utility functions rather than sharing between tightly coupled modules
-- **Example**: `extractModelFromUrl()` function should be in handler file, not shared from route file
-
-**Shared Utility Reuse**:
-
-- **Stop reason mapping**: Use `mapOpenAIFinishReasonToGemini` from `~/routes/messages/utils.ts` instead of duplicating
-- **Pattern**: Check `utils.ts` for existing functions before implementing new utility functions
-- **Import order**: Ensure proper import grouping when adding shared utility imports
+- TypeScript 严格模式；避免 `any`
+- Imports 使用 `~/*` 别名
+- 无分号、双引号、按组排序 imports
+- 不要直接运行 Prettier；依赖 eslint 与 lint-staged 做自动修复
+- 不要打印或写入敏感信息
 
 ## Debugging & Troubleshooting
 
-### HUMBLE DEBUG Mode
+- 常见 Gemini 问题
+  - `invalid_tool_call_format`：工具声明缺失或参数为空；确保 `tools` 与 `tool_choice` 按需出现，并有非空 `parameters`
+  - 嵌套 `functionResponse`：Gemini CLI 会发送嵌套数组，需用 `processFunctionResponseArray` 处理
+  - `tool_call_id` 关联：用函数名暂存并在用户回应时取回，保持一致性
+  - 取消的 tool call：清理掉未完成的 `assistant+tool_calls` 信息
+  - `HTTPError`：多半是 OpenAI 侧 payload 校验失败
 
-When user says `# HUMBLE DEBUG`: You've failed many times assuming you knew the answer. This mode enforces humility after repeated debugging failures.
-
-#### Core Behavioral Guidelines
-
-**NEVER claim certainty**: "I found/identified/solved/root cause is/real problem is/now I understand/the answer is"
-**ONLY express uncertainty**: "I suspect/might be/guessing/this looks suspicious but..."
-**ALWAYS acknowledge fallibility**: "but I've been wrong before" or "this could be another failed assumption"
-
-#### Required Language Patterns
-
-- **Uncertainty prefixes**: "I'm not sure, but I notice..." / "This might be wrong like my previous guesses, but..." / "I failed before, so this guess might also fail..."
-- **Suspicious observations**: "looks odd but I failed many times before so this could be wrong too..."
-- **Documentation focus**: Document what you observe and what failed, never claim to know solutions
-
-#### Historical Context
-
-This mode was created after multiple failed debugging attempts on the Gemini streaming termination issue where confident assertions about "root causes" proved repeatedly wrong:
-
-- ❌ Protocol compatibility assumptions (wrong)
-- ❌ Timing/delay solutions (wrong)
-- ❌ HTTP header modifications (wrong)
-- ❌ Response format changes (wrong)
-- ❌ Server-side stream control (wrong)
-- ❌ Finish reason logic (possibly wrong)
-
-#### Implementation Rules
-
-1. **Document failures comprehensively** - What was tried, why it failed, what was learned
-2. **No confident diagnoses** - Observations only, never conclusions
-3. **Reference past failures** - "Like my previous wrong assumptions about X..."
-4. **Maintain investigation notes** - Update bug reports with humble observations
-5. **Question your own logic** - Always ask "but could I be wrong again?"
-
-**Remember**: Your job is to observe, document failures humbly, and assist with testing hypotheses - not to confidently diagnose problems you don't actually understand. The goal is learning through systematic failure documentation, not appearing knowledgeable.
-
-### Common Gemini API Issues
-
-- **"Tool name is required for Gemini requests" Error**: This error with code `invalid_tool_call_format` is often caused by:
-  1. **Wrong model mapping**: Always check `/v1/models` endpoint first to see which Gemini models are actually supported by GitHub Copilot
-  2. **Invalid tool parameters**: Ensure `func.parametersJsonSchema || func.parameters` doesn't return `undefined`
-  3. **DO NOT limit tool count**: GitHub Copilot supports many tools (11+ is fine)
-  4. **DO NOT add parameter size limits**: Arbitrary parameter complexity restrictions can break tool validation
-
-- **Model Mapping Best Practices**:
-  - GitHub Copilot natively supports: `gemini-2.5-pro`, `gemini-2.0-flash-001`
-  - Only map unsupported variants: `gemini-2.5-flash` → `gemini-2.0-flash-001`
-  - Keep supported models unchanged - don't map `gemini-2.5-pro` to `gpt-4o`
-
-- **Function calls fail while text prompts work**: Check `logs/gemini-translation.log` for missing `parameters` in translated tools
-- **Tool response mapping errors**: Verify tool_call_id consistency between assistant tool calls and user tool responses
-- **Nested array handling**: Gemini CLI sends function responses as nested arrays requiring `processFunctionResponseArray()` extraction
-- **tool_call_id mismatch errors**: Ensure both `processFunctionResponseArray()` and direct function response handling use `pendingToolCalls.get(functionName)` consistently
-- **Cancelled tool call errors**: 400 Bad Request errors may occur when Gemini CLI includes cancelled tool calls in conversation history. The post-processing logic in `translateGeminiContentsToOpenAI()` removes these incomplete assistant messages from all positions in the conversation.
-- **HTTPError from create-chat-completions**: Usually indicates parameter validation failure in OpenAI translation layer
-- **ESLint max-depth violations**: Extract helper functions when nested loops exceed 4 levels of depth
-
-**Key Log Files**:
-
-- `logs/gemini-errors.log`: HTTP errors and stack traces
-- `logs/gemini-debug.log`: Request/response flow with full JSON payloads
-- `logs/gemini-translation.log`: Translation pipeline details showing input/output transformations
-
-**Debugging Commands**:
-
-- `bun run lint && bun run typecheck && bun run build`: Full validation pipeline
-- `curl http://localhost:4142/v1/models`: Check which models are actually supported by GitHub Copilot
-- Check error reports in `C:\Users\39764\AppData\Local\Temp\gemini-client-error-*.json` for client-side failures
-- use bash in this repo, not powershell. use lint auto fix, not prettier
-- never use prettier in this repo. use lint auto fix
+- 快速自检
+  - `bun run lint && bun run typecheck && bun run build`
+  - `curl http://localhost:4142/v1/models` 查看真实支持的模型集合
+  - 不要在助手侧运行服务；由用户本地确认行为
