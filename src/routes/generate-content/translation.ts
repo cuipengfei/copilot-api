@@ -35,15 +35,28 @@ function mapGeminiModelToCopilot(geminiModel: string): string {
   return modelMap[geminiModel] || geminiModel // Return original if supported
 }
 
+function selectTools(
+  geminiTools?: Array<GeminiTool>,
+  contents?: Array<
+    | GeminiContent
+    | Array<{
+        functionResponse: { id?: string; name: string; response: unknown }
+      }>
+  >,
+): Array<Tool> | undefined {
+  return (
+    translateGeminiToolsToOpenAI(geminiTools)
+    || (contents ? synthesizeToolsFromContents(contents) : undefined)
+  )
+}
+
 // Request translation: Gemini -> OpenAI
 
 export function translateGeminiToOpenAINonStream(
   payload: GeminiRequest,
   model: string,
 ): ChatCompletionsPayload {
-  const tools =
-    translateGeminiToolsToOpenAI(payload.tools)
-    || synthesizeToolsFromContents(payload.contents)
+  const tools = selectTools(payload.tools, payload.contents)
   const result = {
     model: mapGeminiModelToCopilot(model),
     messages: translateGeminiContentsToOpenAI(
@@ -67,9 +80,7 @@ export function translateGeminiToOpenAIStream(
   payload: GeminiRequest,
   model: string,
 ): ChatCompletionsPayload {
-  const tools =
-    translateGeminiToolsToOpenAI(payload.tools)
-    || synthesizeToolsFromContents(payload.contents)
+  const tools = selectTools(payload.tools, payload.contents)
   const result = {
     model: mapGeminiModelToCopilot(model),
     messages: translateGeminiContentsToOpenAI(
@@ -734,9 +745,7 @@ export function translateGeminiCountTokensToOpenAI(
   request: GeminiCountTokensRequest,
   model: string,
 ): ChatCompletionsPayload {
-  const tools =
-    translateGeminiToolsToOpenAI(request.tools)
-    || synthesizeToolsFromContents(request.contents)
+  const tools = selectTools(request.tools, request.contents)
   return {
     model: mapGeminiModelToCopilot(model),
     messages: translateGeminiContentsToOpenAI(
