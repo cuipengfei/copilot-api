@@ -75,6 +75,10 @@ Gemini integration
     - 逐块处理：`processAndWriteChunk/handleStreamingResponse`: `handler.ts:194-238, 241-282`
   - 工具调用的增量参数：不完整 JSON `arguments` 跳过当次块，等待后续完整块
     - `processToolCalls`: `translation.ts:537-577`
+  - **工具响应处理**：确保 tool call 与 response 1:1 映射
+    - `ensureToolCallResponseMatch`: `translation.ts` 对 tool responses 按 `tool_call_id` 去重
+    - 问题：OpenAI 可能返回重复的 tool responses，导致 Gemini 1:1 映射要求失败
+    - 解决：简单去重逻辑，保留每个 `tool_call_id` 的第一个响应
   - 终止原因映射
     - OpenAI → Gemini: `mapOpenAIFinishReasonToGemini` in `src/routes/generate-content/utils.ts:3-23`
     - Gemini → OpenAI: `mapGeminiFinishReasonToOpenAI` in `utils.ts:26-50`
@@ -105,10 +109,21 @@ Error handling
 
 - 常见 Gemini 问题
   - `invalid_tool_call_format`：工具声明缺失或参数为空；确保 `tools` 与 `tool_choice` 按需出现，并有非空 `parameters`
+  - **Tool call/response 1:1 映射错误**："Please ensure that the number of function response parts is equal to the number of function call parts" - 通常由重复的 `tool_call_id` 响应引起，需要去重而不是拆分
   - 嵌套 `functionResponse`：Gemini CLI 会发送嵌套数组，需用 `processFunctionResponseArray` 处理
   - `tool_call_id` 关联：用函数名暂存并在用户回应时取回，保持一致性
   - 取消的 tool call：清理掉未完成的 `assistant+tool_calls` 信息
   - `HTTPError`：多半是 OpenAI 侧 payload 校验失败
+
+- Debug 日志分析方法
+  - 使用 `DebugLogger` 自动生成 debug-logs/ 文件夹中的请求日志
+  - 压缩大日志文件便于分析：用 `compress-logs.js` 脚本删除重复内容
+  - 分析时用 PowerShell/脚本统计 function calls vs responses 数量：检查 `functionCall` 与 `functionResponse` 计数，以及翻译后的 `tool_calls` 与 tool responses 计数
+  - **调试方法论**：
+    - **数据先行**：从实际 debug logs 出发，不要基于理论假设
+    - **验证而非猜测**：每次修改后必须通过新 debug logs 验证效果
+    - **简单解决方案优先**：去重 > 拆分，避免过度复杂化
+    - **承认错误**：当证据显示修复制造了新问题时，快速重新思考
 
 - 快速自检
   - `bun run lint && bun run typecheck && bun run build`

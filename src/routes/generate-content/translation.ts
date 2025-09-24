@@ -111,14 +111,24 @@ function processFunctionResponseArray(
   for (const responseItem of responseArray) {
     if ("functionResponse" in responseItem) {
       const functionName = responseItem.functionResponse.name
-      const toolCallId = pendingToolCalls.get(functionName)
-      if (toolCallId) {
+      // Find tool call ID by searching through the map
+      let matchedToolCallId: string | undefined
+      for (const [
+        toolCallId,
+        mappedFunctionName,
+      ] of pendingToolCalls.entries()) {
+        if (mappedFunctionName === functionName) {
+          matchedToolCallId = toolCallId
+          break
+        }
+      }
+      if (matchedToolCallId) {
         messages.push({
           role: "tool",
-          tool_call_id: toolCallId,
+          tool_call_id: matchedToolCallId,
           content: JSON.stringify(responseItem.functionResponse.response),
         })
-        pendingToolCalls.delete(functionName)
+        pendingToolCalls.delete(matchedToolCallId)
       }
     }
   }
@@ -150,14 +160,21 @@ function processFunctionResponses(
 ): void {
   for (const funcResponse of functionResponses) {
     const functionName = funcResponse.functionResponse.name
-    const toolCallId = pendingToolCalls.get(functionName)
-    if (toolCallId) {
+    // Find tool call ID by searching through the map
+    let matchedToolCallId: string | undefined
+    for (const [toolCallId, mappedFunctionName] of pendingToolCalls.entries()) {
+      if (mappedFunctionName === functionName) {
+        matchedToolCallId = toolCallId
+        break
+      }
+    }
+    if (matchedToolCallId) {
       messages.push({
         role: "tool",
-        tool_call_id: toolCallId,
+        tool_call_id: matchedToolCallId,
         content: JSON.stringify(funcResponse.functionResponse.response),
       })
-      pendingToolCalls.delete(functionName)
+      pendingToolCalls.delete(matchedToolCallId)
     }
   }
 }
@@ -175,7 +192,8 @@ function processFunctionCalls(options: {
   const toolCalls = functionCalls.map((call) => {
     const toolCallId = generateToolCallId(call.functionCall.name)
     // Remember this tool call for later matching with responses
-    pendingToolCalls.set(call.functionCall.name, toolCallId)
+    // Use tool_call_id as key to avoid duplicate function name overwrites
+    pendingToolCalls.set(toolCallId, call.functionCall.name)
 
     return {
       id: toolCallId,
@@ -207,6 +225,8 @@ function mergeConsecutiveSameRoleMessages(
       && lastMessage.role === message.role
       && !lastMessage.tool_calls
       && !message.tool_calls
+      && !(lastMessage as { tool_call_id?: string }).tool_call_id // Don't merge tool responses
+      && !(message as { tool_call_id?: string }).tool_call_id // Don't merge tool responses
     ) {
       // Merge with previous message of same role
       if (
@@ -247,7 +267,7 @@ function removeIncompleteAssistantMessages(messages: Array<Message>): void {
   }
 }
 
-function translateGeminiContentsToOpenAI(
+export function translateGeminiContentsToOpenAI(
   contents: Array<
     | GeminiContent
     | Array<{
@@ -257,7 +277,7 @@ function translateGeminiContentsToOpenAI(
   systemInstruction?: GeminiContent,
 ): Array<Message> {
   const messages: Array<Message> = []
-  const pendingToolCalls = new Map<string, string>() // function name -> tool_call_id
+  const pendingToolCalls = new Map<string, string>() // tool_call_id -> function_name
 
   // Add system instruction first if present
   if (systemInstruction) {
@@ -309,8 +329,11 @@ function translateGeminiContentsToOpenAI(
   // Post-process: Remove incomplete assistant messages from cancelled tool calls
   removeIncompleteAssistantMessages(messages)
 
+  // Post-process: Deduplicate tool responses (remove duplicate tool_call_ids)
+  const matchedMessages = ensureToolCallResponseMatch(messages)
+
   // Post-process: Merge consecutive messages with same role (based on LiteLLM research)
-  return mergeConsecutiveSameRoleMessages(messages)
+  return mergeConsecutiveSameRoleMessages(matchedMessages)
 }
 
 function synthesizeToolsFromContents(
@@ -466,6 +489,32 @@ function translateGeminiToolConfigToOpenAI(
 
 // Response translation: OpenAI -> Gemini
 
+// Helper function to deduplicate tool responses - remove duplicate tool_call_ids
+// The problem was our logic was CREATING duplicates instead of preventing them
+
+function ensureToolCallResponseMatch(messages: Array<Message>): Array<Message> {
+  const result: Array<Message> = []
+  const seenToolCallIds = new Set<string>() // Track processed tool_call_ids to avoid duplicates
+
+  for (const message of messages) {
+    if (message.role === "tool" && message.tool_call_id) {
+      const toolCallId = message.tool_call_id
+
+      // Only keep the FIRST response for each tool_call_id (deduplicate)
+      if (!seenToolCallIds.has(toolCallId)) {
+        seenToolCallIds.add(toolCallId)
+        result.push(message)
+      }
+      // Skip any duplicate responses for the same tool_call_id
+    } else {
+      // Keep all non-tool messages as-is
+      result.push(message)
+    }
+  }
+
+  return result
+}
+
 export function translateOpenAIToGemini(
   response: ChatCompletionResponse,
 ): GeminiResponse {
@@ -561,7 +610,12 @@ function processToolCalls(
   const parts: Array<GeminiPart> = []
 
   for (const toolCall of toolCalls) {
-    if (!toolCall.function?.name) {
+    // Enhanced validation: check for empty/whitespace-only names
+    if (
+      !toolCall.function?.name
+      || typeof toolCall.function.name !== "string"
+      || toolCall.function.name.trim() === ""
+    ) {
       continue
     }
 
@@ -720,6 +774,22 @@ export function translateOpenAIChunkToGemini(chunk: ChatCompletionChunk): {
 
   const parts = processParts(choice)
   if (!parts) {
+    return null
+  }
+
+  // Additional validation - if we only have function call parts with empty names,
+  // skip this chunk entirely to prevent invalid tool call responses
+  const hasOnlyEmptyToolCalls =
+    parts.length > 0
+    && parts.every((part) => {
+      if ("functionCall" in part) {
+        return !part.functionCall.name || part.functionCall.name.trim() === ""
+      }
+      return false
+    })
+    && parts.some((part) => "functionCall" in part)
+
+  if (hasOnlyEmptyToolCalls && !choice.finish_reason) {
     return null
   }
 
