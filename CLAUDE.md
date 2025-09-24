@@ -8,10 +8,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - Dev (watch): `bun run dev`
 - Start (production env): `bun run start`
 - Lint (with cache): `bun run lint`
+- Lint with auto-fix: `bun run lint --fix`
 - Lint fix on staged: `bunx lint-staged`
 - Typecheck: `bun run typecheck`
 - Test all: `bun test`
-- Test single file: `bun test tests/[filename].test.ts`
+- Test single file: `bun test tests/path/to/filename.test.ts`
 - Package (prepack builds): `bun run prepack`
 
 Notes:
@@ -117,6 +118,7 @@ Error handling
 
 - Debug 日志分析方法
   - 使用 `DebugLogger` 自动生成 debug-logs/ 文件夹中的请求日志
+  - Debug logging: Set `DEBUG_GEMINI_REQUESTS=true` to enable request logging to debug-logs/
   - 压缩大日志文件便于分析：用 `compress-logs.js` 脚本删除重复内容
   - 分析时用 PowerShell/脚本统计 function calls vs responses 数量：检查 `functionCall` 与 `functionResponse` 计数，以及翻译后的 `tool_calls` 与 tool responses 计数
   - **调试方法论**：
