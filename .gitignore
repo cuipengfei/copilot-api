@@ -46,3 +46,5 @@ debug-logs/debug-gemini-2025-09-24T16-05-20-120Z-m6ebiq-compressed.log
 debug-logs/debug-gemini-2025-09-24T16-05-20-120Z-m6ebiq.log
 debug-logs/debug-gemini-2025-09-24T16-05-24-000Z-nuggbx-compressed.log
 debug-logs/debug-gemini-2025-09-24T16-05-24-000Z-nuggbx.log
+generate-content-review-gpt5.md
+generate-content-test-review.md

@@ -3,7 +3,10 @@ import { writeFile } from "node:fs/promises"
 import { join } from "node:path"
 
 import type { GeminiRequest } from "~/routes/generate-content/types"
-import type { ChatCompletionsPayload } from "~/services/copilot/create-chat-completions"
+import type {
+  ChatCompletionsPayload,
+  ChatCompletionResponse,
+} from "~/services/copilot/create-chat-completions"
 
 interface DebugLogData {
   timestamp: string
@@ -76,5 +79,101 @@ export class DebugLogger {
     const logger = DebugLogger.getInstance()
     const requestId = Math.random().toString(36).slice(2, 8)
     await logger.logRequest({ requestId, geminiPayload, openAIPayload, error })
+  }
+
+  // Log GitHub Copilot API Response
+  static async logCopilotResponse(
+    response: ChatCompletionResponse,
+    context?: string,
+  ): Promise<void> {
+    const logger = DebugLogger.getInstance()
+    const requestId = Math.random().toString(36).slice(2, 8)
+    const timestamp = new Date().toISOString().replaceAll(/[:.]/g, "-")
+    const logPath = join(
+      logger.logDir,
+      `debug-copilot-response-${timestamp}-${requestId}.log`,
+    )
+
+    const logData = {
+      timestamp: new Date().toISOString(),
+      context: context || "GitHub Copilot API Response",
+      response,
+    }
+
+    try {
+      await writeFile(logPath, JSON.stringify(logData, null, 2), "utf8")
+      console.log(`[DEBUG] Logged Copilot response to: ${logPath}`)
+    } catch (writeError) {
+      console.error(
+        `[DEBUG] Failed to write Copilot response log file ${logPath}:`,
+        writeError,
+      )
+    }
+  }
+
+  // Log any object for debugging purposes
+  static async logDebugData(
+    data: unknown,
+    context: string,
+    filePrefix = "debug-data",
+  ): Promise<void> {
+    const logger = DebugLogger.getInstance()
+    const requestId = Math.random().toString(36).slice(2, 8)
+    const timestamp = new Date().toISOString().replaceAll(/[:.]/g, "-")
+    const logPath = join(
+      logger.logDir,
+      `${filePrefix}-${timestamp}-${requestId}.log`,
+    )
+
+    const logData = {
+      timestamp: new Date().toISOString(),
+      context,
+      data,
+    }
+
+    try {
+      await writeFile(logPath, JSON.stringify(logData, null, 2), "utf8")
+      console.log(`[DEBUG] Logged ${context} to: ${logPath}`)
+    } catch (writeError) {
+      console.error(
+        `[DEBUG] Failed to write debug log file ${logPath}:`,
+        writeError,
+      )
+    }
+  }
+
+  // Log original and translated response comparison
+  static async logResponseComparison(
+    originalResponse: unknown,
+    translatedResponse: unknown,
+    options: { context: string; filePrefix?: string } = {
+      context: "Response Comparison",
+    },
+  ): Promise<void> {
+    const { context, filePrefix = "debug-comparison" } = options
+    const logger = DebugLogger.getInstance()
+    const requestId = Math.random().toString(36).slice(2, 8)
+    const timestamp = new Date().toISOString().replaceAll(/[:.]/g, "-")
+    const logPath = join(
+      logger.logDir,
+      `${filePrefix}-${timestamp}-${requestId}.log`,
+    )
+
+    const logData = {
+      timestamp: new Date().toISOString(),
+      context,
+      originalResponse,
+      translatedResponse,
+    }
+
+    try {
+      await writeFile(logPath, JSON.stringify(logData, null, 2), "utf8")
+      console.log(`[DEBUG] Logged ${context} comparison to: ${logPath}`)
+    } catch (writeError) {
+      console.error(
+        `[DEBUG] Failed to write comparison log file ${logPath}:`,
+        writeError,
+      )
+    }
   }
 }

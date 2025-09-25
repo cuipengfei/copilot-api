@@ -1,3 +1,4 @@
+import { DebugLogger } from "~/lib/debug-logger"
 import {
   type ChatCompletionResponse,
   type ChatCompletionChunk,
@@ -518,22 +519,33 @@ function ensureToolCallResponseMatch(messages: Array<Message>): Array<Message> {
 export function translateOpenAIToGemini(
   response: ChatCompletionResponse,
 ): GeminiResponse {
-  const candidates: Array<GeminiCandidate> = response.choices.map(
-    (choice, index) => ({
+  const result = {
+    candidates: response.choices.map((choice, index) => ({
       content: translateOpenAIMessageToGeminiContent(choice.message),
       finishReason: mapOpenAIFinishReasonToGemini(choice.finish_reason),
       index,
-    }),
-  )
-
-  return {
-    candidates,
+    })),
     usageMetadata: {
       promptTokenCount: response.usage?.prompt_tokens || 0,
       candidatesTokenCount: response.usage?.completion_tokens || 0,
       totalTokenCount: response.usage?.total_tokens || 0,
     },
   }
+
+  // Debug: Log original GitHub Copilot response and translated Gemini response for comparison
+  if (process.env.DEBUG_GEMINI_REQUESTS === "true") {
+    DebugLogger.logResponseComparison(response, result, {
+      context: "Non-Stream Response Translation",
+      filePrefix: "debug-nonstream-comparison",
+    }).catch((error: unknown) => {
+      console.error(
+        "[DEBUG] Failed to log non-stream response comparison:",
+        error,
+      )
+    })
+  }
+
+  return result
 }
 
 function translateOpenAIMessageToGeminiContent(
@@ -568,6 +580,13 @@ function translateOpenAIMessageToGeminiContent(
   // Handle tool calls
   if (message.tool_calls) {
     for (const toolCall of message.tool_calls) {
+      // Debug: Log tool call arguments to verify what GitHub Copilot returns
+      if (process.env.DEBUG_GEMINI_REQUESTS === "true") {
+        console.log(
+          `[DEBUG] Tool call - name: ${toolCall.function.name}, arguments: "${toolCall.function.arguments}", type: ${typeof toolCall.function.arguments}, truthy: ${Boolean(toolCall.function.arguments)}`,
+        )
+      }
+
       parts.push({
         functionCall: {
           name: toolCall.function.name,
@@ -595,7 +614,94 @@ function generateToolCallId(functionName: string): string {
   return `call_${functionName}_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`
 }
 
-// Helper function to process tool calls in streaming chunks
+// Global accumulator for streaming tool call arguments
+const streamingToolCallAccumulator = new Map<
+  number,
+  {
+    name: string
+    arguments: string
+    id?: string
+  }
+>()
+
+// Helper function to try parsing and creating a function call
+function tryCreateFunctionCall(
+  name: string,
+  argumentsStr: string,
+): GeminiPart | null {
+  try {
+    const args = JSON.parse(argumentsStr) as Record<string, unknown>
+    return {
+      functionCall: {
+        name,
+        args,
+      },
+    }
+  } catch {
+    return null
+  }
+}
+
+// Helper function to handle tool call with function name
+function handleToolCallWithName(toolCall: {
+  index: number
+  id?: string
+  function: {
+    name: string
+    arguments?: string
+  }
+}): GeminiPart | null {
+  const accumulatedArgs = toolCall.function.arguments || ""
+
+  streamingToolCallAccumulator.set(toolCall.index, {
+    name: toolCall.function.name,
+    arguments: accumulatedArgs,
+    id: toolCall.id,
+  })
+
+  // If we already have arguments, try to process immediately (for non-streaming models like Gemini)
+  if (accumulatedArgs) {
+    const functionCall = tryCreateFunctionCall(
+      toolCall.function.name,
+      accumulatedArgs,
+    )
+    if (functionCall) {
+      // Clear the accumulator for this index since we've successfully processed it
+      streamingToolCallAccumulator.delete(toolCall.index)
+      return functionCall
+    }
+  }
+
+  return null
+}
+
+// Helper function to handle tool call argument accumulation
+function handleToolCallAccumulation(toolCall: {
+  index: number
+  function?: {
+    arguments?: string
+  }
+}): GeminiPart | null {
+  const existingAccumulated = streamingToolCallAccumulator.get(toolCall.index)
+
+  if (existingAccumulated && toolCall.function?.arguments) {
+    existingAccumulated.arguments += toolCall.function.arguments
+
+    const functionCall = tryCreateFunctionCall(
+      existingAccumulated.name,
+      existingAccumulated.arguments,
+    )
+    if (functionCall) {
+      // Clear the accumulator for this index since we've successfully processed it
+      streamingToolCallAccumulator.delete(toolCall.index)
+      return functionCall
+    }
+  }
+
+  return null
+}
+
+// Helper function to process tool calls in streaming chunks with argument accumulation
 function processToolCalls(
   toolCalls: Array<{
     index: number
@@ -610,33 +716,34 @@ function processToolCalls(
   const parts: Array<GeminiPart> = []
 
   for (const toolCall of toolCalls) {
-    // Enhanced validation: check for empty/whitespace-only names
-    if (
-      !toolCall.function?.name
-      || typeof toolCall.function.name !== "string"
-      || toolCall.function.name.trim() === ""
-    ) {
+    // Debug: Log streaming tool call arguments to verify what GitHub Copilot returns
+    if (process.env.DEBUG_GEMINI_REQUESTS === "true") {
+      console.log(
+        `[DEBUG STREAM] Tool call - name: ${toolCall.function?.name}, arguments: "${toolCall.function?.arguments}", type: ${typeof toolCall.function?.arguments}, truthy: ${Boolean(toolCall.function?.arguments)}`,
+      )
+    }
+
+    // If this chunk has a function name, it's the start of a new tool call
+    if (toolCall.function?.name && toolCall.function.name.trim() !== "") {
+      const functionCall = handleToolCallWithName({
+        index: toolCall.index,
+        id: toolCall.id,
+        function: {
+          name: toolCall.function.name,
+          arguments: toolCall.function.arguments,
+        },
+      })
+      if (functionCall) {
+        parts.push(functionCall)
+      }
       continue
     }
 
-    let args: Record<string, unknown>
-    try {
-      args = JSON.parse(toolCall.function.arguments || "{}") as Record<
-        string,
-        unknown
-      >
-    } catch {
-      // In streaming, arguments might be incomplete JSON
-      // Skip this chunk and wait for complete arguments
-      continue
+    // If we have existing accumulated data and this chunk has arguments, append them
+    const functionCall = handleToolCallAccumulation(toolCall)
+    if (functionCall) {
+      parts.push(functionCall)
     }
-
-    parts.push({
-      functionCall: {
-        name: toolCall.function.name,
-        args,
-      },
-    })
   }
 
   return parts
@@ -805,6 +912,16 @@ export function translateOpenAIChunkToGemini(chunk: ChatCompletionChunk): {
     choice.index,
   )
   const response = buildGeminiResponse(candidate, shouldInclude, chunk)
+
+  // Debug: Log original GitHub Copilot chunk and translated Gemini chunk for comparison
+  if (process.env.DEBUG_GEMINI_REQUESTS === "true") {
+    DebugLogger.logResponseComparison(chunk, response, {
+      context: "Streaming Chunk Translation",
+      filePrefix: "debug-stream-comparison",
+    }).catch((error: unknown) => {
+      console.error("[DEBUG] Failed to log streaming chunk comparison:", error)
+    })
+  }
 
   return response
 }
