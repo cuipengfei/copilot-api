@@ -13,6 +13,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - Typecheck: `bun run typecheck`
 - Test all: `bun test`
 - Test single file: `bun test tests/path/to/filename.test.ts`
+- Test coverage: `bun test --coverage`
 - Package (prepack builds): `bun run prepack`
 
 Notes:
@@ -74,8 +75,11 @@ Gemini integration
   - 流式 JSON 累积解析：`StreamingJSONParser` 先尝试直接解析，失败后切换累积模式直到形成完整 JSON，避免半包导致崩流
     - `StreamingJSONParser`: `handler.ts:158-188`
     - 逐块处理：`processAndWriteChunk/handleStreamingResponse`: `handler.ts:194-238, 241-282`
-  - 工具调用的增量参数：不完整 JSON `arguments` 跳过当次块，等待后续完整块
+  - **工具调用的增量参数**：流式工具调用参数积累器处理完整/分片参数
+    - 不完整 JSON `arguments` 跳过当次块，等待后续完整块
+    - 支持 Gemini 风格的完整参数传递和 Claude/GPT 风格的分片传递
     - `processToolCalls`: `translation.ts:537-577`
+    - 测试覆盖：`tests/generate-content/stream-tool-call-accumulator.test.ts`
   - **工具响应处理**：确保 tool call 与 response 1:1 映射
     - `ensureToolCallResponseMatch`: `translation.ts` 对 tool responses 按 `tool_call_id` 去重
     - 问题：OpenAI 可能返回重复的 tool responses，导致 Gemini 1:1 映射要求失败
@@ -118,6 +122,11 @@ Error handling
 
 - Debug 日志分析方法
   - 使用 `DebugLogger` 自动生成 debug-logs/ 文件夹中的请求日志
+    - `DebugLogger.getInstance()` 单例模式访问
+    - `logRequest()` 记录 Gemini 请求翻译过程
+    - `logCopilotResponse()` 记录 GitHub Copilot API 响应
+    - `logDebugData()` 通用调试数据记录
+    - `logResponseComparison()` 对比原始与翻译后的响应
   - Debug logging: Set `DEBUG_GEMINI_REQUESTS=true` to enable request logging to debug-logs/
   - 压缩大日志文件便于分析：用 `compress-logs.js` 脚本删除重复内容
   - 分析时用 PowerShell/脚本统计 function calls vs responses 数量：检查 `functionCall` 与 `functionResponse` 计数，以及翻译后的 `tool_calls` 与 tool responses 计数
@@ -128,6 +137,21 @@ Error handling
     - **承认错误**：当证据显示修复制造了新问题时，快速重新思考
 
 - 快速自检
-  - `bun run lint && bun run typecheck && bun run build`
+  - 完整质量保证流程：`bun run lint && bun run typecheck && bun run build && bun test --coverage`
+  - 单独运行：`bun run lint && bun run typecheck && bun run build`
   - `curl http://localhost:4142/v1/models` 查看真实支持的模型集合
   - 不要在助手侧运行服务；由用户本地确认行为
+
+## Testing
+
+- 测试结构：遵循行为驱动测试（BDD），专注于外部行为而非内部实现细节
+- 主要测试场景：
+  - API 翻译正确性：Gemini ↔ OpenAI 格式转换
+  - 流式响应处理：完整响应与分片响应的正确处理
+  - 工具调用：完整参数 vs 分片参数的兼容性处理
+  - 错误处理：各种边缘情况的错误转发与处理
+- 测试命令：
+  - 运行所有测试：`bun test`
+  - 运行特定文件：`bun test tests/path/to/file.test.ts`
+  - 查看覆盖率：`bun test --coverage`
+- 目标覆盖率：保持 90%+ 的代码覆盖率，重点关注核心翻译逻辑
