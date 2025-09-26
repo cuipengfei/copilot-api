@@ -2,9 +2,8 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Development Commands
-
 ## Tone & Communication
+
 - 语言：中文输出，技术术语保留 English
 - 语气：自然、克制、礼貌；禁止命令式、情绪化、俚语、粗鲁
 - 表达：先结论后必要补充；简洁，避免空泛抽象措辞
@@ -12,6 +11,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - 禁止：自我评价、填充词、无必要冗长背景
 - 冲突：文档与用户即时指令冲突时优先后者并简短提示
 - 拒绝：不合规请求礼貌拒绝，最少必要解释
+
+## Development Commands
 
 - Build: `bun run build`
 - Dev (watch): `bun run dev`
@@ -28,6 +29,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 Notes:
 - 不要手动运行 Prettier；风格遵循 eslint 规则与现有配置，修复交给 lint-staged。
 - 本仓库的命令使用 bash 运行。
+- 质量保证流程：频繁运行 `bun run lint && bun run typecheck && bun run build` 避免错误积累
 
 ## Project Architecture
 
@@ -119,6 +121,12 @@ Error handling
 - 不要直接运行 Prettier；依赖 eslint 与 lint-staged 做自动修复
 - 不要打印或写入敏感信息
 
+## File Organization
+
+- 测试专用类型声明放在 `tests/@types/` 而不是全局 `types/` 目录
+- 遵循关注点分离：测试相关文件与测试代码放在一起
+- 使用 `declare module "~/server?*"` 支持测试中的查询参数导入隔离
+
 ## Debugging & Troubleshooting
 
 - 常见 Gemini 问题
@@ -154,6 +162,8 @@ Error handling
 ## Testing
 
 - 测试结构：遵循行为驱动测试（BDD），专注于外部行为而非内部实现细节
+- 测试组织：针对覆盖率不足的代码创建专门的 `-coverage.test.ts` 文件
+- Mock 模式：使用严格的 TypeScript 接口（如 `CapturedPayload`）替代 `any` 类型
 - 主要测试场景：
   - API 翻译正确性：Gemini ↔ OpenAI 格式转换
   - 流式响应处理：完整响应与分片响应的正确处理
@@ -164,3 +174,21 @@ Error handling
   - 运行特定文件：`bun test tests/path/to/file.test.ts`
   - 查看覆盖率：`bun test --coverage`
 - 目标覆盖率：保持 90%+ 的代码覆盖率，重点关注核心翻译逻辑
+
+## Development Best Practices
+
+基于实际项目经验的最佳实践：
+
+### 质量保证流程
+- **渐进式改进**：小步快跑，频繁运行 lint + typecheck + build，避免错误积累
+- **立即验证**：每次重要变更后立即运行测试确保功能正常
+- **类型安全**：严格使用 TypeScript 类型，测试中避免 `any` 类型
+
+### 文件组织原则
+- **关注点分离**：测试专用类型放 `tests/@types/`，避免污染全局类型定义
+- **测试隔离**：使用 `~/server?query` 模式实现测试场景隔离
+
+### 调试方法论
+- **数据先行**：基于实际 debug logs 而非理论假设进行问题分析
+- **简单解决方案优先**：例如工具调用去重 > 复杂拆分逻辑
+- **验证而非猜测**：每次修改必须通过新的测试/logs 验证效果
