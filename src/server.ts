@@ -27,7 +27,6 @@ server.route("/token", tokenRoute)
 server.route("/v1/chat/completions", completionRoutes)
 server.route("/v1/models", modelRoutes)
 server.route("/v1/embeddings", embeddingRoutes)
-server.route("/", geminiRouter)
 
 // Anthropic compatible endpoints
 server.route("/v1/messages", messageRoutes)
