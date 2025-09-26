@@ -64,11 +64,11 @@ export function translateGeminiToOpenAINonStream(
       payload.contents,
       payload.systemInstruction,
     ),
-    max_tokens: payload.generationConfig?.maxOutputTokens || 4096,
-    stop: payload.generationConfig?.stopSequences,
+    max_tokens: (payload.generationConfig?.maxOutputTokens as number) || 4096,
+    stop: payload.generationConfig?.stopSequences as Array<string> | undefined,
     stream: false,
-    temperature: payload.generationConfig?.temperature,
-    top_p: payload.generationConfig?.topP,
+    temperature: payload.generationConfig?.temperature as number | undefined,
+    top_p: payload.generationConfig?.topP as number | undefined,
     tools,
     tool_choice:
       tools ? translateGeminiToolConfigToOpenAI(payload.toolConfig) : undefined,
@@ -88,11 +88,11 @@ export function translateGeminiToOpenAIStream(
       payload.contents,
       payload.systemInstruction,
     ),
-    max_tokens: payload.generationConfig?.maxOutputTokens || 4096,
-    stop: payload.generationConfig?.stopSequences,
+    max_tokens: (payload.generationConfig?.maxOutputTokens as number) || 4096,
+    stop: payload.generationConfig?.stopSequences as Array<string> | undefined,
     stream: true,
-    temperature: payload.generationConfig?.temperature,
-    top_p: payload.generationConfig?.topP,
+    temperature: payload.generationConfig?.temperature as number | undefined,
+    top_p: payload.generationConfig?.topP as number | undefined,
     tools,
     tool_choice:
       tools ? translateGeminiToolConfigToOpenAI(payload.toolConfig) : undefined,
@@ -268,7 +268,7 @@ function removeIncompleteAssistantMessages(messages: Array<Message>): void {
   }
 }
 
-export function translateGeminiContentsToOpenAI(
+function translateGeminiContentsToOpenAI(
   contents: Array<
     | GeminiContent
     | Array<{
@@ -379,10 +379,14 @@ function translateGeminiContentToOpenAI(
     if ("text" in part) {
       contentParts.push({ type: "text", text: part.text })
     } else if ("inlineData" in part) {
+      // Handle inline data for images - this is a legacy format
+      const partWithInlineData = part as {
+        inlineData: { mimeType: string; data: string }
+      }
       contentParts.push({
         type: "image_url",
         image_url: {
-          url: `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`,
+          url: `data:${partWithInlineData.inlineData.mimeType};base64,${partWithInlineData.inlineData.data}`,
         },
       })
     }

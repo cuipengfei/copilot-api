@@ -41,30 +41,3 @@ export function mapOpenAIFinishReasonToGemini(
     }
   }
 }
-
-// Add the reverse mapping - Gemini → OpenAI (based on LiteLLM research)
-export function mapGeminiFinishReasonToOpenAI(
-  finishReason: string | undefined,
-): "stop" | "length" | "content_filter" | "tool_calls" {
-  switch (finishReason) {
-    case GeminiFinish.STOP:
-    case GeminiFinish.FINISH_REASON_UNSPECIFIED:
-    case GeminiFinish.MALFORMED_FUNCTION_CALL: {
-      return OpenAIFinish.stop
-    }
-    case GeminiFinish.MAX_TOKENS: {
-      return OpenAIFinish.length
-    }
-    case GeminiFinish.SAFETY:
-    case GeminiFinish.RECITATION:
-    case GeminiFinish.BLOCKLIST:
-    case GeminiFinish.PROHIBITED_CONTENT:
-    case GeminiFinish.SPII:
-    case GeminiFinish.IMAGE_SAFETY: {
-      return OpenAIFinish.content_filter
-    }
-    default: {
-      return OpenAIFinish.stop
-    }
-  }
-}

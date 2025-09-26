@@ -4,6 +4,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Development Commands
 
+## Tone & Communication
+- 语言：中文输出，技术术语保留 English
+- 语气：自然、克制、礼貌；禁止命令式、情绪化、俚语、粗鲁
+- 表达：先结论后必要补充；简洁，避免空泛抽象措辞
+- 不确定：先澄清再执行，避免假设性操作
+- 禁止：自我评价、填充词、无必要冗长背景
+- 冲突：文档与用户即时指令冲突时优先后者并简短提示
+- 拒绝：不合规请求礼貌拒绝，最少必要解释
+
 - Build: `bun run build`
 - Dev (watch): `bun run dev`
 - Start (production env): `bun run start`
