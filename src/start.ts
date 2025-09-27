@@ -25,11 +25,12 @@ interface RunServerOptions {
   githubToken?: string
   claudeCode: boolean
   showToken: boolean
+  claudeCodeEnv?: boolean
   headerMode: string
 }
 
 const formatModelInfo = (model: Model) => {
-  const contextWindow = model.capabilities?.limits?.max_context_window_tokens
+  const contextWindow = model.capabilities.limits?.max_context_window_tokens
   const contextStr =
     contextWindow ? ` (${(contextWindow / 1000).toFixed(0)}K tokens)` : ""
   return `- ${model.id}${contextStr}`
@@ -82,7 +83,7 @@ export async function runServer(options: RunServerOptions): Promise<void> {
 
   const serverUrl = `http://localhost:${options.port}`
 
-  if (options.claudeCode) {
+  if (options.claudeCode && options.claudeCodeEnv) {
     invariant(state.models, "Models should be loaded by now")
 
     const selectedModel = await consola.prompt(
@@ -193,6 +194,11 @@ export const start = defineCommand({
       default: false,
       description: "Show GitHub and Copilot tokens on fetch and refresh",
     },
+    "claude-code-env": {
+      type: "boolean",
+      default: true,
+      description: "Generate Claude Code Environment variables",
+    },
     "header-mode": {
       type: "string",
       default: "savings",
@@ -216,6 +222,7 @@ export const start = defineCommand({
       githubToken: args["github-token"],
       claudeCode: args["claude-code"],
       showToken: args["show-token"],
+      claudeCodeEnv: args["claude-code-env"],
       headerMode: args["header-mode"],
     })
   },

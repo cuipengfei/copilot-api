@@ -66,7 +66,27 @@ test("routes to stream endpoint based on URL keyword", async () => {
 
 test("routes to countTokens endpoint based on URL keyword", async () => {
   await mock.module("~/lib/tokenizer", () => ({
-    getTokenCount: (_: unknown) => ({ input: 2, output: 3 }),
+    getTokenCount: (_payload: unknown, _model: unknown) =>
+      Promise.resolve({ input: 2, output: 3 }),
+  }))
+  await mock.module("~/lib/state", () => ({
+    state: {
+      models: {
+        data: [
+          {
+            id: "test-model",
+            capabilities: {
+              limits: { max_output_tokens: 1000 },
+              object: "model",
+              supports: {},
+              tokenizer: "gpt-3.5-turbo",
+              type: "chat",
+              family: "gpt",
+            },
+          },
+        ],
+      },
+    },
   }))
   await mock.module("~/lib/rate-limit", () => ({
     checkRateLimit: () => {},

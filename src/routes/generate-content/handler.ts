@@ -331,7 +331,13 @@ export async function handleGeminiCountTokens(c: Context) {
 
   const openAIPayload = translateGeminiCountTokensToOpenAI(geminiPayload, model)
 
-  const tokenCounts = getTokenCount(openAIPayload.messages)
+  // Get the selected model object for token counting
+  const selectedModel = state.models?.data[0]
+  if (!selectedModel) {
+    throw new Error("No models available for token counting")
+  }
+
+  const tokenCounts = await getTokenCount(openAIPayload, selectedModel)
 
   const totalTokens = tokenCounts.input + tokenCounts.output
   const geminiResponse = translateTokenCountToGemini(totalTokens)

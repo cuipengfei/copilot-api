@@ -313,7 +313,9 @@ export function translateToAnthropic(
     stop_reason: mapOpenAIStopReasonToAnthropic(stopReason),
     stop_sequence: null,
     usage: {
-      input_tokens: response.usage?.prompt_tokens ?? 0,
+      input_tokens:
+        (response.usage?.prompt_tokens ?? 0)
+        - (response.usage?.prompt_tokens_details?.cached_tokens ?? 0),
       output_tokens: response.usage?.completion_tokens ?? 0,
       ...(response.usage?.prompt_tokens_details?.cached_tokens
         !== undefined && {

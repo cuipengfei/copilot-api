@@ -20,18 +20,29 @@ export async function handleCompletion(c: Context) {
   let payload = await c.req.json<ChatCompletionsPayload>()
   consola.debug("Request payload:", JSON.stringify(payload).slice(-400))
 
-  consola.info("Current token count:", getTokenCount(payload.messages))
+  // Find the selected model
+  const selectedModel = state.models?.data.find(
+    (model) => model.id === payload.model,
+  )
+
+  // Calculate and display token count
+  try {
+    if (selectedModel) {
+      const tokenCount = await getTokenCount(payload, selectedModel)
+      consola.info("Current token count:", tokenCount)
+    } else {
+      consola.warn("No model selected, skipping token count calculation")
+    }
+  } catch (error) {
+    consola.warn("Failed to calculate token count:", error)
+  }
 
   if (state.manualApprove) await awaitApproval()
 
-  if (isNullish(payload.max_tokens)) {
-    const selectedModel = state.models?.data.find(
-      (model) => model.id === payload.model,
-    )
-
+  if (isNullish(payload.max_tokens) && selectedModel) {
     payload = {
       ...payload,
-      max_tokens: selectedModel?.capabilities?.limits?.max_output_tokens,
+      max_tokens: selectedModel.capabilities.limits?.max_output_tokens,
     }
     consola.debug("Set max_tokens to:", JSON.stringify(payload.max_tokens))
   }
