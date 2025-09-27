@@ -55,9 +55,10 @@ export function createMockTokenCount(tokens: {
   output: number
 }) {
   return mock.module(
-    "~/services/copilot/get-token-count",
+    "~/lib/tokenizer",
     (): MockTokenCountModule => ({
-      getTokenCount: () => tokens,
+      getTokenCount: (_payload: unknown, _model: unknown) =>
+        Promise.resolve(tokens),
     }),
   )
 }

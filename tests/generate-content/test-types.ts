@@ -22,7 +22,10 @@ export interface MockRateLimitModule {
 }
 
 export interface MockTokenCountModule {
-  getTokenCount: () => { input: number; output: number }
+  getTokenCount: (
+    payload: unknown,
+    model: unknown,
+  ) => Promise<{ input: number; output: number }>
 }
 
 // Common test data types

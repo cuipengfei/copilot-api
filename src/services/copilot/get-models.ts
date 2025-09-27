@@ -40,7 +40,7 @@ interface ModelCapabilities {
 }
 
 export interface Model {
-  capabilities?: ModelCapabilities
+  capabilities: ModelCapabilities
   id: string
   model_picker_enabled: boolean
   name: string

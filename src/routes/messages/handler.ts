@@ -98,8 +98,14 @@ export async function handleCountTokens(c: Context) {
   // Convert Anthropic format to OpenAI format for token counting
   const openAIPayload = translateToOpenAI(anthropicPayload)
 
+  // Get the first available model for token counting
+  const selectedModel = state.models?.data[0]
+  if (!selectedModel) {
+    throw new Error("No models available for token counting")
+  }
+
   // Calculate tokens using our existing tokenizer
-  const tokenCounts = getTokenCount(openAIPayload.messages)
+  const tokenCounts = await getTokenCount(openAIPayload, selectedModel)
 
   // Return in Anthropic format
   const response = {
