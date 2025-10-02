@@ -66,7 +66,20 @@ test("routes to stream endpoint based on URL keyword", async () => {
 
 test("routes to countTokens endpoint based on URL keyword", async () => {
   await mock.module("~/lib/tokenizer", () => ({
-    getTokenCount: (_: unknown) => ({ input: 2, output: 3 }),
+    getTokenCount: async (_p: unknown, _m: unknown) =>
+      Promise.resolve({ input: 2, output: 3 }),
+  }))
+  await mock.module("~/lib/state", () => ({
+    state: {
+      models: {
+        data: [
+          {
+            id: "gemini-pro",
+            capabilities: { tokenizer: "o200k_base" },
+          },
+        ],
+      },
+    },
   }))
   await mock.module("~/lib/rate-limit", () => ({
     checkRateLimit: () => {},
