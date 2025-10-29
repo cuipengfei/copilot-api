@@ -35,9 +35,9 @@ import { mapOpenAIFinishReasonToGemini } from "./utils"
 // Model mapping for Gemini models - only map unsupported variants to supported ones
 function mapGeminiModelToCopilot(geminiModel: string): string {
   const modelMap: Record<string, string> = {
-    "gemini-2.5-flash": "gemini-2.0-flash-001", // Map to supported Gemini model
-    "gemini-2.0-flash": "gemini-2.0-flash-001", // Map to full model name
-    "gemini-2.5-flash-lite": "gemini-2.0-flash-001", // Map to full model name
+    "gemini-2.5-flash": "gpt-5-mini", // Map to supported
+    "gemini-2.0-flash": "gpt-5-mini",
+    "gemini-2.5-flash-lite": "gpt-5-mini",
   }
 
   return modelMap[geminiModel] || geminiModel // Return original if supported
@@ -265,16 +265,9 @@ function cleanupMessages(messages: Array<Message>): Array<Message> {
   }
 
   for (const message of messages) {
-    // Skip incomplete assistant messages with tool calls that have no responses
-    if (message.role === "assistant" && message.tool_calls) {
-      // Check if all tool calls have responses
-      const hasAllResponses = message.tool_calls.every((call) =>
-        toolCallIdsWithResponses.has(call.id),
-      )
-      if (!hasAllResponses) {
-        continue
-      }
-    }
+    // Preserve assistant messages with tool calls even if not all have responses
+    // This prevents losing tool call context in multi-turn conversations
+    // Original behavior was too aggressive and removed valid pending tool calls
 
     // Skip duplicate tool responses
     if (isDuplicateToolResponse(message, seenToolCallIds)) {
@@ -625,14 +618,16 @@ function processParts(
 ): Array<GeminiPart> | null {
   const parts = processChunkParts(choice, accumulator)
 
-  if (parts.length === 0 && !choice.finish_reason) {
-    return null
-  }
+  // No stub emission - let accumulator handle complete functionCall assembly
+  // This prevents duplicate calls when name and args arrive in separate chunks
 
-  // If we have a finish reason but no parts, add an empty text part
-  // This ensures Gemini CLI receives a properly formatted completion chunk
-  if (parts.length === 0 && choice.finish_reason) {
-    parts.push({ text: "" })
+  if (parts.length === 0) {
+    if (choice.finish_reason) {
+      // Emit empty text part to preserve finish signaling when no other parts exist
+      return [{ text: "" }]
+    }
+    // No parts and still streaming - skip this chunk
+    return null
   }
 
   return parts
@@ -680,21 +675,9 @@ export function translateOpenAIChunkToGemini(
     return null
   }
 
-  // Additional validation - if we only have function call parts with empty names,
-  // skip this chunk entirely to prevent invalid tool call responses
-  const hasOnlyEmptyToolCalls =
-    parts.length > 0
-    && parts.every((part) => {
-      if ("functionCall" in part) {
-        return !part.functionCall.name || part.functionCall.name.trim() === ""
-      }
-      return false
-    })
-    && parts.some((part) => "functionCall" in part)
-
-  if (hasOnlyEmptyToolCalls && !choice.finish_reason) {
-    return null
-  }
+  // [PATCH A APPLIED] Removed hasOnlyEmptyToolCalls filtering logic
+  // Name-only chunks now return null (wait for args); accumulator assembles complete functionCall
+  // This prioritizes correctness over early UX display
 
   const shouldInclude = shouldIncludeFinishReason(choice)
   const mappedFinishReason =
