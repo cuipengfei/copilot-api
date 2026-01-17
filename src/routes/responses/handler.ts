@@ -13,6 +13,7 @@ import {
   type ResponsesResult,
 } from "~/services/copilot/create-responses"
 
+import { createStreamIdTracker, fixStreamIds } from "./stream-id-sync"
 import { getResponsesRequestOptions } from "./utils"
 
 const logger = createHandlerLogger("responses-handler")
@@ -57,12 +58,21 @@ export const handleResponses = async (c: Context) => {
   if (isStreamingRequested(payload) && isAsyncIterable(response)) {
     logger.debug("Forwarding native Responses stream")
     return streamSSE(c, async (stream) => {
+      const idTracker = createStreamIdTracker()
+
       for await (const chunk of response) {
         logger.debug("Responses stream chunk:", JSON.stringify(chunk))
+
+        const processedData = fixStreamIds(
+          (chunk as { data?: string }).data ?? "",
+          (chunk as { event?: string }).event,
+          idTracker,
+        )
+
         await stream.writeSSE({
           id: (chunk as { id?: string }).id,
           event: (chunk as { event?: string }).event,
-          data: (chunk as { data?: string }).data ?? "",
+          data: processedData,
         })
       }
     })
