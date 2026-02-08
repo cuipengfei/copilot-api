@@ -193,7 +193,7 @@ const handleWithResponsesApi = async (
       for await (const chunk of response) {
         const eventName = chunk.event
         if (eventName === "ping") {
-          await stream.writeSSE({ event: "ping", data: "" })
+          await stream.writeSSE({ event: "ping", data: '{"type":"ping"}' })
           continue
         }
 
