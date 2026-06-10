@@ -71,6 +71,8 @@ const COMPACTION_SIGNATURE_PREFIX = "cm1#"
 const COMPACTION_SIGNATURE_SEPARATOR = "@"
 
 export const THINKING_TEXT = "Thinking..."
+const CLAUDE_CODE_BILLING_HEADER_PREFIX = "x-anthropic-billing-header:"
+const CLAUDE_CODE_CCH_SEGMENT_PATTERN = /(^|;\s*)cch=[^;]+;/u
 
 const buildPromptCacheKey = (
   basePromptCacheKey: string | null,
@@ -663,12 +665,25 @@ const translateSystemPrompt = (
   const text = system
     .map((block, index) => {
       if (index === 0) {
-        return block.text + "\n\n" + extraPrompt + "\n\n"
+        return (
+          normalizeSystemPromptBlockText(block.text)
+          + "\n\n"
+          + extraPrompt
+          + "\n\n"
+        )
       }
       return block.text
     })
     .join(" ")
   return text.length > 0 ? text : null
+}
+
+const normalizeSystemPromptBlockText = (text: string): string => {
+  if (!text.startsWith(CLAUDE_CODE_BILLING_HEADER_PREFIX)) {
+    return text
+  }
+
+  return text.replace(CLAUDE_CODE_CCH_SEGMENT_PATTERN, "$1cch=<stable>;")
 }
 
 const convertAnthropicTools = (
