@@ -13,6 +13,9 @@ const actualConfigModule = await import("../src/lib/config")
 const actualModelsModule = await import("../src/lib/models")
 const actualRateLimitModule = await import("../src/lib/rate-limit")
 const actualUtilsModule = await import("../src/lib/utils")
+const { responsesUtilsDependencies } = await import(
+  "../src/routes/responses/utils"
+)
 
 const state = {
   ...actualStateModule.state,
@@ -22,6 +25,7 @@ const state = {
 }
 
 let messagesApiEnabled = true
+let responsesApiWebSocketEnabled = true
 let modelMappings: Record<string, string> = {}
 type SelectedModel = {
   id: string
@@ -74,6 +78,7 @@ await mock.module("~/lib/config", () => ({
   ...actualConfigModule,
   getSmallModel: () => "small-model",
   isMessagesApiEnabled: () => messagesApiEnabled,
+  isResponsesApiWebSocketEnabled: () => responsesApiWebSocketEnabled,
   resolveMappedModel: (model: string) => modelMappings[model] ?? model,
 }))
 await mock.module("~/lib/models", () => ({
@@ -88,6 +93,7 @@ const { handleCompletion, messagesFlowHandlers } = await import(
 )
 
 const defaultMessagesFlowHandlers = { ...messagesFlowHandlers }
+const defaultResponsesUtilsDependencies = { ...responsesUtilsDependencies }
 
 const createApp = () => {
   const app = new Hono()
@@ -108,8 +114,12 @@ beforeEach(() => {
   state.manualApprove = false
   state.verbose = false
   messagesApiEnabled = true
+  responsesApiWebSocketEnabled = true
   modelMappings = {}
   selectedModel = undefined
+
+  responsesUtilsDependencies.isResponsesApiWebSocketEnabled = () =>
+    responsesApiWebSocketEnabled
 
   messagesFlowHandlers.handleWithMessagesApi = handleWithMessagesApi
   messagesFlowHandlers.handleWithResponsesApi = handleWithResponsesApi
@@ -129,6 +139,7 @@ afterEach(() => {
     defaultMessagesFlowHandlers.handleWithResponsesApi
   messagesFlowHandlers.handleWithChatCompletions =
     defaultMessagesFlowHandlers.handleWithChatCompletions
+  Object.assign(responsesUtilsDependencies, defaultResponsesUtilsDependencies)
 })
 
 describe("messages handler orchestration", () => {
@@ -441,7 +452,51 @@ describe("messages handler orchestration", () => {
     expect(forwardedPayload.model).toBe("messages-model")
   })
 
-  test("delegates to the Responses API flow when the model supports /responses", async () => {
+  test("stabilizes Claude Code billing header before forwarding to the Messages API flow", async () => {
+    selectedModel = {
+      id: "messages-model",
+      supported_endpoints: ["/v1/messages"],
+    }
+
+    const app = createApp()
+    const response = await app.request("/", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(
+        createPayload({
+          system: [
+            {
+              type: "text",
+              text: "x-anthropic-billing-header: cc_version=2.1.158.c0c; cc_entrypoint=cli; cch=6fb32;",
+            },
+            {
+              type: "text",
+              text: "You are Claude Code, Anthropic's official CLI for Claude.",
+            },
+          ],
+        }),
+      ),
+    })
+
+    expect(response.status).toBe(200)
+    expect(await response.text()).toBe("messages")
+
+    const [, forwardedPayload] = handleWithMessagesApi.mock.calls[0]
+    expect(forwardedPayload.system).toEqual([
+      {
+        type: "text",
+        text: "x-anthropic-billing-header: cc_version=2.1.158.c0c; cc_entrypoint=cli; cch=<stable>;",
+      },
+      {
+        type: "text",
+        text: "You are Claude Code, Anthropic's official CLI for Claude.",
+      },
+    ])
+  })
+
+  test("stabilizes Claude Code billing header before forwarding to the Responses API flow", async () => {
     selectedModel = {
       id: "responses-model",
       supported_endpoints: ["/responses"],
@@ -453,7 +508,20 @@ describe("messages handler orchestration", () => {
       headers: {
         "content-type": "application/json",
       },
-      body: JSON.stringify(createPayload()),
+      body: JSON.stringify(
+        createPayload({
+          system: [
+            {
+              type: "text",
+              text: "x-anthropic-billing-header: cc_version=2.1.158.c0c; cc_entrypoint=cli; cch=6fb32;",
+            },
+            {
+              type: "text",
+              text: "You are Claude Code, Anthropic's official CLI for Claude.",
+            },
+          ],
+        }),
+      ),
     })
 
     expect(response.status).toBe(200)
@@ -461,9 +529,22 @@ describe("messages handler orchestration", () => {
     expect(handleWithMessagesApi).not.toHaveBeenCalled()
     expect(handleWithResponsesApi).toHaveBeenCalledTimes(1)
     expect(handleWithChatCompletions).not.toHaveBeenCalled()
+
+    const [, forwardedPayload] = handleWithResponsesApi.mock.calls[0]
+    expect(forwardedPayload.system).toEqual([
+      {
+        type: "text",
+        text: "x-anthropic-billing-header: cc_version=2.1.158.c0c; cc_entrypoint=cli; cch=<stable>;",
+      },
+      {
+        type: "text",
+        text: "You are Claude Code, Anthropic's official CLI for Claude.",
+      },
+    ])
   })
 
   test("delegates to the Responses API flow when the model supports ws:/responses", async () => {
+    responsesApiWebSocketEnabled = true
     selectedModel = {
       id: "responses-ws-model",
       supported_endpoints: ["ws:/responses"],
@@ -516,7 +597,7 @@ describe("messages handler orchestration", () => {
     expect(handleWithChatCompletions).toHaveBeenCalledTimes(1)
   })
 
-  test("falls back to the Chat Completions flow when no endpoint matches", async () => {
+  test("stabilizes Claude Code billing header before falling back to the Chat Completions flow", async () => {
     selectedModel = {
       id: "chat-model",
       supported_endpoints: [],
@@ -528,7 +609,20 @@ describe("messages handler orchestration", () => {
       headers: {
         "content-type": "application/json",
       },
-      body: JSON.stringify(createPayload()),
+      body: JSON.stringify(
+        createPayload({
+          system: [
+            {
+              type: "text",
+              text: "x-anthropic-billing-header: cc_version=2.1.158.c0c; cc_entrypoint=cli; cch=6fb32;",
+            },
+            {
+              type: "text",
+              text: "You are Claude Code, Anthropic's official CLI for Claude.",
+            },
+          ],
+        }),
+      ),
     })
 
     expect(response.status).toBe(200)
@@ -536,6 +630,18 @@ describe("messages handler orchestration", () => {
     expect(handleWithMessagesApi).not.toHaveBeenCalled()
     expect(handleWithResponsesApi).not.toHaveBeenCalled()
     expect(handleWithChatCompletions).toHaveBeenCalledTimes(1)
+
+    const [, forwardedPayload] = handleWithChatCompletions.mock.calls[0]
+    expect(forwardedPayload.system).toEqual([
+      {
+        type: "text",
+        text: "x-anthropic-billing-header: cc_version=2.1.158.c0c; cc_entrypoint=cli; cch=<stable>;",
+      },
+      {
+        type: "text",
+        text: "You are Claude Code, Anthropic's official CLI for Claude.",
+      },
+    ])
   })
 
   test("applies warmup model override and passes request metadata to the selected flow", async () => {

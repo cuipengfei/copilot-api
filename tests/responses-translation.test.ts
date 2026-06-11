@@ -190,36 +190,6 @@ describe("translateAnthropicMessagesToResponsesPayload", () => {
     expect(result.prompt_cache_key).toBe("opencode-session:agent:agent-123")
   })
 
-  it("stabilizes claude code billing header cch for claude code system prompts", () => {
-    const payload = {
-      model: "gpt-5.4",
-      max_tokens: 1024,
-      system: [
-        {
-          type: "text",
-          text: "x-anthropic-billing-header: cc_version=2.1.158.c0c; cc_entrypoint=cli; cch=6fb32;",
-        },
-        {
-          type: "text",
-          text: "You are Claude Code, Anthropic's official CLI for Claude.",
-        },
-      ],
-      messages: [
-        {
-          role: "user",
-          content: [{ type: "text", text: "hello codex" }],
-        },
-      ],
-    } as unknown as AnthropicMessagesPayload
-
-    const result = translateAnthropicMessagesToResponsesPayload(payload)
-
-    expect(result.instructions).toContain(
-      "x-anthropic-billing-header: cc_version=2.1.158.c0c; cc_entrypoint=cli; cch=<stable>;",
-    )
-    expect(result.instructions).not.toContain("cch=6fb32;")
-  })
-
   it("keeps unrelated system prompt text unchanged", () => {
     const payload = {
       model: "gpt-5.4",

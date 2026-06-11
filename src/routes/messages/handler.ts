@@ -33,6 +33,7 @@ import {
   getCompactType,
   getLastMessageContentCacheControl,
   mergeToolResultForClaude,
+  normalizeClaudeCodeBillingHeaderInSystem,
   normalizeSystemMessages,
   sanitizeIdeTools,
   stripToolReferenceTurnBoundary,
@@ -78,6 +79,7 @@ export async function handleCompletion(c: Context) {
 
   debugJson(logger, "Anthropic request payload:", anthropicPayload)
 
+  normalizeClaudeCodeBillingHeaderInSystem(anthropicPayload)
   normalizeSystemMessages(anthropicPayload)
 
   await checkRateLimit(state)

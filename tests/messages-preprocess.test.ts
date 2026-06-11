@@ -1,6 +1,21 @@
-import { describe, expect, test } from "bun:test"
+import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test"
 
 import type { AnthropicMessagesPayload } from "../src/routes/messages/anthropic-types"
+
+const actualConfigModule = await import("../src/lib/config")
+
+let mockedReasoningEffort:
+  | "none"
+  | "minimal"
+  | "low"
+  | "medium"
+  | "high"
+  | "xhigh" = "xhigh"
+
+await mock.module("~/lib/config", () => ({
+  ...actualConfigModule,
+  getReasoningEffortForModel: () => mockedReasoningEffort,
+}))
 
 import {
   applyLastMessageCacheControl,
@@ -11,6 +26,14 @@ import {
   sanitizeIdeTools,
   stripToolReferenceTurnBoundary,
 } from "../src/routes/messages/preprocess"
+
+beforeEach(() => {
+  mockedReasoningEffort = "xhigh"
+})
+
+afterEach(() => {
+  mockedReasoningEffort = "xhigh"
+})
 
 describe("normalizeSystemMessages", () => {
   test("merges system string content into the previous message", () => {
