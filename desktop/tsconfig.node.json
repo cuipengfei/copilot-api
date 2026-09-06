@@ -28,6 +28,7 @@
     "../src/lib/request-auth.ts",
     "../src/lib/request-context.ts",
     "../src/lib/server-host.ts",
+    "../src/lib/server-host-shared.ts",
     "../src/lib/sqlite.ts",
     "../src/lib/state.ts",
     "../src/lib/subagent.ts",

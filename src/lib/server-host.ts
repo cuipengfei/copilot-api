@@ -1,10 +1,8 @@
 import { isIP } from "node:net"
 
-export const DEFAULT_SERVER_HOST = "127.0.0.1"
+import { isWildcardHostname, normalizeHostnameBase } from "./server-host-shared"
 
-// Bind hosts that listen on every interface, which clients cannot dial
-// directly (0.0.0.0 is not a routable destination).
-const WILDCARD_HOSTNAMES = new Set(["0.0.0.0", "::"])
+export const DEFAULT_SERVER_HOST = "127.0.0.1"
 
 // Listen failures that mean the hostname itself cannot be bound, as opposed
 // to the port being occupied (EADDRINUSE) or forbidden (EACCES). ENOTFOUND
@@ -26,13 +24,6 @@ export interface ServerBinding {
   hostname: string
   clientHostname: string
   networkExposed: boolean
-}
-
-function stripIpv6Brackets(hostname: string): string {
-  if (hostname.startsWith("[") && hostname.endsWith("]")) {
-    return hostname.slice(1, -1)
-  }
-  return hostname
 }
 
 function isLoopbackIpv4(hostname: string): boolean {
@@ -59,11 +50,7 @@ function isLoopbackMappedIpv4(hostname: string): boolean {
 }
 
 export function normalizeServerHostname(hostname: string): string {
-  const normalized = stripIpv6Brackets(hostname.trim())
-  if (!normalized || /[\s/?#]/.test(normalized)) {
-    throw new Error(`Invalid server host: ${JSON.stringify(hostname)}`)
-  }
-  return normalized
+  return normalizeHostnameBase(hostname)
 }
 
 export function isLoopbackHostname(hostname: string): boolean {
@@ -106,9 +93,11 @@ export function resolveServerBinding(
 }
 
 export function resolveClientHostname(hostname: string): string {
-  const normalizedHostname = normalizeServerHostname(hostname).toLowerCase()
-  return WILDCARD_HOSTNAMES.has(normalizedHostname) ? DEFAULT_SERVER_HOST : (
-      normalizedHostname
+  const normalizedHostname = normalizeServerHostname(hostname)
+  // Wildcard binds listen on every interface, which clients cannot dial
+  // directly (0.0.0.0 is not a routable destination).
+  return isWildcardHostname(normalizedHostname) ? DEFAULT_SERVER_HOST : (
+      normalizedHostname.toLowerCase()
     )
 }
 

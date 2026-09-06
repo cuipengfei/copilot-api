@@ -309,8 +309,8 @@ export function registerIpcHandlers(
         return status
       } catch (err) {
         if (
-          err instanceof Error &&
-          err.message.startsWith('Invalid server host')
+          err instanceof Error
+          && err.message.startsWith('Invalid server host')
         ) {
           return {
             running: false,
