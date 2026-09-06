@@ -1,4 +1,4 @@
-import { Hono } from "hono"
+import { Hono, type Context } from "hono"
 import { cors } from "hono/cors"
 import { logger } from "hono/logger"
 import { readFileSync } from "node:fs"
@@ -24,63 +24,94 @@ import { responsesRoutes } from "./routes/responses/route"
 import { tokenUsageRoute } from "./routes/token-usage/route"
 import { usageRoute } from "./routes/usage/route"
 
-export const server = new Hono()
+export interface CreateServerOptions {
+  networkExposed?: boolean
+  getApiKeys?: () => Array<string>
+}
 
-server.use(traceIdMiddleware)
-server.use(logger())
-server.use(cors())
-server.use(
-  "*",
-  createAuthMiddleware({
-    allowUnauthenticatedPaths: ["/", "/usage-viewer", "/usage-viewer/"],
-    shouldSkipPath: (path) => path.startsWith("/admin/"),
-  }),
-)
-server.use(
-  "/admin/*",
-  createAuthMiddleware({
-    getApiKeys: getConfiguredAdminApiKeys,
-    allowUnauthenticatedPaths: [],
-    allowWhenNoApiKeys: false,
-  }),
-)
+function resolveSameOriginCorsOrigin(
+  origin: string,
+  context: Context,
+): string | null {
+  if (!origin) {
+    return null
+  }
 
-server.get("/", (c) => c.text("Server running"))
-server.get("/usage-viewer", (c) => {
-  const usageViewerFileUrl = new URL("../pages/index.html", import.meta.url)
-  return c.html(readFileSync(usageViewerFileUrl, "utf8"))
-})
-server.get("/usage-viewer/", (c) => c.redirect("/usage-viewer", 301))
+  try {
+    return origin === new URL(context.req.url).origin ? origin : null
+  } catch {
+    return null
+  }
+}
 
-server.route("/chat/completions", completionRoutes)
-server.route("/admin/config", configRoutes)
-server.route("/models", modelRoutes)
-server.route("/embeddings", embeddingRoutes)
-server.route("/usage", usageRoute)
-server.route("/token-usage", tokenUsageRoute)
-server.route("/responses", responsesRoutes)
-server.route("/alpha/search", alphaSearchRoutes)
-server.route("/images", imageRoutes)
+export function createServer(options: CreateServerOptions = {}): Hono {
+  const server = new Hono()
+  const networkExposed = options.networkExposed ?? false
 
-// Compatibility with tools that expect v1/ prefix
-server.route("/v1/chat/completions", completionRoutes)
-server.route("/v1/models", modelRoutes)
-server.route("/v1/embeddings", embeddingRoutes)
-server.route("/v1/responses", responsesRoutes)
-server.route("/v1/alpha/search", alphaSearchRoutes)
-server.route("/v1/images", imageRoutes)
+  server.use(traceIdMiddleware)
+  server.use(logger())
+  server.use(
+    networkExposed ? cors({ origin: resolveSameOriginCorsOrigin }) : cors(),
+  )
+  server.use(
+    "*",
+    createAuthMiddleware({
+      getApiKeys: options.getApiKeys,
+      allowUnauthenticatedPaths: ["/", "/usage-viewer", "/usage-viewer/"],
+      shouldSkipPath: (path) => path.startsWith("/admin/"),
+      allowWhenNoApiKeys: !networkExposed,
+    }),
+  )
+  server.use(
+    "/admin/*",
+    createAuthMiddleware({
+      getApiKeys: getConfiguredAdminApiKeys,
+      allowUnauthenticatedPaths: [],
+      allowWhenNoApiKeys: false,
+    }),
+  )
 
-// Anthropic compatible endpoints
-server.route("/v1/messages", messageRoutes)
+  server.get("/", (c) => c.text("Server running"))
+  server.get("/usage-viewer", (c) => {
+    const usageViewerFileUrl = new URL("../pages/index.html", import.meta.url)
+    return c.html(readFileSync(usageViewerFileUrl, "utf8"))
+  })
+  server.get("/usage-viewer/", (c) => c.redirect("/usage-viewer", 301))
 
-// Provider scoped endpoints
-server.route("/:provider/v1/messages", providerMessageRoutes)
-server.route("/:provider/v1/models", providerModelRoutes)
-server.route("/:provider/v1/responses", providerResponsesRoutes)
-server.route("/:provider/v1/alpha/search", providerAlphaSearchRoutes)
-server.route("/:provider/v1/images", providerImageRoutes)
+  server.route("/chat/completions", completionRoutes)
+  server.route("/admin/config", configRoutes)
+  server.route("/models", modelRoutes)
+  server.route("/embeddings", embeddingRoutes)
+  server.route("/usage", usageRoute)
+  server.route("/token-usage", tokenUsageRoute)
+  server.route("/responses", responsesRoutes)
+  server.route("/alpha/search", alphaSearchRoutes)
+  server.route("/images", imageRoutes)
 
-server.route("/:provider/models", providerModelRoutes)
-server.route("/:provider/responses", providerResponsesRoutes)
-server.route("/:provider/alpha/search", providerAlphaSearchRoutes)
-server.route("/:provider/images", providerImageRoutes)
+  // Compatibility with tools that expect v1/ prefix
+  server.route("/v1/chat/completions", completionRoutes)
+  server.route("/v1/models", modelRoutes)
+  server.route("/v1/embeddings", embeddingRoutes)
+  server.route("/v1/responses", responsesRoutes)
+  server.route("/v1/alpha/search", alphaSearchRoutes)
+  server.route("/v1/images", imageRoutes)
+
+  // Anthropic compatible endpoints
+  server.route("/v1/messages", messageRoutes)
+
+  // Provider scoped endpoints
+  server.route("/:provider/v1/messages", providerMessageRoutes)
+  server.route("/:provider/v1/models", providerModelRoutes)
+  server.route("/:provider/v1/responses", providerResponsesRoutes)
+  server.route("/:provider/v1/alpha/search", providerAlphaSearchRoutes)
+  server.route("/:provider/v1/images", providerImageRoutes)
+
+  server.route("/:provider/models", providerModelRoutes)
+  server.route("/:provider/responses", providerResponsesRoutes)
+  server.route("/:provider/alpha/search", providerAlphaSearchRoutes)
+  server.route("/:provider/images", providerImageRoutes)
+
+  return server
+}
+
+export const server = createServer()

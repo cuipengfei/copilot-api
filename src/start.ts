@@ -13,7 +13,15 @@ import { getLatestModelForFamily } from "./lib/models"
 import { initOpencodeVersion } from "./lib/opencode"
 import { ensurePaths } from "./lib/paths"
 import { initProxyFromEnv } from "./lib/proxy"
-import { getMissingApiKeysMessage } from "./lib/request-auth"
+import {
+  getConfiguredApiKeys,
+  getMissingApiKeysMessage,
+} from "./lib/request-auth"
+import {
+  DEFAULT_SERVER_HOST,
+  formatServerUrl,
+  resolveServerBinding,
+} from "./lib/server-host"
 import { generateEnvScript } from "./lib/shell"
 import { state } from "./lib/state"
 import { logUser, setupCopilotToken } from "./lib/token"
@@ -26,6 +34,7 @@ import {
 } from "./services/vscode-env"
 
 interface RunServerOptions {
+  host: string
   port: number
   verbose: boolean
   githubToken?: string
@@ -157,6 +166,12 @@ export async function runServer(options: RunServerOptions): Promise<void> {
 
   mergeConfigWithDefaults()
 
+  const configuredApiKeys = getConfiguredApiKeys()
+  const binding = resolveServerBinding(
+    options.host,
+    configuredApiKeys.length > 0,
+  )
+
   const missingApiKeysMessage = getMissingApiKeysMessage()
   if (missingApiKeysMessage) {
     consola.info(missingApiKeysMessage)
@@ -178,7 +193,7 @@ export async function runServer(options: RunServerOptions): Promise<void> {
 
   await ensurePaths()
 
-  const serverUrl = `http://localhost:${options.port}`
+  const serverUrl = formatServerUrl(binding.hostname, options.port)
 
   const githubToken = options.githubToken || (await readGitHubToken())
   if (githubToken) {
@@ -196,10 +211,12 @@ export async function runServer(options: RunServerOptions): Promise<void> {
     `🌐 Usage Viewer: ${serverUrl}/usage-viewer?endpoint=${serverUrl}/usage`,
   )
 
-  const { server } = await import("./server")
+  const { createServer } = await import("./server")
+  const server = createServer({ networkExposed: binding.networkExposed })
 
   serve({
     fetch: server.fetch as ServerHandler,
+    hostname: binding.hostname,
     port: options.port,
     bun: {
       idleTimeout: 0,
@@ -213,6 +230,11 @@ export const start = defineCommand({
     description: "Start the Copilot API server",
   },
   args: {
+    host: {
+      type: "string",
+      default: process.env.HOST?.trim() || DEFAULT_SERVER_HOST,
+      description: "Host to listen on",
+    },
     port: {
       alias: "p",
       type: "string",
@@ -251,6 +273,7 @@ export const start = defineCommand({
   },
   run({ args }) {
     return runServer({
+      host: args.host,
       port: Number.parseInt(args.port, 10),
       verbose: args.verbose,
       githubToken: args["github-token"],
