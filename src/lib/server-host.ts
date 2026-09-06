@@ -2,8 +2,29 @@ import { isIP } from "node:net"
 
 export const DEFAULT_SERVER_HOST = "127.0.0.1"
 
+// Bind hosts that listen on every interface, which clients cannot dial
+// directly (0.0.0.0 is not a routable destination).
+const WILDCARD_HOSTNAMES = new Set(["0.0.0.0", "::"])
+
+// Listen failures that mean the hostname itself cannot be bound, as opposed
+// to the port being occupied (EADDRINUSE) or forbidden (EACCES). ENOTFOUND
+// covers unresolvable names such as typos, EADDRNOTAVAIL covers valid IPs
+// that are not assigned to this machine.
+const INVALID_BIND_ERROR_CODES = new Set([
+  "ENOTFOUND",
+  "EADDRNOTAVAIL",
+  "EINVAL",
+  "EAFNOSUPPORT",
+  "ENXIO",
+])
+
+export function isInvalidBindErrorCode(code?: string): boolean {
+  return !!code && INVALID_BIND_ERROR_CODES.has(code)
+}
+
 export interface ServerBinding {
   hostname: string
+  clientHostname: string
   networkExposed: boolean
 }
 
@@ -77,7 +98,27 @@ export function resolveServerBinding(
     )
   }
 
-  return { hostname: normalizedHostname, networkExposed }
+  return {
+    hostname: normalizedHostname,
+    clientHostname: resolveClientHostname(normalizedHostname),
+    networkExposed,
+  }
+}
+
+export function resolveClientHostname(hostname: string): string {
+  const normalizedHostname = normalizeServerHostname(hostname).toLowerCase()
+  return WILDCARD_HOSTNAMES.has(normalizedHostname) ? DEFAULT_SERVER_HOST : (
+      normalizedHostname
+    )
+}
+
+export function resolveClientHostnameOrDefault(
+  hostname: string | null | undefined,
+): string {
+  const normalizedHostname = hostname?.trim()
+  return normalizedHostname ?
+      resolveClientHostname(normalizedHostname)
+    : DEFAULT_SERVER_HOST
 }
 
 export function formatServerUrl(hostname: string, port: number): string {

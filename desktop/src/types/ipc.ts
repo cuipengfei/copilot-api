@@ -47,6 +47,7 @@ export type ProviderAuthInput =
 export interface ServerStatus {
   running: boolean
   port?: number
+  host?: string
   error?: string
 }
 
@@ -186,6 +187,7 @@ export interface DesktopSettings {
   apiHome: string
   oauthApp: 'default' | 'opencode'
   enterpriseUrl: string
+  host: string
   lastPort: number
   launchAtLogin: boolean
   autoStartServer: boolean
@@ -212,6 +214,7 @@ declare global {
       startServer: (
         port: number,
         authMode?: DesktopAuthMode,
+        host?: string,
       ) => Promise<ServerStatus>
       stopServer: () => Promise<void>
       getServerStatus: () => Promise<ServerStatus>

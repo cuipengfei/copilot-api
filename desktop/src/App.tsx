@@ -31,6 +31,7 @@ export default function App() {
   const [authMode, setAuthMode] = useState<DesktopAuthMode>('none')
   const [canReturnFromAuth, setCanReturnFromAuth] = useState(false)
   const [port, setPort] = useState<number>(4141)
+  const [host, setHost] = useState<string>('')
   const [initialServerStatus, setInitialServerStatus] = useState<ServerStatus>()
   const { setLangPref, t } = useLanguage()
 
@@ -47,6 +48,7 @@ export default function App() {
         if (!active) return
 
         setPort(settings.lastPort)
+        setHost(settings.host ?? '')
         setLangPref(settings.language ?? 'auto')
 
         if (authResult.success && authResult.mode !== 'none') {
@@ -116,6 +118,7 @@ export default function App() {
     <DashboardPage
       authMode={authMode}
       defaultPort={port}
+      defaultHost={host}
       initialServerStatus={initialServerStatus}
       onChangeAuth={handleChangeAuth}
     />

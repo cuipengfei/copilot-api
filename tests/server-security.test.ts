@@ -3,7 +3,10 @@ import { describe, expect, test } from "bun:test"
 import {
   DEFAULT_SERVER_HOST,
   formatServerUrl,
+  isInvalidBindErrorCode,
   isLoopbackHostname,
+  resolveClientHostname,
+  resolveClientHostnameOrDefault,
   resolveServerBinding,
 } from "~/lib/server-host"
 import { createServer } from "~/server"
@@ -28,10 +31,12 @@ describe("server host security", () => {
     )
     expect(resolveServerBinding("0.0.0.0", true)).toEqual({
       hostname: "0.0.0.0",
+      clientHostname: "127.0.0.1",
       networkExposed: true,
     })
     expect(resolveServerBinding("[::1]", false)).toEqual({
       hostname: "::1",
+      clientHostname: "::1",
       networkExposed: false,
     })
     expect(() =>
@@ -42,6 +47,36 @@ describe("server host security", () => {
   test("formats IPv4 and IPv6 listener URLs", () => {
     expect(formatServerUrl("127.0.0.1", 4141)).toBe("http://127.0.0.1:4141")
     expect(formatServerUrl("::1", 4141)).toBe("http://[::1]:4141")
+  })
+
+  test("dials wildcard binds through loopback", () => {
+    expect(resolveClientHostname("0.0.0.0")).toBe("127.0.0.1")
+    expect(resolveClientHostname("[::]")).toBe("127.0.0.1")
+    expect(resolveClientHostname("::")).toBe("127.0.0.1")
+    expect(resolveClientHostname("192.168.1.10")).toBe("192.168.1.10")
+    expect(resolveClientHostname("127.0.0.1")).toBe("127.0.0.1")
+  })
+
+  test("falls back to loopback for a blank desktop host", () => {
+    expect(resolveClientHostnameOrDefault("")).toBe("127.0.0.1")
+    expect(resolveClientHostnameOrDefault("   ")).toBe("127.0.0.1")
+    expect(resolveClientHostnameOrDefault(null)).toBe("127.0.0.1")
+    expect(resolveClientHostnameOrDefault(undefined)).toBe("127.0.0.1")
+    expect(resolveClientHostnameOrDefault("0.0.0.0")).toBe("127.0.0.1")
+    expect(resolveClientHostnameOrDefault("  ::  ")).toBe("127.0.0.1")
+    expect(resolveClientHostnameOrDefault("  192.168.1.10  ")).toBe(
+      "192.168.1.10",
+    )
+    expect(resolveClientHostnameOrDefault("::1")).toBe("::1")
+  })
+  test("classifies unbindable host errors separately from occupied ports", () => {
+    expect(isInvalidBindErrorCode("ENOTFOUND")).toBe(true)
+    expect(isInvalidBindErrorCode("EADDRNOTAVAIL")).toBe(true)
+    expect(isInvalidBindErrorCode("EINVAL")).toBe(true)
+    expect(isInvalidBindErrorCode("EAFNOSUPPORT")).toBe(true)
+    expect(isInvalidBindErrorCode(undefined)).toBe(false)
+    expect(isInvalidBindErrorCode("EADDRINUSE")).toBe(false)
+    expect(isInvalidBindErrorCode("EACCES")).toBe(false)
   })
 })
 

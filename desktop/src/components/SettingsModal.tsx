@@ -9,6 +9,7 @@ import type {
 import { useLanguage } from '../contexts/LanguageContext'
 import { useTheme } from '../contexts/ThemeContext'
 import { translate, type LangPreference } from '../locales'
+import { isValidServerHost } from '../lib/server-url'
 
 interface SettingsModalProps {
   onClose: () => void
@@ -237,6 +238,7 @@ export default function SettingsModal({ onClose }: SettingsModalProps) {
     apiHome: '',
     oauthApp: 'default',
     enterpriseUrl: '',
+    host: '',
     lastPort: 4141,
     launchAtLogin: false,
     autoStartServer: false,
@@ -595,6 +597,28 @@ export default function SettingsModal({ onClose }: SettingsModalProps) {
 
             {section === 'network' && (
               <div>
+                <div className="mb-4">
+                  <div className="text-[13px] font-medium text-ink mb-1.5">
+                    {t('settings.host')}
+                  </div>
+                  <input
+                    type="text"
+                    placeholder="127.0.0.1"
+                    value={settings.host}
+                    onChange={(e) =>
+                      setSettings((s) => ({ ...s, host: e.target.value }))
+                    }
+                    className={inputClass}
+                  />
+                  {isValidServerHost(settings.host) ?
+                    <p className="text-[12px] text-ink-faint mt-1.5 leading-relaxed">
+                      {t('settings.hostDesc')}
+                    </p>
+                  : <p className="text-[12px] mt-1.5 leading-relaxed text-red-600 dark:text-red-400">
+                      {t('settings.hostInvalid')}
+                    </p>
+                  }
+                </div>
                 <div className="mb-4 rounded-lg border border-line bg-sunken px-3 py-2 text-[12px] leading-relaxed text-ink-soft dark:border-blue-400/15 dark:bg-blue-500/10 dark:text-blue-100/80">
                   {t('settings.proxySystemNote')}
                 </div>
@@ -781,7 +805,7 @@ export default function SettingsModal({ onClose }: SettingsModalProps) {
           </button>
           <button
             onClick={handleSave}
-            disabled={saving}
+            disabled={saving || !isValidServerHost(settings.host)}
             className="px-4 py-2 text-[13px] font-semibold bg-accent-strong text-white rounded-lg hover:bg-accent-strong/90 dark:bg-blue-500 dark:hover:bg-blue-400 disabled:cursor-not-allowed disabled:opacity-50 transition-colors shadow-sm dark:shadow-blue-950/20"
           >
             {saving ? t('settings.saving') : t('settings.save')}

@@ -193,7 +193,7 @@ export async function runServer(options: RunServerOptions): Promise<void> {
 
   await ensurePaths()
 
-  const serverUrl = formatServerUrl(binding.hostname, options.port)
+  const serverUrl = formatServerUrl(binding.clientHostname, options.port)
 
   const githubToken = options.githubToken || (await readGitHubToken())
   if (githubToken) {
