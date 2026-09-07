@@ -183,7 +183,7 @@ function getServerPath(): string {
 
 export async function startServer(
   port: number,
-  token: string | null,
+  githubToken: string | null,
   serverOptions?: {
     verbose?: boolean
     showToken?: boolean
@@ -251,13 +251,24 @@ export async function startServer(
     ...process.env,
     NODE_ENV: 'production',
   }
+  const normalizedGithubToken = githubToken?.trim()
+  if (normalizedGithubToken) {
+    // Never pass the token as an argument: process arguments are readable by
+    // every local user through the process list.
+    env.COPILOT_API_GITHUB_TOKEN = normalizedGithubToken
+  } else {
+    // Drop any inherited value, otherwise a token exported in the shell that
+    // launched the app would silently switch the server to Copilot mode and
+    // ignore the configured providers.
+    delete env.COPILOT_API_GITHUB_TOKEN
+  }
   const proxyEnabled =
     serverOptions?.proxy ?
       applyDesktopProxySettingsToEnv(env, serverOptions.proxy)
     : false
 
   const serverPath = getServerPath()
-  const args = buildServerStartArgs(port, token, host)
+  const args = buildServerStartArgs(port, host)
   if (proxyEnabled) args.push('--proxy-env')
   if (serverOptions?.verbose) args.push('--verbose')
   if (serverOptions?.showToken) args.push('--show-token')

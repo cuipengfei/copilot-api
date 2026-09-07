@@ -3,7 +3,7 @@ import { expect, test } from 'bun:test'
 import { buildServerStartArgs } from '../electron/server-start-args'
 
 test('passes the host through to the server CLI', () => {
-  expect(buildServerStartArgs(4141, null, '0.0.0.0')).toEqual([
+  expect(buildServerStartArgs(4141, '0.0.0.0')).toEqual([
     'start',
     '--port',
     '4141',
@@ -13,18 +13,12 @@ test('passes the host through to the server CLI', () => {
 })
 
 test('omits the host flag when no host is configured', () => {
-  expect(buildServerStartArgs(4141, 'token', '   ')).toEqual([
-    'start',
-    '--port',
-    '4141',
+  expect(buildServerStartArgs(4141, '   ')).toEqual(['start', '--port', '4141'])
+  expect(buildServerStartArgs(4141)).toEqual(['start', '--port', '4141'])
+})
+
+test('never puts the GitHub token on the command line', () => {
+  expect(buildServerStartArgs(4141, '127.0.0.1')).not.toContain(
     '--github-token',
-    'token',
-  ])
-  expect(buildServerStartArgs(4141, 'token')).toEqual([
-    'start',
-    '--port',
-    '4141',
-    '--github-token',
-    'token',
-  ])
+  )
 })
