@@ -46,6 +46,7 @@
     "../src/services/responses-http.ts",
     "../src/services/responses-websocket-helpers.ts",
     "../src/services/responses-websocket.ts",
+    "../src/services/upstream-http.ts",
     "../src/lib/electron-fetch.ts"
   ],
   "compilerOptions": {
