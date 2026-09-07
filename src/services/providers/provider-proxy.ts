@@ -242,16 +242,23 @@ function resolveProviderRequestUrl(
 export async function forwardProviderAlphaSearch(
   providerConfig: ResolvedProviderConfig,
   request: Request,
+  options: { clientSignal?: AbortSignal } = {},
 ): Promise<Response> {
   const headers = buildProviderUpstreamHeaders(providerConfig, request.headers)
   const body = await request.arrayBuffer()
+  const transportConfig = getUpstreamTransportConfig()
 
-  return await fetch(
+  return await fetchUpstreamWithLifecycle(
     resolveProviderRequestUrl(providerConfig, request.url, "/v1/alpha/search"),
     {
       method: "POST",
       headers,
       body,
+    },
+    {
+      clientSignal: options.clientSignal,
+      headersTimeoutMs: transportConfig.headersTimeoutMs,
+      streamInactivityTimeoutMs: transportConfig.streamInactivityTimeoutMs,
     },
   )
 }
