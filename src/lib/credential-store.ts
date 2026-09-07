@@ -55,6 +55,14 @@ export async function readGitHubToken(): Promise<string | null> {
   return normalizedToken || null
 }
 
+// Command line arguments are readable by every local user through the process
+// list, so the environment is the preferred way to hand the server a token.
+export const GITHUB_TOKEN_ENV = "COPILOT_API_GITHUB_TOKEN"
+
+export function readGitHubTokenFromEnv(): string | undefined {
+  return process.env[GITHUB_TOKEN_ENV]?.trim() || undefined
+}
+
 export async function writeGitHubToken(token: string): Promise<void> {
   await writeProtectedFile(PATHS.GITHUB_TOKEN_PATH, token.trim())
 }

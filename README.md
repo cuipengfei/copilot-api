@@ -450,6 +450,8 @@ Or pass a GitHub token directly:
 docker run -p 4141:4141 -v $(pwd)/copilot-data:/root/.local/share/copilot-api -e GH_TOKEN=your_github_token_here copilot-api
 ```
 
+The entrypoint exports `GH_TOKEN` as `COPILOT_API_GITHUB_TOKEN`, so the token is handed to the server through the environment instead of the process arguments.
+
 ## Electron Desktop App
 
 If you prefer a GUI, this repository also includes an Electron desktop app in `desktop/`. It supports GitHub Copilot sign-in, OpenAI Codex OAuth, and API-key configuration for Kimi, DeepSeek, DashScope, OpenRouter, or a custom provider. After authorization or provider configuration, it can start and stop the local proxy with one click and shows the local endpoint, auth header, available models, usage, and logs in the app.
@@ -636,10 +638,12 @@ The following command line options are available for the `start` command:
 | --host         | Host to listen on; non-loopback hosts require a configured gateway API key   | 127.0.0.1 | none  |
 | --port         | Port to listen on                                                             | 4141       | -p    |
 | --verbose      | Enable verbose logging                                                        | false      | -v    |
-| --github-token | Provide GitHub token directly (must be generated using the `auth` subcommand) | none       | -g    |
+| --github-token | Provide GitHub token directly (must be generated using the `auth` subcommand); prefer `COPILOT_API_GITHUB_TOKEN`, since arguments are visible in the process list | none       | -g    |
 | --claude-code  | Generate a command to launch Claude Code with Copilot API config              | false      | -c    |
 | --show-token   | Show GitHub and Copilot tokens on fetch and refresh                           | false      | none  |
 | --proxy-env    | Initialize proxy from environment variables                                   | false      | none  |
+
+Passing the GitHub token on the command line exposes it to every local user through the process list, so prefer the `COPILOT_API_GITHUB_TOKEN` environment variable. The gateway resolves the token in this order: `--github-token` → `COPILOT_API_GITHUB_TOKEN` → the token file written by `auth login`.
 
 ### Auth Command Options
 

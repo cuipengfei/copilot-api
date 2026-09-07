@@ -3,7 +3,12 @@ import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 
-import { writeCodexCredentials, writeGitHubToken } from "~/lib/credential-store"
+import {
+  GITHUB_TOKEN_ENV,
+  readGitHubTokenFromEnv,
+  writeCodexCredentials,
+  writeGitHubToken,
+} from "~/lib/credential-store"
 import { PATHS } from "~/lib/paths"
 
 const originalGitHubTokenPath = PATHS.GITHUB_TOKEN_PATH
@@ -101,5 +106,35 @@ describe("credential store atomic writes", () => {
     expect(error.message).toBe("forced credential fsync failure")
     expect(fs.readFileSync(codexCredentialPath, "utf8")).toBe("old-credentials")
     expect(listTemporaryFiles(codexCredentialPath)).toEqual([])
+  })
+})
+
+describe("GitHub token from the environment", () => {
+  const originalEnvToken = process.env[GITHUB_TOKEN_ENV]
+
+  afterEach(() => {
+    if (originalEnvToken === undefined) {
+      delete process.env[GITHUB_TOKEN_ENV]
+    } else {
+      process.env[GITHUB_TOKEN_ENV] = originalEnvToken
+    }
+  })
+
+  test("returns the trimmed token", () => {
+    process.env[GITHUB_TOKEN_ENV] = "  env-token  "
+
+    expect(readGitHubTokenFromEnv()).toBe("env-token")
+  })
+
+  test("ignores a blank value", () => {
+    process.env[GITHUB_TOKEN_ENV] = "   "
+
+    expect(readGitHubTokenFromEnv()).toBeUndefined()
+  })
+
+  test("returns undefined when the variable is unset", () => {
+    delete process.env[GITHUB_TOKEN_ENV]
+
+    expect(readGitHubTokenFromEnv()).toBeUndefined()
   })
 })

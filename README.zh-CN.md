@@ -480,6 +480,8 @@ docker run -p 4141:4141 -v $(pwd)/copilot-data:/root/.local/share/copilot-api co
 docker run -p 4141:4141 -v $(pwd)/copilot-data:/root/.local/share/copilot-api -e GH_TOKEN=your_github_token_here copilot-api
 ```
 
+entrypoint 会把 `GH_TOKEN` 导出为 `COPILOT_API_GITHUB_TOKEN`，因此 token 是通过环境变量交给服务的，不会出现在进程参数里。
+
 <a id="electron-desktop-app"></a>
 
 ## Electron 桌面应用
@@ -678,10 +680,12 @@ Copilot API 现在使用子命令结构，主要命令包括：
 | --host | 监听主机；非回环地址要求已配置网关 API Key | 127.0.0.1 | 无 |
 | --port | 监听端口 | 4141 | -p |
 | --verbose | 启用详细日志 | false | -v |
-| --github-token | 直接提供 GitHub token（必须通过 `auth` 子命令生成） | 无 | -g |
+| --github-token | 直接提供 GitHub token（必须通过 `auth` 子命令生成）；建议使用 `COPILOT_API_GITHUB_TOKEN`，命令行参数会出现在进程列表中 | 无 | -g |
 | --claude-code | 生成一个使用 Copilot API 配置启动 Claude Code 的命令 | false | -c |
 | --show-token | 在获取和刷新时显示 GitHub 与 Copilot token | false | 无 |
 | --proxy-env | 从环境变量初始化代理 | false | 无 |
+
+不建议把 GitHub token 放在命令行上：本机任意用户都能从进程列表里读到它，请优先使用 `COPILOT_API_GITHUB_TOKEN` 环境变量。token 的解析顺序为：`--github-token` → `COPILOT_API_GITHUB_TOKEN` → `auth login` 写入的 token 文件。
 
 ### Auth 命令选项
 

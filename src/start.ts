@@ -8,7 +8,11 @@ import invariant from "tiny-invariant"
 
 import { runProviderSetup } from "./auth"
 import { listEnabledProviders, mergeConfigWithDefaults } from "./lib/config"
-import { readGitHubToken } from "./lib/credential-store"
+import {
+  GITHUB_TOKEN_ENV,
+  readGitHubToken,
+  readGitHubTokenFromEnv,
+} from "./lib/credential-store"
 import { getLatestModelForFamily } from "./lib/models"
 import { initOpencodeVersion } from "./lib/opencode"
 import { ensurePaths } from "./lib/paths"
@@ -43,16 +47,36 @@ interface RunServerOptions {
   proxyEnv: boolean
 }
 
+type GitHubTokenSource = "cli" | "env" | "file"
+
+// The environment is preferred over the token file so the token never has to
+// travel through the process list; --github-token stays first for callers that
+// opt in explicitly.
+async function resolveGitHubToken(
+  cliToken: string | undefined,
+): Promise<{ token: string; source: GitHubTokenSource } | null> {
+  if (cliToken) return { token: cliToken, source: "cli" }
+
+  const envToken = readGitHubTokenFromEnv()
+  if (envToken) return { token: envToken, source: "env" }
+
+  const fileToken = await readGitHubToken()
+  if (fileToken) return { token: fileToken, source: "file" }
+
+  return null
+}
+
 async function setupCopilotMode(
   githubToken: string,
-  fromCli: boolean,
+  source: GitHubTokenSource,
   serverUrl: string,
   claudeCode: boolean,
 ): Promise<void> {
   state.githubToken = githubToken
   consola.info(
-    fromCli ?
-      "Using provided GitHub token"
+    source === "cli" ? "Using provided GitHub token"
+    : source === "env" ?
+      `Using GitHub token from the ${GITHUB_TOKEN_ENV} environment variable`
     : "Using GitHub token from local file",
   )
 
@@ -145,7 +169,8 @@ async function setupProviderMode(
   await runProviderSetup()
 
   if (state.githubToken) {
-    await setupCopilotMode(state.githubToken, false, serverUrl, claudeCode)
+    // The setup flow persisted the token with the credential store.
+    await setupCopilotMode(state.githubToken, "file", serverUrl, claudeCode)
     return
   }
 
@@ -195,11 +220,11 @@ export async function runServer(options: RunServerOptions): Promise<void> {
 
   const serverUrl = formatServerUrl(binding.clientHostname, options.port)
 
-  const githubToken = options.githubToken || (await readGitHubToken())
-  if (githubToken) {
+  const resolvedGitHubToken = await resolveGitHubToken(options.githubToken)
+  if (resolvedGitHubToken) {
     await setupCopilotMode(
-      githubToken,
-      Boolean(options.githubToken),
+      resolvedGitHubToken.token,
+      resolvedGitHubToken.source,
       serverUrl,
       options.claudeCode,
     )
