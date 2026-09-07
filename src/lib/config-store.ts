@@ -24,7 +24,7 @@ export interface AppConfig {
   >
   useMessagesApi?: boolean
   useResponsesApiWebSocket?: boolean
-  responsesTransport?: ResponsesTransportConfig
+  upstreamTransport?: UpstreamTransportConfig
   anthropicApiKey?: string
   useResponsesApiWebSearch?: boolean
   alphaSearchCodexPriority?: boolean
@@ -52,8 +52,8 @@ export interface ContextManagementConfig {
   responses?: boolean
 }
 
-export interface ResponsesTransportConfig {
-  headersTimeoutMsV2?: number
+export interface UpstreamTransportConfig {
+  headersTimeoutMs?: number
   streamInactivityTimeoutMs?: number
   websocketMaxBufferedBytes?: number
   websocketMaxBufferedMessages?: number
@@ -61,14 +61,14 @@ export interface ResponsesTransportConfig {
   websocketPoolIdleTimeoutMs?: number
 }
 
-export const defaultResponsesTransportConfig = {
-  headersTimeoutMsV2: 5 * 60 * 1000,
+export const defaultUpstreamTransportConfig = {
+  headersTimeoutMs: 5 * 60 * 1000,
   streamInactivityTimeoutMs: 5 * 60 * 1000,
   websocketMaxBufferedBytes: 8 * 1024 * 1024,
   websocketMaxBufferedMessages: 1024,
   websocketOpenTimeoutMs: 30_000,
   websocketPoolIdleTimeoutMs: 60_000,
-} satisfies Required<ResponsesTransportConfig>
+} satisfies Required<UpstreamTransportConfig>
 
 export interface ModelConfig {
   temperature?: number
@@ -159,7 +159,7 @@ export const defaultConfig: AppConfig = {
   },
   useMessagesApi: true,
   useResponsesApiWebSocket: true,
-  responsesTransport: defaultResponsesTransportConfig,
+  upstreamTransport: defaultUpstreamTransportConfig,
   useResponsesApiWebSearch: true,
   alphaSearchCodexPriority: true,
   alphaSearchModel: "gpt-5-mini",
@@ -292,8 +292,13 @@ function mergeDefaultConfig(config: AppConfig): {
   const contextManagement = normalizeContextManagementConfig(
     config.contextManagement,
   )
-  const responsesTransport = normalizeResponsesTransportConfig(
-    config.responsesTransport,
+  const {
+    changed: upstreamTransportMigrated,
+    migrated: migratedUpstreamTransport,
+  } = migrateUpstreamTransportConfig(config)
+
+  const upstreamTransport = normalizeUpstreamTransportConfig(
+    migratedUpstreamTransport,
   )
   const defaultContextManagementConfig = defaultConfig.contextManagement ?? {}
 
@@ -316,10 +321,9 @@ function mergeDefaultConfig(config: AppConfig): {
   const hasResponsesApiCompactThresholdChanges =
     missingResponsesApiCompactThresholdModels.length > 0
   const hasContextManagementChanges = missingContextManagementKeys.length > 0
-  const hasResponsesTransportChanges = Object.entries(responsesTransport).some(
+  const hasUpstreamTransportChanges = Object.entries(upstreamTransport).some(
     ([key, value]) =>
-      config.responsesTransport?.[key as keyof ResponsesTransportConfig]
-      !== value,
+      migratedUpstreamTransport[key as keyof UpstreamTransportConfig] !== value,
   )
 
   if (
@@ -327,14 +331,19 @@ function mergeDefaultConfig(config: AppConfig): {
     && !hasReasoningEffortChanges
     && !hasResponsesApiCompactThresholdChanges
     && !hasContextManagementChanges
-    && !hasResponsesTransportChanges
+    && !hasUpstreamTransportChanges
+    && !upstreamTransportMigrated
   ) {
     return { mergedConfig: config, changed: false }
   }
 
+  // The deprecated responsesTransport key is dropped once it is migrated.
+  const { responsesTransport: _legacyResponsesTransport, ...persistedConfig } =
+    config as LegacyAppConfig
+
   return {
     mergedConfig: {
-      ...config,
+      ...persistedConfig,
       contextManagement: {
         ...defaultContextManagementConfig,
         ...contextManagement,
@@ -351,7 +360,7 @@ function mergeDefaultConfig(config: AppConfig): {
         ...defaultModelReasoningEfforts,
         ...modelReasoningEfforts,
       },
-      responsesTransport,
+      upstreamTransport,
     },
     changed: true,
   }
@@ -371,6 +380,45 @@ function normalizeContextManagementConfig(
     ...(typeof value.responses === "boolean" ?
       { responses: value.responses }
     : {}),
+  }
+}
+
+// responsesTransport was renamed to upstreamTransport, and headersTimeoutMsV2
+// to headersTimeoutMs, when this block started applying to every upstream HTTP
+// transport. Legacy configs are migrated once during the startup merge and the
+// old keys are dropped from disk.
+interface LegacyAppConfig extends AppConfig {
+  responsesTransport?: LegacyUpstreamTransportConfig
+}
+
+interface LegacyUpstreamTransportConfig extends UpstreamTransportConfig {
+  headersTimeoutMsV2?: number
+}
+
+const migrateUpstreamTransportConfig = (
+  config: AppConfig,
+): { changed: boolean; migrated: UpstreamTransportConfig } => {
+  const legacyBlock = (config as LegacyAppConfig).responsesTransport
+  const { headersTimeoutMsV2, ...migrated } = (config.upstreamTransport
+    ?? legacyBlock
+    ?? {}) as LegacyUpstreamTransportConfig
+
+  const hasLegacyBlock = legacyBlock !== undefined
+  const hasLegacyHeadersTimeout = headersTimeoutMsV2 !== undefined
+  if (!hasLegacyBlock && !hasLegacyHeadersTimeout) {
+    return { changed: false, migrated }
+  }
+
+  consola.info(
+    "Migrating deprecated transport config: responsesTransport -> upstreamTransport, headersTimeoutMsV2 -> headersTimeoutMs",
+  )
+
+  return {
+    changed: true,
+    migrated:
+      migrated.headersTimeoutMs === undefined && hasLegacyHeadersTimeout ?
+        { ...migrated, headersTimeoutMs: headersTimeoutMsV2 }
+      : migrated,
   }
 }
 
@@ -455,39 +503,39 @@ export function isResponsesApiWebSocketEnabled(): boolean {
   return config.useResponsesApiWebSocket ?? true
 }
 
-export function getResponsesTransportConfig() {
-  const { headersTimeoutMsV2, ...config } = normalizeResponsesTransportConfig(
-    getConfig().responsesTransport,
-  )
-  return { headersTimeoutMs: headersTimeoutMsV2, ...config }
+// Applies to every upstream HTTP transport (Copilot Chat Completions and
+// Messages, Codex Responses, and provider-forwarded requests), not only the
+// Responses API.
+export function getUpstreamTransportConfig(): Required<UpstreamTransportConfig> {
+  return normalizeUpstreamTransportConfig(getConfig().upstreamTransport)
 }
 
-export const normalizeResponsesTransportConfig = (
-  configured: ResponsesTransportConfig | undefined,
-): Required<ResponsesTransportConfig> => ({
-  headersTimeoutMsV2: positiveIntegerOrDefault(
-    configured?.headersTimeoutMsV2,
-    defaultResponsesTransportConfig.headersTimeoutMsV2,
+export const normalizeUpstreamTransportConfig = (
+  configured: UpstreamTransportConfig | undefined,
+): Required<UpstreamTransportConfig> => ({
+  headersTimeoutMs: positiveIntegerOrDefault(
+    configured?.headersTimeoutMs,
+    defaultUpstreamTransportConfig.headersTimeoutMs,
   ),
   streamInactivityTimeoutMs: positiveIntegerOrDefault(
     configured?.streamInactivityTimeoutMs,
-    defaultResponsesTransportConfig.streamInactivityTimeoutMs,
+    defaultUpstreamTransportConfig.streamInactivityTimeoutMs,
   ),
   websocketMaxBufferedBytes: positiveIntegerOrDefault(
     configured?.websocketMaxBufferedBytes,
-    defaultResponsesTransportConfig.websocketMaxBufferedBytes,
+    defaultUpstreamTransportConfig.websocketMaxBufferedBytes,
   ),
   websocketMaxBufferedMessages: positiveIntegerOrDefault(
     configured?.websocketMaxBufferedMessages,
-    defaultResponsesTransportConfig.websocketMaxBufferedMessages,
+    defaultUpstreamTransportConfig.websocketMaxBufferedMessages,
   ),
   websocketOpenTimeoutMs: positiveIntegerOrDefault(
     configured?.websocketOpenTimeoutMs,
-    defaultResponsesTransportConfig.websocketOpenTimeoutMs,
+    defaultUpstreamTransportConfig.websocketOpenTimeoutMs,
   ),
   websocketPoolIdleTimeoutMs: positiveIntegerOrDefault(
     configured?.websocketPoolIdleTimeoutMs,
-    defaultResponsesTransportConfig.websocketPoolIdleTimeoutMs,
+    defaultUpstreamTransportConfig.websocketPoolIdleTimeoutMs,
   ),
 })
 

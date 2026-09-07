@@ -210,7 +210,7 @@ test("forwardCodexResponses falls back to HTTP for non-streaming responses", asy
     }),
     undefined,
     {
-      signal: downstream.signal,
+      clientSignal: downstream.signal,
       transport: "websocket",
     },
   )
@@ -458,22 +458,26 @@ test("forwardCodexResponses emits an error event when the websocket closes witho
   )
 })
 
-test("forwardCodexResponses propagates cancellation to an active websocket", async () => {
+test("forwardCodexResponses drains an active websocket after client cancellation", async () => {
   MockWebSocket.autoComplete = false
   const controller = new AbortController()
   const response = await forwardCodexResponses(
     { input: "hello", model: "gpt-5.4", stream: true },
     new Headers(),
     undefined,
-    { signal: controller.signal, transport: "websocket" },
+    { clientSignal: controller.signal, transport: "websocket" },
   )
   const chunksPromise = collectStreamChunks(response as AsyncIterable<unknown>)
   await waitFor(() => MockWebSocket.instances[0]?.sent.length === 1)
 
   controller.abort()
+  await delay(10)
+  expect(MockWebSocket.instances[0]?.readyState).toBe(MockWebSocket.OPEN)
 
-  expect(await chunksPromise).toEqual([])
-  expect(MockWebSocket.instances[0]?.readyState).toBe(MockWebSocket.CLOSED)
+  MockWebSocket.instances[0]?.completeLatestResponse()
+  const chunks = await chunksPromise
+  expect(chunks.at(-1)?.event).toBe("response.completed")
+  expect(MockWebSocket.instances[0]?.readyState).toBe(MockWebSocket.OPEN)
 })
 
 const collectStreamChunks = async (
@@ -509,3 +513,6 @@ const waitFor = async (predicate: () => boolean): Promise<void> => {
 
   throw new Error("Timed out waiting for condition")
 }
+
+const delay = async (milliseconds: number): Promise<void> =>
+  await new Promise((resolve) => originalSetTimeout(resolve, milliseconds))

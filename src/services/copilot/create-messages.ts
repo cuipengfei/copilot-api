@@ -15,10 +15,12 @@ import {
   prepareInteractionHeaders,
   prepareMessageProxyHeaders,
 } from "~/lib/api-config"
+import { getUpstreamTransportConfig } from "~/lib/config"
 import { logCopilotRateLimits } from "~/lib/copilot-rate-limit"
 import { HTTPError } from "~/lib/error"
 import { state } from "~/lib/state"
 import { parseUserIdMetadata } from "~/lib/utils"
+import { fetchUpstreamWithLifecycle } from "~/services/upstream-http"
 
 export type MessagesStream = ReturnType<typeof events>
 export type CreateMessagesReturn = AnthropicResponse | MessagesStream
@@ -66,6 +68,7 @@ export const createMessages = async (
   payload: AnthropicMessagesPayload,
   anthropicBetaHeader: string | undefined,
   options: {
+    clientSignal?: AbortSignal
     subagentMarker?: SubagentMarker | null
     requestId: string
     sessionId?: string
@@ -137,11 +140,20 @@ export const createMessages = async (
 
   consola.log(`<-- model: ${payload.model}`)
 
-  const response = await fetch(`${copilotBaseUrl(state)}/v1/messages`, {
-    method: "POST",
-    headers,
-    body: JSON.stringify(payload),
-  })
+  const transportConfig = getUpstreamTransportConfig()
+  const response = await fetchUpstreamWithLifecycle(
+    `${copilotBaseUrl(state)}/v1/messages`,
+    {
+      method: "POST",
+      headers,
+      body: JSON.stringify(payload),
+    },
+    {
+      clientSignal: options.clientSignal,
+      headersTimeoutMs: transportConfig.headersTimeoutMs,
+      streamInactivityTimeoutMs: transportConfig.streamInactivityTimeoutMs,
+    },
+  )
 
   logCopilotRateLimits(response.headers)
 

@@ -6,6 +6,12 @@ export interface PooledWebSocketRequest<TPayload> {
   headers: Record<string, string>
   payload: TPayload
   poolKey: string
+  // Optional cancellation for a single pooled request. The Responses and Codex
+  // request paths deliberately leave it unset: a client disconnect now drains
+  // the upstream instead of cancelling it, because aborting here closes the
+  // shared pooled socket and invalidates it for other in-flight requests.
+  // Keep this hook for callers that own the lifecycle end to end (and for a
+  // future bounded drain deadline).
   signal?: AbortSignal
   url: string
 }

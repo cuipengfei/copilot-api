@@ -1231,7 +1231,7 @@ describe("responses handler token usage", () => {
       expect(response.status).toBe(200)
       expect(createResponses).toHaveBeenCalledTimes(1)
       expect(createResponses.mock.calls[0][1]?.transport).toBe(transport)
-      expect(createResponses.mock.calls[0][1]?.signal).toBeInstanceOf(
+      expect(createResponses.mock.calls[0][1]?.clientSignal).toBeInstanceOf(
         AbortSignal,
       )
       expect(createResponses.mock.calls[0][0].input).toEqual([

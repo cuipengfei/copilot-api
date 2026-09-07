@@ -14,13 +14,16 @@ import {
   prepareForCompact,
   prepareInteractionHeaders,
 } from "~/lib/api-config"
+import { getUpstreamTransportConfig } from "~/lib/config"
 import { logCopilotRateLimits } from "~/lib/copilot-rate-limit"
 import { HTTPError } from "~/lib/error"
 import { state } from "~/lib/state"
+import { fetchUpstreamWithLifecycle } from "~/services/upstream-http"
 
 export const createChatCompletions = async (
   payload: ChatCompletionsPayload,
   options: {
+    clientSignal?: AbortSignal
     subagentMarker?: SubagentMarker | null
     requestId: string
     sessionId?: string
@@ -62,11 +65,20 @@ export const createChatCompletions = async (
 
   consola.log(`<-- model: ${payload.model}`)
 
-  const response = await fetch(`${copilotBaseUrl(state)}/chat/completions`, {
-    method: "POST",
-    headers,
-    body: JSON.stringify(payload),
-  })
+  const transportConfig = getUpstreamTransportConfig()
+  const response = await fetchUpstreamWithLifecycle(
+    `${copilotBaseUrl(state)}/chat/completions`,
+    {
+      method: "POST",
+      headers,
+      body: JSON.stringify(payload),
+    },
+    {
+      clientSignal: options.clientSignal,
+      headersTimeoutMs: transportConfig.headersTimeoutMs,
+      streamInactivityTimeoutMs: transportConfig.streamInactivityTimeoutMs,
+    },
+  )
 
   logCopilotRateLimits(response.headers)
 

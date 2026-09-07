@@ -2,8 +2,8 @@ import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test"
 import { Hono } from "hono"
 
 import type { ResolvedProviderConfig } from "~/lib/config"
+import { UpstreamStreamInactivityTimeoutError } from "~/lib/error"
 import type { UsageTokens } from "~/lib/token-usage"
-import { ResponsesStreamInactivityTimeoutError } from "~/services/responses-http"
 
 const actualConfigModule = await import("~/lib/config")
 const actualTokenUsageModule = await import("~/lib/token-usage")
@@ -162,7 +162,7 @@ const createFailingResponsesStream = (): Response =>
   new Response(
     new ReadableStream<Uint8Array>({
       start(controller) {
-        controller.error(new ResponsesStreamInactivityTimeoutError(25))
+        controller.error(new UpstreamStreamInactivityTimeoutError(25))
       },
     }),
     {
@@ -449,7 +449,7 @@ describe("provider Messages Responses forwarding", () => {
     expect(parseStreamData(await response.text())).toEqual([
       {
         error: {
-          message: "Responses upstream stream was inactive for 25ms",
+          message: "Upstream stream was inactive for 25ms",
           type: "api_error",
         },
         type: "error",

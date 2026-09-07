@@ -4,6 +4,7 @@ import { streamSSE } from "hono/streaming"
 
 import { COMPACT_REQUEST } from "~/lib/compact"
 import { createHandlerLogger, debugJson } from "~/lib/logger"
+import { writeSSEIfConnected } from "~/lib/sse"
 import type { SubagentMarker } from "~/lib/subagent"
 import type { AnthropicResponse } from "~/lib/types/anthropic"
 import type { ResponsesPayload } from "~/lib/types/responses"
@@ -105,7 +106,7 @@ export async function handleResponsesViaMessages(
     }
     return streamSSE(c, async (stream) => {
       for (const event of responsesResultToStreamEvents(result)) {
-        await stream.writeSSE({
+        await writeSSEIfConnected(stream, {
           event: event.type,
           data: JSON.stringify(event),
         })
@@ -138,7 +139,7 @@ function streamTranslatedMessagesEvents(
       context,
     )) {
       debugJson(logger, "Translated Responses stream event:", event)
-      await stream.writeSSE({
+      await writeSSEIfConnected(stream, {
         event: event.type,
         data: JSON.stringify(event),
       })
