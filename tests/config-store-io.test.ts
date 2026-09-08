@@ -3,7 +3,11 @@ import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 
-import { setConfiguredApiKeys, writeConfigToDisk } from "~/lib/config-store"
+import {
+  reloadConfig,
+  setConfiguredApiKeys,
+  writeConfigToDisk,
+} from "~/lib/config-store"
 import { PATHS } from "~/lib/paths"
 
 interface StoredConfig {
@@ -17,6 +21,7 @@ interface StoredConfig {
 
 const originalAppDir = PATHS.APP_DIR
 const originalConfigPath = PATHS.CONFIG_PATH
+const originalAccessSync = fs.accessSync
 const tempDirs: Array<string> = []
 
 function useTempConfigPath(): string {
@@ -28,6 +33,7 @@ function useTempConfigPath(): string {
 }
 
 afterEach(() => {
+  fs.accessSync = originalAccessSync
   PATHS.APP_DIR = originalAppDir
   PATHS.CONFIG_PATH = originalConfigPath
   while (tempDirs.length > 0) {
@@ -63,6 +69,41 @@ test("writeConfigToDisk atomically replaces the editable config", () => {
     },
   })
   expect(fs.readdirSync(path.dirname(configPath))).toEqual(["config.json"])
+})
+
+test("reloadConfig creates a default config when it is missing", () => {
+  const configPath = useTempConfigPath()
+
+  const config = reloadConfig()
+
+  expect(config.auth?.apiKeys).toEqual([])
+  if (process.platform !== "win32") {
+    expect(fs.statSync(configPath).mode & 0o777).toBe(0o600)
+  }
+})
+
+test("reloadConfig preserves an unreadable config file", () => {
+  const configPath = useTempConfigPath()
+  const sentinelConfig = '{"auth":{"apiKeys":["preserve-me"]}}\n'
+  fs.writeFileSync(configPath, sentinelConfig, "utf8")
+  fs.accessSync = (() => {
+    throw Object.assign(new Error("access denied"), { code: "EACCES" })
+  }) as typeof fs.accessSync
+
+  expect(() => reloadConfig()).toThrow("access denied")
+
+  expect(fs.readFileSync(configPath, "utf8")).toBe(sentinelConfig)
+})
+
+test("reloadConfig propagates nonmissing filesystem errors", () => {
+  useTempConfigPath()
+  fs.accessSync = (() => {
+    throw Object.assign(new Error("operation not permitted"), {
+      code: "EPERM",
+    })
+  }) as typeof fs.accessSync
+
+  expect(() => reloadConfig()).toThrow("operation not permitted")
 })
 
 test("setConfiguredApiKeys normalizes keys and preserves other config fields", () => {
