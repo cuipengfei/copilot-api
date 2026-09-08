@@ -16,6 +16,7 @@ import {
   buildResponsesWebSocketUrl,
   createResponses,
   prepareResponsesWebSocketRequest,
+  requiresCopilotResponsesHttpTransport,
 } from "~/services/copilot/create-responses"
 
 const originalFetch = globalThis.fetch
@@ -166,6 +167,93 @@ describe("createResponses", () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(1)
     expect(response).toEqual(createResponsesResult("gpt-test"))
+  })
+
+  test("uses HTTP for agent messages when websocket is requested", async () => {
+    const payload: ResponsesPayload = {
+      input: [
+        {
+          author: "/root",
+          content: [
+            {
+              encrypted_content: "encrypted-task",
+              type: "encrypted_content",
+            },
+          ],
+          recipient: "/root/child",
+          type: "agent_message",
+        },
+      ],
+      model: "gpt-test",
+      stream: true,
+    }
+
+    await createResponses(payload, {
+      initiator: "user",
+      requestId: "request-1",
+      transport: "websocket",
+      vision: false,
+    })
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  test("detects agent messages without scanning encrypted tool schemas", () => {
+    expect(
+      requiresCopilotResponsesHttpTransport({
+        input: [
+          {
+            author: "/root",
+            content: [
+              { type: "input_text", text: "Message Type: NEW_TASK" },
+              {
+                encrypted_content: "encrypted-task",
+                type: "encrypted_content",
+              },
+            ],
+            recipient: "/root/child",
+            type: "agent_message",
+          },
+        ],
+        model: "gpt-test",
+      }),
+    ).toBe(true)
+    expect(
+      requiresCopilotResponsesHttpTransport({
+        input: [
+          {
+            role: "developer",
+            tools: [
+              {
+                name: "spawn_agent",
+                parameters: {
+                  properties: {
+                    message: { encrypted: true, type: "string" },
+                  },
+                  type: "object",
+                },
+                strict: false,
+                type: "function",
+              },
+            ],
+            type: "additional_tools",
+          },
+        ],
+        model: "gpt-test",
+      }),
+    ).toBe(false)
+    expect(
+      requiresCopilotResponsesHttpTransport({
+        input: [
+          {
+            encrypted_content: "encrypted-reasoning",
+            summary: [],
+            type: "reasoning",
+          },
+        ],
+        model: "gpt-test",
+      }),
+    ).toBe(false)
   })
 
   test("keeps cache-relevant HTTP payloads deterministic", async () => {

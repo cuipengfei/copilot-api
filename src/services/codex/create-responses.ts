@@ -27,7 +27,7 @@ import {
 import {
   createResponsesSafeStream,
   encodePoolKeyPart,
-  isTerminalResponsesStreamChunk,
+  getResponsesStreamTerminalDisposition,
 } from "~/services/responses-websocket-helpers"
 import { createResponsesHttpEventStream } from "~/services/responses-http"
 import { fetchUpstreamWithLifecycle } from "~/services/upstream-http"
@@ -474,9 +474,9 @@ const createCodexResponsesWebSocketStream = (
     createClientPreflightStream(
       createPooledWebSocketStream(request, {
         createChunk: createCodexResponsesWebSocketStreamChunk,
+        getTerminalDisposition: getResponsesStreamTerminalDisposition,
         maxBufferedBytes: transportConfig.websocketMaxBufferedBytes,
         maxBufferedMessages: transportConfig.websocketMaxBufferedMessages,
-        isTerminalChunk: isTerminalResponsesStreamChunk,
         openErrorMessage: "Failed to create codex responses websocket",
         openTimeoutMs: transportConfig.websocketOpenTimeoutMs,
         poolIdleTimeoutMs: transportConfig.websocketPoolIdleTimeoutMs,

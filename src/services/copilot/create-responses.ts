@@ -34,7 +34,7 @@ import {
 import {
   createResponsesSafeStream,
   encodePoolKeyPart,
-  isTerminalResponsesStreamChunk,
+  getResponsesStreamTerminalDisposition,
 } from "~/services/responses-websocket-helpers"
 import { createResponsesHttpEventStream } from "~/services/responses-http"
 import { fetchUpstreamWithLifecycle } from "~/services/upstream-http"
@@ -79,8 +79,15 @@ export const createResponses = async (
 
   consola.log(`<-- model: ${payload.model}`)
 
+  const requiresHttpTransport = requiresCopilotResponsesHttpTransport(payload)
   const effectiveTransport =
-    compactType === COMPACT_REQUEST ? "http" : transport
+    compactType === COMPACT_REQUEST || requiresHttpTransport ?
+      "http"
+    : transport
+
+  if (transport === "websocket" && requiresHttpTransport) {
+    consola.debug("Using HTTP for Copilot Responses multi-agent compatibility")
+  }
 
   if (payload.stream === true && effectiveTransport === "websocket") {
     clientSignal?.throwIfAborted()
@@ -214,9 +221,9 @@ const getResponsesWebSocketOptions = () => {
   const transportConfig = getUpstreamTransportConfig()
   return {
     createChunk: createResponsesWebSocketStreamChunk,
+    getTerminalDisposition: getResponsesStreamTerminalDisposition,
     maxBufferedBytes: transportConfig.websocketMaxBufferedBytes,
     maxBufferedMessages: transportConfig.websocketMaxBufferedMessages,
-    isTerminalChunk: isTerminalResponsesStreamChunk,
     openErrorMessage: "Failed to create responses websocket",
     openTimeoutMs: transportConfig.websocketOpenTimeoutMs,
     poolIdleTimeoutMs: transportConfig.websocketPoolIdleTimeoutMs,
@@ -256,6 +263,21 @@ export const buildResponsesWebSocketPayload = (
 export const buildResponsesWebSocketUrl = (baseUrl: string): string => {
   return createWebSocketUrl(`${baseUrl.replace(/\/+$/u, "")}/responses`)
 }
+
+export const requiresCopilotResponsesHttpTransport = (
+  payload: ResponsesPayload,
+): boolean => {
+  if (!Array.isArray(payload.input)) {
+    return false
+  }
+
+  return payload.input.some(
+    (item) => isRecord(item) && item.type === "agent_message",
+  )
+}
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  Boolean(value && typeof value === "object" && !Array.isArray(value))
 
 const getHeaderValue = (
   headers: Record<string, string>,

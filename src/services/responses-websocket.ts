@@ -18,7 +18,7 @@ export interface PooledWebSocketRequest<TPayload> {
 
 export interface PooledWebSocketStreamOptions<TChunk> {
   createChunk: (data: string) => TChunk
-  isTerminalChunk: (chunk: TChunk) => boolean
+  getTerminalDisposition: (chunk: TChunk) => "continue" | "discard" | "reuse"
   maxBufferedBytes: number
   maxBufferedMessages: number
   openErrorMessage: string
@@ -188,10 +188,14 @@ const runPooledWebSocketRequest = async function* <TPayload, TChunk>(
 
     for await (const data of messageStream.iterable) {
       const chunk = options.createChunk(data)
-      const isTerminal = options.isTerminalChunk(chunk)
+      const terminalDisposition = options.getTerminalDisposition(chunk)
+      const isTerminal = terminalDisposition !== "continue"
       if (isTerminal) {
         messageStream.complete()
-        reusable = true
+        reusable = terminalDisposition === "reuse"
+        if (!reusable) {
+          removePooledWebSocketEntry(request.poolKey, entry)
+        }
       }
 
       yield chunk
