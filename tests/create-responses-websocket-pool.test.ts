@@ -265,52 +265,6 @@ test("Responses websocket pool reuses the same connection for matching pool keys
   expect(MockWebSocket.instances[0]?.sent).toHaveLength(2)
 })
 
-test("Responses websocket discards a connection after a server error event", async () => {
-  MockWebSocket.autoComplete = false
-
-  const response = await createResponses(
-    {
-      input: "hello",
-      model: "gpt-test",
-      stream: true,
-    },
-    {
-      initiator: "user",
-      requestId: "request-error",
-      transport: "websocket",
-      vision: false,
-    },
-  )
-  const chunksPromise = collectStreamChunks(response as AsyncIterable<unknown>)
-
-  await waitFor(() => MockWebSocket.instances[0]?.sent.length === 1)
-  MockWebSocket.instances[0]?.emitMessage(
-    JSON.stringify({
-      error: {
-        code: "invalid_request_body",
-        message: "Encrypted content could not be decrypted",
-      },
-      type: "error",
-    }),
-  )
-
-  const chunks = await chunksPromise
-  expect(chunks).toHaveLength(1)
-  expect(chunks[0]?.event).toBe("error")
-  expect(MockWebSocket.instances[0]?.readyState).toBe(MockWebSocket.CLOSED)
-
-  const nextRequest = collectResponsesStream("request-error")
-  await waitFor(
-    () =>
-      MockWebSocket.instances.length === 2
-      && MockWebSocket.instances[1]?.sent.length === 1,
-  )
-  MockWebSocket.instances[1]?.completeLatestResponse()
-  await nextRequest
-
-  expect(MockWebSocket.instances).toHaveLength(2)
-})
-
 test("Responses websocket remains reusable when the consumer stops after the terminal chunk", async () => {
   const stream = createResponsesSafeStream(
     createTestPooledStream("terminal-break"),
@@ -915,8 +869,7 @@ const createTestPooledStream = (
         const parsed = JSON.parse(data) as { type?: string }
         return { data, event: parsed.type }
       },
-      getTerminalDisposition: (chunk) =>
-        chunk.event === "response.completed" ? "reuse" : "continue",
+      isTerminalChunk: (chunk) => chunk.event === "response.completed",
       maxBufferedBytes: overrides.maxBufferedBytes ?? 1024,
       maxBufferedMessages: overrides.maxBufferedMessages ?? 32,
       openErrorMessage: "open failed",

@@ -33,30 +33,23 @@ export const createResponsesErrorServerSentEventChunk = (
   }
 }
 
-export const getResponsesStreamTerminalDisposition = (chunk: {
+export const isTerminalResponsesStreamChunk = (chunk: {
   data?: string
-}): "continue" | "discard" | "reuse" => {
+}): boolean => {
   if (!chunk.data || chunk.data === "[DONE]") {
-    return "continue"
+    return false
   }
 
   try {
     const parsed = JSON.parse(chunk.data) as { type?: unknown }
-    if (parsed.type === "error") {
-      return "discard"
-    }
-
-    if (
+    return (
       parsed.type === "response.completed"
       || parsed.type === "response.failed"
       || parsed.type === "response.incomplete"
-    ) {
-      return "reuse"
-    }
-
-    return "continue"
+      || parsed.type === "error"
+    )
   } catch {
-    return "continue"
+    return false
   }
 }
 
