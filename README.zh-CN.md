@@ -924,9 +924,9 @@ curl http://localhost:4141/dashscope/v1/messages \
 
 ## 故障排查
 
-### GitHub Copilot 报错 `Encrypted function output content could not be decrypted or decoded`
+**GitHub Copilot 加密输出解密失败**
 
-使用 GitHub Copilot provider 时，如果响应或日志中出现 `Encrypted function output content could not be decrypted or decoded`，通常是上游 Copilot Responses 的 WebSocket 通道返回了当前无法解密的工具调用输出。把 `config.json` 里的 `useResponsesApiWebSocket` 设为 `false`，让 Copilot Responses 改走 HTTP `/responses` 即可绕过：
+使用 GitHub Copilot provider 时，如果响应或日志中出现 `Encrypted function output content could not be decrypted or decoded`，通常是上游问题。把 `config.json` 里的 `useResponsesApiWebSocket` 设为 `false`，让 Copilot Responses 改走 HTTP `/responses` 即可绕过：
 
 ```json
 {

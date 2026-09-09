@@ -874,9 +874,9 @@ curl http://localhost:4141/dashscope/v1/messages \
 
 ## Troubleshooting
 
-### GitHub Copilot fails with `Encrypted function output content could not be decrypted or decoded`
+**GitHub Copilot encrypted output decryption failure**
 
-When the GitHub Copilot provider returns or logs `Encrypted function output content could not be decrypted or decoded`, the upstream Copilot Responses WebSocket channel returned tool-call output that cannot currently be decrypted. Set `useResponsesApiWebSocket` to `false` in `config.json` so Copilot Responses traffic goes over HTTP `/responses` instead:
+When the GitHub Copilot provider returns or logs `Encrypted function output content could not be decrypted or decoded`, it is usually an upstream issue. Set `useResponsesApiWebSocket` to `false` in `config.json` so Copilot Responses traffic goes over HTTP `/responses` instead:
 
 ```json
 {
