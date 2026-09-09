@@ -9,7 +9,6 @@
     "electron"
   ],
   "scripts": {
-    "postinstall": "node scripts/ensure-electron.mjs",
     "dev": "node scripts/ensure-electron.mjs && electron-vite dev",
     "build": "electron-vite build",
     "build:server": "bun run --cwd .. build:desktop",
