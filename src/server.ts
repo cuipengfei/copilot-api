@@ -23,23 +23,6 @@ import { providerResponsesRoutes } from "./routes/provider/responses/route"
 import { responsesRoutes } from "./routes/responses/route"
 import { tokenUsageRoute } from "./routes/token-usage/route"
 import { usageRoute } from "./routes/usage/route"
-import diagnosticsChannel from "node:diagnostics_channel"
-import consola from "consola"
-
-diagnosticsChannel.subscribe("undici:websocket:ping", (event) => {
-  const { payload } = event as { payload?: Buffer }
-  consola.debug(
-    `Undici WebSocket received PING (${payload?.length ?? 0} bytes)`,
-  )
-})
-
-diagnosticsChannel.subscribe("undici:websocket:pong", (event) => {
-  const { payload } = event as { payload?: Buffer }
-  consola.debug(
-    `Undici WebSocket received PONG (${payload?.length ?? 0} bytes)`,
-  )
-})
-
 export interface CreateServerOptions {
   networkExposed?: boolean
   getApiKeys?: () => Array<string>
