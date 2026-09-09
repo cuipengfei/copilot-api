@@ -1,7 +1,6 @@
 import consola from "consola"
-import { WebSocket } from "undici-real"
-
-import { getProxyEnvDispatcher } from "~/lib/proxy"
+import { getProxyForUrl } from "proxy-from-env"
+import { WebSocket } from "undici"
 
 export interface PooledWebSocketRequest<TPayload> {
   headers: Record<string, string>
@@ -422,8 +421,8 @@ const openWebSocket = async ({
       return
     }
 
-    const dispatcher = getProxyEnvDispatcher()
-    const init = dispatcher ? { dispatcher, headers } : { headers }
+    const proxy = typeof Bun === "undefined" ? undefined : getProxyUrl(url)
+    const init = { headers, ...(proxy ? { proxy } : {}) }
     const websocket = new WebSocket(url, init)
     let settled = false
     const timer = setTimeout(() => {
@@ -669,6 +668,9 @@ const closeWebSocket = (websocket: WebSocketInstance): void => {
     // listeners have already been detached, so the socket cannot be reused.
   }
 }
+
+const getProxyUrl = (url: string): string =>
+  getProxyForUrl(url.replace(/^wss:/u, "https:").replace(/^ws:/u, "http:"))
 
 const unrefTimer = (timer: ReturnType<typeof setTimeout>): void => {
   if (

@@ -122,7 +122,7 @@ const fetchMock = mock((_url: string | URL | Request, _init?: RequestInit) =>
 )
 const actualUndici = await import("undici")
 
-await mock.module("undici-real", () => ({
+await mock.module("undici", () => ({
   ...actualUndici,
   Agent: MockAgent,
   ProxyAgent: MockProxyAgent,

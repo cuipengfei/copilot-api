@@ -11,8 +11,8 @@ type ListenerEvent = {
 type Listener = (event: ListenerEvent) => void
 
 type MockWebSocketInit = {
-  dispatcher?: unknown
   headers?: Record<string, string>
+  proxy?: string
 }
 
 const originalClearTimeout = globalThis.clearTimeout
@@ -35,6 +35,8 @@ const proxyEnvKeys = [
   "npm_config_no_proxy",
   "NPM_CONFIG_NO_PROXY",
 ] as const
+
+type ProxyEnvKey = (typeof proxyEnvKeys)[number]
 
 class MockWebSocket {
   static readonly CONNECTING = 0
@@ -166,19 +168,15 @@ class MockProxyAgent extends MockAgent {
 const setGlobalDispatcherMock = mock((_dispatcher: unknown) => {})
 const actualUndici = await import("undici")
 
-const undiciMock = () => ({
+await mock.module("undici", () => ({
   ...actualUndici,
   Agent: MockAgent,
   ProxyAgent: MockProxyAgent,
   setGlobalDispatcher: setGlobalDispatcherMock,
   WebSocket: MockWebSocket,
-})
-
-await mock.module("undici", undiciMock)
-await mock.module("undici-real", undiciMock)
+}))
 
 const { state } = await import("~/lib/state")
-const { getProxyEnvDispatcher, initProxyFromEnv } = await import("~/lib/proxy")
 const { createResponses } = await import("~/services/copilot/create-responses")
 const {
   createPooledWebSocketStream,
@@ -638,18 +636,28 @@ test("Responses websocket emits an error event when the websocket closes without
   )
 })
 
-test("Responses websocket uses the proxy-env dispatcher when initialized", async () => {
+test("Responses websocket passes HTTPS proxy env to Bun websocket init", async () => {
   const proxyEnv = clearProxyEnv()
-  process.env.HTTP_PROXY = "http://127.0.0.1:8080"
+  process.env.HTTPS_PROXY = "http://127.0.0.1:8080"
 
   try {
-    initProxyFromEnv()
-    const dispatcher = getProxyEnvDispatcher()
-
     await collectResponsesStream("proxy-request")
 
-    expect(dispatcher).toBeDefined()
-    expect(MockWebSocket.instances[0]?.init.dispatcher).toBe(dispatcher)
+    expect(MockWebSocket.instances[0]?.init.proxy).toBe("http://127.0.0.1:8080")
+  } finally {
+    restoreProxyEnv(proxyEnv)
+  }
+})
+
+test("Responses websocket honors NO_PROXY when resolving Bun websocket proxy", async () => {
+  const proxyEnv = clearProxyEnv()
+  process.env.HTTPS_PROXY = "http://127.0.0.1:8080"
+  process.env.NO_PROXY = "api.githubcopilot.com"
+
+  try {
+    await collectResponsesStream("no-proxy-request")
+
+    expect(MockWebSocket.instances[0]?.init.proxy).toBeUndefined()
   } finally {
     restoreProxyEnv(proxyEnv)
   }
@@ -938,8 +946,8 @@ const waitFor = async (predicate: () => boolean): Promise<void> => {
   throw new Error("Timed out waiting for condition")
 }
 
-const clearProxyEnv = (): Map<string, string | undefined> => {
-  const originalValues = new Map<string, string | undefined>()
+const clearProxyEnv = (): Map<ProxyEnvKey, string | undefined> => {
+  const originalValues = new Map<ProxyEnvKey, string | undefined>()
 
   for (const key of proxyEnvKeys) {
     originalValues.set(key, process.env[key])
@@ -950,7 +958,7 @@ const clearProxyEnv = (): Map<string, string | undefined> => {
 }
 
 const restoreProxyEnv = (
-  originalValues: Map<string, string | undefined>,
+  originalValues: Map<ProxyEnvKey, string | undefined>,
 ): void => {
   for (const key of proxyEnvKeys) {
     const value = originalValues.get(key)
