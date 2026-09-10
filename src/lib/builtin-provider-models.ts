@@ -476,6 +476,17 @@ export class BuiltinProviderModelRegistry {
         },
         reasoningEfforts: ["low", "medium", "high", "xhigh"],
       },
+      "deepseek-flash": {
+        contextWindow: 1_000_000,
+        inputModalities: ["text", "image"],
+        maxOutputTokens: 384_000,
+        pricing: {
+          cachedInput: 0.006,
+          input: 0.3,
+          output: 1.2,
+        },
+        reasoningEfforts: ["low", "high", "max"],
+      },
       "deepseek-v4-flash": {
         contextWindow: 1_000_000,
         inputModalities: ["text"],
