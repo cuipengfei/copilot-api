@@ -97,7 +97,7 @@ For rollback, stop the new service and restore the protected backup plus the old
 
 ## Tests
 
-The separate Docker test workflow validates both Compose configurations, runs the entrypoint tests, and builds and runs the image natively on Linux AMD64 and ARM64. It does not publish images or request package-write permission. Integration tests use disposable test volumes, synthetic keys, no outbound container network, and the same filesystem/capability restrictions as Compose.
+The entrypoint tests also run in the main CI job as part of `bun test`. Run these checks locally before or after changing the image or the Compose files. Integration tests use disposable test volumes, synthetic keys, no outbound container network, and the same filesystem/capability restrictions as Compose.
 
 ```sh
 bun test tests/docker-entrypoint.test.ts

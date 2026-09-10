@@ -97,7 +97,7 @@ sudo chmod 700 "$DATA_DIR"
 
 ## 测试
 
-独立 Docker 测试流程验证两种 Compose 配置、运行入口脚本测试，并在 Linux AMD64 与 ARM64 原生构建和运行镜像，不发布镜像，也不请求 package 写权限。容器测试使用一次性测试卷、合成 Key、禁用容器外网，并采用与 Compose 相同的文件系统和权限限制。
+入口脚本测试也会作为 `bun test` 的一部分在主 CI 中运行。修改镜像或 Compose 文件前后，可在本地执行以下检查。容器测试使用一次性测试卷、合成 Key、禁用容器外网，并采用与 Compose 相同的文件系统和权限限制。
 
 ```sh
 bun test tests/docker-entrypoint.test.ts
