@@ -1,0 +1,66 @@
+name: Docker tests
+
+on:
+  push:
+    branches: [dev, main]
+    paths:
+      - "src/**"
+      - "pages/**"
+      - "tests/docker-*.test.ts"
+      - "package.json"
+      - "bun.lock"
+      - "Dockerfile"
+      - "entrypoint.sh"
+      - "docker-compose*.yaml"
+      - ".env*.example"
+      - ".dockerignore"
+      - ".gitattributes"
+      - ".github/workflows/docker-test.yml"
+  pull_request:
+    paths:
+      - "src/**"
+      - "pages/**"
+      - "tests/docker-*.test.ts"
+      - "package.json"
+      - "bun.lock"
+      - "Dockerfile"
+      - "entrypoint.sh"
+      - "docker-compose*.yaml"
+      - ".env*.example"
+      - ".dockerignore"
+      - ".gitattributes"
+      - ".github/workflows/docker-test.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docker-test-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
+
+jobs:
+  validate:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.14"
+      - run: bun install --frozen-lockfile
+      - name: Test container entrypoint
+        run: bun test tests/docker-entrypoint.test.ts
+      - name: Validate Compose variants
+        run: |
+          docker compose config --quiet
+          docker compose -f docker-compose.yaml -f docker-compose.bind.yaml config --quiet
+      - name: Build native image
+        run: docker build --tag copilot-api:test .
+      - name: Test container lifecycle
+        run: bun test tests/docker-smoke.test.ts
+        env:
+          COPILOT_API_DOCKER_TEST_IMAGE: copilot-api:test

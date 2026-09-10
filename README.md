@@ -425,30 +425,65 @@ npx @jeffreycao/copilot-api@latest start
 
 ## Using with Docker
 
-Build the image:
+The image runs as the non-root `bun` user and stores GitHub authentication data, provider configuration, and other gateway state in `/data`. Docker Compose is the recommended way to run it with persistent storage and the supplied security settings.
+
+**Upgrading an existing Docker deployment?** Follow the [migration instructions](docs/docker.md#root-image-or-old-path-migration) first. The old `/root/.local/share/copilot-api` mount must move to `/data`, and its files must be accessible to the non-root user.
+
+### Quick start with Docker Compose
+
+For a new installation, run these commands from the repository root. Do not overwrite an existing `.env` file. Replace `YOUR_GATEWAY_API_KEY` with a strong key for clients connecting to this gateway:
 
 ```sh
-docker build -t copilot-api .
+cp .env.example .env
+docker compose build
+docker compose run --rm copilot-api auth keys --add YOUR_GATEWAY_API_KEY
 ```
 
-Run the container with a bind mount so auth data survives restarts:
+Next, configure an upstream provider. For interactive sign-in or provider setup:
 
 ```sh
-mkdir -p ./copilot-data
-docker run --rm -v $(pwd)/copilot-data:/root/.local/share/copilot-api copilot-api --auth keys --add your-gateway-api-key
-docker run -p 4141:4141 -v $(pwd)/copilot-data:/root/.local/share/copilot-api copilot-api
+docker compose run --rm copilot-api auth login
 ```
 
-This stores GitHub auth data, provider config, and other gateway state in `./copilot-data` on the host, mapped to `/root/.local/share/copilot-api` in the container.
-The image explicitly listens on `0.0.0.0` so Docker port publishing works and refuses to start until at least one gateway API key is configured. Non-loopback listeners also restrict CORS to the request's own origin.
+If you already have a GitHub token, **skip `auth login`** and set it in `.env` instead:
 
-Or pass a GitHub token directly:
+```dotenv
+COPILOT_API_GITHUB_TOKEN=your_github_token_here
+```
+
+The legacy `GH_TOKEN` variable remains a fallback when `COPILOT_API_GITHUB_TOKEN` is empty or unset. A GitHub token authorizes access to GitHub Copilot; it does **not** replace the gateway API key configured above. Keep `.env` private and do not commit it. The gateway key passed to `auth keys --add` can appear in shell history and the process list, so initialize it only on a trusted host.
+
+Start the service:
 
 ```sh
-docker run -p 4141:4141 -v $(pwd)/copilot-data:/root/.local/share/copilot-api -e GH_TOKEN=your_github_token_here copilot-api
+docker compose up -d --no-build
+docker compose ps
 ```
 
-The entrypoint exports `GH_TOKEN` as `COPILOT_API_GITHUB_TOKEN`, so the token is handed to the server through the environment instead of the process arguments.
+The default local endpoint is `http://127.0.0.1:4141`; use the gateway key above when configuring your API client. Compose mounts its project-scoped `copilot-api-data` named volume at `/data`, so authentication data and configuration survive container recreation and `docker compose down`. **Do not use `docker compose down -v` unless intentionally deleting that data.**
+
+The server listens on `0.0.0.0:4141` **inside the container** so Docker port publishing works, while Compose publishes the port only on the host's `127.0.0.1` by default. The server refuses this non-loopback listener without a gateway API key and restricts CORS to the request's own origin. To change the host port, set `COPILOT_API_PORT` in `.env`; keep the internal port at `4141` for the health check.
+
+### Run directly with Docker
+
+If you prefer not to use Compose and already have a GitHub token, the following is an alternative **new installation** using a Docker-managed named volume. First securely set and export `COPILOT_API_GITHUB_TOKEN` in your shell; `-e COPILOT_API_GITHUB_TOKEN` passes its value without including the token itself in the Docker command arguments:
+
+```sh
+docker build -t copilot-api:local .
+docker run --rm -v copilot-api-data:/data copilot-api:local auth keys --add YOUR_GATEWAY_API_KEY
+docker run -d --name copilot-api \
+  -p 127.0.0.1:4141:4141 \
+  -v copilot-api-data:/data \
+  -e COPILOT_API_GITHUB_TOKEN \
+  -e XDG_CACHE_HOME=/data/cache \
+  copilot-api:local
+```
+
+If your shell already exports `GH_TOKEN`, use `-e GH_TOKEN` instead; the entrypoint forwards it to the application as `COPILOT_API_GITHUB_TOKEN`. Here, `copilot-api-data` is a named volume, **not** a host directory, and is separate from Compose's default project-prefixed volume. Both initialization and startup must use the same volume. These minimal `docker run` commands do not apply Compose's read-only filesystem, capability restrictions, or log rotation; use Compose for those settings.
+
+### Keep an existing host data directory
+
+To keep data in a host directory such as `./copilot-data`, use the [bind-mount override](docs/docker.md#existing-bind-mounts) after preparing ownership. It maps that host directory to `/data` inside the container, preserving GitHub authentication data, provider configuration, and other gateway state in the same host location. **Do not replace an existing bind mount with a new named volume:** that would select different, initially empty storage. See [Docker deployment and migration](docs/docker.md) for the exact commands, backup and rollback, proxy configuration, and permissions.
 
 ## Electron Desktop App
 
