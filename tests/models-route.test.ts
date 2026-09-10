@@ -289,16 +289,16 @@ describe("model routes", () => {
       data: Array<Record<string, unknown> & { id: string }>
     }
     const modelIds = body.data.map((model) => model.id)
-    expect(modelIds).toContain("deepseek/deepseek-v4-flash")
+    expect(modelIds).toContain("deepseek/deepseek-flash")
     expect(modelIds).toContain("deepseek/deepseek-v4-pro")
     expect(modelIds).toContain("kimi/k3")
     expect(modelIds).toContain("kimi/k3-256k")
     expect(modelIds).toContain("opencode-go/hy3")
     expect(modelIds).toContain("opencode-go/gpt-5.6-luna")
     expect(
-      body.data.find((model) => model.id === "deepseek/deepseek-v4-flash"),
+      body.data.find((model) => model.id === "deepseek/deepseek-flash"),
     ).toMatchObject({
-      display_name: "deepseek-v4-flash",
+      display_name: "deepseek-flash",
       object: "model",
       owned_by: "deepseek",
     })
@@ -349,16 +349,16 @@ describe("model routes", () => {
       models: Array<Record<string, unknown> & { slug: string }>
     }
     const modelSlugs = body.models.map((model) => model.slug)
-    expect(modelSlugs).toContain("deepseek/deepseek-v4-flash")
+    expect(modelSlugs).toContain("deepseek/deepseek-flash")
     expect(modelSlugs).toContain("kimi/k3")
     expect(modelSlugs).toContain("opencode-go/hy3")
     expect(modelSlugs).toContain("opencode-go/qwen3.7-plus")
     expect(
-      body.models.find((model) => model.slug === "deepseek/deepseek-v4-flash"),
+      body.models.find((model) => model.slug === "deepseek/deepseek-flash"),
     ).toMatchObject({
       context_window: 1_000_000,
-      input_modalities: ["text"],
-      max_output_tokens: 64_000,
+      input_modalities: ["text", "image"],
+      max_output_tokens: 384_000,
       shell_type: "shell_command",
     })
     expect(body.models.find((model) => model.slug === "kimi/k3")).toMatchObject(

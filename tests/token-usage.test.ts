@@ -444,7 +444,7 @@ describe("token usage storage", () => {
 
   test("prices DeepSeek models with peak-tier prices in CNY", () => {
     const expectedCosts = [
-      { model: "deepseek-v4-flash", totalCostNanos: 30_200_000 },
+      { model: "deepseek-flash", totalCostNanos: 26_080_000 },
       { model: "deepseek-v4-pro", totalCostNanos: 90_600_000 },
     ]
 

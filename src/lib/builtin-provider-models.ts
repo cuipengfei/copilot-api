@@ -315,24 +315,14 @@ export class BuiltinProviderModelRegistry {
       },
     },
     deepseek: {
-      "deepseek-v4-flash": {
-        contextWindow: 1_000_000,
-        inputModalities: ["text"],
-        maxOutputTokens: 64_000,
-        pricing: {
-          cachedInput: 0.1,
-          input: 3,
-          output: 9,
-        },
-      },
-      "deepseek-v4-flash-vision-exp": {
+      "deepseek-flash": {
         contextWindow: 1_000_000,
         inputModalities: ["text", "image"],
-        maxOutputTokens: 64_000,
+        maxOutputTokens: 384_000,
         pricing: {
-          cachedInput: 0.1,
-          input: 3,
-          output: 9,
+          cachedInput: 0.04,
+          input: 2,
+          output: 8,
         },
       },
       "deepseek-v4-pro": {
