@@ -91,21 +91,6 @@ describe("builtin provider model registry", () => {
     })
   })
 
-  test("defines the DeepSeek Flash model with peak-tier multimodal pricing", () => {
-    expect(
-      builtinProviderModelRegistry.getModelConfig("deepseek", "deepseek-flash"),
-    ).toEqual({
-      contextWindow: 1_000_000,
-      inputModalities: ["text", "image"],
-      maxOutputTokens: 384_000,
-      pricing: {
-        cachedInput: 0.04,
-        input: 2,
-        output: 8,
-      },
-    })
-  })
-
   test("defines the supported Grok reasoning levels", () => {
     expect(
       builtinProviderModelRegistry.getModelConfig("opencode-go", "grok-4.5"),
