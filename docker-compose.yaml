@@ -4,12 +4,35 @@ services:
     pull_policy: always
     user: "0:0"
     entrypoint: ["/bin/sh", "-c"]
+    environment:
+      DATA_SRC: ${COPILOT_API_DATA_DIR:-./copilot-data}
     command:
       - |
         set -eu
+        src="$${DATA_SRC:-}"
+        # Normalize the host path before the safety check: collapse repeated
+        # leading slashes (//etc -> /etc) and strip trailing slashes and
+        # trailing /. (/etc/ -> /etc), so the exact-match blocklist cannot
+        # be bypassed by an equivalent spelling.
+        while :; do
+          case "$$src" in
+            //*) src=/$${src#//} ;;
+            */) src=$${src%/} ;;
+            */.) src=$${src%/.} ;;
+            *) break ;;
+          esac
+        done
+        [ -z "$$src" ] && src=/
+        case "$$src" in
+          "/"|"/root"|"/home"|"/etc"|"/var"|"/usr"|"/bin"|"/sbin")
+            echo "refusing unsafe COPILOT_API_DATA_DIR: $$DATA_SRC" >&2
+            exit 1
+            ;;
+        esac
         mkdir -p /data/cache
         chmod 700 /data
-        chown -R bun:bun /data
+        chown bun:bun /data
+        find /data -maxdepth 8 -user 0 -exec chown bun:bun {} +
     network_mode: none
     read_only: true
     cap_drop:
@@ -25,7 +48,7 @@ services:
         source: ${COPILOT_API_DATA_DIR:-./copilot-data}
         target: /data
         bind:
-          create_host_path: true
+          create_host_path: false
     restart: "no"
 
   copilot-api:
@@ -58,7 +81,7 @@ services:
         source: ${COPILOT_API_DATA_DIR:-./copilot-data}
         target: /data
         bind:
-          create_host_path: true
+          create_host_path: false
     healthcheck:
       test: ["CMD", "wget", "--spider", "-q", "-T", "4", "-Y", "off", "http://127.0.0.1:4141/"]
       interval: 30s

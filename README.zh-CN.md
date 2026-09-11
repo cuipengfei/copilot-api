@@ -462,6 +462,7 @@ npx @jeffreycao/copilot-api@latest start
 在仓库根目录执行以下命令。将 `YOUR_GATEWAY_API_KEY` 替换为客户端访问 gateway 时使用的强密钥：
 
 ```sh
+mkdir -p copilot-data
 docker compose pull
 docker compose run --rm copilot-api --auth keys --add YOUR_GATEWAY_API_KEY
 docker compose run --rm copilot-api --auth login
@@ -476,6 +477,8 @@ docker compose ps
 ```dotenv
 COPILOT_API_DATA_DIR=/absolute/path/to/copilot-data
 ```
+
+首次运行前请先建好宿主机目录。Compose 不会自动创建缺失的宿主机目录（`create_host_path: false`），因此 `COPILOT_API_DATA_DIR` 写错会直接报错，而不会以空状态启动。一次性的 `data-init` 服务在改归属前也会拒绝 `/` 这类危险路径。
 
 默认本地地址为 `http://127.0.0.1:4141`。配置好 gateway API Key 后，如需监听宿主机所有网卡，可在用户自己的 `.env` 中设置：
 

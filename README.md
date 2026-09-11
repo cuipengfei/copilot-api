@@ -432,6 +432,7 @@ The supplied Compose file uses the current published `ghcr.io/caozhiyuan/copilot
 Run these commands from the repository root. Replace `YOUR_GATEWAY_API_KEY` with a strong key for clients connecting to this gateway:
 
 ```sh
+mkdir -p copilot-data
 docker compose pull
 docker compose run --rm copilot-api --auth keys --add YOUR_GATEWAY_API_KEY
 docker compose run --rm copilot-api --auth login
@@ -446,6 +447,8 @@ Before every server or authentication run, the one-shot `data-init` service repa
 ```dotenv
 COPILOT_API_DATA_DIR=/absolute/path/to/copilot-data
 ```
+
+Create the host directory before the first run. Compose does not auto-create a missing host directory (`create_host_path: false`), so a typo in `COPILOT_API_DATA_DIR` fails fast instead of starting with empty state. The one-shot `data-init` service also refuses unsafe values such as `/` before touching ownership.
 
 The local endpoint is `http://127.0.0.1:4141`. To publish the gateway on every host interface after configuring a gateway API key, add this to your `.env`:
 
