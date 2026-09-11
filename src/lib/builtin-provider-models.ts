@@ -324,6 +324,7 @@ export class BuiltinProviderModelRegistry {
           input: 2,
           output: 8,
         },
+        reasoningEfforts: ["low", "high", "max"],
       },
       "deepseek-v4-pro": {
         contextWindow: 1_000_000,
@@ -334,6 +335,7 @@ export class BuiltinProviderModelRegistry {
           input: 9,
           output: 27,
         },
+        reasoningEfforts: ["low", "high", "max"],
       },
     },
     "opencode-go": {
@@ -476,7 +478,7 @@ export class BuiltinProviderModelRegistry {
         },
         reasoningEfforts: ["low", "medium", "high", "xhigh"],
       },
-      "deepseek-flash": {
+      "deepseek-v4.1-flash": {
         contextWindow: 1_000_000,
         inputModalities: ["text", "image"],
         maxOutputTokens: 384_000,
