@@ -1,7 +1,40 @@
 services:
+  data-init:
+    image: ghcr.io/caozhiyuan/copilot-api:latest
+    pull_policy: always
+    user: "0:0"
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -eu
+        mkdir -p /data/cache
+        chmod 700 /data
+        chown -R bun:bun /data
+    network_mode: none
+    read_only: true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      - type: bind
+        source: ${COPILOT_API_DATA_DIR:-./copilot-data}
+        target: /data
+        bind:
+          create_host_path: true
+    restart: "no"
+
   copilot-api:
-    image: ${COPILOT_API_IMAGE:-copilot-api:local}
-    build: .
+    image: ghcr.io/caozhiyuan/copilot-api:latest
+    pull_policy: always
+    user: bun
+    depends_on:
+      data-init:
+        condition: service_completed_successfully
     restart: unless-stopped
     read_only: true
     cap_drop:
@@ -21,12 +54,19 @@ services:
       ALL_PROXY: ${ALL_PROXY:-${all_proxy:-}}
       NO_PROXY: ${NO_PROXY:-${no_proxy:-127.0.0.1,localhost,::1}}
     volumes:
-      - copilot-api-data:/data
+      - type: bind
+        source: ${COPILOT_API_DATA_DIR:-./copilot-data}
+        target: /data
+        bind:
+          create_host_path: true
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "-T", "4", "-Y", "off", "http://127.0.0.1:4141/"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 5
     logging:
       driver: json-file
       options:
         max-size: "10m"
         max-file: "3"
-
-volumes:
-  copilot-api-data:

@@ -22,7 +22,7 @@ done
 
 if [ "$check_home" = true ] && [ -n "$data_home" ]; then
   if ! mkdir -p "$data_home" || [ ! -w "$data_home" ] || [ ! -x "$data_home" ]; then
-    printf 'Cannot write API home: %s. Prepare the mounted directory for UID:GID %s:%s; see docs/docker.md. Do not use chmod 777.\n' "$data_home" "$(id -u)" "$(id -g)" >&2
+    printf 'Cannot write API home: %s. Prepare the mounted directory for UID:GID %s:%s. Do not use chmod 777.\n' "$data_home" "$(id -u)" "$(id -g)" >&2
     exit 1
   fi
   if [ -e "$data_home/config.json" ] && [ ! -r "$data_home/config.json" ]; then

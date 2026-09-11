@@ -16,8 +16,6 @@ ENV NODE_ENV=production \
     NODE_USE_SYSTEM_CA=1 \
     COPILOT_API_HOME=/data
 
-RUN apk add --no-cache curl
-
 COPY package.json bun.lock ./
 RUN bun install --frozen-lockfile --production --ignore-scripts --no-cache
 
@@ -35,6 +33,6 @@ VOLUME ["/data"]
 EXPOSE 4141
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=5 \
-  CMD ["curl", "--noproxy", "*", "--connect-timeout", "2", "--max-time", "4", "-fsS", "http://127.0.0.1:4141/"]
+  CMD ["wget", "--spider", "-q", "-T", "4", "-Y", "off", "http://127.0.0.1:4141/"]
 
 ENTRYPOINT ["/entrypoint.sh"]
