@@ -29,10 +29,55 @@ services:
             exit 1
             ;;
         esac
+        # A gateway data directory never contains system directories. Refuse
+        # mounts that resolve to a filesystem root, which the literal path
+        # check above cannot see through (for example `/etc/..` or a symlink
+        # pointing at `/`).
+        for marker in boot dev etc home lib proc root sbin sys usr var; do
+          if [ -e "/data/$$marker" ]; then
+            echo "refusing to use $$DATA_SRC: /data contains /$$marker, so the mount looks like a system root" >&2
+            exit 1
+          fi
+        done
         mkdir -p /data/cache
         chmod 700 /data
         chown bun:bun /data
-        find /data -maxdepth 8 -user 0 -exec chown bun:bun {} +
+        # Repair ownership for the gateway's own state only. A mistyped
+        # COPILOT_API_DATA_DIR must never rewrite unrelated files, so the
+        # gateway's paths are matched explicitly instead of walking the whole
+        # mount.
+        fix_state_permissions() {
+          for entry in \
+            cache \
+            logs \
+            codex_credentials.json \
+            config.json \
+            copilot-api.sqlite \
+            copilot-api.sqlite-journal \
+            copilot-api.sqlite-shm \
+            copilot-api.sqlite-wal \
+            desktop-config.json
+          do
+            if [ -e "/data/$$entry" ]; then
+              chown -R bun:bun "/data/$$entry"
+            fi
+          done
+
+          # The token file name is dynamic: `github_token`, or
+          # `ent_github_token` when COPILOT_API_ENTERPRISE_URL is set, and it
+          # can live in an OAuth app subdirectory such as
+          # `opencode/github_token`. Match the name suffix so neither the
+          # enterprise prefix nor the app directory can be missed.
+          for token in /data/*github_token /data/*/*github_token; do
+            if [ -f "$$token" ]; then
+              chown bun:bun "$$(dirname "$$token")"
+              chown bun:bun "$$token"
+            fi
+          done
+
+          return 0
+        }
+        fix_state_permissions
     network_mode: none
     read_only: true
     cap_drop:

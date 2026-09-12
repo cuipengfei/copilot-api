@@ -472,13 +472,13 @@ docker compose ps
 
 如果环境变量或用户自己创建的私有 `.env` 中已经设置 `COPILOT_API_GITHUB_TOKEN` 或旧变量 `GH_TOKEN`，可以跳过 `--auth login`。GitHub token 用于访问 GitHub Copilot，不能替代上面配置的 gateway API Key。
 
-每次启动服务或执行认证命令前，一次性的 `data-init` 服务都会修复挂载数据目录的所有权。因此非 root 服务可以直接复用旧 root 容器写入的数据，包括权限为 `0600` 的配置文件。宿主机目录仍默认使用旧 Docker 文档中的 `./copilot-data`；Compose 将它挂载到 `/data`，并设置对应的 `COPILOT_API_HOME`。如需复用其他位置的已有目录，可在环境变量或用户自己的 `.env` 中设置 `COPILOT_API_DATA_DIR`。
+每次启动服务或执行认证命令前，一次性的 `data-init` 服务只会修复挂载目录中属于 gateway 自身的状态文件：`config.json`、`github_token`（含企业版的 `ent_github_token`，以及 `opencode/github_token` 这类 OAuth 应用子目录）、`codex_credentials.json`、`desktop-config.json`、`copilot-api.sqlite*`、`logs/` 和 `cache/`。挂载目录中的其他文件和目录不会被改动。因此非 root 服务可以直接复用旧 root 容器写入的数据，包括权限为 `0600` 的配置文件。宿主机目录仍默认使用旧 Docker 文档中的 `./copilot-data`；Compose 将它挂载到 `/data`，并设置对应的 `COPILOT_API_HOME`。如需复用其他位置的已有目录，可在环境变量或用户自己的 `.env` 中设置 `COPILOT_API_DATA_DIR`。
 
 ```dotenv
 COPILOT_API_DATA_DIR=/absolute/path/to/copilot-data
 ```
 
-首次运行前请先建好宿主机目录。Compose 不会自动创建缺失的宿主机目录（`create_host_path: false`），因此 `COPILOT_API_DATA_DIR` 写错会直接报错，而不会以空状态启动。一次性的 `data-init` 服务在改归属前也会拒绝 `/` 这类危险路径。
+首次运行前请先建好宿主机目录。Compose 不会自动创建缺失的宿主机目录（`create_host_path: false`），因此 `COPILOT_API_DATA_DIR` 写错会直接报错，而不会以空状态启动。一次性的 `data-init` 服务在改归属前会拒绝 `/` 这类危险路径；当挂载内容中出现 `/etc`、`/usr` 等系统目录时（说明路径实际指向了系统根目录）也会直接拒绝运行。
 
 默认本地地址为 `http://127.0.0.1:4141`。配置好 gateway API Key 后，如需监听宿主机所有网卡，可在用户自己的 `.env` 中设置：
 

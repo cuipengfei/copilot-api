@@ -442,13 +442,13 @@ docker compose ps
 
 If `COPILOT_API_GITHUB_TOKEN` or the legacy `GH_TOKEN` is already available in your environment or a private `.env` file, you can skip `--auth login`. A GitHub token authorizes access to GitHub Copilot; it does not replace the gateway API key configured above.
 
-Before every server or authentication run, the one-shot `data-init` service repairs ownership of the mounted data directory. This lets the non-root server reuse files written by an earlier root container, including mode `0600` configuration files. The host directory defaults to `./copilot-data`, matching the earlier Docker instructions; Compose mounts it at `/data` and sets `COPILOT_API_HOME` accordingly. Set `COPILOT_API_DATA_DIR` in the environment or your own `.env` to use an existing directory elsewhere.
+Before every server or authentication run, the one-shot `data-init` service repairs ownership of the gateway's own state in the mounted data directory: `config.json`, `github_token` (including the enterprise `ent_github_token` and OAuth app subdirectories such as `opencode/github_token`), `codex_credentials.json`, `desktop-config.json`, `copilot-api.sqlite*`, `logs/`, and `cache/`. Other files and directories in the mount are left untouched. This lets the non-root server reuse files written by an earlier root container, including mode `0600` configuration files. The host directory defaults to `./copilot-data`, matching the earlier Docker instructions; Compose mounts it at `/data` and sets `COPILOT_API_HOME` accordingly. Set `COPILOT_API_DATA_DIR` in the environment or your own `.env` to use an existing directory elsewhere.
 
 ```dotenv
 COPILOT_API_DATA_DIR=/absolute/path/to/copilot-data
 ```
 
-Create the host directory before the first run. Compose does not auto-create a missing host directory (`create_host_path: false`), so a typo in `COPILOT_API_DATA_DIR` fails fast instead of starting with empty state. The one-shot `data-init` service also refuses unsafe values such as `/` before touching ownership.
+Create the host directory before the first run. Compose does not auto-create a missing host directory (`create_host_path: false`), so a typo in `COPILOT_API_DATA_DIR` fails fast instead of starting with empty state. The one-shot `data-init` service also refuses unsafe values such as `/`, and refuses to run when the mount contains system directories (`/etc`, `/usr`, and so on), which means the path resolved to a system root.
 
 The local endpoint is `http://127.0.0.1:4141`. To publish the gateway on every host interface after configuring a gateway API key, add this to your `.env`:
 
