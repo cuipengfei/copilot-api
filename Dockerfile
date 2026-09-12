@@ -1,4 +1,4 @@
-FROM oven/bun:1.3.14-alpine AS builder
+FROM oven/bun:1.4.2-alpine AS builder
 WORKDIR /app
 
 ENV NODE_ENV=production
@@ -9,7 +9,7 @@ RUN bun install --frozen-lockfile
 COPY . .
 RUN bun run build
 
-FROM oven/bun:1.3.14-alpine AS runner
+FROM oven/bun:1.4.2-alpine AS runner
 WORKDIR /app
 
 ENV NODE_ENV=production \
