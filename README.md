@@ -372,6 +372,9 @@ bun install
 
 ## Running from Source
 
+> [!NOTE]
+> Building from source with `tsdown@0.23` requires Node.js `^22.18.0 || ^24.11.0 || >=26.0.0`. This is a build-time requirement only; the published CLI supports Node.js >= 22.13.0.
+
 The project can be run from source in several ways:
 
 ### Development Mode
@@ -393,7 +396,7 @@ bun run start start
 You can run the project directly using npx:
 
 > [!IMPORTANT]
-> Token usage storage uses Node's built-in `node:sqlite` module when running with `npx`. It is enabled on Node.js >= 22.13.0. Node.js < 22.13.0 is outside the range declared in `engines`: the CLI still starts, but token usage storage is disabled.
+> Token usage storage uses Node's built-in `node:sqlite` module when running with `npx`. It is enabled on Node.js >= 22.13.0, the first release where `node:sqlite` works without `--experimental-sqlite`. On older Node.js versions the CLI still starts, but token usage storage is disabled.
 >
 > If you want token usage storage without upgrading Node.js, run the published CLI with Bun instead: `bunx --bun @jeffreycao/copilot-api@latest start`.
 
@@ -595,7 +598,7 @@ After starting the server, a URL to the Copilot Usage Dashboard will be displaye
 
 The dashboard provides a user-friendly interface to view your Copilot usage data:
 
-> Token usage history requires Bun or Node.js >= 22.13.0. Node.js < 22.13.0 is outside the range declared in `engines`: the server runs normally but token usage storage is disabled.
+> Token usage history requires Bun or Node.js >= 22.13.0. On older Node.js versions the server runs normally but token usage storage is disabled.
 
 - **API Endpoint URL**: The dashboard is pre-configured to fetch data from your local server endpoint via a URL query parameter. You can manually switch this to any other compatible API endpoint.
 - **API Key Authentication**: If API Key authentication is enabled, enter a raw API key (sent as the `x-api-key` header) or `Authorization: Bearer <key>`. Credentials are remembered in the browser's local storage per endpoint origin, and switching to a different endpoint origin does not automatically send the previous credential.
