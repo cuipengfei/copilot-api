@@ -28,6 +28,8 @@ import { state } from "./state"
 
 let copilotRefreshLoopController: AbortController | null = null
 let codexRefreshLoopController: AbortController | null = null
+let codexRefreshInFlight: Promise<CodexCredentials> | null = null
+let codexCredentialsPendingPersistence: CodexCredentials | null = null
 
 interface CopilotUserIdentity {
   endpoints: { api: string }
@@ -114,6 +116,91 @@ export async function persistCodexCredentials(
     enabled: options?.enableProvider ? true : undefined,
   })
   applyCodexCredentials(credentials)
+  codexCredentialsPendingPersistence = null
+}
+
+export interface CodexRefreshDependencies {
+  getCurrentCredentials: () => CodexCredentials | null
+  persistCodexCredentials: (credentials: CodexCredentials) => Promise<void>
+  refreshCodexCredentials: (
+    credentials: CodexCredentials,
+  ) => Promise<CodexCredentials>
+}
+
+const defaultCodexRefreshDependencies: CodexRefreshDependencies = {
+  getCurrentCredentials: getLoadedCodexCredentials,
+  persistCodexCredentials,
+  refreshCodexCredentials,
+}
+
+/**
+ * Refreshes and persists Codex credentials through one module level
+ * single-flight guard.
+ *
+ * The upstream rotates the refresh token on every use, so two concurrent
+ * refreshes with the same token make one caller fail and let the slower
+ * response overwrite the persisted result. Provider resolution runs on every
+ * Codex request, so a burst of requests (or the background loop waking at the
+ * same moment) must share a single attempt instead of burning the token.
+ */
+export function refreshCodexCredentialsOnce(
+  credentials: CodexCredentials,
+  dependencies: CodexRefreshDependencies = defaultCodexRefreshDependencies,
+): Promise<CodexCredentials> {
+  const inFlight = codexRefreshInFlight
+  if (inFlight) {
+    return inFlight
+  }
+
+  const attempt = (async () => {
+    // A successful refresh may have rotated the upstream token before local
+    // persistence failed. Retry writing that exact result instead of calling
+    // the refresh endpoint again with the consumed token.
+    const pendingPersistence = codexCredentialsPendingPersistence
+    if (pendingPersistence) {
+      await dependencies.persistCodexCredentials(pendingPersistence)
+      if (codexCredentialsPendingPersistence === pendingPersistence) {
+        codexCredentialsPendingPersistence = null
+      }
+      return pendingPersistence
+    }
+
+    // The caller's snapshot may predate a refresh triggered by someone else.
+    // Reusing that snapshot's token would fail and consume it, so prefer the
+    // rotated credentials in state and skip the call when they are still valid.
+    const current = dependencies.getCurrentCredentials()
+    const rotated =
+      current && current.refreshToken !== credentials.refreshToken ?
+        current
+      : null
+
+    if (rotated && !isCodexCredentialsExpired(rotated)) {
+      return rotated
+    }
+
+    const base = rotated ?? credentials
+    const refreshed = await dependencies.refreshCodexCredentials(base)
+    codexCredentialsPendingPersistence = refreshed
+    await dependencies.persistCodexCredentials(refreshed)
+    if (codexCredentialsPendingPersistence === refreshed) {
+      codexCredentialsPendingPersistence = null
+    }
+    return refreshed
+  })()
+
+  codexRefreshInFlight = attempt
+
+  const clearAttempt = () => {
+    if (codexRefreshInFlight === attempt) {
+      codexRefreshInFlight = null
+    }
+  }
+
+  // Rejected attempts are not shared after they settle. A rotated credential
+  // whose persistence failed remains cached above for a write-only retry.
+  attempt.then(clearAttempt, clearAttempt)
+
+  return attempt
 }
 
 export const applyCopilotTokenResponse = (
@@ -194,8 +281,7 @@ export const setupCodexToken = async (): Promise<void> => {
   let nextCredentials = credentials
   if (isCodexCredentialsExpired(credentials)) {
     consola.debug("Refreshing expired Codex credentials")
-    nextCredentials = await refreshCodexCredentials(credentials)
-    await persistCodexCredentials(nextCredentials)
+    nextCredentials = await refreshCodexCredentialsOnce(credentials)
   }
 
   applyCodexCredentials(nextCredentials)
@@ -299,13 +385,12 @@ const runCodexRefreshLoop = async (signal: AbortSignal) => {
     consola.debug("Refreshing Codex credentials")
 
     try {
-      const credentials = await refreshCodexCredentials({
+      const credentials = await refreshCodexCredentialsOnce({
         accessToken: state.codexAccessToken ?? "",
         refreshToken,
         expiresAt,
         accountId: state.codexAccountId ?? "",
       })
-      await persistCodexCredentials(credentials)
       refreshAtMs = Math.max(
         credentials.expiresAt - EARLY_REFRESH_BUFFER_MS,
         Date.now(),

@@ -69,3 +69,69 @@ test("does not include Codex tokens in response validation errors", async () => 
   expect(message).not.toContain("codex-access-secret")
   expect(message).not.toContain("codex-refresh-secret")
 })
+
+test("aborts a stalled Codex credential refresh at its deadline", async () => {
+  let refreshSignal: AbortSignal | null | undefined
+  globalThis.fetch = ((_input, init) => {
+    const signal = init?.signal
+    refreshSignal = signal
+    return new Promise<Response>((_resolve, reject) => {
+      if (!signal) {
+        reject(new Error("missing refresh signal"))
+        return
+      }
+
+      const rejectForAbort = () => {
+        reject(
+          signal.reason instanceof Error ?
+            signal.reason
+          : new Error("Codex credential refresh aborted"),
+        )
+      }
+
+      if (signal.aborted) {
+        rejectForAbort()
+        return
+      }
+
+      signal.addEventListener("abort", rejectForAbort, { once: true })
+    })
+  }) as typeof fetch
+
+  const failure = await refreshCodexCredentials(
+    {
+      accessToken: "old-access-token",
+      accountId: "account-id",
+      expiresAt: 0,
+      refreshToken: "old-refresh-token",
+    },
+    { timeoutMs: 10 },
+  ).then(
+    () => null,
+    (error: unknown) => error,
+  )
+
+  expect(failure).toBeInstanceOf(Error)
+  expect((failure as Error).message).toBe(
+    "Codex token refresh timed out after 10ms",
+  )
+  expect(refreshSignal?.aborted).toBe(true)
+})
+
+test("preserves non-timeout Codex refresh failures", async () => {
+  const networkError = new Error("network unavailable")
+  globalThis.fetch = (() =>
+    Promise.reject(networkError)) as unknown as typeof fetch
+
+  const failure = await refreshCodexCredentials({
+    accessToken: "old-access-token",
+    accountId: "account-id",
+    expiresAt: 0,
+    refreshToken: "old-refresh-token",
+  }).then(
+    () => null,
+    (error: unknown) => error,
+  )
+
+  expect(failure).toBe(networkError)
+})
