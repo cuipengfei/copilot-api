@@ -14,7 +14,7 @@ import type {
 } from "~/lib/types/responses"
 
 import {
-  getResponsesTransportConfig,
+  getUpstreamTransportConfig,
   isResponsesApiWebSocketEnabled as isConfiguredResponsesApiWebSocketEnabled,
 } from "~/lib/config"
 import { HTTPError } from "~/lib/error"
@@ -30,11 +30,9 @@ import {
   encodePoolKeyPart,
   isTerminalResponsesStreamChunk,
 } from "~/services/responses-websocket-helpers"
-import {
-  createResponsesHttpEventStream,
-  fetchResponsesWithLifecycle,
-} from "~/services/responses-http"
+import { createResponsesHttpEventStream } from "~/services/responses-http"
 import { retryAfterTlsCertificateVerificationFailure } from "~/services/tls-retry"
+import { fetchUpstreamWithLifecycle } from "~/services/upstream-http"
 import { requestContext } from "~/lib/request-context"
 import consola from "consola"
 
@@ -229,7 +227,6 @@ export function prepareCodexResponsesWebSocketRequest(
   payload: ResponsesPayload,
   requestHeaders: Headers,
   baseUrl: string = CODEX_API_BASE_URL,
-  signal?: AbortSignal,
 ): CodexResponsesWebSocketRequest {
   const headers = buildCodexResponsesWebSocketHeaders(requestHeaders)
 
@@ -237,7 +234,6 @@ export function prepareCodexResponsesWebSocketRequest(
     headers,
     payload: buildCodexResponsesWebSocketPayload(payload),
     poolKey: buildCodexResponsesWebSocketPoolKey(payload, headers, baseUrl),
-    signal,
     url: buildCodexResponsesWebSocketUrl(baseUrl),
   }
 }
@@ -247,27 +243,28 @@ export async function forwardCodexResponses(
   requestHeaders: Headers,
   baseUrl: string = CODEX_API_BASE_URL,
   options: {
-    signal?: AbortSignal
+    clientSignal?: AbortSignal
     transport?: ResponsesTransport
   } = {},
 ): Promise<CreateResponsesReturn> {
   consola.log(`<-- model: ${payload.model}`)
+  options.clientSignal?.throwIfAborted()
   const transport = resolveCodexResponsesTransport(options.transport)
   if (payload.stream && transport === "websocket") {
     return forwardCodexResponsesOverWebSocket(
       payload,
       requestHeaders,
       baseUrl,
-      options.signal,
+      options.clientSignal,
     )
   }
 
   const normalizedPayload = normalizeCodexResponsesPayload(payload)
 
-  const transportConfig = getResponsesTransportConfig()
+  const transportConfig = getUpstreamTransportConfig()
   const response = await retryAfterTlsCertificateVerificationFailure(
     () =>
-      fetchResponsesWithLifecycle(
+      fetchUpstreamWithLifecycle(
         resolveCodexResponsesUrl(baseUrl),
         {
           method: "POST",
@@ -277,12 +274,12 @@ export async function forwardCodexResponses(
           body: JSON.stringify(normalizedPayload),
         },
         {
+          clientSignal: options.clientSignal,
           headersTimeoutMs: transportConfig.headersTimeoutMs,
-          signal: options.signal,
           streamInactivityTimeoutMs: transportConfig.streamInactivityTimeoutMs,
         },
       ),
-    { signal: options.signal },
+    { signal: options.clientSignal },
   )
 
   if (!response.ok) {
@@ -291,10 +288,7 @@ export async function forwardCodexResponses(
 
   if (normalizedPayload.stream) {
     return attachResponseHeaders(
-      createResponsesSafeStream(
-        createResponsesHttpEventStream(response, options.signal),
-        { signal: options.signal },
-      ),
+      createResponsesSafeStream(createResponsesHttpEventStream(response)),
       response.headers,
     )
   }
@@ -472,39 +466,49 @@ const forwardCodexResponsesOverWebSocket = (
   payload: ResponsesPayload,
   requestHeaders: Headers,
   baseUrl: string,
-  signal?: AbortSignal,
+  clientSignal?: AbortSignal,
 ): ResponsesStream => {
   const websocketRequest = prepareCodexResponsesWebSocketRequest(
     payload,
     requestHeaders,
     baseUrl,
-    signal,
   )
 
-  return createCodexResponsesWebSocketStream(websocketRequest)
+  return createCodexResponsesWebSocketStream(websocketRequest, clientSignal)
 }
 
 const createCodexResponsesWebSocketStream = (
   request: CodexResponsesWebSocketRequest,
+  clientSignal?: AbortSignal,
 ): ResponsesStream => {
-  const transportConfig = getResponsesTransportConfig()
+  const transportConfig = getUpstreamTransportConfig()
   return createResponsesSafeStream(
-    createPooledWebSocketStream(request, {
-      createChunk: createCodexResponsesWebSocketStreamChunk,
-      maxBufferedBytes: transportConfig.websocketMaxBufferedBytes,
-      maxBufferedMessages: transportConfig.websocketMaxBufferedMessages,
-      isTerminalChunk: isTerminalResponsesStreamChunk,
-      openErrorMessage: "Failed to create codex responses websocket",
-      openTimeoutMs: transportConfig.websocketOpenTimeoutMs,
-      poolIdleTimeoutMs: transportConfig.websocketPoolIdleTimeoutMs,
-      streamInactivityTimeoutMs: transportConfig.streamInactivityTimeoutMs,
-      streamErrorMessage:
-        "Upstream connection lost, Codex responses websocket stream error",
-      terminalChunkMissingMessage:
-        "Codex responses websocket ended without a terminal response, retry your request.",
-    }),
-    { signal: request.signal },
+    createClientPreflightStream(
+      createPooledWebSocketStream(request, {
+        createChunk: createCodexResponsesWebSocketStreamChunk,
+        maxBufferedBytes: transportConfig.websocketMaxBufferedBytes,
+        maxBufferedMessages: transportConfig.websocketMaxBufferedMessages,
+        isTerminalChunk: isTerminalResponsesStreamChunk,
+        openErrorMessage: "Failed to create codex responses websocket",
+        openTimeoutMs: transportConfig.websocketOpenTimeoutMs,
+        poolIdleTimeoutMs: transportConfig.websocketPoolIdleTimeoutMs,
+        streamInactivityTimeoutMs: transportConfig.streamInactivityTimeoutMs,
+        streamErrorMessage:
+          "Upstream connection lost, Codex responses websocket stream error",
+        terminalChunkMissingMessage:
+          "Codex responses websocket ended without a terminal response, retry your request.",
+      }),
+      clientSignal,
+    ),
   )
+}
+
+const createClientPreflightStream = async function* <T>(
+  source: AsyncIterable<T>,
+  clientSignal?: AbortSignal,
+): AsyncGenerator<T, void, unknown> {
+  if (clientSignal?.aborted) return
+  yield* source
 }
 
 const createCodexResponsesWebSocketStreamChunk = (

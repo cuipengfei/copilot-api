@@ -17,7 +17,10 @@ import {
   prepareMessageProxyHeaders,
 } from "~/lib/api-config"
 import { getAutoSessionTokenForModel } from "~/lib/auto-session"
-import { getReasoningEffortForModel } from "~/lib/config"
+import {
+  getReasoningEffortForModel,
+  getUpstreamTransportConfig,
+} from "~/lib/config"
 import { logCopilotRateLimits } from "~/lib/copilot-rate-limit"
 import { HTTPError } from "~/lib/error"
 import { attachPremiumInfo, getPremiumInfoFromHeaders } from "~/lib/logger"
@@ -37,11 +40,13 @@ import {
 
 import { retryAfterInvalidAutoModeSelector } from "./auto-session-retry"
 import { retryAfterTlsCertificateVerificationFailure } from "../tls-retry"
+import { fetchUpstreamWithLifecycle } from "~/services/upstream-http"
 
 export type MessagesStream = ReturnType<typeof events>
 export type CreateMessagesReturn = AnthropicResponse | MessagesStream
 
 export interface CreateMessagesOptions {
+  clientSignal?: AbortSignal
   initiator?: "user" | "agent"
   subagentMarker?: SubagentMarker | null
   requestId?: string
@@ -302,14 +307,27 @@ const sendWithSignatureRetry = async (
   url: string,
   headers: Record<string, string>,
   enhancedPayload: ReturnType<typeof buildEnhancedPayload>,
+  clientSignal?: AbortSignal,
 ): Promise<Response> => {
+  const transportConfig = getUpstreamTransportConfig()
   const sendRequest = () =>
-    retryAfterTlsCertificateVerificationFailure(() =>
-      fetch(url, {
-        method: "POST",
-        headers,
-        body: JSON.stringify(enhancedPayload),
-      }),
+    retryAfterTlsCertificateVerificationFailure(
+      () =>
+        fetchUpstreamWithLifecycle(
+          url,
+          {
+            method: "POST",
+            headers,
+            body: JSON.stringify(enhancedPayload),
+          },
+          {
+            clientSignal,
+            headersTimeoutMs: transportConfig.headersTimeoutMs,
+            streamInactivityTimeoutMs:
+              transportConfig.streamInactivityTimeoutMs,
+          },
+        ),
+      { signal: clientSignal },
     )
 
   const response = await retryAfterInvalidAutoModeSelector(
@@ -344,11 +362,21 @@ const sendWithSignatureRetry = async (
       }
       const retryResponse = await retryAfterTlsCertificateVerificationFailure(
         () =>
-          fetch(url, {
-            method: "POST",
-            headers,
-            body: JSON.stringify(retryPayload),
-          }),
+          fetchUpstreamWithLifecycle(
+            url,
+            {
+              method: "POST",
+              headers,
+              body: JSON.stringify(retryPayload),
+            },
+            {
+              clientSignal,
+              headersTimeoutMs: transportConfig.headersTimeoutMs,
+              streamInactivityTimeoutMs:
+                transportConfig.streamInactivityTimeoutMs,
+            },
+          ),
+        { signal: clientSignal },
       )
       if (!retryResponse.ok) {
         consola.error(
@@ -374,11 +402,21 @@ const sendWithSignatureRetry = async (
     const strippedPayload = stripThinkingBlocks(enhancedPayload)
     const retryResponse = await retryAfterTlsCertificateVerificationFailure(
       () =>
-        fetch(url, {
-          method: "POST",
-          headers,
-          body: JSON.stringify(strippedPayload),
-        }),
+        fetchUpstreamWithLifecycle(
+          url,
+          {
+            method: "POST",
+            headers,
+            body: JSON.stringify(strippedPayload),
+          },
+          {
+            clientSignal,
+            headersTimeoutMs: transportConfig.headersTimeoutMs,
+            streamInactivityTimeoutMs:
+              transportConfig.streamInactivityTimeoutMs,
+          },
+        ),
+      { signal: clientSignal },
     )
     if (!retryResponse.ok) {
       consola.error("Retry also failed", retryResponse.status)
@@ -408,6 +446,7 @@ export const createMessages = async (
   options: CreateMessagesOptions = {},
 ): Promise<CreateMessagesReturn> => {
   if (!state.copilotToken) throw new Error("Copilot token not found")
+  options.clientSignal?.throwIfAborted()
 
   const modelCallId = randomUUID()
   const enableVision = hasImageContent(payload)
@@ -476,6 +515,7 @@ export const createMessages = async (
       `${copilotBaseUrl(state)}/v1/messages`,
       headers,
       enhancedPayload,
+      options.clientSignal,
     )
   } catch (error) {
     if (error instanceof HTTPError) {

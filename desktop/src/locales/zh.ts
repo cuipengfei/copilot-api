@@ -138,6 +138,7 @@ const zh: Locale = {
     startFailed: '服务进程启动失败（退出码 {{code}}），可参考下方服务日志排查',
     startTimeout: '服务启动超时，端口 {{port}} 可能已被占用',
     processExit: '进程退出，代码 {{code}}',
+    invalidHost: '监听地址无效，请填写如 127.0.0.1 或 0.0.0.0 这样的地址',
   },
   settings: {
     title: '设置',
@@ -164,6 +165,9 @@ const zh: Locale = {
     adminKeyDesc:
       '用于 /admin/* 接口。留空会移除该字段，下次启动服务时自动生成新的。',
     sectionNetwork: '网络',
+    host: '监听地址',
+    hostDesc: 'API 服务绑定的地址，留空使用 127.0.0.1，下次启动服务时生效',
+    hostInvalid: '监听地址无效，请填写如 127.0.0.1 或 0.0.0.0 这样的地址',
     proxySystemNote:
       '默认使用系统代理。选择自定义代理后，Electron 和新启动的本地服务会使用下方配置；选择不使用代理后将直连网络。已运行的服务需重启后生效。',
     proxyMode: '代理模式',

@@ -11,6 +11,7 @@ import {
   shouldUseColor,
 } from "~/lib/logger"
 import { findEndpointModel } from "~/lib/models"
+import { writeSSEIfConnected } from "~/lib/sse"
 import { resolveConfiguredProviderModelAlias } from "~/lib/provider-resolver"
 import {
   copilotUsageToTokens,
@@ -101,6 +102,7 @@ export async function handleCompletion(c: Context) {
   consola.info(`IN ${modelLabel}${effortSuffix}`)
 
   const response = await createChatCompletions(payload, {
+    clientSignal: c.req.raw.signal,
     requestId,
     sessionId,
   })
@@ -132,7 +134,7 @@ export async function handleCompletion(c: Context) {
           copilotUsageToTokens(parsedChunk.copilot_usage),
         )
       }
-      await stream.writeSSE(chunk as SSEMessage)
+      await writeSSEIfConnected(stream, chunk as SSEMessage)
     }
     recordUsage(usage, copilotUsage)
   })

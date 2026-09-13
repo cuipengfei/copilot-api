@@ -54,6 +54,7 @@ providerAlphaSearchRoutes.post("/", async (c) => {
       await providerAlphaSearchRouteDependencies.forwardProviderAlphaSearch(
         providerConfig,
         c.req.raw,
+        { clientSignal: c.req.raw.signal },
       )
 
     await debugJsonAsync(

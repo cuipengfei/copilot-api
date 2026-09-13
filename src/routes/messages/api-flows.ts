@@ -13,6 +13,7 @@ import {
   getAttachedResponseHeaders,
   jsonWithForwardedHeaders,
 } from "~/lib/response-headers"
+import { writeSSEIfConnected } from "~/lib/sse"
 import { resolveBridgeToolSearchName } from "~/lib/tool-search"
 import {
   createCopilotTokenUsageRecorder,
@@ -136,6 +137,7 @@ export const handleWithChatCompletions = async (
   const response = await messagesApiFlowDependencies.createChatCompletions(
     openAIPayload,
     {
+      clientSignal: c.req?.raw?.signal,
       subagentMarker,
       requestId,
       sessionId,
@@ -195,7 +197,7 @@ export const handleWithChatCompletions = async (
         for (const event of events) {
           const eventData = JSON.stringify(event)
           debugLazy(logger, () => ["Translated Anthropic event:", eventData])
-          await stream.writeSSE({
+          await writeSSEIfConnected(stream, {
             event: event.type,
             data: eventData,
           })
@@ -208,7 +210,7 @@ export const handleWithChatCompletions = async (
     for (const event of flushPendingAnthropicStreamEvents(streamState)) {
       const eventData = JSON.stringify(event)
       debugLazy(logger, () => ["Translated Anthropic event:", eventData])
-      await stream.writeSSE({
+      await writeSSEIfConnected(stream, {
         event: event.type,
         data: eventData,
       })
@@ -219,7 +221,7 @@ export const handleWithChatCompletions = async (
         "Chat completions stream ended without completion; sending error event",
       )
       const errorEvent = translateErrorToAnthropicErrorEvent()
-      await stream.writeSSE({
+      await writeSSEIfConnected(stream, {
         event: errorEvent.type,
         data: JSON.stringify(errorEvent),
       })
@@ -271,7 +273,7 @@ export const handleWithResponsesApi = async (
     {
       vision,
       initiator,
-      signal: c.req?.raw?.signal,
+      clientSignal: c.req?.raw?.signal,
       transport,
       ...requestOptions,
     },
@@ -291,7 +293,10 @@ export const handleWithResponsesApi = async (
       for await (const chunk of response) {
         const eventName = chunk.event
         if (eventName === "ping") {
-          await stream.writeSSE({ event: "ping", data: '{"type":"ping"}' })
+          await writeSSEIfConnected(stream, {
+            event: "ping",
+            data: '{"type":"ping"}',
+          })
           continue
         }
 
@@ -330,7 +335,7 @@ export const handleWithResponsesApi = async (
         for (const event of events) {
           const eventData = JSON.stringify(event)
           debugLazy(logger, () => ["Translated Anthropic event:", eventData])
-          await stream.writeSSE({
+          await writeSSEIfConnected(stream, {
             event: event.type,
             data: eventData,
           })
@@ -349,7 +354,7 @@ export const handleWithResponsesApi = async (
         const errorEvent = buildErrorEvent(
           "Responses stream ended without completion, retry your request.",
         )
-        await stream.writeSSE({
+        await writeSSEIfConnected(stream, {
           event: errorEvent.type,
           data: JSON.stringify(errorEvent),
         })
@@ -406,6 +411,7 @@ export const handleWithMessagesApi = async (
     anthropicPayload,
     anthropicBetaHeader,
     {
+      clientSignal: c.req?.raw?.signal,
       subagentMarker,
       requestId,
       sessionId,
@@ -453,7 +459,7 @@ export const handleWithMessagesApi = async (
           } else if (parsedEvent?.type === "error" || eventName === "error") {
             errorSeen = true
           }
-          await stream.writeSSE({
+          await writeSSEIfConnected(stream, {
             event: eventName,
             data,
           })
@@ -467,7 +473,7 @@ export const handleWithMessagesApi = async (
           "Messages stream ended without completion; sending error event",
         )
         const errorEvent = translateErrorToAnthropicErrorEvent()
-        await stream.writeSSE({
+        await writeSSEIfConnected(stream, {
           event: errorEvent.type,
           data: JSON.stringify(errorEvent),
         })

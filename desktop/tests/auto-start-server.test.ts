@@ -5,6 +5,7 @@ import { autoStartServer } from '../src/lib/auto-start-server'
 const settings = {
   autoStartServer: true,
   lastPort: 5151,
+  host: '',
 }
 
 test('auto-starts only after authorization loads', async () => {
@@ -35,7 +36,22 @@ test('auto-starts only after authorization loads', async () => {
       startServer,
     ),
   ).toEqual({ running: true, port: 5151 })
-  expect(calls).toEqual([[5151, 'provider']])
+  expect(calls).toEqual([[5151, 'provider', '']])
+})
+
+test('passes the saved host when auto-starting', async () => {
+  const calls: unknown[] = []
+  const startServer = async (...args: unknown[]) => {
+    calls.push(args)
+    return { running: true, port: 5151 }
+  }
+
+  await autoStartServer(
+    { ...settings, host: '0.0.0.0' },
+    { success: true, mode: 'copilot' },
+    startServer,
+  )
+  expect(calls).toEqual([[5151, 'copilot', '0.0.0.0']])
 })
 
 test('returns startup errors for the dashboard to display', async () => {

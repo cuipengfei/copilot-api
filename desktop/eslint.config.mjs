@@ -31,7 +31,10 @@ export default defineConfig(
       globals: { ...globals.browser, ...globals.node },
       parserOptions: {
         projectService: {
-          allowDefaultProject: ['eslint.config.mjs'],
+          allowDefaultProject: [
+            'eslint.config.mjs',
+            'scripts/ensure-electron.mjs',
+          ],
         },
         tsconfigRootDir: configDir,
       },
@@ -67,7 +70,12 @@ export default defineConfig(
     },
   },
   {
-    files: ['eslint.config.mjs'],
+    files: [
+      'eslint.config.mjs',
+      'scripts/ensure-electron.mjs',
+      'desktop/eslint.config.mjs',
+      'desktop/scripts/ensure-electron.mjs',
+    ],
     ...tseslint.configs.disableTypeChecked,
   },
   {

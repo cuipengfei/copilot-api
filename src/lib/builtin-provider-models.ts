@@ -198,6 +198,28 @@ export class BuiltinProviderModelRegistry {
           output: 28,
         },
       },
+      "ZHIPU/GLM-5.3": {
+        contextWindow: 1_048_576,
+        inputModalities: ["text"],
+        maxOutputTokens: 131_072,
+        pricing: {
+          cachedInput: 2,
+          input: 8,
+          output: 28,
+        },
+        reasoningEfforts: ["low", "high", "max"],
+      },
+      "ZHIPU/GLM-5.3-Flash": {
+        contextWindow: 1_048_576,
+        inputModalities: ["text", "image"],
+        maxOutputTokens: 131_072,
+        pricing: {
+          cachedInput: 0.23,
+          input: 0.8,
+          output: 2.8,
+        },
+        reasoningEfforts: ["low", "high", "max"],
+      },
       "qwen3.7-max": {
         contextWindow: 1_000_000,
         inputModalities: ["text"],
@@ -220,6 +242,30 @@ export class BuiltinProviderModelRegistry {
           explicitCachedInput: 1,
           input: 12,
           output: 36,
+        },
+      },
+      "qwen3.8-max-0902": {
+        contextWindow: 1_000_000,
+        inputModalities: ["text", "image"],
+        maxOutputTokens: 131_072,
+        pricing: {
+          cachedInput: 1.5,
+          cacheCreationInput: 15,
+          explicitCachedInput: 1,
+          input: 12,
+          output: 36,
+        },
+      },
+      "qwen3.8-flash": {
+        contextWindow: 1_000_000,
+        inputModalities: ["text", "image"],
+        maxOutputTokens: 131_072,
+        pricing: {
+          cachedInput: 0.1,
+          cacheCreationInput: 1.25,
+          explicitCachedInput: 0.1,
+          input: 0.8,
+          output: 2.7,
         },
       },
       "deepseek-v4-flash-0731": {
@@ -269,25 +315,16 @@ export class BuiltinProviderModelRegistry {
       },
     },
     deepseek: {
-      "deepseek-v4-flash": {
-        contextWindow: 1_000_000,
-        inputModalities: ["text"],
-        maxOutputTokens: 64_000,
-        pricing: {
-          cachedInput: 0.1,
-          input: 3,
-          output: 9,
-        },
-      },
-      "deepseek-v4-flash-vision-exp": {
+      "deepseek-flash": {
         contextWindow: 1_000_000,
         inputModalities: ["text", "image"],
-        maxOutputTokens: 64_000,
+        maxOutputTokens: 384_000,
         pricing: {
-          cachedInput: 0.1,
-          input: 3,
-          output: 9,
+          cachedInput: 0.04,
+          input: 2,
+          output: 8,
         },
+        reasoningEfforts: ["low", "high", "max"],
       },
       "deepseek-v4-pro": {
         contextWindow: 1_000_000,
@@ -298,6 +335,7 @@ export class BuiltinProviderModelRegistry {
           input: 9,
           output: 27,
         },
+        reasoningEfforts: ["low", "high", "max"],
       },
     },
     "opencode-go": {
@@ -439,6 +477,17 @@ export class BuiltinProviderModelRegistry {
           ],
         },
         reasoningEfforts: ["low", "medium", "high", "xhigh"],
+      },
+      "deepseek-v4.1-flash": {
+        contextWindow: 1_000_000,
+        inputModalities: ["text", "image"],
+        maxOutputTokens: 384_000,
+        pricing: {
+          cachedInput: 0.006,
+          input: 0.3,
+          output: 1.2,
+        },
+        reasoningEfforts: ["low", "high", "max"],
       },
       "deepseek-v4-flash": {
         contextWindow: 1_000_000,
@@ -634,9 +683,8 @@ export class BuiltinProviderModelRegistry {
     providerName: string,
     modelName: string,
   ): BuiltinProviderModelConfig | undefined {
-    return this.modelCatalog[this.normalizeKey(providerName)]?.[
-      this.normalizeKey(modelName)
-    ]
+    const models = this.modelCatalog[this.normalizeKey(providerName)]
+    return models?.[modelName.trim()] ?? models?.[this.normalizeKey(modelName)]
   }
 
   getModelIds(providerName: string): Array<string> {

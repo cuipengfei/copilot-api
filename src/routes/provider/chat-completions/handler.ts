@@ -17,6 +17,7 @@ import { HTTPError } from "~/lib/error"
 import { createHandlerLogger, debugJson } from "~/lib/logger"
 import { resolveProviderConfig } from "~/lib/provider-resolver"
 import { applyForwardableResponseHeaders } from "~/lib/response-headers"
+import { writeSSEIfConnected } from "~/lib/sse"
 import {
   createProviderTokenUsageRecorder,
   normalizeOpenAIUsage,
@@ -81,6 +82,7 @@ export async function handleProviderChatCompletionsForProvider(
     providerConfig,
     payload,
     c.req.raw.headers,
+    { clientSignal: c.req.raw.signal },
   )
 
   if (!upstreamResponse.ok) {
@@ -182,7 +184,7 @@ const streamProviderChatCompletions = (
           }
         }
 
-        await stream.writeSSE({
+        await writeSSEIfConnected(stream, {
           event: chunk.event,
           data: chunk.data ?? "",
         })

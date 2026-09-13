@@ -45,26 +45,27 @@ beforeEach(() => {
   state.models = undefined
   clearSmartAgentCache() // Clear cache between tests
   fetchMock = mock((_url: string, opts: { headers: Record<string, string> }) =>
-    Promise.resolve({
-      ok: true,
-      status: 200,
-      json: () => ({
-        id: "msg-123",
-        type: "message",
-        role: "assistant",
-        content: [{ type: "text", text: "Hello" }],
-        model: "claude-sonnet-4-20250514",
-        stop_reason: "end_turn",
-        usage: { input_tokens: 10, output_tokens: 5 },
-      }),
-      text: () => Promise.resolve('{"itemsReceived":1,"itemsAccepted":1}'),
-      body: new ReadableStream(),
-      headers: new Headers({
-        ...opts.headers,
-        "x-quota-snapshot-premium_interactions":
-          "ent=300&ov=0.0&ovPerm=false&rem=35.5&rst=2026-04-01T00%3A00%3A00Z",
-      }),
-    }),
+    Promise.resolve(
+      new Response(
+        JSON.stringify({
+          id: "msg-123",
+          type: "message",
+          role: "assistant",
+          content: [{ type: "text", text: "Hello" }],
+          model: "claude-sonnet-4-20250514",
+          stop_reason: "end_turn",
+          usage: { input_tokens: 10, output_tokens: 5 },
+        }),
+        {
+          status: 200,
+          headers: new Headers({
+            ...opts.headers,
+            "x-quota-snapshot-premium_interactions":
+              "ent=300&ov=0.0&ovPerm=false&rem=35.5&rst=2026-04-01T00%3A00%3A00Z",
+          }),
+        },
+      ),
+    ),
   )
   // @ts-expect-error - Mock fetch doesn't implement all fetch properties
   ;(globalThis as unknown as { fetch: typeof fetch }).fetch = fetchMock

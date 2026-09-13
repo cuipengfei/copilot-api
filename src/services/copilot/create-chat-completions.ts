@@ -16,6 +16,7 @@ import {
   prepareInteractionHeaders,
 } from "~/lib/api-config"
 import { getAutoSessionTokenForModel } from "~/lib/auto-session"
+import { getUpstreamTransportConfig } from "~/lib/config"
 import { logCopilotRateLimits } from "~/lib/copilot-rate-limit"
 import { HTTPError } from "~/lib/error"
 import { attachPremiumInfo, getPremiumInfoFromHeaders } from "~/lib/logger"
@@ -35,6 +36,7 @@ import {
 import { retryAfterInvalidAutoModeSelector } from "./auto-session-retry"
 import { retryAfterTlsCertificateVerificationFailure } from "../tls-retry"
 import type { CopilotUsage } from "~/lib/token-usage"
+import { fetchUpstreamWithLifecycle } from "~/services/upstream-http"
 
 export type { CopilotUsage }
 
@@ -154,18 +156,34 @@ function trackSuccessUiTelemetry(opts: {
 async function retryWithStrippedReasoningFields(
   payload: ChatCompletionsPayload,
   headers: Record<string, string>,
-  opts: { start: number; requestId?: string; modelCallId: string },
+  opts: {
+    start: number
+    requestId?: string
+    modelCallId: string
+    clientSignal?: AbortSignal
+  },
 ) {
   consola.warn(
     "Thinking block error detected, retrying with reasoning fields stripped",
   )
   const strippedPayload = stripReasoningFields(payload)
-  const retryResponse = await retryAfterTlsCertificateVerificationFailure(() =>
-    fetch(`${copilotBaseUrl(state)}/chat/completions`, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(strippedPayload),
-    }),
+  const transportConfig = getUpstreamTransportConfig()
+  const retryResponse = await retryAfterTlsCertificateVerificationFailure(
+    () =>
+      fetchUpstreamWithLifecycle(
+        `${copilotBaseUrl(state)}/chat/completions`,
+        {
+          method: "POST",
+          headers,
+          body: JSON.stringify(strippedPayload),
+        },
+        {
+          clientSignal: opts.clientSignal,
+          headersTimeoutMs: transportConfig.headersTimeoutMs,
+          streamInactivityTimeoutMs: transportConfig.streamInactivityTimeoutMs,
+        },
+      ),
+    { signal: opts.clientSignal },
   )
   if (!retryResponse.ok) {
     consola.error("Retry also failed", retryResponse.status)
@@ -193,6 +211,7 @@ async function retryWithStrippedReasoningFields(
 export const createChatCompletions = async (
   payload: ChatCompletionsPayload,
   options?: {
+    clientSignal?: AbortSignal
     subagentMarker?: SubagentMarker | null
     requestId?: string
     sessionId?: string
@@ -200,6 +219,7 @@ export const createChatCompletions = async (
   },
 ) => {
   if (!state.copilotToken) throw new Error("Copilot token not found")
+  options?.clientSignal?.throwIfAborted()
 
   const modelCallId = randomUUID()
 
@@ -249,13 +269,25 @@ export const createChatCompletions = async (
   // First attempt: passthrough unchanged
   consola.debug(`<-- model: ${payload.model}`)
   const url = `${copilotBaseUrl(state)}/chat/completions`
+  const transportConfig = getUpstreamTransportConfig()
   const sendRequest = () =>
-    retryAfterTlsCertificateVerificationFailure(() =>
-      fetch(url, {
-        method: "POST",
-        headers,
-        body: JSON.stringify(payload),
-      }),
+    retryAfterTlsCertificateVerificationFailure(
+      () =>
+        fetchUpstreamWithLifecycle(
+          url,
+          {
+            method: "POST",
+            headers,
+            body: JSON.stringify(payload),
+          },
+          {
+            clientSignal: options?.clientSignal,
+            headersTimeoutMs: transportConfig.headersTimeoutMs,
+            streamInactivityTimeoutMs:
+              transportConfig.streamInactivityTimeoutMs,
+          },
+        ),
+      { signal: options?.clientSignal },
     )
 
   const response = await retryAfterInvalidAutoModeSelector(
@@ -287,6 +319,7 @@ export const createChatCompletions = async (
       start,
       requestId,
       modelCallId,
+      clientSignal: options?.clientSignal,
     })
   }
 

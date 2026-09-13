@@ -36,6 +36,13 @@ export default defineConfig({
   },
   renderer: {
     root: '.',
+    server: {
+      // The renderer imports the dependency-free shared hostname module
+      // from the repo root (../src); allow the dev server to serve it.
+      fs: {
+        allow: [resolve(__dirname, '..')],
+      },
+    },
     build: {
       rollupOptions: {
         input: {

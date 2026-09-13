@@ -5,6 +5,7 @@
     "electron/**/*",
     "tests/**/*",
     "src/lib/auto-start-server.ts",
+    "src/lib/server-url.ts",
     "src/locales/**/*",
     "src/types/**/*",
     "../src/lib/api-config.ts",
@@ -33,6 +34,8 @@
     "../src/lib/request-context.ts",
     "../src/lib/response-headers.ts",
     "../src/lib/smart-agent.ts",
+    "../src/lib/server-host.ts",
+    "../src/lib/server-host-shared.ts",
     "../src/lib/sqlite.ts",
     "../src/lib/state.ts",
     "../src/lib/subagent.ts",
@@ -59,7 +62,8 @@
     "../src/services/telemetry/mock-values.ts",
     "../src/services/telemetry/telemetry.ts",
     "../src/services/telemetry/types.ts",
-    "../src/services/tls-retry.ts"
+    "../src/services/tls-retry.ts",
+    "../src/services/upstream-http.ts"
   ],
   "compilerOptions": {
     "composite": true,

@@ -241,9 +241,7 @@ async function exchangeAuthorizationCode(
     || typeof payload.refresh_token !== "string"
     || typeof payload.expires_in !== "number"
   ) {
-    throw new TypeError(
-      `Codex token exchange response missing fields: ${JSON.stringify(payload)}`,
-    )
+    throw new TypeError("Codex token exchange response missing required fields")
   }
 
   return {
@@ -286,9 +284,7 @@ async function refreshAccessToken(
     || typeof payload.refresh_token !== "string"
     || typeof payload.expires_in !== "number"
   ) {
-    throw new TypeError(
-      `Codex token refresh response missing fields: ${JSON.stringify(payload)}`,
-    )
+    throw new TypeError("Codex token refresh response missing required fields")
   }
 
   return {

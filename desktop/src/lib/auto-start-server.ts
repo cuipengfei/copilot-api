@@ -6,11 +6,12 @@ import type {
 } from '../types/ipc'
 
 export async function autoStartServer(
-  settings: Pick<DesktopSettings, 'autoStartServer' | 'lastPort'>,
+  settings: Pick<DesktopSettings, 'autoStartServer' | 'lastPort' | 'host'>,
   authStatus: AuthStatus,
   startServer: (
     port: number,
     authMode?: DesktopAuthMode,
+    host?: string,
   ) => Promise<ServerStatus>,
 ): Promise<ServerStatus | undefined> {
   if (
@@ -22,7 +23,7 @@ export async function autoStartServer(
   }
 
   try {
-    return await startServer(settings.lastPort, authStatus.mode)
+    return await startServer(settings.lastPort, authStatus.mode, settings.host)
   } catch (error) {
     return {
       running: false,

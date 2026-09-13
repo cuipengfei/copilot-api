@@ -50,6 +50,7 @@ interface HeaderProps {
   onChangeAuth?: () => void
   onRestart?: () => void
   onStop?: () => void
+  onSettingsClose?: () => void
   isRunning?: boolean
   isRestarting?: boolean
 }
@@ -58,6 +59,7 @@ export default function Header({
   onChangeAuth,
   onRestart,
   onStop,
+  onSettingsClose,
   isRunning,
   isRestarting,
 }: HeaderProps) {
@@ -200,7 +202,14 @@ export default function Header({
         {isMac ? null : <WindowControls />}
       </div>
 
-      {showSettings && <SettingsModal onClose={() => setShowSettings(false)} />}
+      {showSettings && (
+        <SettingsModal
+          onClose={() => {
+            setShowSettings(false)
+            onSettingsClose?.()
+          }}
+        />
+      )}
     </>
   )
 }

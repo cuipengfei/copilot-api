@@ -57,17 +57,6 @@ export function isCodexUserAgent(userAgent: string | undefined): boolean {
   return CODEX_USER_AGENT_PATTERN.test(userAgent?.trim() ?? "")
 }
 
-export function isDeepSeekModelId(modelId: string): boolean {
-  return modelId.toLowerCase().includes("deepseek")
-}
-
-export function shouldInjectMessagesToolCallTips(
-  userAgent: string | undefined,
-  targetModel: string,
-): boolean {
-  return isCodexUserAgent(userAgent) && !isDeepSeekModelId(targetModel)
-}
-
 /**
  * Proxies a models request to the fixed Codex upstream models endpoint.
  * Returns a 404 JSON response when the codex provider is unavailable.
@@ -209,7 +198,6 @@ export function createSyntheticCodexModel(
     : reasoningEfforts[0]
   const supportsReasoning = reasoningEfforts.some((effort) => effort !== "none")
   const inputModalities = [...new Set(candidate.inputModalities)]
-  const isDeepSeekModel = isDeepSeekModelId(candidate.slug)
 
   return {
     ...template,
@@ -226,11 +214,11 @@ export function createSyntheticCodexModel(
     apply_patch_tool_type: "freeform",
     web_search_tool_type: "text_and_image",
     supports_search_tool: false,
-    use_responses_lite: isDeepSeekModel ? false : true,
-    tool_mode: isDeepSeekModel ? null : "code_mode_only",
+    use_responses_lite: true,
+    tool_mode: "code_mode_only",
     multi_agent_version: "v2",
     multi_agent_reasoning_effort: null,
-    shell_type: isDeepSeekModel ? "shell_command" : template.shell_type,
+    shell_type: template.shell_type,
     experimental_supported_tools: [],
     input_modalities: inputModalities,
     supports_image_detail_original: false,

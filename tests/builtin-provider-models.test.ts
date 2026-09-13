@@ -91,24 +91,6 @@ describe("builtin provider model registry", () => {
     })
   })
 
-  test("defines the DeepSeek V4 Flash vision experimental model", () => {
-    expect(
-      builtinProviderModelRegistry.getModelConfig(
-        "deepseek",
-        "deepseek-v4-flash-vision-exp",
-      ),
-    ).toEqual({
-      contextWindow: 1_000_000,
-      inputModalities: ["text", "image"],
-      maxOutputTokens: 64_000,
-      pricing: {
-        cachedInput: 0.1,
-        input: 3,
-        output: 9,
-      },
-    })
-  })
-
   test("defines the supported Grok reasoning levels", () => {
     expect(
       builtinProviderModelRegistry.getModelConfig("opencode-go", "grok-4.5"),

@@ -12,6 +12,7 @@ import {
   isResponsesApiWebSearchEnabled,
 } from "~/lib/config"
 import { findEndpointModel } from "~/lib/models"
+import { writeSSEIfConnected } from "~/lib/sse"
 import {
   applyForwardableResponseHeaders,
   getAttachedResponseHeaders,
@@ -417,7 +418,7 @@ export const handleWebSearchViaResponses = async (
       subagentMarker: options.subagentMarker,
       requestId: options.requestId,
       sessionId: options.sessionId,
-      signal: c.req?.raw?.signal,
+      clientSignal: c.req?.raw?.signal,
       compactType: options.compactType,
     },
   )
@@ -461,7 +462,7 @@ export const handleWebSearchViaResponses = async (
     for (const event of buildSyntheticStreamEvents(response)) {
       const data = JSON.stringify(event)
       logger.debug(`Web search stream event`, data)
-      await stream.writeSSE({
+      await writeSSEIfConnected(stream, {
         event: event.type,
         data: data,
       })

@@ -24,6 +24,7 @@ import {
   getAttachedResponseHeaders,
   jsonWithForwardedHeaders,
 } from "~/lib/response-headers"
+import { writeSSEIfConnected } from "~/lib/sse"
 import { isCodexUserAgent } from "~/routes/models/codex-models"
 import {
   handleProviderResponsesForProvider,
@@ -155,6 +156,7 @@ export const handleResponses = async (c: Context) => {
   }
   if (fallback === "chat") {
     return await handleResponsesViaChatCompletions(c, {
+      clientSignal: c.req.raw.signal,
       payload,
       subagentMarker,
       requestId,
@@ -245,7 +247,7 @@ export const handleResponses = async (c: Context) => {
     subagentMarker,
     requestId,
     sessionId: fallbackSessionId,
-    signal: c.req.raw.signal,
+    clientSignal: c.req.raw.signal,
     transport: responsesTransport,
   }
 
@@ -313,7 +315,7 @@ export const handleResponses = async (c: Context) => {
             idTracker,
           )
 
-          await stream.writeSSE({
+          await writeSSEIfConnected(stream, {
             id: (chunk as { id?: string }).id,
             event: (chunk as { event?: string }).event,
             data: processedData,
@@ -552,12 +554,10 @@ const writeResponsesStreamError = async (
   stream: Parameters<Parameters<typeof streamSSE>[1]>[0],
   errorEvent: ReturnType<typeof createResponsesStreamErrorEvent>,
 ) => {
-  try {
-    await stream.writeSSE({
-      event: errorEvent.type,
-      data: JSON.stringify(errorEvent),
-    })
-  } catch {
+  await writeSSEIfConnected(stream, {
+    event: errorEvent.type,
+    data: JSON.stringify(errorEvent),
+  }).catch(() => {
     // stream already closed
-  }
+  })
 }

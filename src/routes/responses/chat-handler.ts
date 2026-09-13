@@ -5,6 +5,7 @@ import {
   applyForwardableResponseHeaders,
   getAttachedResponseHeaders,
 } from "~/lib/response-headers"
+import { writeSSEIfConnected } from "~/lib/sse"
 import type { SubagentMarker } from "~/lib/subagent"
 import {
   copilotUsageToTokens,
@@ -87,6 +88,7 @@ export async function handleResponsesViaChatCompletions(
   c: Context,
   options: {
     payload: ResponsesPayload
+    clientSignal?: AbortSignal
     subagentMarker?: SubagentMarker | null
     requestId?: string
     sessionId?: string
@@ -102,6 +104,7 @@ export async function handleResponsesViaChatCompletions(
   const chatResponse = await responsesChatDependencies.createChatCompletions(
     chatPayload,
     {
+      clientSignal: options.clientSignal,
       requestId: options.requestId,
       sessionId: options.sessionId,
       subagentMarker: options.subagentMarker,
@@ -162,7 +165,7 @@ export async function handleResponsesViaChatCompletions(
           chunk,
           state,
         )) {
-          await stream.writeSSE({
+          await writeSSEIfConnected(stream, {
             event: event.type,
             data: JSON.stringify(event),
           })
@@ -170,7 +173,7 @@ export async function handleResponsesViaChatCompletions(
       }
 
       for (const event of flushChatCompletionToResponsesStreamEvents(state)) {
-        await stream.writeSSE({
+        await writeSSEIfConnected(stream, {
           event: event.type,
           data: JSON.stringify(event),
         })
@@ -181,7 +184,7 @@ export async function handleResponsesViaChatCompletions(
           error,
           state,
         )
-        await stream.writeSSE({
+        await writeSSEIfConnected(stream, {
           event: event.type,
           data: JSON.stringify(event),
         })

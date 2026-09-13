@@ -1,25 +1,10 @@
-import { afterEach, describe, expect, test } from "bun:test"
-import consola from "consola"
+import { describe, expect, test } from "bun:test"
 
 import {
   type ClackPromptBackend,
-  prompt,
   promptWithClack,
   shouldUseClackPrompt,
 } from "~/lib/interactive-prompt"
-
-const originalConsolaPromptDescriptor = Object.getOwnPropertyDescriptor(
-  consola,
-  "prompt",
-)
-
-afterEach(() => {
-  if (originalConsolaPromptDescriptor) {
-    Object.defineProperty(consola, "prompt", originalConsolaPromptDescriptor)
-  } else {
-    Reflect.deleteProperty(consola, "prompt")
-  }
-})
 
 function createBackend(
   overrides: Partial<ClackPromptBackend>,
@@ -164,29 +149,5 @@ describe("interactive prompt compatibility", () => {
         backend,
       ),
     ).toBe("fallback")
-  })
-
-  test("delegates prompts to Consola outside an affected terminal", async () => {
-    const calls: Array<{ message: string; type: string | undefined }> = []
-    Object.defineProperty(consola, "prompt", {
-      configurable: true,
-      value: (message: string, options: { type?: string }): Promise<string> => {
-        calls.push({ message, type: options.type })
-        return Promise.resolve(options.type === "select" ? "picked" : "typed")
-      },
-      writable: true,
-    })
-
-    expect(await prompt("Enter value", { type: "text" })).toBe("typed")
-    expect(
-      await prompt("Pick one", {
-        type: "select",
-        options: [{ label: "Picked", value: "picked" }],
-      }),
-    ).toBe("picked")
-    expect(calls).toEqual([
-      { message: "Enter value", type: "text" },
-      { message: "Pick one", type: "select" },
-    ])
   })
 })

@@ -1264,7 +1264,7 @@ describe("responses handler token usage", () => {
       expect(response.status).toBe(200)
       expect(createResponses).toHaveBeenCalledTimes(1)
       expect(createResponses.mock.calls[0][1]?.transport).toBe(transport)
-      expect(createResponses.mock.calls[0][1]?.signal).toBeInstanceOf(
+      expect(createResponses.mock.calls[0][1]?.clientSignal).toBeInstanceOf(
         AbortSignal,
       )
       expect(createResponses.mock.calls[0][0].input).toEqual([
@@ -2350,6 +2350,39 @@ describe("responses handler upstream header forwarding across fallbacks", () => 
       nano_cost_input: 6,
       total_nano_aiu: 1_500_000,
     })
+  })
+
+  test("passes the client signal to chat fallback requests", async () => {
+    state.models = {
+      object: "list",
+      data: [
+        {
+          capabilities: { limits: { max_prompt_tokens: 128000 } },
+          id: "chat-fallback-test",
+          supported_endpoints: ["/v1/chat/completions"],
+        },
+      ],
+    } as typeof state.models
+
+    let clientSignal: AbortSignal | undefined
+    responsesChatDependencies.createChatCompletions = mock(
+      (_payload, options: { clientSignal?: AbortSignal } | undefined) => {
+        clientSignal = options?.clientSignal
+        return Promise.resolve(createChatResponse("chat-fallback-test"))
+      },
+    ) as typeof responsesChatDependencies.createChatCompletions
+
+    const response = await createApp().request("/v1/responses", {
+      body: JSON.stringify({
+        input: "hello",
+        model: "chat-fallback-test",
+      }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    })
+
+    expect(response.status).toBe(200)
+    expect(clientSignal).toBeInstanceOf(AbortSignal)
   })
 
   test("flushes a completed chat fallback stream without a final usage chunk", async () => {

@@ -5,6 +5,10 @@ import { ipcMain, shell, BrowserWindow } from 'electron'
 import { normalizeApiKeys } from '../../src/lib/request-auth'
 import { PATHS } from '../../src/lib/paths'
 import {
+  isValidServerHost,
+  resolveEffectiveServerHost,
+} from '../src/lib/server-url'
+import {
   getDeviceCode,
   pollAccessToken,
   getGitHubUser,
@@ -25,6 +29,8 @@ import {
   startServer,
   stopServer,
   getPort,
+  getHost,
+  getServerBaseUrl,
   getLogs,
   isRunning,
 } from './server-manager'
@@ -126,7 +132,7 @@ function getConfigApiBaseUrl(): string {
     )
   }
 
-  return `http://localhost:${getPort()}/admin/config/model-mappings`
+  return `${getServerBaseUrl()}/admin/config/model-mappings`
 }
 
 async function readConfigApiError(response: Response): Promise<string> {
@@ -260,7 +266,7 @@ export function registerIpcHandlers(
   // Server: Start
   ipcMain.handle(
     'server:start',
-    async (_event, port: number, authMode?: DesktopAuthMode) => {
+    async (_event, port: number, authMode?: DesktopAuthMode, host?: string) => {
       const token = await readToken()
       const providerMode = shouldStartInProviderMode(authMode)
       const enabledProviders = getEnabledDesktopProviders()
@@ -274,16 +280,45 @@ export function registerIpcHandlers(
       }
 
       const settings = await readSettings()
+      const effectiveHost = resolveEffectiveServerHost(host, settings.host)
+      if (!isValidServerHost(effectiveHost)) {
+        return {
+          running: false,
+          error: await tMain('server.invalidHost'),
+        }
+      }
+
       const serverOptions = {
         verbose: settings.verbose,
         showToken: settings.showToken,
+        host: effectiveHost,
         proxy: options.getEffectiveProxySettings?.(settings) ?? settings.proxy,
       }
 
-      // Persist the last used port
-      await writeSettings({ ...settings, lastPort: port })
-
-      return startServer(port, tokenForStart, serverOptions)
+      try {
+        const status = await startServer(port, tokenForStart, serverOptions)
+        if (status.running) {
+          // Persist only after a successful start so failed attempts never
+          // clobber the last known good configuration.
+          await writeSettings({
+            ...settings,
+            lastPort: port,
+            ...(host === undefined ? {} : { host: effectiveHost }),
+          })
+        }
+        return status
+      } catch (err) {
+        if (
+          err instanceof Error
+          && err.message.startsWith('Invalid server host')
+        ) {
+          return {
+            running: false,
+            error: await tMain('server.invalidHost'),
+          }
+        }
+        throw err
+      }
     },
   )
 
@@ -295,11 +330,15 @@ export function registerIpcHandlers(
   ipcMain.handle('server:get-status', () => ({
     running: isRunning(),
     port: getPort(),
+    host: getHost(),
   }))
 
   // Settings
   ipcMain.handle('settings:get', async () => readSettings())
   ipcMain.handle('settings:save', async (_event, settings: DesktopSettings) => {
+    if (!isValidServerHost(settings?.host ?? '')) {
+      throw new Error(await tMain('server.invalidHost'))
+    }
     const prev = await readSettings()
     await runSettingsTransaction(
       () => options.onBeforeSettingsSave?.(settings, prev),
@@ -333,10 +372,10 @@ export function registerIpcHandlers(
 
   // Server: Proxy HTTP requests through the main process to bypass file:// origin CORS in the renderer
   ipcMain.handle('server:fetch-usage', async () => {
-    const port = getPort()
+    const baseUrl = getServerBaseUrl()
     try {
       const headers = await getServerRequestHeaders()
-      const res = await fetch(`http://localhost:${port}/usage`, {
+      const res = await fetch(`${baseUrl}/usage`, {
         headers,
         signal: AbortSignal.timeout(5000),
       })
@@ -348,10 +387,10 @@ export function registerIpcHandlers(
   })
 
   ipcMain.handle('server:fetch-models', async () => {
-    const port = getPort()
+    const baseUrl = getServerBaseUrl()
     try {
       const headers = await getServerRequestHeaders()
-      const res = await fetch(`http://localhost:${port}/models`, {
+      const res = await fetch(`${baseUrl}/models`, {
         headers,
         signal: AbortSignal.timeout(5000),
       })
@@ -372,12 +411,12 @@ export function registerIpcHandlers(
   ])
 
   ipcMain.handle('server:fetch-token-usage', async (_event, period: string) => {
-    const port = getPort()
+    const baseUrl = getServerBaseUrl()
     const normalizedPeriod = TOKEN_USAGE_PERIODS.has(period) ? period : 'today'
     try {
       const headers = await getServerRequestHeaders()
       const res = await fetch(
-        `http://localhost:${port}/token-usage?period=${normalizedPeriod}`,
+        `${baseUrl}/token-usage?period=${normalizedPeriod}`,
         {
           headers,
           signal: AbortSignal.timeout(5000),
@@ -393,13 +432,13 @@ export function registerIpcHandlers(
   ipcMain.handle(
     'server:fetch-token-usage-daily',
     async (_event, period: string) => {
-      const port = getPort()
+      const baseUrl = getServerBaseUrl()
       const normalizedPeriod =
         TOKEN_USAGE_PERIODS.has(period) ? period : 'today'
       try {
         const headers = await getServerRequestHeaders()
         const res = await fetch(
-          `http://localhost:${port}/token-usage/daily?period=${normalizedPeriod}`,
+          `${baseUrl}/token-usage/daily?period=${normalizedPeriod}`,
           {
             headers,
             signal: AbortSignal.timeout(5000),
@@ -416,7 +455,7 @@ export function registerIpcHandlers(
   ipcMain.handle(
     'server:fetch-token-usage-events',
     async (_event, period: string, page: number, pageSize: number) => {
-      const port = getPort()
+      const baseUrl = getServerBaseUrl()
       const normalizedPeriod =
         TOKEN_USAGE_PERIODS.has(period) ? period : 'today'
       const normalizedPage =
@@ -431,7 +470,7 @@ export function registerIpcHandlers(
       try {
         const headers = await getServerRequestHeaders()
         const res = await fetch(
-          `http://localhost:${port}/token-usage/events?${params.toString()}`,
+          `${baseUrl}/token-usage/events?${params.toString()}`,
           {
             headers,
             signal: AbortSignal.timeout(5000),

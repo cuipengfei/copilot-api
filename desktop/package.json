@@ -1,6 +1,6 @@
 {
   "name": "copilot-api-desktop",
-  "version": "2.4.2",
+  "version": "2.5.6",
   "description": "Copilot API Desktop App",
   "author": "jeffreycao",
   "desktopName": "copilot-api.desktop",
@@ -9,7 +9,7 @@
     "electron"
   ],
   "scripts": {
-    "dev": "electron-vite dev",
+    "dev": "node scripts/ensure-electron.mjs && electron-vite dev",
     "build": "electron-vite build",
     "build:server": "bun run --cwd .. build:desktop",
     "test": "bun test tests",

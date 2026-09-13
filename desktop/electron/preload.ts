@@ -11,8 +11,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('auth:start-codex-login', callbackUrlOrCode),
   logout: () => ipcRenderer.invoke('auth:logout'),
 
-  startServer: (port: number, authMode?: string) =>
-    ipcRenderer.invoke('server:start', port, authMode),
+  startServer: (port: number, authMode?: string, host?: string) =>
+    ipcRenderer.invoke('server:start', port, authMode, host),
   stopServer: () => ipcRenderer.invoke('server:stop'),
   getServerStatus: () => ipcRenderer.invoke('server:get-status'),
 

@@ -17,6 +17,7 @@ const DEFAULT_SETTINGS: DesktopSettings = {
   apiHome: '',
   oauthApp: 'default',
   enterpriseUrl: '',
+  host: '',
   lastPort: 4141,
   launchAtLogin: false,
   autoStartServer: false,
@@ -85,6 +86,10 @@ export function normalizeSettings(
       typeof settings?.enterpriseUrl === 'string' ?
         settings.enterpriseUrl
       : DEFAULT_SETTINGS.enterpriseUrl,
+    host:
+      typeof settings?.host === 'string' ?
+        settings.host.trim()
+      : DEFAULT_SETTINGS.host,
     lastPort:
       typeof settings?.lastPort === 'number' ?
         settings.lastPort

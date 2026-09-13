@@ -5,11 +5,12 @@ import { streamSSE } from "hono/streaming"
 import { COMPACT_REQUEST } from "~/lib/compact"
 import { createHandlerLogger, debugJson } from "~/lib/logger"
 import { applyForwardableResponseHeaders } from "~/lib/response-headers"
+import { writeSSEIfConnected } from "~/lib/sse"
 import type { SubagentMarker } from "~/lib/subagent"
 import type { AnthropicResponse } from "~/lib/types/anthropic"
 import type { ResponsesPayload } from "~/lib/types/responses"
 import { handleCompletionPayload } from "~/routes/messages/handler"
-import { shouldInjectMessagesToolCallTips } from "~/routes/models/codex-models"
+import { isCodexUserAgent } from "~/routes/models/codex-models"
 
 import {
   responsesResultToStreamEvents,
@@ -45,10 +46,7 @@ export async function handleResponsesViaMessages(
       {
         model: options.targetModel,
         publicModel: options.publicModel,
-        toolCallTips: shouldInjectMessagesToolCallTips(
-          c.req.header("user-agent"),
-          options.targetModel,
-        ),
+        toolCallTips: isCodexUserAgent(c.req.header("user-agent")),
       },
     )
     const context: MessagesResponseTranslationContext = translation
@@ -108,7 +106,7 @@ export async function handleResponsesViaMessages(
     }
     return streamSSE(c, async (stream) => {
       for (const event of responsesResultToStreamEvents(result)) {
-        await stream.writeSSE({
+        await writeSSEIfConnected(stream, {
           event: event.type,
           data: JSON.stringify(event),
         })
@@ -141,7 +139,7 @@ function streamTranslatedMessagesEvents(
       context,
     )) {
       debugJson(logger, "Translated Responses stream event:", event)
-      await stream.writeSSE({
+      await writeSSEIfConnected(stream, {
         event: event.type,
         data: JSON.stringify(event),
       })

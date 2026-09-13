@@ -5,12 +5,20 @@ import path from 'node:path'
 import { StringDecoder } from 'node:string_decoder'
 
 import type { DesktopProxySettings, ServerStatus } from '../src/types/ipc'
+import {
+  DEFAULT_SERVER_HOST,
+  formatServerUrl,
+  isInvalidBindErrorCode,
+  normalizeServerHostname,
+  resolveClientHostnameOrDefault,
+} from '../../src/lib/server-host'
 import { applyDesktopProxySettingsToEnv } from './electron-proxy-config'
 import { tMain } from './i18n'
 import { buildServerStartArgs } from './server-start-args'
 
 let serverProcess: UtilityProcess | null = null
 let currentPort = 4141
+let currentHost = ''
 let statusCallback: ((status: ServerStatus) => void) | null = null
 let logCallback: ((log: string) => void) | null = null
 // Ring buffer for logs, capped at 2000 entries for log panel replay.
@@ -143,16 +151,25 @@ export function onLog(cb: (log: string) => void): void {
   logCallback = cb
 }
 
-function checkPortAvailable(port: number): Promise<boolean> {
+type PortProbeResult = { available: true } | { available: false; code?: string }
+
+function checkPortAvailable(
+  port: number,
+  hostname: string,
+): Promise<PortProbeResult> {
   return new Promise((resolve) => {
     const server = net.createServer()
-    server.once('error', () => resolve(false))
+    server.once('error', (err: NodeJS.ErrnoException) =>
+      resolve({ available: false, code: err?.code }),
+    )
     server.once('listening', () => {
       server.close()
-      resolve(true)
+      resolve({ available: true })
     })
-    // Bind to 0.0.0.0 to check whether the port is occupied on any interface.
-    server.listen(port, '0.0.0.0')
+    // Probe the address the server process will actually bind. A wildcard
+    // probe refuses hosts the server could still bind (::1 or 127.0.0.1 while
+    // another process holds 0.0.0.0) and misses loopback-only listeners.
+    server.listen(port, hostname)
   })
 }
 
@@ -166,26 +183,66 @@ function getServerPath(): string {
 
 export async function startServer(
   port: number,
-  token: string | null,
+  githubToken: string | null,
   serverOptions?: {
     verbose?: boolean
     showToken?: boolean
+    host?: string
     proxy?: DesktopProxySettings
   },
 ): Promise<ServerStatus> {
-  const available = await checkPortAvailable(port)
-  if (!available) {
+  const host = serverOptions?.host?.trim() ?? ''
+  let bindHostname: string
+  try {
+    bindHostname = host ? normalizeServerHostname(host) : DEFAULT_SERVER_HOST
+  } catch {
+    return {
+      running: false,
+      error: await tMain('server.invalidHost'),
+    }
+  }
+  // Validate the host before touching a running server, so an invalid host
+  // never stops a healthy instance.
+  // When the port changes, a conflicting listener cannot be our own
+  // previous instance. Probe first so an occupied new port fails fast
+  // without stopping the running server. The same-port case still stops
+  // first, because our own listener would otherwise report as a conflict
+  // (including wildcard/loopback overlap on the same port).
+  if (serverProcess && port !== currentPort) {
+    const preProbe = await checkPortAvailable(port, bindHostname)
+    if (!preProbe.available) {
+      if (isInvalidBindErrorCode(preProbe.code)) {
+        return {
+          running: false,
+          error: await tMain('server.invalidHost'),
+        }
+      }
+      return {
+        running: false,
+        error: await tMain('server.portInUse', { port }),
+      }
+    }
+  }
+
+  // Stop the previous instance first, so its own listener is never reported as
+  // a conflicting process holding the port.
+  if (serverProcess) {
+    await stopServer()
+  }
+
+  const probe = await checkPortAvailable(port, bindHostname)
+  if (!probe.available) {
+    if (isInvalidBindErrorCode(probe.code)) {
+      return {
+        running: false,
+        error: await tMain('server.invalidHost'),
+      }
+    }
     return {
       running: false,
       error: await tMain('server.portInUse', { port }),
     }
   }
-
-  if (serverProcess) {
-    await stopServer()
-  }
-
-  currentPort = port
 
   // Clear the previous log buffer before each new server start.
   logBuffer.length = 0
@@ -194,13 +251,24 @@ export async function startServer(
     ...process.env,
     NODE_ENV: 'production',
   }
+  const normalizedGithubToken = githubToken?.trim()
+  if (normalizedGithubToken) {
+    // Never pass the token as an argument: process arguments are readable by
+    // every local user through the process list.
+    env.COPILOT_API_GITHUB_TOKEN = normalizedGithubToken
+  } else {
+    // Drop any inherited value, otherwise a token exported in the shell that
+    // launched the app would silently switch the server to Copilot mode and
+    // ignore the configured providers.
+    delete env.COPILOT_API_GITHUB_TOKEN
+  }
   const proxyEnabled =
     serverOptions?.proxy ?
       applyDesktopProxySettingsToEnv(env, serverOptions.proxy)
     : false
 
   const serverPath = getServerPath()
-  const args = buildServerStartArgs(port, token)
+  const args = buildServerStartArgs(port, host)
   if (proxyEnabled) args.push('--proxy-env')
   if (serverOptions?.verbose) args.push('--verbose')
   if (serverOptions?.showToken) args.push('--show-token')
@@ -226,7 +294,7 @@ export async function startServer(
   proc.stderr?.once('close', stderrLogStream.flush)
 
   // Wait for the server to become ready while also detecting early process exit.
-  const startResult = await waitForServer(port, proc)
+  const startResult = await waitForServer(host, port, proc)
   if (!startResult.ok) {
     proc.kill()
     if (serverProcess === proc) {
@@ -262,11 +330,15 @@ export async function startServer(
     )
   })
 
-  return { running: true, port }
+  currentPort = port
+  currentHost = host
+
+  return { running: true, port, host }
 }
 
 // Wait for server readiness or process exit, whichever happens first.
 async function waitForServer(
+  host: string,
   port: number,
   proc: UtilityProcess,
 ): Promise<{ ok: boolean; exitCode?: number }> {
@@ -287,7 +359,7 @@ async function waitForServer(
     proc.once('exit', onExit)
 
     ;(async () => {
-      const url = `http://localhost:${port}/`
+      const url = `${formatServerUrl(resolveClientHostnameOrDefault(host), port)}/`
       for (let i = 0; i < 20; i++) {
         await new Promise<void>((r) => setTimeout(r, 500))
         if (settled) return
@@ -348,6 +420,17 @@ export function clearCallbacks(): void {
 
 export function getPort(): number {
   return currentPort
+}
+
+export function getHost(): string {
+  return currentHost
+}
+
+export function getServerBaseUrl(): string {
+  return formatServerUrl(
+    resolveClientHostnameOrDefault(currentHost),
+    currentPort,
+  )
 }
 
 export function getLogs(): string[] {

@@ -58,7 +58,7 @@ describe("runServer auto-session prewarm order", () => {
     }))
 
     await mock.module("../src/server", () => ({
-      server: { fetch: () => new Response(null) },
+      createServer: () => ({ fetch: () => new Response(null) }),
     }))
   })
 
@@ -73,6 +73,7 @@ describe("runServer auto-session prewarm order", () => {
 
     await startModule.runServer({
       port: 4141,
+      host: "127.0.0.1",
       verbose: false,
       githubToken: "provided-token",
       claudeCode: false,

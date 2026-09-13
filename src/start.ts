@@ -8,13 +8,25 @@ import invariant from "tiny-invariant"
 
 import { runProviderSetup } from "./auth"
 import { listEnabledProviders, mergeConfigWithDefaults } from "./lib/config"
-import { readGitHubToken } from "./lib/credential-store"
+import {
+  GITHUB_TOKEN_ENV,
+  readGitHubToken,
+  readGitHubTokenFromEnv,
+} from "./lib/credential-store"
 import { getLatestModelForFamily } from "./lib/models"
 import { initOpencodeVersion } from "./lib/opencode"
 import { formatModelsLog } from "./lib/models-log"
 import { ensurePaths } from "./lib/paths"
 import { initProxyFromEnv } from "./lib/proxy"
-import { getMissingApiKeysMessage } from "./lib/request-auth"
+import {
+  getConfiguredApiKeys,
+  getMissingApiKeysMessage,
+} from "./lib/request-auth"
+import {
+  DEFAULT_SERVER_HOST,
+  formatServerUrl,
+  resolveServerBinding,
+} from "./lib/server-host"
 import { generateEnvScript } from "./lib/shell"
 import { state } from "./lib/state"
 import { logUser, setupCopilotToken } from "./lib/token"
@@ -28,6 +40,7 @@ import {
 } from "./services/vscode-env"
 
 interface RunServerOptions {
+  host: string
   port: number
   verbose: boolean
   githubToken?: string
@@ -38,16 +51,36 @@ interface RunServerOptions {
   nativeMessages: boolean
 }
 
+type GitHubTokenSource = "cli" | "env" | "file"
+
+// The environment is preferred over the token file so the token never has to
+// travel through the process list; --github-token stays first for callers that
+// opt in explicitly.
+async function resolveGitHubToken(
+  cliToken: string | undefined,
+): Promise<{ token: string; source: GitHubTokenSource } | null> {
+  if (cliToken) return { token: cliToken, source: "cli" }
+
+  const envToken = readGitHubTokenFromEnv()
+  if (envToken) return { token: envToken, source: "env" }
+
+  const fileToken = await readGitHubToken()
+  if (fileToken) return { token: fileToken, source: "file" }
+
+  return null
+}
+
 async function setupCopilotMode(
   githubToken: string,
-  fromCli: boolean,
+  source: GitHubTokenSource,
   serverUrl: string,
   claudeCode: boolean,
 ): Promise<void> {
   state.githubToken = githubToken
   consola.info(
-    fromCli ?
-      "Using provided GitHub token"
+    source === "cli" ? "Using provided GitHub token"
+    : source === "env" ?
+      `Using GitHub token from the ${GITHUB_TOKEN_ENV} environment variable`
     : "Using GitHub token from local file",
   )
 
@@ -140,7 +173,8 @@ async function setupProviderMode(
   await runProviderSetup()
 
   if (state.githubToken) {
-    await setupCopilotMode(state.githubToken, false, serverUrl, claudeCode)
+    // The setup flow persisted the token with the credential store.
+    await setupCopilotMode(state.githubToken, "file", serverUrl, claudeCode)
     return
   }
 
@@ -160,6 +194,12 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   consola.options.throttle = 0
 
   mergeConfigWithDefaults()
+
+  const configuredApiKeys = getConfiguredApiKeys()
+  const binding = resolveServerBinding(
+    options.host,
+    configuredApiKeys.length > 0,
+  )
 
   const missingApiKeysMessage = getMissingApiKeysMessage()
   if (missingApiKeysMessage) {
@@ -182,13 +222,13 @@ export async function runServer(options: RunServerOptions): Promise<void> {
 
   await ensurePaths()
 
-  const serverUrl = `http://localhost:${options.port}`
+  const serverUrl = formatServerUrl(binding.clientHostname, options.port)
 
-  const githubToken = options.githubToken || (await readGitHubToken())
-  if (githubToken) {
+  const resolvedGitHubToken = await resolveGitHubToken(options.githubToken)
+  if (resolvedGitHubToken) {
     await setupCopilotMode(
-      githubToken,
-      Boolean(options.githubToken),
+      resolvedGitHubToken.token,
+      resolvedGitHubToken.source,
       serverUrl,
       options.claudeCode,
     )
@@ -200,10 +240,12 @@ export async function runServer(options: RunServerOptions): Promise<void> {
     `🌐 Usage Viewer: ${serverUrl}/usage-viewer?endpoint=${serverUrl}/usage`,
   )
 
-  const { server } = await import("./server")
+  const { createServer } = await import("./server")
+  const server = createServer({ networkExposed: binding.networkExposed })
 
   serve({
     fetch: server.fetch,
+    hostname: binding.hostname,
     port: options.port,
     bun: {
       idleTimeout: 0,
@@ -217,6 +259,11 @@ export const start = defineCommand({
     description: "Start the Copilot API server",
   },
   args: {
+    host: {
+      type: "string",
+      default: process.env.HOST?.trim() || DEFAULT_SERVER_HOST,
+      description: "Host to listen on",
+    },
     port: {
       alias: "p",
       type: "string",
@@ -268,6 +315,7 @@ export const start = defineCommand({
   },
   run({ args }) {
     return runServer({
+      host: args.host,
       port: Number.parseInt(args.port, 10),
       verbose: args.verbose,
       githubToken: args["github-token"],

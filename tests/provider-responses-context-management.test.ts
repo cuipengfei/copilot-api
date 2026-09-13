@@ -490,9 +490,10 @@ describe("provider Responses context management", () => {
     })
   })
 
-  test("propagates provider-scoped client cancellation upstream without a 500", async () => {
+  test("drains provider-scoped requests after client cancellation", async () => {
     let upstreamSignal: AbortSignal | undefined
     const upstreamStarted = createDeferred()
+    const upstreamCompletion = createResponseDeferred()
     fetchMock.mockImplementation((_url, init) => {
       const signal = init?.signal
       if (!(signal instanceof AbortSignal)) {
@@ -500,26 +501,7 @@ describe("provider Responses context management", () => {
       }
       upstreamSignal = signal
       upstreamStarted.resolve()
-      return new Promise<Response>((_resolve, reject) => {
-        if (signal.aborted) {
-          reject(
-            signal.reason instanceof Error ?
-              signal.reason
-            : new Error("Provider request aborted"),
-          )
-          return
-        }
-        signal.addEventListener(
-          "abort",
-          () =>
-            reject(
-              signal.reason instanceof Error ?
-                signal.reason
-              : new Error("Provider request aborted"),
-            ),
-          { once: true },
-        )
-      })
+      return upstreamCompletion.promise
     })
     const controller = new AbortController()
     const responsePromise = createApp().fetch(
@@ -533,17 +515,20 @@ describe("provider Responses context management", () => {
     await upstreamStarted.promise
 
     controller.abort()
+    expect(upstreamSignal?.aborted).toBe(false)
+    upstreamCompletion.resolve(createJsonResponsesResponse("gpt-test"))
 
     const response = await responsePromise
-    expect(upstreamSignal?.aborted).toBe(true)
-    expect(response.status).toBe(499)
+    expect(response.status).toBe(200)
+    expect(upstreamSignal?.aborted).toBe(false)
   })
 
-  test("propagates provider-prefixed Codex cancellation upstream", async () => {
+  test("drains provider-prefixed Codex requests after client cancellation", async () => {
     const originalCodexAccessToken = state.codexAccessToken
     const originalCodexAccountId = state.codexAccountId
     let upstreamSignal: AbortSignal | undefined
     const upstreamStarted = createDeferred()
+    const upstreamCompletion = createResponseDeferred()
     providerConfig = {
       apiKey: "",
       authType: "oauth2",
@@ -562,18 +547,7 @@ describe("provider Responses context management", () => {
       }
       upstreamSignal = signal
       upstreamStarted.resolve()
-      return new Promise<Response>((_resolve, reject) => {
-        signal.addEventListener(
-          "abort",
-          () =>
-            reject(
-              signal.reason instanceof Error ?
-                signal.reason
-              : new Error("Codex request aborted"),
-            ),
-          { once: true },
-        )
-      })
+      return upstreamCompletion.promise
     })
 
     try {
@@ -589,10 +563,12 @@ describe("provider Responses context management", () => {
       await upstreamStarted.promise
 
       controller.abort()
+      expect(upstreamSignal?.aborted).toBe(false)
+      upstreamCompletion.resolve(createJsonResponsesResponse("gpt-test"))
 
       const response = await responsePromise
-      expect(upstreamSignal?.aborted).toBe(true)
-      expect(response.status).toBe(499)
+      expect(response.status).toBe(200)
+      expect(upstreamSignal?.aborted).toBe(false)
     } finally {
       state.codexAccessToken = originalCodexAccessToken
       state.codexAccountId = originalCodexAccountId
@@ -967,3 +943,19 @@ const createDeferred = (): {
   })
   return { promise, resolve }
 }
+
+const createResponseDeferred = (): {
+  promise: Promise<Response>
+  resolve: (response: Response) => void
+} => {
+  let resolve!: (response: Response) => void
+  const promise = new Promise<Response>((deferredResolve) => {
+    resolve = deferredResolve
+  })
+  return { promise, resolve }
+}
+
+const createJsonResponsesResponse = (model: string): Response =>
+  new Response(JSON.stringify(createResponsesResult(model)), {
+    headers: { "content-type": "application/json" },
+  })
