@@ -524,11 +524,14 @@ describe("router discovery and proxy helpers", () => {
     })
 
     const response = await handler(
-      createRouterRequest('{"model":"gpt-4.1"}', {
-        "X-SESSION-ID": "preferred-session",
-        "X-Claude-Code-Session-Id": "claude-session-1",
-        "SESSION-ID": "codex-session-1",
-      }),
+      createRouterRequest(
+        '{"model":"gpt-4.1","prompt_cache_key":"body-session"}',
+        {
+          "X-SESSION-ID": "preferred-session",
+          "X-Claude-Code-Session-Id": "claude-session-1",
+          "SESSION-ID": "codex-session-1",
+        },
+      ),
     )
 
     expect(response.status).toBe(200)
@@ -538,7 +541,7 @@ describe("router discovery and proxy helpers", () => {
     )
   })
 
-  test("router handler keeps least-loaded routing when responses request lacks compatible session headers", async () => {
+  test("router handler uses prompt_cache_key when session headers are absent", async () => {
     const state = createState()
     const proxiedPorts: Array<string> = []
     state.modelToPorts.set("gpt-5.4", [4141, 4142])
@@ -570,12 +573,33 @@ describe("router discovery and proxy helpers", () => {
 
     expect(first.status).toBe(200)
     expect(second.status).toBe(200)
-    expect(proxiedPorts.sort()).toEqual(["4141", "4142"])
-    expect(state.routeHistory.map((entry) => entry.sid)).toEqual(["-", "-"])
+    expect(proxiedPorts[0]).toBe(proxiedPorts[1])
+    expect(state.routeHistory.map((entry) => entry.sid)).toEqual([
+      "responses-session-1",
+      "responses-session-1",
+    ])
     expect(state.routeHistory.map((entry) => entry.reason)).toEqual([
       "new",
-      "new",
+      "sticky",
     ])
+  })
+  test("router handler ignores blank prompt_cache_key", async () => {
+    const state = createState()
+    state.modelToPorts.set("gpt-5.4", [4141])
+    const handler = createRouterHandlerForTest({
+      state,
+      fetchImpl: createFetchStub(() => Promise.resolve(new Response("ok"))),
+    })
+
+    const response = await handler(
+      createResponsesRequest(
+        JSON.stringify({ model: "gpt-5.4", prompt_cache_key: "   " }),
+      ),
+    )
+
+    expect(response.status).toBe(200)
+    expect(state.routeHistory.at(-1)?.sid).toBe("-")
+    expect(state.sessionBindings.size).toBe(0)
   })
 })
 

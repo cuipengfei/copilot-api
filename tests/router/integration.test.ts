@@ -327,7 +327,7 @@ describe("router handlers", () => {
     expect(logs[1]).toContain("reason=sticky")
   })
 
-  test("router handler keeps least-loaded routing when responses request lacks x-session-id header", async () => {
+  test("router handler uses prompt_cache_key when responses session headers are absent", async () => {
     const state = createState()
     const proxiedPorts: Array<string> = []
     state.modelToPorts.set("gpt-5.4", [4141, 4142])
@@ -375,11 +375,14 @@ describe("router handlers", () => {
 
     expect(first.status).toBe(200)
     expect(second.status).toBe(200)
-    expect(proxiedPorts.sort()).toEqual(["4141", "4142"])
-    expect(state.routeHistory.map((entry) => entry.sid)).toEqual(["-", "-"])
+    expect(proxiedPorts[0]).toBe(proxiedPorts[1])
+    expect(state.routeHistory.map((entry) => entry.sid)).toEqual([
+      "responses-session-1",
+      "responses-session-1",
+    ])
     expect(state.routeHistory.map((entry) => entry.reason)).toEqual([
       "new",
-      "new",
+      "sticky",
     ])
   })
 
