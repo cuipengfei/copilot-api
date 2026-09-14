@@ -4,6 +4,7 @@ const originalFetch = globalThis.fetch
 const originalCopilotToken = state.copilotToken
 const originalCodexToken = state.codexAccessToken
 const originalCodexAccount = state.codexAccountId
+const originalTelemetryEnabled = state.copilotTelemetryEnabled
 const fetchMock = mock(() =>
   Promise.resolve(new Response("unexpected", { status: 500 })),
 )
@@ -11,6 +12,7 @@ beforeEach(() => {
   state.copilotToken = "test-token"
   state.codexAccessToken = "codex-token"
   state.codexAccountId = "codex-account"
+  state.copilotTelemetryEnabled = false
   fetchMock.mockClear()
   const scope = globalThis as unknown as { fetch: typeof fetch }
   scope.fetch = fetchMock as unknown as typeof fetch
@@ -19,6 +21,7 @@ afterEach(() => {
   state.copilotToken = originalCopilotToken
   state.codexAccessToken = originalCodexToken
   state.codexAccountId = originalCodexAccount
+  state.copilotTelemetryEnabled = originalTelemetryEnabled
   const scope = globalThis as unknown as { fetch: typeof fetch }
   scope.fetch = originalFetch
   mock.restore()
@@ -104,6 +107,12 @@ describe("copilot messages drain", () => {
             { status: 200, headers: { "content-type": "application/json" } },
           ),
         )
+      }
+      if (!url.includes("/v1/messages")) {
+        // Telemetry and other fire-and-forget fetches must not share the
+        // gated Response: sharing one Response object lets res.text() lock
+        // the body before the main flow calls getReader() (flaky race).
+        return Promise.resolve(new Response(null, { status: 200 }))
       }
       upstreamSignal = init?.signal as AbortSignal
       notifyDispatched()
