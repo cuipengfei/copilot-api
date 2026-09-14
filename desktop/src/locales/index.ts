@@ -178,6 +178,8 @@ export interface Locale {
     oauthAppDesc: string
     apiHome: string
     apiHomeDesc: string
+    sqliteDbPath: string
+    sqliteDbPathDesc: string
     enterpriseUrl: string
     enterpriseUrlDesc: string
     verbose: string

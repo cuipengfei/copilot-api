@@ -185,6 +185,7 @@ export interface DesktopProxySettings {
 
 export interface DesktopSettings {
   apiHome: string
+  sqliteDbPath: string
   oauthApp: 'default' | 'opencode'
   enterpriseUrl: string
   host: string

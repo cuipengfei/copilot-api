@@ -143,9 +143,9 @@ const zh: Locale = {
   settings: {
     title: '设置',
     restartAppNote:
-      'OAuth App、API Home 和 Enterprise URL 修改后需重启应用才能生效。',
+      'OAuth App、API Home、SQLite DB Path 和 Enterprise URL 修改后需重启应用才能生效。',
     restartAppPrompt:
-      '设置已保存。OAuth App、API Home 和 Enterprise URL 需重启应用后才能生效。',
+      '设置已保存。OAuth App、API Home、SQLite DB Path 和 Enterprise URL 需重启应用后才能生效。',
     sectionGeneral: '通用',
     launchAtLogin: '登录时启动',
     launchAtLoginDesc:
@@ -185,6 +185,9 @@ const zh: Locale = {
       '选择 opencode 后，Electron 启动时会按 opencode OAuth 流程进行鉴权。',
     apiHome: 'API Home',
     apiHomeDesc: '可选，自定义 token 与 config.json 的存放目录。',
+    sqliteDbPath: 'SQLite DB Path',
+    sqliteDbPathDesc:
+      '可选，自定义用量数据 SQLite 数据库文件路径（COPILOT_API_SQLITE_DB_PATH）。',
     enterpriseUrl: 'Enterprise URL',
     enterpriseUrlDesc:
       '可选，例如 company.ghe.com。用于连接 GitHub Enterprise。',

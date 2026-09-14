@@ -490,6 +490,14 @@ COPILOT_API_BIND=0.0.0.0
 COPILOT_API_PORT=4141
 ```
 
+Compose 服务还会从环境变量或用户自己的私有 `.env` 中传入 `COPILOT_API_SQLITE_DB_PATH`、`COPILOT_API_ENTERPRISE_URL` 和 `COPILOT_API_OAUTH_APP`。SQLite 路径是容器内路径，应放在可写的 `/data` 挂载目录下，例如：
+
+```dotenv
+COPILOT_API_SQLITE_DB_PATH=/data/copilot-api.sqlite
+COPILOT_API_ENTERPRISE_URL=company.ghe.com
+COPILOT_API_OAUTH_APP=opencode
+```
+
 Token 和代理变量也可以在同一文件中覆盖。代理地址必须能从容器内部访问。容器内部端口保持 `4141`，以便健康检查正常工作。
 
 <a id="electron-desktop-app"></a>
@@ -498,7 +506,7 @@ Token 和代理变量也可以在同一文件中覆盖。代理地址必须能�
 
 如果你更喜欢图形界面，仓库里还提供了位于 `desktop/` 的 Electron 桌面应用。它支持 GitHub Copilot 登录、OpenAI Codex OAuth，以及 Kimi、DeepSeek、DashScope、OpenRouter 或自定义 provider 的 API Key 配置。授权或配置 provider 后，可以一键启动或停止本地代理，并在界面里直接查看本地端点、鉴权 Header、可用模型、额度和日志。
 
-设置页还可以配置 `OAuth App`、`API Home`、`Enterprise URL`、详细日志以及最小化到托盘。Windows x64（`.exe`）、macOS Apple Silicon（`.dmg`）和 Linux x64（`.AppImage`）安装包发布在 GitHub Releases：
+设置页还可以配置 `OAuth App`、`API Home`、`SQLite DB Path`、`Enterprise URL`、详细日志以及最小化到托盘。Windows x64（`.exe`）、macOS Apple Silicon（`.dmg`）和 Linux x64（`.AppImage`）安装包发布在 GitHub Releases：
 
 https://github.com/caozhiyuan/copilot-api/releases
 

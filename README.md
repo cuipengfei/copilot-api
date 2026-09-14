@@ -460,13 +460,21 @@ COPILOT_API_BIND=0.0.0.0
 COPILOT_API_PORT=4141
 ```
 
+The Compose service also forwards `COPILOT_API_SQLITE_DB_PATH`, `COPILOT_API_ENTERPRISE_URL`, and `COPILOT_API_OAUTH_APP` from the environment or a private `.env` file. SQLite paths are container paths and should stay under the writable `/data` mount, for example:
+
+```dotenv
+COPILOT_API_SQLITE_DB_PATH=/data/copilot-api.sqlite
+COPILOT_API_ENTERPRISE_URL=company.ghe.com
+COPILOT_API_OAUTH_APP=opencode
+```
+
 Token and proxy variables can be overridden in the same file. Proxy addresses must be reachable from inside the container. Keep the internal port at `4141` so the health check remains valid.
 
 ## Electron Desktop App
 
 If you prefer a GUI, this repository also includes an Electron desktop app in `desktop/`. It supports GitHub Copilot sign-in, OpenAI Codex OAuth, and API-key configuration for Kimi, DeepSeek, DashScope, OpenRouter, or a custom provider. After authorization or provider configuration, it can start and stop the local proxy with one click and shows the local endpoint, auth header, available models, usage, and logs in the app.
 
-The settings screen also exposes `OAuth App`, `API Home`, `Enterprise URL`, verbose logging, and minimize-to-tray. Windows x64 (`.exe`), macOS Apple Silicon (`.dmg`), and Linux x64 (`.AppImage`) packages are published in GitHub Releases:
+The settings screen also exposes `OAuth App`, `API Home`, `SQLite DB Path`, `Enterprise URL`, verbose logging, and minimize-to-tray. Windows x64 (`.exe`), macOS Apple Silicon (`.dmg`), and Linux x64 (`.AppImage`) packages are published in GitHub Releases:
 
 https://github.com/caozhiyuan/copilot-api/releases
 

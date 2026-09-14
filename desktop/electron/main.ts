@@ -34,6 +34,7 @@ import {
   readSettingsSync,
   setLaunchAtLoginFallback,
 } from './settings-store'
+import { applySettingsEnvOverrides } from './settings-env'
 
 const CLI_ENV_FLAGS = {
   '--api-home': 'COPILOT_API_HOME',
@@ -100,22 +101,6 @@ function getEffectiveProxySettings(
 }
 
 let runtimeDependenciesPromise: Promise<RuntimeDependencies> | null = null
-
-function applySettingsEnvOverrides(settings: DesktopSettings): void {
-  const apiHome = settings.apiHome.trim()
-  if (!process.env.COPILOT_API_HOME && apiHome) {
-    process.env.COPILOT_API_HOME = apiHome
-  }
-
-  if (!process.env.COPILOT_API_OAUTH_APP && settings.oauthApp === 'opencode') {
-    process.env.COPILOT_API_OAUTH_APP = 'opencode'
-  }
-
-  const enterpriseUrl = settings.enterpriseUrl.trim()
-  if (!process.env.COPILOT_API_ENTERPRISE_URL && enterpriseUrl) {
-    process.env.COPILOT_API_ENTERPRISE_URL = enterpriseUrl
-  }
-}
 
 function warmOpencodeVersion(): void {
   void import('../../src/lib/opencode')
