@@ -4,7 +4,7 @@ import { setTimeout as delay } from "node:timers/promises"
 import { isOpencodeOauthApp } from "~/lib/api-config"
 import { getRawProviderConfig, setProviderConfig } from "~/lib/config"
 import {
-  readCodexCredentials,
+  readCodexCredentialStore,
   readGitHubToken,
   writeCodexCredentials,
   writeGitHubToken,
@@ -30,6 +30,19 @@ let copilotRefreshLoopController: AbortController | null = null
 let codexRefreshLoopController: AbortController | null = null
 let codexRefreshInFlight: Promise<CodexCredentials> | null = null
 let codexCredentialsPendingPersistence: CodexCredentials | null = null
+
+export interface CodexAccountSummary {
+  accountId: string
+  alias?: string
+  active: boolean
+}
+
+export interface PersistCodexCredentialsOptions {
+  activateAccount?: boolean
+  alias?: string
+  enableProvider?: boolean
+  syncProvider?: boolean
+}
 
 interface CopilotUserIdentity {
   endpoints: { api: string }
@@ -95,7 +108,10 @@ function getLoadedCodexCredentials(): CodexCredentials | null {
   }
 }
 
-function syncCodexProviderConfig(options?: { enabled?: boolean }): void {
+function syncCodexProviderConfig(options?: {
+  accountId?: string
+  enabled?: boolean
+}): void {
   const existingProviderConfig = getRawProviderConfig("codex") ?? {}
   setProviderConfig("codex", {
     ...existingProviderConfig,
@@ -103,18 +119,67 @@ function syncCodexProviderConfig(options?: { enabled?: boolean }): void {
     enabled: options?.enabled ?? existingProviderConfig.enabled,
     baseUrl: CODEX_API_BASE_URL,
     authType: "oauth2",
+    accountId: options?.accountId ?? existingProviderConfig.accountId,
     pricingCurrency: "USD",
   })
 }
 
+function getConfiguredCodexAccountId(): string | undefined {
+  return getRawProviderConfig("codex")?.accountId?.trim() || undefined
+}
+
+export async function getCodexAccounts(): Promise<Array<CodexAccountSummary>> {
+  const accounts = (await readCodexCredentialStore())?.accounts ?? []
+  const configuredAccountId = getConfiguredCodexAccountId()
+  const implicitAccountId =
+    configuredAccountId
+    ?? (accounts.length === 1 ? accounts[0].accountId : undefined)
+
+  return accounts.map((account) => ({
+    accountId: account.accountId,
+    ...(account.alias ? { alias: account.alias } : {}),
+    active: account.accountId === implicitAccountId,
+  }))
+}
+
+export async function selectCodexAccount(
+  selector: string,
+): Promise<CodexAccountSummary> {
+  const normalizedSelector = selector.trim()
+  if (!normalizedSelector) {
+    throw new Error("Codex account selector must be a non-empty string")
+  }
+
+  const accounts = (await readCodexCredentialStore())?.accounts ?? []
+  const account =
+    accounts.find((candidate) => candidate.accountId === normalizedSelector)
+    ?? accounts.find(
+      (candidate) =>
+        candidate.alias?.toLowerCase() === normalizedSelector.toLowerCase(),
+    )
+  if (!account) {
+    throw new Error(`Codex account '${normalizedSelector}' was not found`)
+  }
+
+  syncCodexProviderConfig({ accountId: account.accountId })
+  return {
+    accountId: account.accountId,
+    ...(account.alias ? { alias: account.alias } : {}),
+    active: true,
+  }
+}
+
 export async function persistCodexCredentials(
   credentials: CodexCredentials,
-  options?: { enableProvider?: boolean },
+  options: PersistCodexCredentialsOptions = {},
 ): Promise<void> {
-  await writeCodexCredentials(credentials)
-  syncCodexProviderConfig({
-    enabled: options?.enableProvider ? true : undefined,
-  })
+  await writeCodexCredentials(credentials, { alias: options.alias })
+  if (options.syncProvider !== false) {
+    syncCodexProviderConfig({
+      accountId: options.activateAccount ? credentials.accountId : undefined,
+      enabled: options.enableProvider ? true : undefined,
+    })
+  }
   applyCodexCredentials(credentials)
   codexCredentialsPendingPersistence = null
 }
@@ -129,7 +194,8 @@ export interface CodexRefreshDependencies {
 
 const defaultCodexRefreshDependencies: CodexRefreshDependencies = {
   getCurrentCredentials: getLoadedCodexCredentials,
-  persistCodexCredentials,
+  persistCodexCredentials: (credentials) =>
+    persistCodexCredentials(credentials, { syncProvider: false }),
   refreshCodexCredentials,
 }
 
@@ -260,23 +326,74 @@ export const setupCopilotToken = async (
 }
 
 export const setupCodexToken = async (): Promise<void> => {
+  const configuredAccountId = getConfiguredCodexAccountId()
   const loadedCredentials = getLoadedCodexCredentials()
-  if (loadedCredentials && !isCodexCredentialsExpired(loadedCredentials)) {
+  if (
+    configuredAccountId
+    && loadedCredentials?.accountId === configuredAccountId
+    && !isCodexCredentialsExpired(loadedCredentials)
+    && codexRefreshLoopController
+  ) {
+    return
+  }
+
+  let store: Awaited<ReturnType<typeof readCodexCredentialStore>> | undefined
+  let selectedAccountId = configuredAccountId
+  if (!selectedAccountId) {
+    store = await readCodexCredentialStore()
+    if (!store || store.accounts.length === 0) {
+      throw new Error(
+        `Codex credentials not found. Run \`copilot-api auth login --provider codex\` first.`,
+      )
+    }
+    if (store.accounts.length > 1) {
+      throw new Error(
+        "Multiple Codex accounts found but no account is selected. Run `copilot-api auth codex --use <alias-or-accountId>` first.",
+      )
+    }
+
+    selectedAccountId = store.accounts[0].accountId
+    syncCodexProviderConfig({ accountId: selectedAccountId })
+  }
+
+  const selectedLoadedCredentials =
+    loadedCredentials?.accountId === selectedAccountId ?
+      loadedCredentials
+    : null
+  if (
+    selectedLoadedCredentials
+    && !isCodexCredentialsExpired(selectedLoadedCredentials)
+  ) {
     if (codexRefreshLoopController) {
       return
     }
 
-    applyCodexCredentials(loadedCredentials)
+    applyCodexCredentials(selectedLoadedCredentials)
   }
 
-  const credentials = loadedCredentials ?? (await readCodexCredentials())
+  if (loadedCredentials && !selectedLoadedCredentials) {
+    stopCodexRefreshLoop()
+  }
+
+  if (!selectedLoadedCredentials) {
+    store ??= await readCodexCredentialStore()
+    if (!store || store.accounts.length === 0) {
+      throw new Error(
+        `Codex credentials not found. Run \`copilot-api auth login --provider codex\` first.`,
+      )
+    }
+  }
+
+  const credentials =
+    selectedLoadedCredentials
+    ?? store?.accounts.find(
+      (account) => account.accountId === selectedAccountId,
+    )
   if (!credentials) {
     throw new Error(
-      `Codex credentials not found. Run \`copilot-api auth login --provider codex\` first.`,
+      `Selected Codex account '${selectedAccountId}' was not found. Run \`copilot-api auth codex --list\` to inspect available accounts.`,
     )
   }
-
-  syncCodexProviderConfig()
 
   let nextCredentials = credentials
   if (isCodexCredentialsExpired(credentials)) {

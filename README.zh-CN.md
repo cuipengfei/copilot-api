@@ -504,7 +504,7 @@ Token 和代理变量也可以在同一文件中覆盖。代理地址必须能�
 
 ## Electron 桌面应用
 
-如果你更喜欢图形界面，仓库里还提供了位于 `desktop/` 的 Electron 桌面应用。它支持 GitHub Copilot 登录、OpenAI Codex OAuth，以及 Kimi、DeepSeek、DashScope、OpenRouter 或自定义 provider 的 API Key 配置。授权或配置 provider 后，可以一键启动或停止本地代理，并在界面里直接查看本地端点、鉴权 Header、可用模型、额度和日志。
+如果你更喜欢图形界面，仓库里还提供了位于 `desktop/` 的 Electron 桌面应用。它支持 GitHub Copilot 登录、OpenAI Codex OAuth 与最多 3 个 Codex 账号的手动切换，以及 Kimi、DeepSeek、DashScope、OpenRouter 或自定义 provider 的 API Key 配置。切换 Codex 账号后，界面会提示手动重启服务。授权或配置 provider 后，可以一键启动或停止本地代理，并在界面里直接查看本地端点、鉴权 Header、可用模型、额度和日志。
 
 设置页还可以配置 `OAuth App`、`API Home`、`SQLite DB Path`、`Enterprise URL`、详细日志以及最小化到托盘。Windows x64（`.exe`）、macOS Apple Silicon（`.dmg`）和 Linux x64（`.AppImage`）安装包发布在 GitHub Releases：
 
@@ -710,10 +710,13 @@ Copilot API 现在使用子命令结构，主要命令包括：
 | 选项 | 说明 | 默认值 | 别名 |
 | --- | --- | --- | --- |
 | --provider | 要登录或配置的 provider（`copilot`、`codex`、`opencode-go`、`kimi`、`deepseek`、`dashscope`、`openrouter` 或 `custom`） | 交互选择 | 无 |
+| --alias | Codex 账号的可选别名，仅与 `--provider codex` 一起使用 | 无 | 无 |
 | --verbose | 启用详细日志 | false | -v |
 | --show-token | 认证时显示 GitHub token | false | 无 |
 
 只有在需要启用 GitHub Copilot provider 时，才需要执行 `copilot-api auth login --provider copilot`。使用 `codex` 或第三方 provider-only 模式不要求配置 Copilot。
+
+Codex provider 最多保存 3 个账号。使用 `copilot-api auth login --provider codex --alias work` 新增或更新账号，新登录账号会成为当前账号；使用 `copilot-api auth codex --list` 查看账号，使用 `copilot-api auth codex --use <alias-or-accountId>` 手动切换。切换后需要重启正在运行的服务。旧版单账号 `codex_credentials.json` 会自动兼容，并在下一次写入凭据时升级为多账号格式。
 
 使用 `copilot-api auth login --provider deepseek`、`--provider dashscope`、`--provider openrouter`、`--provider opencode-go` 或 `--provider kimi` 可以通过 CLI 快速新增或更新这些常用第三方 provider。DeepSeek 会提示输入掩码显示的 `apiKey`、provider `type`（默认 `anthropic`），以及默认 `https://api.deepseek.com/anthropic` 的 `baseUrl`。DashScope 会提示输入掩码显示的 `apiKey`、provider `type`（默认 `openai-compatible`）和预填默认值的 `baseUrl`。OpenRouter 只提示输入掩码显示的 `apiKey` 和预填默认值的 `baseUrl`，并固定写入 `type: "anthropic"`。OpenCode Go 只提示输入掩码显示的 `apiKey` 和预填默认值的 `baseUrl`，并固定写入 `type: "openai-compatible"`（baseUrl `https://opencode.ai/zen/go`）。Kimi 会提示输入掩码显示的 `apiKey`、provider `type`（默认 `openai-compatible`）和默认值为 `https://api.kimi.com/coding` 的 `baseUrl`（同一个 base URL 同时支持 Anthropic 和 OpenAI-compatible 两种端点）。此外，OpenCode Go 内置将 `qwen*` 和 `minimax*` 模型路由到 Anthropic Messages，将 `gpt*`/`grok*`/`muse-spark*` 模型路由到 OpenAI Responses，其他模型仍默认使用 OpenAI 兼容协议。配置并启用 provider 后，`copilot-api start` 可在没有 GitHub token 的情况下启动。
 
@@ -781,13 +784,14 @@ Copilot API 现在使用子命令结构，主要命令包括：
   - `baseUrl`：provider API 的基础 URL，不要带结尾的 endpoint。Anthropic provider 不要带 `/v1/messages`；OpenAI 兼容 provider 不要带 `/v1/chat/completions`；OpenAI Responses provider 不要带 `/v1/responses`。
   - `apiKey`：作为上游凭据值使用；除 `authType` 为 `azure-entra` 外，普通 provider 必须配置。
   - `authType`：可选，控制上游认证方式。普通 provider 支持 `x-api-key`、`authorization` 和 `azure-entra`。Anthropic provider 默认 `x-api-key`；OpenAI 兼容和 OpenAI Responses provider 默认 `authorization`。`authorization` 会发送 `Authorization: Bearer <apiKey>`。`azure-entra` 使用 Azure Identity 的 `DefaultAzureCredential` 和 `https://cognitiveservices.azure.com/.default` scope 获取并发送 Bearer token，不需要配置 `apiKey`。Azure OpenAI v1 endpoint 可配置为 `{ "type": "openai-compatible", "baseUrl": "https://<resource-name>.openai.azure.com/openai", "authType": "azure-entra" }`。本地可先执行 `az login`，在 Azure 中可使用托管身份，也可设置标准的 `AZURE_TENANT_ID`、`AZURE_CLIENT_ID` 和 `AZURE_CLIENT_SECRET` 环境变量。`oauth2` 仅保留给内置 `codex` provider，并由 `auth login --provider codex` 自动写入。
+  - `accountId`：仅用于内置 `codex` provider，记录当前选中的 Codex 账号。CLI 或桌面端切换账号时自动更新。
   - `pricingCurrency`：可选，provider 维度的 token 费用币种，例如 `USD` 或 `CNY`。快捷 provider 默认 DashScope、DeepSeek 为 `CNY`，Codex、Kimi、OpenCode Go、OpenRouter 为 `USD`。费用按币种分别汇总，不做汇率换算。
   - `models`：可选，按模型 ID 配置的映射。每个键为请求中的模型名，值支持：
     - `temperature`：可选，当请求未指定时使用的默认温度。
     - `topP`：可选，当请求未指定时使用的默认 `top_p`。
     - `topK`：可选，当请求未指定时使用的默认 `top_k`。
     - `extraBody`：可选，按模型合入上游请求体的动态字段；请求体显式同名字段优先。OpenAI 兼容 provider 可用它配置 `enable_thinking`、`preserve_thinking`、`reasoning_effort` 等字段。`thinking_budget` 是 OpenAI 兼容 provider 的特殊覆盖项：配置在 `extraBody` 后，会在 Anthropic `thinking.budget_tokens` 翻译之后强制写入，并覆盖请求派生出的预算值。对于 provider name 为 `dashscope` 或 `baseUrl` 包含 `aliyuncs.com` 的 provider，请求派生的 `thinking_budget`（来自 Anthropic `thinking.budget_tokens`）会转发给上游；其他 OpenAI 兼容 provider 会移除请求派生的 `thinking_budget`，但 `extraBody` 中的 `thinking_budget` 仍然生效。对于 DashScope provider，当 `preserve_thinking` 未在 `extraBody` 或请求体中显式设置时，默认为 `true`。
-    - `pricing`：可选，按模型配置 token 单价，币种使用 provider 的 `pricingCurrency`，单位为每 100 万 tokens。支持 `input`、`output`、`cachedInput`（隐式缓存读）、`explicitCachedInput`（显式缓存读）和 `cacheCreationInput`。如需按输入 token 总量分档，可用带 `maxInputTokens` 的 `tiers`。
+    - `pricing`：可选，按模型配置 token 单价，币种使用 provider 的 `pricingCurrency`，单位为每 100 万 tokens。支持 `input`、`output`、`cachedInput`（隐式缓存读）、`explicitCachedInput`（显式缓存读）和 `cacheCreationInput`。如需按输入 token 总量分档，可用带 `maxInputTokens` 的 `tiers`。分时计费的 provider 可再配置 `offPeak`（字段与顶层相同）声明闲时单价，并用 `peakWindows` 声明忙时时段：每项包含 `startMinuteUtc`（含）和 `endMinuteUtc`（不含），取值为 UTC 当日分钟数，可选用 `weekdays` 以 ISO 星期号（1 表示周一，7 表示周日）限定生效日，省略表示每天生效。未配置 `peakWindows` 时 `offPeak` 不生效，始终按忙时价计费。内置目录已按此方式为 DeepSeek（周一至周五 UTC 01:00-04:00、06:00-10:00 为忙时，其余含周末为闲时）和 DashScope DeepSeek（UTC 14:00-24:00 为闲时）配置峰谷价，OpenCode Go 的 DeepSeek 模型沿用 DeepSeek 的时段。
     - `contextCache`：可选，provider name 为 `dashscope` 或 `baseUrl` 包含 `aliyuncs.com` 时默认 `true`，其他 OpenAI 兼容 provider 默认 `false`。用于启用阿里云百炼/DashScope 的显式缓存（explicit context cache），会按其 Context Cache 格式在最多 4 个 content block 上注入 `cache_control: { "type": "ephemeral" }`。缓存断点策略与 opencode 主链路保持一致：前 2 条 system 消息 + 最后 2 条非 system 消息。标记字符串 content 时会把 `system` / `user` / `assistant` / `tool` 消息转换为 text content part 数组；已有数组 content 则标记最后一个 part。如果模型本身已经支持隐式缓存，或上游不支持该显式缓存扩展字段，可在模型配置中设为 `false`。支持相同显式缓存扩展的非 DashScope provider 可设为 `true`。同时适用于 `/v1/messages` 和 `/v1/chat/completions` 路由。
     - `supportPdf`：可选，控制该模型是否支持 PDF/document content。默认 `false`，不支持时会把 PDF 转成提示文本；设为 `true` 时会把 PDF/document 转成 OpenAI Chat Completions 的 file part。
     - `toolContentSupportType`：可选，配置该模型的 tool result content 支持能力，值为 `array`、`image`、`pdf` 的数组。provider 侧未配置时默认只发送 string tool content。若 `supportPdf` 为 `true` 但这里不包含 `pdf`，tool result 里的 file part 会被转成 user role 消息。Copilot 主链路同样默认只发送 string tool content，因为部分 Copilot 模型也不支持数组或图片形式的 tool content。

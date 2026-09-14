@@ -96,7 +96,12 @@ export default function App() {
     setPage('auth')
   }
 
-  const handleBackToDashboard = () => {
+  const handleBackToDashboard = async () => {
+    try {
+      setInitialServerStatus(await window.electronAPI.getServerStatus())
+    } catch {
+      setInitialServerStatus(undefined)
+    }
     setCanReturnFromAuth(false)
     setPage('dashboard')
   }
@@ -108,7 +113,9 @@ export default function App() {
   if (page === 'auth') {
     return (
       <AuthPage
-        onBack={canReturnFromAuth ? handleBackToDashboard : undefined}
+        onBack={
+          canReturnFromAuth ? () => void handleBackToDashboard() : undefined
+        }
         onSuccess={handleAuthSuccess}
       />
     )

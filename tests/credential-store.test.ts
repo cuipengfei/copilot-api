@@ -5,6 +5,9 @@ import path from "node:path"
 
 import {
   GITHUB_TOKEN_ENV,
+  MAX_CODEX_ACCOUNTS,
+  readCodexCredentialStore,
+  readCodexCredentials,
   readGitHubTokenFromEnv,
   writeCodexCredentials,
   writeGitHubToken,
@@ -75,9 +78,10 @@ describe("credential store atomic writes", () => {
     await writeCodexCredentials(credentials)
 
     expect(fs.readFileSync(githubTokenPath, "utf8")).toBe("github-token")
-    expect(JSON.parse(fs.readFileSync(codexCredentialPath, "utf8"))).toEqual(
-      credentials,
-    )
+    expect(JSON.parse(fs.readFileSync(codexCredentialPath, "utf8"))).toEqual({
+      version: 1,
+      accounts: [credentials],
+    })
     expect(listTemporaryFiles(githubTokenPath)).toEqual([])
     expect(listTemporaryFiles(codexCredentialPath)).toEqual([])
 
@@ -89,7 +93,14 @@ describe("credential store atomic writes", () => {
 
   test("preserves Codex credentials when fsync fails", async () => {
     const { codexCredentialPath } = useTempCredentialPaths()
-    fs.writeFileSync(codexCredentialPath, "old-credentials", "utf8")
+    const oldCredentials = {
+      accessToken: "old-access-token",
+      refreshToken: "old-refresh-token",
+      expiresAt: 123,
+      accountId: "old-account-id",
+    }
+    const oldContent = `${JSON.stringify(oldCredentials, null, 2)}\n`
+    fs.writeFileSync(codexCredentialPath, oldContent, "utf8")
     fs.fsyncSync = (() => {
       throw new Error("forced credential fsync failure")
     }) as typeof fs.fsyncSync
@@ -104,8 +115,126 @@ describe("credential store atomic writes", () => {
     )
 
     expect(error.message).toBe("forced credential fsync failure")
-    expect(fs.readFileSync(codexCredentialPath, "utf8")).toBe("old-credentials")
+    expect(fs.readFileSync(codexCredentialPath, "utf8")).toBe(oldContent)
     expect(listTemporaryFiles(codexCredentialPath)).toEqual([])
+  })
+})
+
+describe("Codex account store", () => {
+  test("reads the legacy single-account credential shape", () => {
+    const { codexCredentialPath } = useTempCredentialPaths()
+    const credentials = {
+      accessToken: "legacy-access-token",
+      refreshToken: "legacy-refresh-token",
+      expiresAt: 123,
+      accountId: "legacy-account-id",
+    }
+    fs.writeFileSync(
+      codexCredentialPath,
+      `${JSON.stringify(credentials, null, 2)}\n`,
+      "utf8",
+    )
+
+    expect(readCodexCredentialStore()).resolves.toEqual({
+      version: 1,
+      accounts: [credentials],
+    })
+    expect(readCodexCredentials()).resolves.toEqual(credentials)
+  })
+
+  test("stores at most three accounts and allows an existing account update", async () => {
+    useTempCredentialPaths()
+
+    for (let index = 1; index <= MAX_CODEX_ACCOUNTS; index += 1) {
+      await writeCodexCredentials(
+        {
+          accessToken: `access-${index}`,
+          refreshToken: `refresh-${index}`,
+          expiresAt: index,
+          accountId: `account-${index}`,
+        },
+        { alias: `Account ${index}` },
+      )
+    }
+
+    await writeCodexCredentials({
+      accessToken: "updated-access",
+      refreshToken: "updated-refresh",
+      expiresAt: 99,
+      accountId: "account-2",
+    })
+
+    const store = await readCodexCredentialStore()
+    expect(store?.accounts).toHaveLength(MAX_CODEX_ACCOUNTS)
+    expect(store?.accounts[1]).toEqual({
+      accessToken: "updated-access",
+      refreshToken: "updated-refresh",
+      expiresAt: 99,
+      accountId: "account-2",
+      alias: "Account 2",
+    })
+
+    expect(
+      writeCodexCredentials({
+        accessToken: "overflow-access",
+        refreshToken: "overflow-refresh",
+        expiresAt: 100,
+        accountId: "account-4",
+      }),
+    ).rejects.toThrow(`Codex supports at most ${MAX_CODEX_ACCOUNTS} accounts`)
+    expect((await readCodexCredentialStore())?.accounts).toHaveLength(
+      MAX_CODEX_ACCOUNTS,
+    )
+  })
+
+  test("rejects duplicate aliases without changing stored accounts", async () => {
+    useTempCredentialPaths()
+    await writeCodexCredentials(
+      {
+        accessToken: "access-1",
+        refreshToken: "refresh-1",
+        expiresAt: 1,
+        accountId: "account-1",
+      },
+      { alias: "Work" },
+    )
+
+    expect(
+      writeCodexCredentials(
+        {
+          accessToken: "access-2",
+          refreshToken: "refresh-2",
+          expiresAt: 2,
+          accountId: "account-2",
+        },
+        { alias: "work" },
+      ),
+    ).rejects.toThrow("Codex account alias 'work' is already in use")
+    expect((await readCodexCredentialStore())?.accounts).toHaveLength(1)
+  })
+
+  test("requires an account id when multiple accounts are stored", async () => {
+    useTempCredentialPaths()
+    await writeCodexCredentials({
+      accessToken: "access-1",
+      refreshToken: "refresh-1",
+      expiresAt: 1,
+      accountId: "account-1",
+    })
+    await writeCodexCredentials({
+      accessToken: "access-2",
+      refreshToken: "refresh-2",
+      expiresAt: 2,
+      accountId: "account-2",
+    })
+
+    expect(readCodexCredentials()).rejects.toThrow(
+      "Multiple Codex accounts found but no account is selected",
+    )
+    expect(readCodexCredentials("account-2")).resolves.toMatchObject({
+      accessToken: "access-2",
+      accountId: "account-2",
+    })
   })
 })
 

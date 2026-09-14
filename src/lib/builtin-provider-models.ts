@@ -1,3 +1,7 @@
+import {
+  dashscopePeakWindows,
+  deepseekPeakWindows,
+} from "./token-usage/peak-windows"
 import type { TokenUsagePricingConfig } from "./token-usage/pricing"
 import type { CodexReasoningEffort, ModelReasoningField } from "./config-store"
 
@@ -273,9 +277,31 @@ export class BuiltinProviderModelRegistry {
         inputModalities: ["text"],
         maxOutputTokens: 64_000,
         pricing: {
+          cachedInput: 0.3,
+          input: 3,
+          offPeak: {
+            cachedInput: 0.15,
+            input: 1.5,
+            output: 4.5,
+          },
+          output: 9,
+          peakWindows: dashscopePeakWindows,
+        },
+      },
+      "deepseek-v4.1-flash": {
+        contextWindow: 1_000_000,
+        inputModalities: ["text", "image"],
+        maxOutputTokens: 393_216,
+        pricing: {
           cachedInput: 0.2,
-          input: 1,
-          output: 2,
+          input: 2,
+          offPeak: {
+            cachedInput: 0.1,
+            input: 1,
+            output: 4,
+          },
+          output: 8,
+          peakWindows: dashscopePeakWindows,
         },
       },
       "qwen3.7-plus": {
@@ -322,7 +348,13 @@ export class BuiltinProviderModelRegistry {
         pricing: {
           cachedInput: 0.04,
           input: 2,
+          offPeak: {
+            cachedInput: 0.02,
+            input: 1,
+            output: 4,
+          },
           output: 8,
+          peakWindows: deepseekPeakWindows,
         },
         reasoningEfforts: ["low", "high", "max"],
       },
@@ -333,7 +365,13 @@ export class BuiltinProviderModelRegistry {
         pricing: {
           cachedInput: 0.3,
           input: 9,
+          offPeak: {
+            cachedInput: 0.15,
+            input: 4.5,
+            output: 13.5,
+          },
           output: 27,
+          peakWindows: deepseekPeakWindows,
         },
         reasoningEfforts: ["low", "high", "max"],
       },
@@ -485,7 +523,13 @@ export class BuiltinProviderModelRegistry {
         pricing: {
           cachedInput: 0.006,
           input: 0.3,
+          offPeak: {
+            cachedInput: 0.003,
+            input: 0.15,
+            output: 0.6,
+          },
           output: 1.2,
+          peakWindows: deepseekPeakWindows,
         },
         reasoningEfforts: ["low", "high", "max"],
       },
@@ -494,9 +538,15 @@ export class BuiltinProviderModelRegistry {
         inputModalities: ["text"],
         maxOutputTokens: 64_000,
         pricing: {
-          cachedInput: 0.007,
-          input: 0.22,
-          output: 0.66,
+          cachedInput: 0.006,
+          input: 0.3,
+          offPeak: {
+            cachedInput: 0.003,
+            input: 0.15,
+            output: 0.6,
+          },
+          output: 1.2,
+          peakWindows: deepseekPeakWindows,
         },
       },
       "deepseek-v4-flash-vision-exp": {
@@ -504,9 +554,15 @@ export class BuiltinProviderModelRegistry {
         inputModalities: ["text", "image"],
         maxOutputTokens: 384_000,
         pricing: {
-          cachedInput: 0.007,
-          input: 0.22,
-          output: 0.66,
+          cachedInput: 0.006,
+          input: 0.3,
+          offPeak: {
+            cachedInput: 0.003,
+            input: 0.15,
+            output: 0.6,
+          },
+          output: 1.2,
+          peakWindows: deepseekPeakWindows,
         },
         reasoningEfforts: ["low", "high", "max"],
       },
@@ -515,9 +571,15 @@ export class BuiltinProviderModelRegistry {
         inputModalities: ["text"],
         maxOutputTokens: 64_000,
         pricing: {
-          cachedInput: 0.022,
-          input: 0.66,
-          output: 1.98,
+          cachedInput: 0.044,
+          input: 1.32,
+          offPeak: {
+            cachedInput: 0.022,
+            input: 0.66,
+            output: 1.98,
+          },
+          output: 3.96,
+          peakWindows: deepseekPeakWindows,
         },
       },
       "kimi-k2.7-code": {

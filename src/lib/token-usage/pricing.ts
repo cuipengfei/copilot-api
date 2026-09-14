@@ -1,9 +1,13 @@
 import { builtinProviderModelRegistry } from "../builtin-provider-models"
+import type { TokenUsagePeakWindow } from "./peak-windows"
 import {
   normalizeToken,
   type TokenUsageSource,
   type UsageTokens,
 } from "./store"
+
+export { dashscopePeakWindows, deepseekPeakWindows } from "./peak-windows"
+export type { TokenUsagePeakWindow } from "./peak-windows"
 
 export interface TokenUsagePricingTier {
   cachedInput?: number
@@ -15,6 +19,10 @@ export interface TokenUsagePricingTier {
 }
 
 export interface TokenUsagePricingConfig extends TokenUsagePricingTier {
+  // Prices billed outside every UTC peak window, for providers that discount
+  // off-peak traffic. Ignored unless `peakWindows` is non-empty.
+  offPeak?: TokenUsagePricingTier
+  peakWindows?: Array<TokenUsagePeakWindow>
   tiers?: Array<TokenUsagePricingTier>
 }
 
@@ -24,7 +32,10 @@ export interface CalculatedTokenUsageCost {
   total_cost_nanos: number
 }
 
-interface TokenUsageCostInput extends UsageTokens {
+export interface TokenUsageCostInput extends UsageTokens {
+  // Timestamp used to pick peak or off-peak prices; defaults to the current
+  // time when omitted.
+  at?: Date | null
   model: string
   pricing?: TokenUsagePricingConfig | null
   pricingCurrency?: string | null
@@ -84,6 +95,7 @@ export function resolveTokenUsageCost(
   const pricing = resolvePricingTier(
     resolvedPricing.pricing,
     getInputTokenTotal(input),
+    resolvePricingTime(input.at),
   )
   const currency = resolveProviderCurrency(providerName, input.pricingCurrency)
   if (!currency) {
@@ -187,6 +199,7 @@ function resolveProviderPricing(
 function resolvePricingTier(
   pricing: TokenUsagePricingConfig,
   inputTokenTotal: number,
+  at: Date,
 ): TokenUsagePricingTier {
   const tiers = pricing.tiers
     ?.filter((tier) => typeof tier === "object" && tier !== null)
@@ -196,10 +209,61 @@ function resolvePricingTier(
     tiers?.find((tier) => inputTokenTotal <= normalizeTierMax(tier))
     ?? tiers?.at(-1)
 
-  return {
+  const resolvedTier = {
     ...pricing,
     ...selectedTier,
   }
+
+  const offPeak = pricing.offPeak
+  const peakWindows = pricing.peakWindows
+  if (offPeak && peakWindows?.length && !isPeakPricingTime(peakWindows, at)) {
+    return { ...resolvedTier, ...offPeak }
+  }
+
+  return resolvedTier
+}
+
+function resolvePricingTime(at: Date | null | undefined): Date {
+  return at instanceof Date && Number.isFinite(at.getTime()) ? at : new Date()
+}
+
+// Peak windows are matched against UTC minutes and ISO weekdays so a catalog
+// entry bills the same no matter which timezone the host runs in.
+export function isPeakPricingTime(
+  windows: Array<TokenUsagePeakWindow>,
+  at: Date,
+): boolean {
+  const minuteOfDay = at.getUTCHours() * 60 + at.getUTCMinutes()
+  const isoWeekday = at.getUTCDay() || 7
+
+  return windows.some((window) => {
+    const startMinute = normalizeMinuteOfDay(window.startMinuteUtc)
+    const endMinute = normalizeMinuteOfDay(window.endMinuteUtc)
+    if (
+      startMinute === null
+      || endMinute === null
+      || endMinute <= startMinute
+    ) {
+      return false
+    }
+
+    if (window.weekdays?.length && !window.weekdays.includes(isoWeekday)) {
+      return false
+    }
+
+    return minuteOfDay >= startMinute && minuteOfDay < endMinute
+  })
+}
+
+function normalizeMinuteOfDay(value: number | undefined): number | null {
+  return (
+      typeof value === "number"
+        && Number.isFinite(value)
+        && value >= 0
+        && value <= 1_440
+    ) ?
+      value
+    : null
 }
 
 function normalizeTierMax(tier: TokenUsagePricingTier): number {

@@ -4,6 +4,10 @@ import {
   builtinProviderModelRegistry,
   BuiltinProviderModelRegistry,
 } from "~/lib/builtin-provider-models"
+import {
+  dashscopePeakWindows,
+  deepseekPeakWindows,
+} from "~/lib/token-usage/pricing"
 
 describe("builtin provider model registry", () => {
   test("normalizes provider and model names when resolving model config", () => {
@@ -142,5 +146,145 @@ describe("builtin provider model registry", () => {
     expect(
       builtinProviderModelRegistry.getModelConfig("deepseek", "unknown"),
     ).toBeUndefined()
+  })
+
+  test("defines DeepSeek peak and off-peak pricing with the DeepSeek windows", () => {
+    expect(
+      builtinProviderModelRegistry.getModelConfig("deepseek", "deepseek-flash"),
+    ).toEqual({
+      contextWindow: 1_000_000,
+      inputModalities: ["text", "image"],
+      maxOutputTokens: 384_000,
+      pricing: {
+        cachedInput: 0.04,
+        input: 2,
+        offPeak: {
+          cachedInput: 0.02,
+          input: 1,
+          output: 4,
+        },
+        output: 8,
+        peakWindows: deepseekPeakWindows,
+      },
+      reasoningEfforts: ["low", "high", "max"],
+    })
+
+    expect(
+      builtinProviderModelRegistry.getModelConfig(
+        "deepseek",
+        "deepseek-v4-pro",
+      ),
+    ).toMatchObject({
+      pricing: {
+        cachedInput: 0.3,
+        input: 9,
+        offPeak: {
+          cachedInput: 0.15,
+          input: 4.5,
+          output: 13.5,
+        },
+        output: 27,
+        peakWindows: deepseekPeakWindows,
+      },
+    })
+  })
+
+  test("defines the DashScope DeepSeek V4.1 Flash model with DashScope windows", () => {
+    expect(
+      builtinProviderModelRegistry.getModelConfig(
+        "dashscope",
+        "deepseek-v4.1-flash",
+      ),
+    ).toEqual({
+      contextWindow: 1_000_000,
+      inputModalities: ["text", "image"],
+      maxOutputTokens: 393_216,
+      pricing: {
+        cachedInput: 0.2,
+        input: 2,
+        offPeak: {
+          cachedInput: 0.1,
+          input: 1,
+          output: 4,
+        },
+        output: 8,
+        peakWindows: dashscopePeakWindows,
+      },
+    })
+
+    expect(
+      builtinProviderModelRegistry.getModelConfig(
+        "dashscope",
+        "deepseek-v4-flash-0731",
+      ),
+    ).toMatchObject({
+      pricing: {
+        cachedInput: 0.3,
+        input: 3,
+        offPeak: {
+          cachedInput: 0.15,
+          input: 1.5,
+          output: 4.5,
+        },
+        output: 9,
+        peakWindows: dashscopePeakWindows,
+      },
+    })
+  })
+
+  test("applies the DeepSeek windows to every OpenCode Go DeepSeek model", () => {
+    const expectedPricing = {
+      "deepseek-v4-flash": {
+        cachedInput: 0.006,
+        input: 0.3,
+        offPeak: {
+          cachedInput: 0.003,
+          input: 0.15,
+          output: 0.6,
+        },
+        output: 1.2,
+        peakWindows: deepseekPeakWindows,
+      },
+      "deepseek-v4-flash-vision-exp": {
+        cachedInput: 0.006,
+        input: 0.3,
+        offPeak: {
+          cachedInput: 0.003,
+          input: 0.15,
+          output: 0.6,
+        },
+        output: 1.2,
+        peakWindows: deepseekPeakWindows,
+      },
+      "deepseek-v4-pro": {
+        cachedInput: 0.044,
+        input: 1.32,
+        offPeak: {
+          cachedInput: 0.022,
+          input: 0.66,
+          output: 1.98,
+        },
+        output: 3.96,
+        peakWindows: deepseekPeakWindows,
+      },
+      "deepseek-v4.1-flash": {
+        cachedInput: 0.006,
+        input: 0.3,
+        offPeak: {
+          cachedInput: 0.003,
+          input: 0.15,
+          output: 0.6,
+        },
+        output: 1.2,
+        peakWindows: deepseekPeakWindows,
+      },
+    }
+
+    for (const [model, pricing] of Object.entries(expectedPricing)) {
+      expect(
+        builtinProviderModelRegistry.getModelConfig("opencode-go", model)
+          ?.pricing,
+      ).toEqual(pricing)
+    }
   })
 })

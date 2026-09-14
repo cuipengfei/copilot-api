@@ -8,6 +8,7 @@ interface ConfigFileShape {
   providers?: Record<
     string,
     {
+      accountId?: string
       apiKey?: string
       authType?: string
       baseUrl?: string
@@ -648,5 +649,117 @@ describe("auth login validation", () => {
       expect(output).toBe(item.message)
       expect(readConfigFile(tempDir).providers).toBeUndefined()
     }
+  })
+})
+
+describe("Codex account commands", () => {
+  function writeCodexAccounts(tempDir: string): void {
+    fs.writeFileSync(
+      path.join(tempDir, "codex_credentials.json"),
+      `${JSON.stringify(
+        {
+          version: 1,
+          accounts: [
+            {
+              accessToken: "secret-access-one",
+              refreshToken: "secret-refresh-one",
+              expiresAt: 1,
+              accountId: "acct_one",
+              alias: "Work",
+            },
+            {
+              accessToken: "secret-access-two",
+              refreshToken: "secret-refresh-two",
+              expiresAt: 2,
+              accountId: "acct_two",
+              alias: "Personal",
+            },
+          ],
+        },
+        null,
+        2,
+      )}\n`,
+      "utf8",
+    )
+  }
+
+  test("lists Codex accounts without exposing credentials", () => {
+    const tempDir = createTempDir()
+    writeConfigFile(tempDir, {
+      providers: { codex: { accountId: "acct_two" } },
+    })
+    writeCodexAccounts(tempDir)
+
+    const output = runScript(
+      tempDir,
+      `
+      const consolaModule = await import("consola");
+      const consola = consolaModule.default ?? consolaModule;
+      const messages = [];
+      consola.info = (...args) => messages.push(args.join(" "));
+      const { runAuthCodex } = await import("./src/auth");
+      await runAuthCodex({ list: true });
+      console.log(JSON.stringify(messages));
+      `,
+    )
+
+    const messages = JSON.parse(output) as Array<string>
+    expect(messages).toContain("- Work (acct_one)")
+    expect(messages).toContain("* Personal (acct_two)")
+    expect(output).not.toContain("secret-access")
+    expect(output).not.toContain("secret-refresh")
+  })
+
+  test("selects a Codex account by case-insensitive alias", () => {
+    const tempDir = createTempDir()
+    writeConfigFile(tempDir, {
+      providers: { codex: { accountId: "acct_two", enabled: true } },
+    })
+    writeCodexAccounts(tempDir)
+
+    const output = runScript(
+      tempDir,
+      `
+      const consolaModule = await import("consola");
+      const consola = consolaModule.default ?? consolaModule;
+      consola.info = () => {};
+      consola.success = () => {};
+      const { runAuthCodex } = await import("./src/auth");
+      const { getRawProviderConfig } = await import("./src/lib/config");
+      await runAuthCodex({ use: "work" });
+      console.log(JSON.stringify(getRawProviderConfig("codex")));
+      `,
+    )
+
+    expect(JSON.parse(output)).toMatchObject({
+      accountId: "acct_one",
+      enabled: true,
+      authType: "oauth2",
+      baseUrl: "https://chatgpt.com/backend-api",
+      type: "openai-responses",
+    })
+  })
+
+  test("rejects an unknown Codex account without changing selection", () => {
+    const tempDir = createTempDir()
+    writeConfigFile(tempDir, {
+      providers: { codex: { accountId: "acct_two", enabled: true } },
+    })
+    writeCodexAccounts(tempDir)
+
+    const output = runScript(
+      tempDir,
+      `
+      const { runAuthCodex } = await import("./src/auth");
+      try {
+        await runAuthCodex({ use: "missing" });
+      } catch (error) {
+        console.log(error instanceof Error ? error.message : String(error));
+      }
+      `,
+    )
+
+    expect(output).toBe("Codex account 'missing' was not found")
+    expect(readConfigFile(tempDir).providers?.codex?.accountId).toBe("acct_two")
   })
 })

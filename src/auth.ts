@@ -23,9 +23,15 @@ import {
 } from "./lib/quick-providers"
 import { prompt } from "./lib/interactive-prompt"
 import { state } from "./lib/state"
-import { persistCodexCredentials, setupGitHubToken } from "./lib/token"
+import {
+  getCodexAccounts,
+  persistCodexCredentials,
+  selectCodexAccount,
+  setupGitHubToken,
+} from "./lib/token"
 
 interface RunAuthOptions {
+  alias?: string
   provider?: string
   verbose: boolean
   showToken: boolean
@@ -36,6 +42,10 @@ const authArgs = {
     type: "string",
     description:
       "Provider to log in with or configure (copilot, codex, opencode-go, kimi, deepseek, dashscope, openrouter, custom)",
+  },
+  alias: {
+    type: "string",
+    description: "Optional alias for a Codex account",
   },
   verbose: {
     alias: "v",
@@ -454,7 +464,7 @@ async function configureQuickProvider(
   )
 }
 
-async function loginWithCodex(): Promise<void> {
+async function loginWithCodex(alias?: string): Promise<void> {
   const credentials = await loginCodex({
     onAuth(info) {
       consola.info("Open the following URL to authenticate with Codex:")
@@ -471,13 +481,24 @@ async function loginWithCodex(): Promise<void> {
     },
   })
 
-  await persistCodexCredentials(credentials, { enableProvider: true })
+  await persistCodexCredentials(credentials, {
+    activateAccount: true,
+    alias,
+    enableProvider: true,
+  })
   consola.success(
     `Codex provider config written to ${PATHS.CONFIG_PATH} and credentials written to ${PATHS.CODEX_CREDENTIAL_PATH}`,
   )
 }
 
-async function loginWithProvider(provider: AuthProviderName): Promise<void> {
+async function loginWithProvider(
+  provider: AuthProviderName,
+  alias?: string,
+): Promise<void> {
+  if (alias !== undefined && provider !== "codex") {
+    throw new Error("--alias is only supported with the codex provider")
+  }
+
   if (provider === "copilot") {
     await setupGitHubToken({ force: true })
     consola.success("GitHub token written to", PATHS.GITHUB_TOKEN_PATH)
@@ -485,7 +506,7 @@ async function loginWithProvider(provider: AuthProviderName): Promise<void> {
   }
 
   if (provider === "codex") {
-    await loginWithCodex()
+    await loginWithCodex(alias)
     return
   }
 
@@ -518,7 +539,68 @@ export async function runAuthLogin(options: RunAuthOptions): Promise<void> {
   const provider = await resolveProviderSelection(options.provider)
 
   consola.info(`Logging in with ${AUTH_PROVIDER_LABELS[provider]}`)
-  await loginWithProvider(provider)
+  await loginWithProvider(provider, options.alias)
+}
+
+const authCodexArgs = {
+  list: {
+    alias: "l",
+    type: "boolean",
+    default: false,
+    description: "List stored Codex accounts",
+  },
+  use: {
+    alias: "u",
+    type: "string",
+    description: "Select a Codex account by alias or account id",
+  },
+} as const
+
+interface RunAuthCodexOptions {
+  list?: boolean
+  use?: string
+}
+
+function formatCodexAccount(
+  account: Awaited<ReturnType<typeof getCodexAccounts>>[number],
+): string {
+  const name =
+    account.alias ?
+      `${account.alias} (${account.accountId})`
+    : account.accountId
+  return `${account.active ? "*" : "-"} ${name}`
+}
+
+export async function runAuthCodex(
+  options: RunAuthCodexOptions,
+): Promise<void> {
+  await ensurePaths()
+
+  if (options.list && options.use !== undefined) {
+    throw new Error("Use only one of --list or --use per invocation")
+  }
+
+  if (options.use !== undefined) {
+    const account = await selectCodexAccount(options.use)
+    consola.success(
+      `Selected Codex account ${account.alias ? `${account.alias} (${account.accountId})` : account.accountId}`,
+    )
+    consola.info("Restart the server to use the selected Codex account.")
+    return
+  }
+
+  const accounts = await getCodexAccounts()
+  if (accounts.length === 0) {
+    consola.info(
+      "No Codex accounts configured. Run `copilot-api auth login --provider codex` to add one.",
+    )
+    return
+  }
+
+  consola.info("Configured Codex accounts:")
+  for (const account of accounts) {
+    consola.info(formatCodexAccount(account))
+  }
 }
 
 const authKeysArgs = {
@@ -642,6 +724,7 @@ const authLogin = defineCommand({
   args: authArgs,
   run({ args }) {
     return runAuthLogin({
+      alias: args.alias,
       provider: args.provider,
       verbose: args.verbose,
       showToken: args["show-token"],
@@ -665,6 +748,20 @@ const authKeys = defineCommand({
   },
 })
 
+const authCodex = defineCommand({
+  meta: {
+    name: "codex",
+    description: "List or select stored Codex accounts",
+  },
+  args: authCodexArgs,
+  run({ args }) {
+    return runAuthCodex({
+      list: args.list,
+      use: args.use,
+    })
+  },
+})
+
 export const auth = defineCommand({
   meta: {
     name: "auth",
@@ -672,6 +769,7 @@ export const auth = defineCommand({
   },
   args: authArgs,
   subCommands: {
+    codex: authCodex,
     login: authLogin,
     keys: authKeys,
   },
@@ -681,6 +779,7 @@ export const auth = defineCommand({
     }
 
     return runAuthLogin({
+      alias: args.alias,
       provider: args.provider,
       verbose: args.verbose,
       showToken: args["show-token"],

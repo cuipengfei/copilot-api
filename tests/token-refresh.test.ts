@@ -224,7 +224,7 @@ test("refreshes expired Codex credentials once for concurrent Codex requests", (
   const script = `
     const payload = Buffer.from(
       JSON.stringify({
-        "https://api.openai.com/auth": { chatgpt_account_id: "acct_refreshed" },
+        "https://api.openai.com/auth": { chatgpt_account_id: "acct_old" },
       }),
     ).toString("base64url")
     const accessToken = "header." + payload + ".signature"
@@ -283,4 +283,89 @@ test("refreshes expired Codex credentials once for concurrent Codex requests", (
   expect(firstApiKey).toStartWith("header.")
   expect(firstApiKey).not.toBe(expiredCredentials.accessToken)
   expect(otherApiKeys).toEqual([firstApiKey, firstApiKey])
+})
+
+test("refreshes only the selected Codex account and preserves the selection", () => {
+  const tempDir = createTempDir()
+  const activeCredentials = {
+    accessToken: "expired-active-access",
+    accountId: "acct_active",
+    expiresAt: 0,
+    refreshToken: "expired-active-refresh",
+    alias: "Work",
+  }
+  const inactiveCredentials = {
+    accessToken: "inactive-access",
+    accountId: "acct_inactive",
+    expiresAt: Date.now() + 60 * 60 * 1000,
+    refreshToken: "inactive-refresh",
+    alias: "Personal",
+  }
+  fs.writeFileSync(
+    path.join(tempDir, "config.json"),
+    `${JSON.stringify({ providers: { codex: { accountId: "acct_active", enabled: true } } })}\n`,
+    "utf8",
+  )
+  fs.writeFileSync(
+    path.join(tempDir, "codex_credentials.json"),
+    `${JSON.stringify({ version: 1, accounts: [activeCredentials, inactiveCredentials] }, null, 2)}\n`,
+    "utf8",
+  )
+
+  const script = `
+    const payload = Buffer.from(
+      JSON.stringify({
+        "https://api.openai.com/auth": { chatgpt_account_id: "acct_active" },
+      }),
+    ).toString("base64url")
+    globalThis.fetch = () => Promise.resolve(
+      Response.json({
+        access_token: "header." + payload + ".signature",
+        refresh_token: "rotated-active-refresh",
+        expires_in: 3600,
+      }),
+    )
+
+    const { resolveProviderConfig } = await import("./src/lib/provider-resolver")
+    await resolveProviderConfig("codex")
+    const { readCodexCredentialStore } = await import("./src/lib/credential-store")
+    const { getRawProviderConfig } = await import("./src/lib/config")
+    const { stopCodexRefreshLoop } = await import("./src/lib/token")
+    console.log(JSON.stringify({
+      accountId: getRawProviderConfig("codex")?.accountId,
+      store: await readCodexCredentialStore(),
+    }))
+    stopCodexRefreshLoop()
+  `
+
+  const result = Bun.spawnSync({
+    cmd: [process.execPath, "--eval", script],
+    cwd: repoRoot,
+    env: {
+      ...process.env,
+      COPILOT_API_HOME: tempDir,
+      COPILOT_API_OAUTH_APP: "",
+      COPILOT_API_ENTERPRISE_URL: "",
+    },
+  })
+
+  if (result.exitCode !== 0) {
+    throw new Error(decoder.decode(result.stderr))
+  }
+
+  const output = JSON.parse(decoder.decode(result.stdout).trim()) as {
+    accountId: string
+    store: {
+      accounts: Array<CodexCredentials & { alias?: string }>
+      version: number
+    }
+  }
+  expect(output.accountId).toBe("acct_active")
+  expect(output.store.accounts).toHaveLength(2)
+  expect(output.store.accounts[0]).toMatchObject({
+    accountId: "acct_active",
+    alias: "Work",
+    refreshToken: "rotated-active-refresh",
+  })
+  expect(output.store.accounts[1]).toEqual(inactiveCredentials)
 })
