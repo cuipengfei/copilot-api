@@ -1,4 +1,7 @@
+import { randomBytes } from "node:crypto"
 import fs from "node:fs/promises"
+import path from "node:path"
+import { setTimeout as delay } from "node:timers/promises"
 
 import type { CodexCredentials } from "~/lib/oauth/codex"
 
@@ -6,6 +9,10 @@ import { writeFileAtomically } from "./atomic-file"
 import { PATHS } from "./paths"
 
 export const MAX_CODEX_ACCOUNTS = 3
+
+const CODEX_CREDENTIAL_LOCK_RETRY_MS = 10
+const CODEX_CREDENTIAL_LOCK_TIMEOUT_MS = 10_000
+const CODEX_CREDENTIAL_LOCK_STALE_MS = 60_000
 
 export interface CodexStoredAccount extends CodexCredentials {
   alias?: string
@@ -20,8 +27,198 @@ export interface WriteCodexCredentialsOptions {
   alias?: string
 }
 
+interface CodexCredentialLockMetadata {
+  createdAt: number
+  owner: string
+  pid: number
+}
+
+interface CodexCredentialLock {
+  content: string
+  fileHandle: Awaited<ReturnType<typeof fs.open>>
+  lockPath: string
+}
+
 function isNodeError(error: unknown): error is NodeJS.ErrnoException {
   return error instanceof Error && "code" in error
+}
+
+function normalizeCodexAccountSelector(value: string): string {
+  return value.trim().toLowerCase()
+}
+
+function parseCodexCredentialLockMetadata(
+  value: string,
+): CodexCredentialLockMetadata | null {
+  try {
+    const candidate = JSON.parse(value) as Partial<CodexCredentialLockMetadata>
+    if (
+      typeof candidate.createdAt !== "number"
+      || !Number.isFinite(candidate.createdAt)
+      || typeof candidate.owner !== "string"
+      || typeof candidate.pid !== "number"
+      || !Number.isSafeInteger(candidate.pid)
+      || candidate.pid <= 0
+    ) {
+      return null
+    }
+
+    return {
+      createdAt: candidate.createdAt,
+      owner: candidate.owner,
+      pid: candidate.pid,
+    }
+  } catch {
+    return null
+  }
+}
+
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (error) {
+    return !(isNodeError(error) && error.code === "ESRCH")
+  }
+}
+
+async function isCodexCredentialLockContention(
+  error: unknown,
+  lockPath: string,
+): Promise<boolean> {
+  if (isNodeError(error) && error.code === "EEXIST") {
+    return true
+  }
+  if (
+    process.platform !== "win32"
+    || !isNodeError(error)
+    || (error.code !== "EACCES" && error.code !== "EPERM")
+  ) {
+    return false
+  }
+
+  try {
+    await fs.stat(lockPath)
+    return true
+  } catch (statError) {
+    if (isNodeError(statError) && statError.code === "ENOENT") {
+      // Windows can briefly report EPERM while another writer removes the lock.
+      return true
+    }
+    return false
+  }
+}
+
+async function removeStaleCodexCredentialLock(lockPath: string): Promise<void> {
+  let content: string
+  let modifiedAt: number
+  try {
+    const [lockContent, stats] = await Promise.all([
+      fs.readFile(lockPath, "utf8"),
+      fs.stat(lockPath),
+    ])
+    content = lockContent
+    modifiedAt = stats.mtimeMs
+  } catch (error) {
+    if (isNodeError(error) && error.code === "ENOENT") {
+      return
+    }
+    throw error
+  }
+
+  const metadata = parseCodexCredentialLockMetadata(content)
+  const lockAgeMs = Date.now() - (metadata?.createdAt ?? modifiedAt)
+  if (
+    lockAgeMs < CODEX_CREDENTIAL_LOCK_STALE_MS
+    && (!metadata || isProcessAlive(metadata.pid))
+  ) {
+    return
+  }
+
+  try {
+    if ((await fs.readFile(lockPath, "utf8")) !== content) {
+      return
+    }
+    await fs.unlink(lockPath)
+  } catch (error) {
+    if (isNodeError(error) && error.code === "ENOENT") {
+      return
+    }
+    throw error
+  }
+}
+
+async function acquireCodexCredentialLock(): Promise<CodexCredentialLock> {
+  const lockPath = `${PATHS.CODEX_CREDENTIAL_PATH}.lock`
+  await fs.mkdir(path.dirname(lockPath), { recursive: true })
+
+  const startedAt = Date.now()
+  while (true) {
+    const metadata: CodexCredentialLockMetadata = {
+      createdAt: Date.now(),
+      owner: `${process.pid}-${randomBytes(8).toString("hex")}`,
+      pid: process.pid,
+    }
+    const content = `${JSON.stringify(metadata)}\n`
+
+    try {
+      const fileHandle = await fs.open(lockPath, "wx", 0o600)
+      try {
+        await fileHandle.writeFile(content, "utf8")
+        await fileHandle.sync()
+      } catch (error) {
+        await fileHandle.close().catch(() => {})
+        await fs.unlink(lockPath).catch(() => {})
+        throw error
+      }
+      return { content, fileHandle, lockPath }
+    } catch (error) {
+      if (!(await isCodexCredentialLockContention(error, lockPath))) {
+        throw error
+      }
+    }
+
+    await removeStaleCodexCredentialLock(lockPath)
+    if (Date.now() - startedAt >= CODEX_CREDENTIAL_LOCK_TIMEOUT_MS) {
+      throw new Error(
+        `Timed out waiting for Codex credential store lock: ${lockPath}`,
+      )
+    }
+    await delay(CODEX_CREDENTIAL_LOCK_RETRY_MS)
+  }
+}
+
+async function releaseCodexCredentialLock(
+  lock: CodexCredentialLock,
+): Promise<void> {
+  await lock.fileHandle.close()
+
+  try {
+    if ((await fs.readFile(lock.lockPath, "utf8")) !== lock.content) {
+      return
+    }
+    await fs.unlink(lock.lockPath)
+  } catch (error) {
+    if (!(isNodeError(error) && error.code === "ENOENT")) {
+      throw error
+    }
+  }
+}
+
+async function withCodexCredentialLock<T>(
+  operation: () => Promise<T>,
+): Promise<T> {
+  const lock = await acquireCodexCredentialLock()
+  let result: T
+  try {
+    result = await operation()
+  } catch (error) {
+    await releaseCodexCredentialLock(lock).catch(() => {})
+    throw error
+  }
+
+  await releaseCodexCredentialLock(lock)
+  return result
 }
 
 async function readOptionalFile(filePath: string): Promise<string | null> {
@@ -120,7 +317,8 @@ function normalizeCodexCredentialStore(
       return null
     }
 
-    const normalizedAlias = account.alias?.toLowerCase()
+    const normalizedAlias =
+      account.alias ? normalizeCodexAccountSelector(account.alias) : undefined
     if (normalizedAlias && aliases.has(normalizedAlias)) {
       return null
     }
@@ -132,10 +330,31 @@ function normalizeCodexCredentialStore(
     }
   }
 
-  return { version: 1, accounts }
+  // Versions before selector namespace validation allowed an alias to equal a
+  // different account id. Drop only that ambiguous alias so existing tokens
+  // remain usable and the next credential write repairs the persisted store.
+  const normalizedAccounts = accounts.map((account, index) => {
+    const alias = account.alias
+    if (
+      !alias
+      || !accounts.some(
+        (candidate, candidateIndex) =>
+          candidateIndex !== index
+          && normalizeCodexAccountSelector(candidate.accountId)
+            === normalizeCodexAccountSelector(alias),
+      )
+    ) {
+      return account
+    }
+
+    const { alias: _alias, ...credentials } = account
+    return credentials
+  })
+
+  return { version: 1, accounts: normalizedAccounts }
 }
 
-async function writeCodexCredentialStore(
+async function writeCodexCredentialStoreUnlocked(
   store: CodexCredentialStoreV1,
 ): Promise<void> {
   await writeProtectedFile(
@@ -223,49 +442,95 @@ export async function writeCodexCredentials(
     throw new Error("Codex credentials are missing required fields")
   }
 
-  const store = (await readCodexCredentialStore()) ?? {
-    version: 1 as const,
-    accounts: [],
-  }
-  const existingIndex = store.accounts.findIndex(
-    (account) => account.accountId === normalizedCredentials.accountId,
-  )
-  if (existingIndex < 0 && store.accounts.length >= MAX_CODEX_ACCOUNTS) {
-    throw new Error(`Codex supports at most ${MAX_CODEX_ACCOUNTS} accounts`)
-  }
-
-  const alias = options.alias?.trim()
-  if (
-    alias
-    && store.accounts.some(
-      (account, index) =>
-        index !== existingIndex
-        && account.alias?.toLowerCase() === alias.toLowerCase(),
+  await withCodexCredentialLock(async () => {
+    const store = (await readCodexCredentialStore()) ?? {
+      version: 1 as const,
+      accounts: [],
+    }
+    const accountIdSelector = normalizeCodexAccountSelector(
+      normalizedCredentials.accountId,
     )
-  ) {
-    throw new Error(`Codex account alias '${alias}' is already in use`)
-  }
+    const existingIndex = store.accounts.findIndex(
+      (account) => account.accountId === normalizedCredentials.accountId,
+    )
+    if (
+      existingIndex < 0
+      && store.accounts.some(
+        (account) =>
+          normalizeCodexAccountSelector(account.accountId)
+          === accountIdSelector,
+      )
+    ) {
+      throw new Error(
+        `Codex account id '${normalizedCredentials.accountId}' is already in use`,
+      )
+    }
+    if (existingIndex < 0 && store.accounts.length >= MAX_CODEX_ACCOUNTS) {
+      throw new Error(`Codex supports at most ${MAX_CODEX_ACCOUNTS} accounts`)
+    }
+    if (
+      store.accounts.some(
+        (account, index) =>
+          index !== existingIndex
+          && account.alias
+          && normalizeCodexAccountSelector(account.alias) === accountIdSelector,
+      )
+    ) {
+      throw new Error(
+        `Codex account id '${normalizedCredentials.accountId}' conflicts with another account alias`,
+      )
+    }
 
-  const existingAccount =
-    existingIndex >= 0 ? store.accounts[existingIndex] : undefined
-  const nextAccount: CodexStoredAccount = {
-    ...normalizedCredentials,
-    ...(alias ? { alias }
-    : existingAccount?.alias ? { alias: existingAccount.alias }
-    : {}),
-  }
-  const accounts = [...store.accounts]
-  if (existingIndex >= 0) {
-    accounts[existingIndex] = nextAccount
-  } else {
-    accounts.push(nextAccount)
-  }
+    const alias = options.alias?.trim()
+    if (alias) {
+      const aliasSelector = normalizeCodexAccountSelector(alias)
+      if (
+        store.accounts.some(
+          (account, index) =>
+            index !== existingIndex
+            && account.alias
+            && normalizeCodexAccountSelector(account.alias) === aliasSelector,
+        )
+      ) {
+        throw new Error(`Codex account alias '${alias}' is already in use`)
+      }
+      if (
+        store.accounts.some(
+          (account, index) =>
+            index !== existingIndex
+            && normalizeCodexAccountSelector(account.accountId)
+              === aliasSelector,
+        )
+      ) {
+        throw new Error(
+          `Codex account alias '${alias}' conflicts with another account id`,
+        )
+      }
+    }
 
-  await writeCodexCredentialStore({ version: 1, accounts })
+    const existingAccount =
+      existingIndex >= 0 ? store.accounts[existingIndex] : undefined
+    const nextAccount: CodexStoredAccount = {
+      ...normalizedCredentials,
+      ...(alias ? { alias }
+      : existingAccount?.alias ? { alias: existingAccount.alias }
+      : {}),
+    }
+    const accounts = [...store.accounts]
+    if (existingIndex >= 0) {
+      accounts[existingIndex] = nextAccount
+    } else {
+      accounts.push(nextAccount)
+    }
+
+    await writeCodexCredentialStoreUnlocked({ version: 1, accounts })
+  })
 }
 
 export async function clearCodexCredentials(): Promise<void> {
-  await writeProtectedFile(PATHS.CODEX_CREDENTIAL_PATH, "")
+  await withCodexCredentialLock(() =>
+    writeProtectedFile(PATHS.CODEX_CREDENTIAL_PATH, ""),
+  )
 }
 
 export async function hasCodexCredentials(): Promise<boolean> {

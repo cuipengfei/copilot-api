@@ -2,8 +2,10 @@ import { afterEach, describe, expect, test } from "bun:test"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
+import { fileURLToPath } from "node:url"
 
 import {
+  clearCodexCredentials,
   GITHUB_TOKEN_ENV,
   MAX_CODEX_ACCOUNTS,
   readCodexCredentialStore,
@@ -17,6 +19,7 @@ import { PATHS } from "~/lib/paths"
 const originalGitHubTokenPath = PATHS.GITHUB_TOKEN_PATH
 const originalCodexCredentialPath = PATHS.CODEX_CREDENTIAL_PATH
 const originalFsyncSync = fs.fsyncSync
+const repoRoot = fileURLToPath(new URL("../", import.meta.url))
 const tempDirs: Array<string> = []
 
 function useTempCredentialPaths(): {
@@ -52,6 +55,16 @@ async function getRejectedError(operation: Promise<void>): Promise<Error> {
   }
 
   throw new Error("Expected credential write to fail")
+}
+
+async function waitForFiles(filePaths: Array<string>): Promise<void> {
+  const deadline = Date.now() + 10_000
+  while (!filePaths.every((filePath) => fs.existsSync(filePath))) {
+    if (Date.now() >= deadline) {
+      throw new Error("Timed out waiting for credential writer processes")
+    }
+    await Bun.sleep(5)
+  }
 }
 
 afterEach(() => {
@@ -117,6 +130,47 @@ describe("credential store atomic writes", () => {
     expect(error.message).toBe("forced credential fsync failure")
     expect(fs.readFileSync(codexCredentialPath, "utf8")).toBe(oldContent)
     expect(listTemporaryFiles(codexCredentialPath)).toEqual([])
+    expect(fs.existsSync(`${codexCredentialPath}.lock`)).toBe(false)
+  })
+
+  test("recovers an abandoned Codex credential lock", async () => {
+    const { codexCredentialPath } = useTempCredentialPaths()
+    const lockPath = `${codexCredentialPath}.lock`
+    fs.writeFileSync(lockPath, "", "utf8")
+    fs.utimesSync(lockPath, new Date(0), new Date(0))
+
+    await writeCodexCredentials({
+      accessToken: "access-token",
+      refreshToken: "refresh-token",
+      expiresAt: 123,
+      accountId: "account-id",
+    })
+
+    fs.writeFileSync(
+      lockPath,
+      `${JSON.stringify({
+        createdAt: Date.now(),
+        owner: "exited-writer",
+        pid: 2_147_483_647,
+      })}\n`,
+      "utf8",
+    )
+    await writeCodexCredentials({
+      accessToken: "updated-access-token",
+      refreshToken: "updated-refresh-token",
+      expiresAt: 456,
+      accountId: "account-id",
+    })
+
+    expect((await readCodexCredentialStore())?.accounts).toEqual([
+      {
+        accessToken: "updated-access-token",
+        refreshToken: "updated-refresh-token",
+        expiresAt: 456,
+        accountId: "account-id",
+      },
+    ])
+    expect(fs.existsSync(lockPath)).toBe(false)
   })
 })
 
@@ -211,6 +265,216 @@ describe("Codex account store", () => {
       ),
     ).rejects.toThrow("Codex account alias 'work' is already in use")
     expect((await readCodexCredentialStore())?.accounts).toHaveLength(1)
+  })
+
+  test("serializes concurrent account updates without losing credentials", async () => {
+    const { codexCredentialPath } = useTempCredentialPaths()
+    const updatedAccount = {
+      accessToken: "updated-access-1",
+      refreshToken: "updated-refresh-1",
+      expiresAt: 2,
+      accountId: "account-1",
+    }
+    const addedAccount = {
+      accessToken: "access-2",
+      refreshToken: "refresh-2",
+      expiresAt: 2,
+      accountId: "account-2",
+    }
+
+    for (let iteration = 0; iteration < 5; iteration += 1) {
+      await clearCodexCredentials()
+      await writeCodexCredentials({
+        accessToken: "old-access-1",
+        refreshToken: "old-refresh-1",
+        expiresAt: 1,
+        accountId: "account-1",
+      })
+
+      await Promise.all([
+        writeCodexCredentials(updatedAccount),
+        writeCodexCredentials(addedAccount),
+      ])
+
+      expect((await readCodexCredentialStore())?.accounts).toEqual([
+        updatedAccount,
+        addedAccount,
+      ])
+    }
+    expect(fs.existsSync(`${codexCredentialPath}.lock`)).toBe(false)
+  })
+
+  test("serializes credential updates across processes", async () => {
+    const { codexCredentialPath } = useTempCredentialPaths()
+    const tempDir = path.dirname(codexCredentialPath)
+    const goPath = path.join(tempDir, "writers-go")
+    const readyPaths = [
+      path.join(tempDir, "writer-a-ready"),
+      path.join(tempDir, "writer-b-ready"),
+    ]
+    await writeCodexCredentials({
+      accessToken: "old-access-1",
+      refreshToken: "old-refresh-1",
+      expiresAt: 1,
+      accountId: "account-1",
+    })
+
+    const script = `
+      const fs = await import("node:fs")
+      const { writeCodexCredentials } = await import("./src/lib/credential-store")
+      fs.writeFileSync(process.env.READY_PATH, "ready", "utf8")
+      while (!fs.existsSync(process.env.GO_PATH)) await Bun.sleep(5)
+      await writeCodexCredentials(JSON.parse(process.env.ACCOUNT))
+    `
+    const accounts = [
+      {
+        accessToken: "updated-access-1",
+        refreshToken: "updated-refresh-1",
+        expiresAt: 2,
+        accountId: "account-1",
+      },
+      {
+        accessToken: "access-2",
+        refreshToken: "refresh-2",
+        expiresAt: 2,
+        accountId: "account-2",
+      },
+    ]
+    const writers = accounts.map((account, index) =>
+      Bun.spawn([process.execPath, "--eval", script], {
+        cwd: repoRoot,
+        env: {
+          ...process.env,
+          ACCOUNT: JSON.stringify(account),
+          COPILOT_API_HOME: tempDir,
+          GO_PATH: goPath,
+          READY_PATH: readyPaths[index],
+        },
+        stderr: "pipe",
+        stdout: "ignore",
+      }),
+    )
+
+    try {
+      await waitForFiles(readyPaths)
+      fs.writeFileSync(goPath, "go", "utf8")
+      const results = await Promise.all(
+        writers.map(async (writer) => ({
+          exitCode: await writer.exited,
+          stderr: await new Response(writer.stderr).text(),
+        })),
+      )
+      expect(results).toEqual([
+        { exitCode: 0, stderr: "" },
+        { exitCode: 0, stderr: "" },
+      ])
+      expect((await readCodexCredentialStore())?.accounts).toEqual(accounts)
+      expect(fs.existsSync(`${codexCredentialPath}.lock`)).toBe(false)
+    } finally {
+      for (const writer of writers) {
+        if (writer.exitCode === null) writer.kill()
+      }
+      await Promise.allSettled(writers.map((writer) => writer.exited))
+    }
+  })
+
+  test("rejects aliases and account ids that collide across accounts", async () => {
+    useTempCredentialPaths()
+    await writeCodexCredentials(
+      {
+        accessToken: "access-1",
+        refreshToken: "refresh-1",
+        expiresAt: 1,
+        accountId: "account-1",
+      },
+      { alias: "Work" },
+    )
+
+    expect(
+      writeCodexCredentials(
+        {
+          accessToken: "access-2",
+          refreshToken: "refresh-2",
+          expiresAt: 2,
+          accountId: "account-2",
+        },
+        { alias: "ACCOUNT-1" },
+      ),
+    ).rejects.toThrow(
+      "Codex account alias 'ACCOUNT-1' conflicts with another account id",
+    )
+    expect(
+      writeCodexCredentials({
+        accessToken: "access-2",
+        refreshToken: "refresh-2",
+        expiresAt: 2,
+        accountId: "ACCOUNT-1",
+      }),
+    ).rejects.toThrow("Codex account id 'ACCOUNT-1' is already in use")
+    expect(
+      writeCodexCredentials({
+        accessToken: "access-2",
+        refreshToken: "refresh-2",
+        expiresAt: 2,
+        accountId: "work",
+      }),
+    ).rejects.toThrow(
+      "Codex account id 'work' conflicts with another account alias",
+    )
+    expect((await readCodexCredentialStore())?.accounts).toHaveLength(1)
+  })
+
+  test("drops a legacy alias that conflicts with another account id", async () => {
+    const { codexCredentialPath } = useTempCredentialPaths()
+    const accounts = [
+      {
+        accessToken: "access-1",
+        refreshToken: "refresh-1",
+        expiresAt: 1,
+        accountId: "account-1",
+      },
+      {
+        accessToken: "access-2",
+        refreshToken: "refresh-2",
+        expiresAt: 2,
+        accountId: "account-2",
+        alias: "ACCOUNT-1",
+      },
+    ]
+    fs.writeFileSync(
+      codexCredentialPath,
+      `${JSON.stringify({ version: 1, accounts }, null, 2)}\n`,
+      "utf8",
+    )
+
+    expect((await readCodexCredentialStore())?.accounts).toEqual([
+      accounts[0],
+      {
+        accessToken: "access-2",
+        refreshToken: "refresh-2",
+        expiresAt: 2,
+        accountId: "account-2",
+      },
+    ])
+
+    await writeCodexCredentials({
+      accessToken: "updated-access-2",
+      refreshToken: "updated-refresh-2",
+      expiresAt: 3,
+      accountId: "account-2",
+    })
+    expect(JSON.parse(fs.readFileSync(codexCredentialPath, "utf8"))).toEqual({
+      version: 1,
+      accounts: [
+        accounts[0],
+        {
+          accessToken: "updated-access-2",
+          refreshToken: "updated-refresh-2",
+          expiresAt: 3,
+          accountId: "account-2",
+        },
+      ],
+    })
   })
 
   test("requires an account id when multiple accounts are stored", async () => {
