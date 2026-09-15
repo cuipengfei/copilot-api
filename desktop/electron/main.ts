@@ -70,6 +70,9 @@ const noProxyServerOverride = hasNoProxyServerSwitch(process.argv)
 const initialSettings = readSettingsSync()
 applySettingsEnvOverrides(initialSettings)
 applyElectronProxyCommandLine(getEffectiveProxySettings(initialSettings))
+// QUIC runs over UDP, which proxies and some networks cannot carry. Keep the
+// Chromium network stack (used through bindElectronFetch) on TCP.
+app.commandLine.appendSwitch('disable-quic')
 bindElectronFetch()
 
 function resolveNativeBackgroundColor(theme: ThemePreference): string {

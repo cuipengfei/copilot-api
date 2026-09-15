@@ -818,9 +818,9 @@ export default function AuthPage({ onBack, onSuccess }: AuthPageProps) {
 
           {/* Error message */}
           {error && (
-            <div className="w-full max-w-[240px] px-3 py-2 bg-red-50 border border-red-200 rounded-lg text-[13px] text-red-600 flex items-center gap-1.5 dark:bg-red-500/15 dark:border-red-500/30 dark:text-red-400">
-              <span>⚠️</span>
-              <span>{error}</span>
+            <div className="w-full max-w-[440px] max-h-[168px] overflow-y-auto px-3 py-2 bg-red-50 border border-red-200 rounded-lg text-[13px] text-red-600 flex items-start gap-1.5 dark:bg-red-500/15 dark:border-red-500/30 dark:text-red-400">
+              <span className="shrink-0">⚠️</span>
+              <span className="min-w-0 flex-1 break-words">{error}</span>
             </div>
           )}
 
