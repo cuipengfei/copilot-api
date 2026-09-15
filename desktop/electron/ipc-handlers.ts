@@ -24,6 +24,7 @@ import {
   getDesktopAuthStatus,
   getEnabledDesktopProviders,
   loginCodexForDesktop,
+  removeCodexAccountForDesktop,
   selectCodexAccountForDesktop,
   shouldStartInProviderMode,
 } from './provider-auth'
@@ -257,6 +258,17 @@ export function registerIpcHandlers(
     async (_event, accountId: string) => {
       try {
         return await selectCodexAccountForDesktop(accountId)
+      } catch (err) {
+        return { success: false, mode: 'none', error: (err as Error).message }
+      }
+    },
+  )
+
+  ipcMain.handle(
+    'auth:remove-codex-account',
+    async (_event, accountId: string) => {
+      try {
+        return await removeCodexAccountForDesktop(accountId)
       } catch (err) {
         return { success: false, mode: 'none', error: (err as Error).message }
       }

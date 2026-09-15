@@ -9,9 +9,13 @@ const en: Locale = {
     codexAccountAlias: 'Account alias (optional)',
     codexAccountAliasPlaceholder: 'For example: Work',
     codexAccountLimit: 'Store up to 3 accounts',
+    codexAccountRemoved: 'Account removed.',
     codexActiveAccount: 'Active',
     codexAddAccount: 'Add or sign in again',
     codexNoAccounts: 'No Codex accounts added yet',
+    codexRemoveAccount: 'Remove',
+    codexRemoveRestartRequired:
+      'Account removed. Restart the running server so it stops using it.',
     codexRestartRequired: 'Account selected. Restart the server to apply it.',
     codexUseAccount: 'Use',
     customProvider: 'Custom provider',

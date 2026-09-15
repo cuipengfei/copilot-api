@@ -9,9 +9,13 @@ const zh: Locale = {
     codexAccountAlias: '账号别名（可选）',
     codexAccountAliasPlaceholder: '例如：工作账号',
     codexAccountLimit: '最多保存 3 个账号',
+    codexAccountRemoved: '账号已移除。',
     codexActiveAccount: '当前',
     codexAddAccount: '添加或重新登录账号',
     codexNoAccounts: '尚未添加 Codex 账号',
+    codexRemoveAccount: '移除',
+    codexRemoveRestartRequired:
+      '账号已移除。正在运行的服务仍在使用该账号，请重启服务。',
     codexRestartRequired: '账号已切换，重启服务后生效。',
     codexUseAccount: '使用',
     customProvider: '自定义 Provider',

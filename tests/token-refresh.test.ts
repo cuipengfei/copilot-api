@@ -369,3 +369,72 @@ test("refreshes only the selected Codex account and preserves the selection", ()
   })
   expect(output.store.accounts[1]).toEqual(inactiveCredentials)
 })
+
+test("does not write a removed Codex account back when refreshing it", () => {
+  const tempDir = createTempDir()
+  const survivingCredentials = {
+    accessToken: "surviving-access",
+    accountId: "acct_surviving",
+    expiresAt: Date.now() + 60 * 60 * 1000,
+    refreshToken: "surviving-refresh",
+  }
+  fs.writeFileSync(
+    path.join(tempDir, "codex_credentials.json"),
+    `${JSON.stringify({ version: 1, accounts: [survivingCredentials] }, null, 2)}\n`,
+    "utf8",
+  )
+
+  const script = `
+    const payload = Buffer.from(
+      JSON.stringify({
+        "https://api.openai.com/auth": { chatgpt_account_id: "acct_removed" },
+      }),
+    ).toString("base64url")
+    globalThis.fetch = () => Promise.resolve(
+      Response.json({
+        access_token: "header." + payload + ".signature",
+        refresh_token: "rotated-removed-refresh",
+        expires_in: 3600,
+      }),
+    )
+
+    const { readCodexCredentialStore } = await import("./src/lib/credential-store")
+    const { refreshCodexCredentialsOnce, stopCodexRefreshLoop } = await import("./src/lib/token")
+    const refreshed = await refreshCodexCredentialsOnce({
+      accessToken: "removed-access",
+      refreshToken: "removed-refresh",
+      expiresAt: 0,
+      accountId: "acct_removed",
+    })
+    console.log(JSON.stringify({
+      refreshed,
+      store: await readCodexCredentialStore(),
+    }))
+    stopCodexRefreshLoop()
+  `
+
+  const result = Bun.spawnSync({
+    cmd: [process.execPath, "--eval", script],
+    cwd: repoRoot,
+    env: {
+      ...process.env,
+      COPILOT_API_HOME: tempDir,
+      COPILOT_API_OAUTH_APP: "",
+      COPILOT_API_ENTERPRISE_URL: "",
+    },
+  })
+
+  if (result.exitCode !== 0) {
+    throw new Error(decoder.decode(result.stderr))
+  }
+
+  const output = JSON.parse(decoder.decode(result.stdout).trim()) as {
+    refreshed: CodexCredentials
+    store: { accounts: Array<CodexCredentials>; version: number }
+  }
+  expect(output.refreshed).toMatchObject({
+    accountId: "acct_removed",
+    refreshToken: "rotated-removed-refresh",
+  })
+  expect(output.store.accounts).toEqual([survivingCredentials])
+})

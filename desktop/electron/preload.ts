@@ -10,6 +10,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getCodexAccounts: () => ipcRenderer.invoke('auth:get-codex-accounts'),
   switchCodexAccount: (accountId: string) =>
     ipcRenderer.invoke('auth:switch-codex-account', accountId),
+  removeCodexAccount: (accountId: string) =>
+    ipcRenderer.invoke('auth:remove-codex-account', accountId),
   startCodexLogin: (input?: unknown) =>
     ipcRenderer.invoke('auth:start-codex-login', input),
   logout: () => ipcRenderer.invoke('auth:logout'),

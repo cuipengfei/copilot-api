@@ -13,6 +13,7 @@ import { QUICK_PROVIDER_CONFIGS } from '../../src/lib/quick-providers'
 import {
   getCodexAccounts,
   persistCodexCredentials,
+  removeCodexAccount,
   selectCodexAccount,
 } from '../../src/lib/token'
 import type {
@@ -53,6 +54,7 @@ interface CodexDesktopLoginDependencies {
 interface CodexDesktopAccountDependencies {
   getCodexAccounts?: typeof getCodexAccounts
   getEnabledProviders?: () => string[]
+  removeCodexAccount?: typeof removeCodexAccount
   selectCodexAccount?: typeof selectCodexAccount
 }
 
@@ -311,6 +313,22 @@ export async function selectCodexAccountForDesktop(
     dependencies.getEnabledProviders ?? getEnabledDesktopProviders
 
   await selectAccount(accountId)
+  return {
+    success: true,
+    mode: 'provider',
+    providers: getEnabledProviders(),
+  }
+}
+
+export async function removeCodexAccountForDesktop(
+  accountId: string,
+  dependencies: CodexDesktopAccountDependencies = {},
+): Promise<AuthResult> {
+  const removeAccount = dependencies.removeCodexAccount ?? removeCodexAccount
+  const getEnabledProviders =
+    dependencies.getEnabledProviders ?? getEnabledDesktopProviders
+
+  await removeAccount(accountId)
   return {
     success: true,
     mode: 'provider',

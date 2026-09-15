@@ -504,7 +504,7 @@ Token 和代理变量也可以在同一文件中覆盖。代理地址必须能�
 
 ## Electron 桌面应用
 
-如果你更喜欢图形界面，仓库里还提供了位于 `desktop/` 的 Electron 桌面应用。它支持 GitHub Copilot 登录、OpenAI Codex OAuth 与最多 3 个 Codex 账号的手动切换，以及 Kimi、DeepSeek、DashScope、OpenRouter 或自定义 provider 的 API Key 配置。切换 Codex 账号后，界面会提示手动重启服务。授权或配置 provider 后，可以一键启动或停止本地代理，并在界面里直接查看本地端点、鉴权 Header、可用模型、额度和日志。
+如果你更喜欢图形界面，仓库里还提供了位于 `desktop/` 的 Electron 桌面应用。它支持 GitHub Copilot 登录、OpenAI Codex OAuth 与最多 3 个 Codex 账号的手动切换、移除未在使用的账号，以及 Kimi、DeepSeek、DashScope、OpenRouter 或自定义 provider 的 API Key 配置。切换 Codex 账号后，界面会提示手动重启服务。授权或配置 provider 后，可以一键启动或停止本地代理，并在界面里直接查看本地端点、鉴权 Header、可用模型、额度和日志。
 
 设置页还可以配置 `OAuth App`、`API Home`、`SQLite DB Path`、`Enterprise URL`、详细日志以及最小化到托盘。Windows x64（`.exe`）、macOS Apple Silicon（`.dmg`）和 Linux x64（`.AppImage`）安装包发布在 GitHub Releases：
 
@@ -716,7 +716,7 @@ Copilot API 现在使用子命令结构，主要命令包括：
 
 只有在需要启用 GitHub Copilot provider 时，才需要执行 `copilot-api auth login --provider copilot`。使用 `codex` 或第三方 provider-only 模式不要求配置 Copilot。
 
-Codex provider 最多保存 3 个账号。使用 `copilot-api auth login --provider codex --alias work` 新增或更新账号，新登录账号会成为当前账号；使用 `copilot-api auth codex --list` 查看账号，使用 `copilot-api auth codex --use <alias-or-accountId>` 手动切换。别名不区分大小写，且不能与其他账号的别名或账号 ID 重复。切换后需要重启正在运行的服务。旧版单账号 `codex_credentials.json` 会自动兼容，并在下一次写入凭据时升级为多账号格式。
+Codex provider 最多保存 3 个账号。使用 `copilot-api auth login --provider codex --alias work` 新增或更新账号，新登录账号会成为当前账号；使用 `copilot-api auth codex --list` 查看账号，使用 `copilot-api auth codex --use <alias-or-accountId>` 手动切换，使用 `copilot-api auth codex --remove <alias-or-accountId>` 移除未在使用的账号。别名不区分大小写，且不能与其他账号的别名或账号 ID 重复；正在使用的账号无法移除。切换或移除账号后需要重启正在运行的服务，使其停止使用旧账号；凭据刷新不会把已移除的账号写回。旧版单账号 `codex_credentials.json` 会自动兼容，并在下一次写入凭据时升级为多账号格式。
 
 使用 `copilot-api auth login --provider deepseek`、`--provider dashscope`、`--provider openrouter`、`--provider opencode-go` 或 `--provider kimi` 可以通过 CLI 快速新增或更新这些常用第三方 provider。DeepSeek 会提示输入掩码显示的 `apiKey`、provider `type`（默认 `anthropic`），以及默认 `https://api.deepseek.com/anthropic` 的 `baseUrl`。DashScope 会提示输入掩码显示的 `apiKey`、provider `type`（默认 `openai-compatible`）和预填默认值的 `baseUrl`。OpenRouter 只提示输入掩码显示的 `apiKey` 和预填默认值的 `baseUrl`，并固定写入 `type: "anthropic"`。OpenCode Go 只提示输入掩码显示的 `apiKey` 和预填默认值的 `baseUrl`，并固定写入 `type: "openai-compatible"`（baseUrl `https://opencode.ai/zen/go`）。Kimi 会提示输入掩码显示的 `apiKey`、provider `type`（默认 `openai-compatible`）和默认值为 `https://api.kimi.com/coding` 的 `baseUrl`（同一个 base URL 同时支持 Anthropic 和 OpenAI-compatible 两种端点）。此外，OpenCode Go 内置将 `qwen*` 和 `minimax*` 模型路由到 Anthropic Messages，将 `gpt*`/`grok*`/`muse-spark*` 模型路由到 OpenAI Responses，其他模型仍默认使用 OpenAI 兼容协议。配置并启用 provider 后，`copilot-api start` 可在没有 GitHub token 的情况下启动。
 

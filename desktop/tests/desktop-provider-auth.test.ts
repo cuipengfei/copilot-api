@@ -6,6 +6,7 @@ import {
   getDesktopCodexAccounts,
   getDesktopAuthStatus,
   loginCodexForDesktop,
+  removeCodexAccountForDesktop,
   selectCodexAccountForDesktop,
   shouldStartInProviderMode,
 } from '../electron/provider-auth'
@@ -380,6 +381,25 @@ describe('desktop provider auth', () => {
     })
 
     expect(selectedAccountId).toBe('acct_two')
+    expect(result).toEqual({
+      mode: 'provider',
+      providers: ['codex'],
+      success: true,
+    })
+  })
+
+  test('removes an unused Codex account through desktop auth', async () => {
+    let removedAccountId = ''
+
+    const result = await removeCodexAccountForDesktop('acct_two', {
+      getEnabledProviders: () => ['codex'],
+      removeCodexAccount: (accountId) => {
+        removedAccountId = accountId
+        return Promise.resolve({ accountId, active: false })
+      },
+    })
+
+    expect(removedAccountId).toBe('acct_two')
     expect(result).toEqual({
       mode: 'provider',
       providers: ['codex'],

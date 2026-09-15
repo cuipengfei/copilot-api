@@ -11,6 +11,7 @@ import {
   readCodexCredentialStore,
   readCodexCredentials,
   readGitHubTokenFromEnv,
+  removeCodexCredentials,
   writeCodexCredentials,
   writeGitHubToken,
 } from "~/lib/credential-store"
@@ -499,6 +500,104 @@ describe("Codex account store", () => {
       accessToken: "access-2",
       accountId: "account-2",
     })
+  })
+
+  test("removes a stored Codex account and keeps the others", async () => {
+    const { codexCredentialPath } = useTempCredentialPaths()
+    const removedAccount = {
+      accessToken: "access-1",
+      refreshToken: "refresh-1",
+      expiresAt: 1,
+      accountId: "account-1",
+    }
+    await writeCodexCredentials(removedAccount, { alias: "Work" })
+    await writeCodexCredentials({
+      accessToken: "access-2",
+      refreshToken: "refresh-2",
+      expiresAt: 2,
+      accountId: "account-2",
+    })
+
+    expect(removeCodexCredentials("account-1")).resolves.toEqual({
+      ...removedAccount,
+      alias: "Work",
+    })
+    expect((await readCodexCredentialStore())?.accounts).toEqual([
+      {
+        accessToken: "access-2",
+        refreshToken: "refresh-2",
+        expiresAt: 2,
+        accountId: "account-2",
+      },
+    ])
+    expect(fs.existsSync(`${codexCredentialPath}.lock`)).toBe(false)
+  })
+
+  test("rejects removing an unknown Codex account id", async () => {
+    useTempCredentialPaths()
+    await writeCodexCredentials({
+      accessToken: "access-1",
+      refreshToken: "refresh-1",
+      expiresAt: 1,
+      accountId: "account-1",
+    })
+
+    expect(removeCodexCredentials("missing")).rejects.toThrow(
+      "Codex account 'missing' was not found",
+    )
+    expect(removeCodexCredentials(" ")).rejects.toThrow(
+      "Codex account id must be a non-empty string",
+    )
+    expect((await readCodexCredentialStore())?.accounts).toHaveLength(1)
+  })
+
+  test("updates existing Codex accounts without inserting a removed one", async () => {
+    useTempCredentialPaths()
+    const removedAccount = {
+      accessToken: "access-1",
+      refreshToken: "refresh-1",
+      expiresAt: 1,
+      accountId: "account-1",
+    }
+    await writeCodexCredentials(removedAccount, { alias: "Work" })
+    await writeCodexCredentials({
+      accessToken: "access-2",
+      refreshToken: "refresh-2",
+      expiresAt: 2,
+      accountId: "account-2",
+    })
+    await removeCodexCredentials("account-1")
+
+    await writeCodexCredentials(
+      { ...removedAccount, accessToken: "rotated-access-1" },
+      { alias: "Work", insertIfMissing: false },
+    )
+    expect((await readCodexCredentialStore())?.accounts).toEqual([
+      {
+        accessToken: "access-2",
+        refreshToken: "refresh-2",
+        expiresAt: 2,
+        accountId: "account-2",
+      },
+    ])
+
+    await writeCodexCredentials(
+      {
+        accessToken: "rotated-access-2",
+        refreshToken: "rotated-refresh-2",
+        expiresAt: 3,
+        accountId: "account-2",
+      },
+      { insertIfMissing: false },
+    )
+    expect((await readCodexCredentialStore())?.accounts).toEqual([
+      {
+        accessToken: "rotated-access-2",
+        refreshToken: "rotated-refresh-2",
+        expiresAt: 3,
+        accountId: "account-2",
+      },
+    ])
   })
 })
 

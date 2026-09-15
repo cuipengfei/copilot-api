@@ -25,6 +25,8 @@ export interface CodexCredentialStoreV1 {
 
 export interface WriteCodexCredentialsOptions {
   alias?: string
+  // Refresh paths pass false so that a removed account is never re-created.
+  insertIfMissing?: boolean
 }
 
 interface CodexCredentialLockMetadata {
@@ -148,8 +150,9 @@ async function removeStaleCodexCredentialLock(lockPath: string): Promise<void> {
   }
 }
 
-async function acquireCodexCredentialLock(): Promise<CodexCredentialLock> {
-  const lockPath = `${PATHS.CODEX_CREDENTIAL_PATH}.lock`
+async function acquireCodexCredentialLock(
+  lockPath: string = `${PATHS.CODEX_CREDENTIAL_PATH}.lock`,
+): Promise<CodexCredentialLock> {
   await fs.mkdir(path.dirname(lockPath), { recursive: true })
 
   const startedAt = Date.now()
@@ -207,8 +210,9 @@ async function releaseCodexCredentialLock(
 
 async function withCodexCredentialLock<T>(
   operation: () => Promise<T>,
+  lockPath?: string,
 ): Promise<T> {
-  const lock = await acquireCodexCredentialLock()
+  const lock = await acquireCodexCredentialLock(lockPath)
   let result: T
   try {
     result = await operation()
@@ -219,6 +223,20 @@ async function withCodexCredentialLock<T>(
 
   await releaseCodexCredentialLock(lock)
   return result
+}
+
+/**
+ * Serializes operations that must keep Codex account selection in config.json
+ * consistent with the credential store. Credential writes retain their own
+ * narrower lock so refreshes can run without changing the selected account.
+ */
+export function withCodexAccountMutationLock<T>(
+  operation: () => Promise<T>,
+): Promise<T> {
+  return withCodexCredentialLock(
+    operation,
+    `${PATHS.CODEX_CREDENTIAL_PATH}.accounts.lock`,
+  )
 }
 
 async function readOptionalFile(filePath: string): Promise<string | null> {
@@ -453,6 +471,14 @@ export async function writeCodexCredentials(
     const existingIndex = store.accounts.findIndex(
       (account) => account.accountId === normalizedCredentials.accountId,
     )
+    if (existingIndex < 0 && options.insertIfMissing === false) {
+      // Update-only writes come from credential refreshes. A missing row means
+      // the account was removed while this process still held its credentials
+      // in memory (for example a server that was not restarted after switching
+      // accounts), so inserting it again would silently undo the removal.
+      return
+    }
+
     if (
       existingIndex < 0
       && store.accounts.some(
@@ -524,6 +550,34 @@ export async function writeCodexCredentials(
     }
 
     await writeCodexCredentialStoreUnlocked({ version: 1, accounts })
+  })
+}
+
+export async function removeCodexCredentials(
+  accountId: string,
+): Promise<CodexStoredAccount> {
+  const normalizedAccountId = accountId.trim()
+  if (!normalizedAccountId) {
+    throw new Error("Codex account id must be a non-empty string")
+  }
+
+  return await withCodexCredentialLock(async () => {
+    const store = await readCodexCredentialStore()
+    const index =
+      store?.accounts.findIndex(
+        (account) => account.accountId === normalizedAccountId,
+      ) ?? -1
+    if (!store || index < 0) {
+      throw new Error(`Codex account '${normalizedAccountId}' was not found`)
+    }
+
+    const removedAccount = store.accounts[index]
+    const accounts = store.accounts.filter(
+      (_account, accountIndex) => accountIndex !== index,
+    )
+    await writeCodexCredentialStoreUnlocked({ version: 1, accounts })
+
+    return removedAccount
   })
 }
 

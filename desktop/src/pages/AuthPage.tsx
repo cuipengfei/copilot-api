@@ -300,6 +300,38 @@ export default function AuthPage({ onBack, onSuccess }: AuthPageProps) {
     }
   }
 
+  const isServerRunning = async (): Promise<boolean> => {
+    try {
+      return (await window.electronAPI.getServerStatus()).running
+    } catch {
+      return false
+    }
+  }
+
+  const handleCodexRemove = async (accountId: string) => {
+    setLoading(true)
+    setError('')
+    setCodexNotice('')
+    try {
+      const result = await window.electronAPI.removeCodexAccount(accountId)
+      if (!result.success) {
+        setError(result.error ?? t('auth.authFailed'))
+        return
+      }
+
+      await loadCodexAccounts()
+      setCodexNotice(
+        (await isServerRunning()) ?
+          t('auth.codexRemoveRestartRequired')
+        : t('auth.codexAccountRemoved'),
+      )
+    } catch (err) {
+      setError((err as Error).message)
+    } finally {
+      setLoading(false)
+    }
+  }
+
   const formatCodexAccountId = (accountId: string): string =>
     accountId.length > 18 ?
       `${accountId.slice(0, 9)}…${accountId.slice(-6)}`
@@ -498,15 +530,26 @@ export default function AuthPage({ onBack, onSuccess }: AuthPageProps) {
                       )}
                     </div>
                     {!account.active && (
-                      <button
-                        onClick={() =>
-                          void handleCodexSwitch(account.accountId)
-                        }
-                        disabled={loading}
-                        className="shrink-0 rounded-md border border-line bg-surface px-2.5 py-1.5 text-[12px] font-medium text-ink-soft transition-colors hover:bg-sunken disabled:opacity-50"
-                      >
-                        {t('auth.codexUseAccount')}
-                      </button>
+                      <div className="flex shrink-0 items-center gap-1.5">
+                        <button
+                          onClick={() =>
+                            void handleCodexSwitch(account.accountId)
+                          }
+                          disabled={loading}
+                          className="rounded-md border border-line bg-surface px-2.5 py-1.5 text-[12px] font-medium text-ink-soft transition-colors hover:bg-sunken disabled:opacity-50"
+                        >
+                          {t('auth.codexUseAccount')}
+                        </button>
+                        <button
+                          onClick={() =>
+                            void handleCodexRemove(account.accountId)
+                          }
+                          disabled={loading}
+                          className="rounded-md border border-red-200 px-2 py-1.5 text-[12px] font-medium text-red-600 transition-colors hover:bg-red-50 disabled:opacity-50 dark:border-red-500/30 dark:hover:bg-red-500/15"
+                        >
+                          {t('auth.codexRemoveAccount')}
+                        </button>
+                      </div>
                     )}
                   </div>
                 ))}

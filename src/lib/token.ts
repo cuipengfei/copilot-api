@@ -2,12 +2,19 @@ import consola from "consola"
 import { setTimeout as delay } from "node:timers/promises"
 
 import { isOpencodeOauthApp } from "~/lib/api-config"
-import { getRawProviderConfig, setProviderConfig } from "~/lib/config"
+import {
+  getRawProviderConfig,
+  readEditableConfigFromDisk,
+  setProviderConfig,
+} from "~/lib/config"
 import {
   readCodexCredentialStore,
   readGitHubToken,
+  removeCodexCredentials,
+  withCodexAccountMutationLock,
   writeCodexCredentials,
   writeGitHubToken,
+  type CodexStoredAccount,
 } from "~/lib/credential-store"
 import {
   isCodexCredentialsExpired,
@@ -41,6 +48,7 @@ export interface PersistCodexCredentialsOptions {
   activateAccount?: boolean
   alias?: string
   enableProvider?: boolean
+  insertIfMissing?: boolean
   syncProvider?: boolean
 }
 
@@ -112,7 +120,8 @@ function syncCodexProviderConfig(options?: {
   accountId?: string
   enabled?: boolean
 }): void {
-  const existingProviderConfig = getRawProviderConfig("codex") ?? {}
+  const existingProviderConfig =
+    readEditableConfigFromDisk().providers?.codex ?? {}
   setProviderConfig("codex", {
     ...existingProviderConfig,
     type: "openai-responses",
@@ -128,60 +137,135 @@ function getConfiguredCodexAccountId(): string | undefined {
   return getRawProviderConfig("codex")?.accountId?.trim() || undefined
 }
 
-export async function getCodexAccounts(): Promise<Array<CodexAccountSummary>> {
-  const accounts = (await readCodexCredentialStore())?.accounts ?? []
-  const configuredAccountId = getConfiguredCodexAccountId()
-  const implicitAccountId =
-    configuredAccountId
-    ?? (accounts.length === 1 ? accounts[0].accountId : undefined)
-
-  return accounts.map((account) => ({
-    accountId: account.accountId,
-    ...(account.alias ? { alias: account.alias } : {}),
-    active: account.accountId === implicitAccountId,
-  }))
+function getPersistedCodexAccountId(): string | undefined {
+  return (
+    readEditableConfigFromDisk().providers?.codex?.accountId?.trim()
+    || undefined
+  )
 }
 
-export async function selectCodexAccount(
-  selector: string,
-): Promise<CodexAccountSummary> {
+function resolveActiveCodexAccountId(
+  accounts: Array<CodexStoredAccount>,
+  configuredAccountId: string | undefined = getConfiguredCodexAccountId(),
+): string | undefined {
+  return (
+    configuredAccountId
+    ?? (accounts.length === 1 ? accounts[0].accountId : undefined)
+  )
+}
+
+function normalizeCodexSelector(selector: string): string {
   const normalizedSelector = selector.trim()
   if (!normalizedSelector) {
     throw new Error("Codex account selector must be a non-empty string")
   }
 
-  const accounts = (await readCodexCredentialStore())?.accounts ?? []
-  const account =
-    accounts.find((candidate) => candidate.accountId === normalizedSelector)
-    ?? accounts.find(
-      (candidate) =>
-        candidate.alias?.toLowerCase() === normalizedSelector.toLowerCase(),
-    )
-  if (!account) {
-    throw new Error(`Codex account '${normalizedSelector}' was not found`)
-  }
+  return normalizedSelector
+}
 
-  syncCodexProviderConfig({ accountId: account.accountId })
+function findCodexAccount(
+  accounts: Array<CodexStoredAccount>,
+  selector: string,
+): CodexStoredAccount | undefined {
+  return (
+    accounts.find((candidate) => candidate.accountId === selector)
+    ?? accounts.find(
+      (candidate) => candidate.alias?.toLowerCase() === selector.toLowerCase(),
+    )
+  )
+}
+
+function toCodexAccountSummary(
+  account: CodexStoredAccount,
+  active: boolean,
+): CodexAccountSummary {
   return {
     accountId: account.accountId,
     ...(account.alias ? { alias: account.alias } : {}),
-    active: true,
+    active,
   }
+}
+
+export async function getCodexAccounts(): Promise<Array<CodexAccountSummary>> {
+  return await withCodexAccountMutationLock(async () => {
+    const accounts = (await readCodexCredentialStore())?.accounts ?? []
+    const activeAccountId = resolveActiveCodexAccountId(
+      accounts,
+      getPersistedCodexAccountId(),
+    )
+
+    return accounts.map((account) =>
+      toCodexAccountSummary(account, account.accountId === activeAccountId),
+    )
+  })
+}
+
+export async function selectCodexAccount(
+  selector: string,
+): Promise<CodexAccountSummary> {
+  return await withCodexAccountMutationLock(async () => {
+    const normalizedSelector = normalizeCodexSelector(selector)
+    const accounts = (await readCodexCredentialStore())?.accounts ?? []
+    const account = findCodexAccount(accounts, normalizedSelector)
+    if (!account) {
+      throw new Error(`Codex account '${normalizedSelector}' was not found`)
+    }
+
+    syncCodexProviderConfig({ accountId: account.accountId })
+    return toCodexAccountSummary(account, true)
+  })
+}
+
+export async function removeCodexAccount(
+  selector: string,
+): Promise<CodexAccountSummary> {
+  return await withCodexAccountMutationLock(async () => {
+    const normalizedSelector = normalizeCodexSelector(selector)
+    const accounts = (await readCodexCredentialStore())?.accounts ?? []
+    const account = findCodexAccount(accounts, normalizedSelector)
+    if (!account) {
+      throw new Error(`Codex account '${normalizedSelector}' was not found`)
+    }
+
+    if (
+      account.accountId
+      === resolveActiveCodexAccountId(accounts, getPersistedCodexAccountId())
+    ) {
+      throw new Error(
+        `Codex account '${account.accountId}' is currently in use; switch to another account before removing it`,
+      )
+    }
+
+    const removedAccount = await removeCodexCredentials(account.accountId)
+    return toCodexAccountSummary(removedAccount, false)
+  })
 }
 
 export async function persistCodexCredentials(
   credentials: CodexCredentials,
   options: PersistCodexCredentialsOptions = {},
 ): Promise<void> {
-  await writeCodexCredentials(credentials, { alias: options.alias })
-  if (options.syncProvider !== false) {
-    syncCodexProviderConfig({
-      accountId: options.activateAccount ? credentials.accountId : undefined,
-      enabled: options.enableProvider ? true : undefined,
+  const persist = async (): Promise<void> => {
+    await writeCodexCredentials(credentials, {
+      alias: options.alias,
+      insertIfMissing: options.insertIfMissing,
     })
+    if (options.syncProvider !== false) {
+      syncCodexProviderConfig({
+        accountId: options.activateAccount ? credentials.accountId : undefined,
+        enabled: options.enableProvider ? true : undefined,
+      })
+    }
+    applyCodexCredentials(credentials)
+    codexCredentialsPendingPersistence = null
   }
-  applyCodexCredentials(credentials)
-  codexCredentialsPendingPersistence = null
+
+  if (options.syncProvider === false) {
+    await persist()
+    return
+  }
+
+  await withCodexAccountMutationLock(persist)
 }
 
 export interface CodexRefreshDependencies {
@@ -194,8 +278,14 @@ export interface CodexRefreshDependencies {
 
 const defaultCodexRefreshDependencies: CodexRefreshDependencies = {
   getCurrentCredentials: getLoadedCodexCredentials,
+  // Refreshes may never re-create an account row. A server that was not
+  // restarted after switching accounts keeps refreshing its previous account,
+  // and inserting it again would undo a removal that already happened.
   persistCodexCredentials: (credentials) =>
-    persistCodexCredentials(credentials, { syncProvider: false }),
+    persistCodexCredentials(credentials, {
+      insertIfMissing: false,
+      syncProvider: false,
+    }),
   refreshCodexCredentials,
 }
 

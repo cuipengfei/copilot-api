@@ -10,9 +10,12 @@ export interface Locale {
     codexAccountAlias: string
     codexAccountAliasPlaceholder: string
     codexAccountLimit: string
+    codexAccountRemoved: string
     codexActiveAccount: string
     codexAddAccount: string
     codexNoAccounts: string
+    codexRemoveAccount: string
+    codexRemoveRestartRequired: string
     codexRestartRequired: string
     codexUseAccount: string
     customProvider: string

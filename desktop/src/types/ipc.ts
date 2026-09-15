@@ -223,6 +223,7 @@ declare global {
       configureProvider: (input: ProviderAuthInput) => Promise<AuthResult>
       getCodexAccounts: () => Promise<Array<CodexAccountSummary>>
       switchCodexAccount: (accountId: string) => Promise<AuthResult>
+      removeCodexAccount: (accountId: string) => Promise<AuthResult>
       startCodexLogin: (input?: CodexLoginInput) => Promise<AuthResult>
       logout: () => Promise<void>
       startServer: (

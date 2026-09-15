@@ -26,8 +26,10 @@ import { state } from "./lib/state"
 import {
   getCodexAccounts,
   persistCodexCredentials,
+  removeCodexAccount,
   selectCodexAccount,
   setupGitHubToken,
+  type CodexAccountSummary,
 } from "./lib/token"
 
 interface RunAuthOptions {
@@ -549,6 +551,12 @@ const authCodexArgs = {
     default: false,
     description: "List stored Codex accounts",
   },
+  remove: {
+    alias: "r",
+    type: "string",
+    description:
+      "Remove a Codex account by alias or account id; the account in use cannot be removed",
+  },
   use: {
     alias: "u",
     type: "string",
@@ -558,17 +566,20 @@ const authCodexArgs = {
 
 interface RunAuthCodexOptions {
   list?: boolean
+  remove?: string
   use?: string
 }
 
-function formatCodexAccount(
-  account: Awaited<ReturnType<typeof getCodexAccounts>>[number],
+function formatCodexAccountName(
+  account: Pick<CodexAccountSummary, "accountId" | "alias">,
 ): string {
-  const name =
-    account.alias ?
+  return account.alias ?
       `${account.alias} (${account.accountId})`
     : account.accountId
-  return `${account.active ? "*" : "-"} ${name}`
+}
+
+function formatCodexAccount(account: CodexAccountSummary): string {
+  return `${account.active ? "*" : "-"} ${formatCodexAccountName(account)}`
 }
 
 export async function runAuthCodex(
@@ -576,16 +587,25 @@ export async function runAuthCodex(
 ): Promise<void> {
   await ensurePaths()
 
-  if (options.list && options.use !== undefined) {
-    throw new Error("Use only one of --list or --use per invocation")
+  const operationCount = [
+    options.list === true,
+    options.use !== undefined,
+    options.remove !== undefined,
+  ].filter(Boolean).length
+  if (operationCount > 1) {
+    throw new Error("Use only one of --list, --use, or --remove per invocation")
   }
 
   if (options.use !== undefined) {
     const account = await selectCodexAccount(options.use)
-    consola.success(
-      `Selected Codex account ${account.alias ? `${account.alias} (${account.accountId})` : account.accountId}`,
-    )
+    consola.success(`Selected Codex account ${formatCodexAccountName(account)}`)
     consola.info("Restart the server to use the selected Codex account.")
+    return
+  }
+
+  if (options.remove !== undefined) {
+    const account = await removeCodexAccount(options.remove)
+    consola.success(`Removed Codex account ${formatCodexAccountName(account)}`)
     return
   }
 
@@ -705,7 +725,7 @@ export async function runAuthKeys(options: RunAuthKeysOptions): Promise<void> {
   const currentKeys = getConfiguredApiKeys()
   if (currentKeys.length === 0) {
     consola.info(
-      "No API keys configured. Run `npx copilot-api auth keys --add <key>` to add one.",
+      "No API keys configured. Run `npx @jeffreycao/copilot-api@latest auth keys --add <key>` to add one.",
     )
     return
   }
@@ -751,12 +771,13 @@ const authKeys = defineCommand({
 const authCodex = defineCommand({
   meta: {
     name: "codex",
-    description: "List or select stored Codex accounts",
+    description: "List, select, or remove stored Codex accounts",
   },
   args: authCodexArgs,
   run({ args }) {
     return runAuthCodex({
       list: args.list,
+      remove: args.remove,
       use: args.use,
     })
   },

@@ -653,34 +653,39 @@ describe("auth login validation", () => {
 })
 
 describe("Codex account commands", () => {
-  function writeCodexAccounts(tempDir: string): void {
+  const codexAccounts = [
+    {
+      accessToken: "secret-access-one",
+      refreshToken: "secret-refresh-one",
+      expiresAt: 1,
+      accountId: "acct_one",
+      alias: "Work",
+    },
+    {
+      accessToken: "secret-access-two",
+      refreshToken: "secret-refresh-two",
+      expiresAt: 2,
+      accountId: "acct_two",
+      alias: "Personal",
+    },
+  ]
+
+  function writeCodexAccounts(
+    tempDir: string,
+    accounts: Array<(typeof codexAccounts)[number]> = codexAccounts,
+  ): void {
     fs.writeFileSync(
       path.join(tempDir, "codex_credentials.json"),
-      `${JSON.stringify(
-        {
-          version: 1,
-          accounts: [
-            {
-              accessToken: "secret-access-one",
-              refreshToken: "secret-refresh-one",
-              expiresAt: 1,
-              accountId: "acct_one",
-              alias: "Work",
-            },
-            {
-              accessToken: "secret-access-two",
-              refreshToken: "secret-refresh-two",
-              expiresAt: 2,
-              accountId: "acct_two",
-              alias: "Personal",
-            },
-          ],
-        },
-        null,
-        2,
-      )}\n`,
+      `${JSON.stringify({ version: 1, accounts }, null, 2)}\n`,
       "utf8",
     )
+  }
+
+  function readCodexAccountIds(tempDir: string): Array<string> {
+    const store = JSON.parse(
+      fs.readFileSync(path.join(tempDir, "codex_credentials.json"), "utf8"),
+    ) as { accounts: Array<{ accountId: string }> }
+    return store.accounts.map((account) => account.accountId)
   }
 
   test("lists Codex accounts without exposing credentials", () => {
@@ -761,5 +766,148 @@ describe("Codex account commands", () => {
 
     expect(output).toBe("Codex account 'missing' was not found")
     expect(readConfigFile(tempDir).providers?.codex?.accountId).toBe("acct_two")
+  })
+
+  test("removes an unused Codex account by alias", () => {
+    const tempDir = createTempDir()
+    writeConfigFile(tempDir, {
+      providers: { codex: { accountId: "acct_two", enabled: true } },
+    })
+    writeCodexAccounts(tempDir)
+
+    const output = runScript(
+      tempDir,
+      `
+      const consolaModule = await import("consola");
+      const consola = consolaModule.default ?? consolaModule;
+      const messages = [];
+      consola.success = (...args) => messages.push(args.join(" "));
+      consola.info = () => {};
+      const { runAuthCodex } = await import("./src/auth");
+      await runAuthCodex({ remove: "work" });
+      console.log(JSON.stringify(messages));
+      `,
+    )
+
+    expect(JSON.parse(output)).toEqual([
+      "Removed Codex account Work (acct_one)",
+    ])
+    expect(readCodexAccountIds(tempDir)).toEqual(["acct_two"])
+    expect(readConfigFile(tempDir).providers?.codex?.accountId).toBe("acct_two")
+  })
+
+  test("keeps an account selected by another process after local config was cached", () => {
+    const tempDir = createTempDir()
+    writeConfigFile(tempDir, {
+      providers: { codex: { accountId: "acct_one", enabled: true } },
+    })
+    writeCodexAccounts(tempDir)
+
+    const output = runScript(
+      tempDir,
+      `
+      const { getRawProviderConfig } = await import("./src/lib/config");
+      const { removeCodexAccount } = await import("./src/lib/token");
+      getRawProviderConfig("codex");
+
+      const switchResult = Bun.spawnSync({
+        cmd: [
+          process.execPath,
+          "--eval",
+          'const { selectCodexAccount } = await import("./src/lib/token"); await selectCodexAccount("acct_two");',
+        ],
+        cwd: process.cwd(),
+        env: { ...process.env },
+      });
+      if (switchResult.exitCode !== 0) {
+        throw new Error(new TextDecoder().decode(switchResult.stderr));
+      }
+
+      try {
+        await removeCodexAccount("acct_two");
+      } catch (error) {
+        console.log(error instanceof Error ? error.message : String(error));
+      }
+      `,
+    )
+
+    expect(output).toBe(
+      "Codex account 'acct_two' is currently in use; switch to another account before removing it",
+    )
+    expect(readCodexAccountIds(tempDir)).toEqual(["acct_one", "acct_two"])
+    expect(readConfigFile(tempDir).providers?.codex?.accountId).toBe("acct_two")
+    expect(
+      fs.existsSync(path.join(tempDir, "codex_credentials.json.accounts.lock")),
+    ).toBe(false)
+  })
+
+  test("rejects removing the Codex account that is in use", () => {
+    const tempDir = createTempDir()
+    writeConfigFile(tempDir, {
+      providers: { codex: { accountId: "acct_one", enabled: true } },
+    })
+    writeCodexAccounts(tempDir)
+
+    const output = runScript(
+      tempDir,
+      `
+      const { runAuthCodex } = await import("./src/auth");
+      try {
+        await runAuthCodex({ remove: "Work" });
+      } catch (error) {
+        console.log(error instanceof Error ? error.message : String(error));
+      }
+      `,
+    )
+
+    expect(output).toBe(
+      "Codex account 'acct_one' is currently in use; switch to another account before removing it",
+    )
+    expect(readCodexAccountIds(tempDir)).toEqual(["acct_one", "acct_two"])
+  })
+
+  test("rejects removing the only stored Codex account", () => {
+    const tempDir = createTempDir()
+    writeConfigFile(tempDir, {})
+    writeCodexAccounts(tempDir, [codexAccounts[0]])
+
+    const output = runScript(
+      tempDir,
+      `
+      const { runAuthCodex } = await import("./src/auth");
+      try {
+        await runAuthCodex({ remove: "acct_one" });
+      } catch (error) {
+        console.log(error instanceof Error ? error.message : String(error));
+      }
+      `,
+    )
+
+    expect(output).toBe(
+      "Codex account 'acct_one' is currently in use; switch to another account before removing it",
+    )
+    expect(readCodexAccountIds(tempDir)).toEqual(["acct_one"])
+  })
+
+  test("rejects combining Codex account operations", () => {
+    const tempDir = createTempDir()
+    writeConfigFile(tempDir, {})
+    writeCodexAccounts(tempDir)
+
+    const output = runScript(
+      tempDir,
+      `
+      const { runAuthCodex } = await import("./src/auth");
+      try {
+        await runAuthCodex({ list: true, remove: "work" });
+      } catch (error) {
+        console.log(error instanceof Error ? error.message : String(error));
+      }
+      `,
+    )
+
+    expect(output).toBe(
+      "Use only one of --list, --use, or --remove per invocation",
+    )
   })
 })
