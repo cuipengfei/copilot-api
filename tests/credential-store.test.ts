@@ -115,9 +115,9 @@ describe("credential store atomic writes", () => {
     }
     const oldContent = `${JSON.stringify(oldCredentials, null, 2)}\n`
     fs.writeFileSync(codexCredentialPath, oldContent, "utf8")
-    fs.fsyncSync = (() => {
+    fs.fsyncSync = () => {
       throw new Error("forced credential fsync failure")
-    }) as typeof fs.fsyncSync
+    }
 
     const error = await getRejectedError(
       writeCodexCredentials({
