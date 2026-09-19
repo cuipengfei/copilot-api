@@ -185,6 +185,7 @@ function toPersistedEvent(
   const pricingCost = resolveTokenUsageCost({
     ...input,
     total_nano_aiu: totalNanoAiu,
+    at: now,
   })
   return {
     cache_creation_input_tokens: normalizeToken(

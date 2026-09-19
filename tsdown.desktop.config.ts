@@ -9,7 +9,12 @@ export default defineConfig({
 
   sourcemap: true,
   clean: true,
-  noExternal: () => true,
+  fixedExtension: false,
+  nodeProtocol: false,
+
+  deps: {
+    alwaysBundle: () => true,
+  },
 
   env: {
     NODE_ENV: "production",

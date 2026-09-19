@@ -51,6 +51,9 @@ describe("runServer auto-session prewarm order", () => {
       setupCopilotToken: async () => {},
       logUser: async () => {},
       persistCodexCredentials: async () => {},
+      getCodexAccounts: () => [],
+      removeCodexAccount: async () => {},
+      selectCodexAccount: async () => {},
     }))
 
     await mock.module("srvx", () => ({

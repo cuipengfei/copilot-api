@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import type {
   AuthResult,
+  CodexAccountSummary,
   DeviceCodeInfo,
   ProviderAuthInput,
   ProviderAuthTypeInput,
@@ -20,6 +21,7 @@ type AuthView =
   | 'oauth-pending'
   | 'token-input'
   | 'provider-input'
+  | 'codex-accounts'
   | 'codex-pending'
 type ProviderChoice = QuickProviderName | 'custom'
 
@@ -33,6 +35,7 @@ const PROVIDER_AUTH_TYPES: ProviderAuthTypeInput[] = [
   'x-api-key',
   'authorization',
 ]
+const MAX_CODEX_ACCOUNTS = 3
 const PROVIDER_COLORS: Record<QuickProviderName, string> = {
   'opencode-go': 'bg-sky-500',
   kimi: 'bg-cyan-500',
@@ -88,6 +91,11 @@ export default function AuthPage({ onBack, onSuccess }: AuthPageProps) {
   const [providerApiKey, setProviderApiKey] = useState('')
   const [providerAuthType, setProviderAuthType] =
     useState<ProviderAuthTypeInput>('__default__')
+  const [codexAccounts, setCodexAccounts] = useState<
+    Array<CodexAccountSummary>
+  >([])
+  const [codexAlias, setCodexAlias] = useState('')
+  const [codexNotice, setCodexNotice] = useState('')
   const [error, setError] = useState('')
   const [polling, setPolling] = useState(false)
   const [copied, setCopied] = useState(false)
@@ -160,6 +168,8 @@ export default function AuthPage({ onBack, onSuccess }: AuthPageProps) {
     setTokenInput('')
     setProviderApiKey('')
     setProviderAuthType('__default__')
+    setCodexAlias('')
+    setCodexNotice('')
   }
 
   const handleProviderSelect = (provider: ProviderChoice) => {
@@ -212,20 +222,120 @@ export default function AuthPage({ onBack, onSuccess }: AuthPageProps) {
     }
   }
 
-  const handleCodexOAuth = async () => {
-    setView('codex-pending')
+  const loadCodexAccounts = async () => {
+    const accounts = await window.electronAPI.getCodexAccounts()
+    setCodexAccounts(accounts)
+    return accounts
+  }
+
+  const handleOpenCodexAccounts = async () => {
     setLoading(true)
     setError('')
-
+    setCodexNotice('')
     try {
-      const result = await window.electronAPI.startCodexLogin()
-      completeAuth(result, t('auth.authFailed'))
+      await loadCodexAccounts()
+      setView('codex-accounts')
     } catch (err) {
       setError((err as Error).message)
     } finally {
       setLoading(false)
     }
   }
+
+  const handleCodexOAuth = async () => {
+    setView('codex-pending')
+    setLoading(true)
+    setError('')
+    setCodexNotice('')
+
+    try {
+      const result = await window.electronAPI.startCodexLogin({
+        alias: codexAlias.trim() || undefined,
+      })
+      if (!result.success) {
+        setError(result.error ?? t('auth.authFailed'))
+        setView('codex-accounts')
+        return
+      }
+
+      if (!onBack) {
+        onSuccess(result)
+        return
+      }
+
+      await loadCodexAccounts()
+      setCodexAlias('')
+      setCodexNotice(t('auth.codexRestartRequired'))
+      setView('codex-accounts')
+    } catch (err) {
+      setError((err as Error).message)
+      setView('codex-accounts')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const handleCodexSwitch = async (accountId: string) => {
+    setLoading(true)
+    setError('')
+    setCodexNotice('')
+    try {
+      const result = await window.electronAPI.switchCodexAccount(accountId)
+      if (!result.success) {
+        setError(result.error ?? t('auth.authFailed'))
+        return
+      }
+
+      if (!onBack) {
+        onSuccess(result)
+        return
+      }
+
+      await loadCodexAccounts()
+      setCodexNotice(t('auth.codexRestartRequired'))
+    } catch (err) {
+      setError((err as Error).message)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const isServerRunning = async (): Promise<boolean> => {
+    try {
+      return (await window.electronAPI.getServerStatus()).running
+    } catch {
+      return false
+    }
+  }
+
+  const handleCodexRemove = async (accountId: string) => {
+    setLoading(true)
+    setError('')
+    setCodexNotice('')
+    try {
+      const result = await window.electronAPI.removeCodexAccount(accountId)
+      if (!result.success) {
+        setError(result.error ?? t('auth.authFailed'))
+        return
+      }
+
+      await loadCodexAccounts()
+      setCodexNotice(
+        (await isServerRunning()) ?
+          t('auth.codexRemoveRestartRequired')
+        : t('auth.codexAccountRemoved'),
+      )
+    } catch (err) {
+      setError((err as Error).message)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const formatCodexAccountId = (accountId: string): string =>
+    accountId.length > 18 ?
+      `${accountId.slice(0, 9)}…${accountId.slice(-6)}`
+    : accountId
 
   const getQuickProviderLabel = (provider: QuickProviderName): string => {
     switch (provider) {
@@ -249,6 +359,7 @@ export default function AuthPage({ onBack, onSuccess }: AuthPageProps) {
       t('auth.customProvider')
     : getQuickProviderLabel(providerChoice)
   const isProviderInput = view === 'provider-input'
+  const isExpandedInput = isProviderInput || view === 'codex-accounts'
   const isCustomProvider = providerChoice === 'custom'
   const canEditProviderType =
     providerChoice === 'custom' || selectedQuickProvider?.editableType
@@ -270,10 +381,10 @@ export default function AuthPage({ onBack, onSuccess }: AuthPageProps) {
         )}
 
         <div
-          className={`flex flex-col items-center justify-center flex-1 px-6 ${isProviderInput ? 'py-4 gap-3' : 'py-6 gap-5'}`}
+          className={`flex flex-col items-center justify-center flex-1 px-6 ${isExpandedInput ? 'py-4 gap-3' : 'py-6 gap-5'}`}
         >
           {/* Logo and title */}
-          {!isProviderInput && (
+          {!isExpandedInput && (
             <div className="text-center">
               <div className="w-14 h-14 bg-accent-strong rounded-2xl flex items-center justify-center mx-auto mb-3 shadow-[0_10px_26px_rgba(30,41,59,0.20)] dark:bg-[#4f94f8]">
                 <span className="text-white text-base font-extrabold">CA</span>
@@ -313,7 +424,7 @@ export default function AuthPage({ onBack, onSuccess }: AuthPageProps) {
                 {loading ? t('auth.loading') : t('auth.githubAuth')}
               </button>
               <button
-                onClick={handleCodexOAuth}
+                onClick={handleOpenCodexAccounts}
                 disabled={loading}
                 className="w-full py-2.5 bg-surface border border-line text-ink-soft text-[13px] font-semibold rounded-lg hover:bg-sunken hover:border-line disabled:opacity-50 transition-all mb-4"
               >
@@ -366,6 +477,116 @@ export default function AuthPage({ onBack, onSuccess }: AuthPageProps) {
                 className="w-full py-2 text-[13px] text-ink-faint hover:text-ink-soft transition-colors"
               >
                 {t('auth.manualToken')}
+              </button>
+            </div>
+          )}
+
+          {view === 'codex-accounts' && (
+            <div className="w-full max-w-[440px] flex flex-col gap-3 rounded-xl border border-line-soft bg-surface p-4 shadow-[0_12px_32px_rgba(0,0,0,0.08)]">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <p className="text-[13px] font-semibold text-ink">
+                    {t('auth.codexAccounts')}
+                  </p>
+                  <p className="mt-1 text-[12px] text-ink-faint">
+                    {t('auth.codexAccountLimit')}
+                  </p>
+                </div>
+                <span className="rounded-full bg-sunken px-2 py-1 text-[11px] font-semibold text-ink-faint">
+                  {codexAccounts.length}/{MAX_CODEX_ACCOUNTS}
+                </span>
+              </div>
+
+              <div className="flex flex-col gap-2">
+                {codexAccounts.length === 0 && (
+                  <p className="rounded-lg border border-dashed border-line px-3 py-4 text-center text-[13px] text-ink-faint">
+                    {t('auth.codexNoAccounts')}
+                  </p>
+                )}
+                {codexAccounts.map((account) => (
+                  <div
+                    key={account.accountId}
+                    className="flex items-center gap-3 rounded-lg border border-line px-3 py-2.5"
+                  >
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2">
+                        <span className="truncate text-[13px] font-medium text-ink">
+                          {account.alias
+                            ?? formatCodexAccountId(account.accountId)}
+                        </span>
+                        {account.active && (
+                          <span className="shrink-0 rounded-full bg-emerald-500/10 px-2 py-0.5 text-[10px] font-semibold text-emerald-600 dark:text-emerald-400">
+                            {t('auth.codexActiveAccount')}
+                          </span>
+                        )}
+                      </div>
+                      {account.alias && (
+                        <p
+                          className="mt-0.5 truncate font-mono text-[11px] text-ink-faint"
+                          title={account.accountId}
+                        >
+                          {formatCodexAccountId(account.accountId)}
+                        </p>
+                      )}
+                    </div>
+                    {!account.active && (
+                      <div className="flex shrink-0 items-center gap-1.5">
+                        <button
+                          onClick={() =>
+                            void handleCodexSwitch(account.accountId)
+                          }
+                          disabled={loading}
+                          className="rounded-md border border-line bg-surface px-2.5 py-1.5 text-[12px] font-medium text-ink-soft transition-colors hover:bg-sunken disabled:opacity-50"
+                        >
+                          {t('auth.codexUseAccount')}
+                        </button>
+                        <button
+                          onClick={() =>
+                            void handleCodexRemove(account.accountId)
+                          }
+                          disabled={loading}
+                          className="rounded-md border border-red-200 px-2 py-1.5 text-[12px] font-medium text-red-600 transition-colors hover:bg-red-50 disabled:opacity-50 dark:border-red-500/30 dark:hover:bg-red-500/15"
+                        >
+                          {t('auth.codexRemoveAccount')}
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+
+              <div className="flex flex-col gap-2 border-t border-line-soft pt-3">
+                <label className="flex flex-col gap-1.5">
+                  <span className="text-[13px] text-ink-faint">
+                    {t('auth.codexAccountAlias')}
+                  </span>
+                  <input
+                    value={codexAlias}
+                    onChange={(event) => setCodexAlias(event.target.value)}
+                    placeholder={t('auth.codexAccountAliasPlaceholder')}
+                    className="w-full rounded-lg border border-line bg-surface px-3 py-2.5 text-[13px] text-ink placeholder-ink-faint focus:outline-none focus:ring-2 focus:ring-accent/40"
+                  />
+                </label>
+                <button
+                  onClick={() => void handleCodexOAuth()}
+                  disabled={loading}
+                  className="w-full rounded-lg bg-accent-strong py-2.5 text-[13px] font-semibold text-white transition-all hover:bg-accent-strong/90 disabled:opacity-50"
+                >
+                  {loading ? t('auth.verifying') : t('auth.codexAddAccount')}
+                </button>
+              </div>
+
+              {codexNotice && (
+                <p className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-[12px] text-amber-700 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-300">
+                  {codexNotice}
+                </p>
+              )}
+
+              <button
+                onClick={handleBack}
+                className="text-center text-[13px] text-ink-faint hover:text-ink-soft"
+              >
+                {t('auth.back')}
               </button>
             </div>
           )}
@@ -597,9 +818,9 @@ export default function AuthPage({ onBack, onSuccess }: AuthPageProps) {
 
           {/* Error message */}
           {error && (
-            <div className="w-full max-w-[240px] px-3 py-2 bg-red-50 border border-red-200 rounded-lg text-[13px] text-red-600 flex items-center gap-1.5 dark:bg-red-500/15 dark:border-red-500/30 dark:text-red-400">
-              <span>⚠️</span>
-              <span>{error}</span>
+            <div className="w-full max-w-[440px] max-h-[168px] overflow-y-auto px-3 py-2 bg-red-50 border border-red-200 rounded-lg text-[13px] text-red-600 flex items-start gap-1.5 dark:bg-red-500/15 dark:border-red-500/30 dark:text-red-400">
+              <span className="shrink-0">⚠️</span>
+              <span className="min-w-0 flex-1 break-words">{error}</span>
             </div>
           )}
 

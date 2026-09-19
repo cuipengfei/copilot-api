@@ -36,6 +36,7 @@ function requiresAppRestart(
 ): boolean {
   return (
     previous.apiHome !== next.apiHome
+    || previous.sqliteDbPath !== next.sqliteDbPath
     || previous.oauthApp !== next.oauthApp
     || previous.enterpriseUrl !== next.enterpriseUrl
   )
@@ -236,6 +237,7 @@ export default function SettingsModal({ onClose }: SettingsModalProps) {
   const [section, setSection] = useState<Section>('general')
   const [settings, setSettings] = useState<DesktopSettings>({
     apiHome: '',
+    sqliteDbPath: '',
     oauthApp: 'default',
     enterpriseUrl: '',
     host: '',
@@ -748,6 +750,26 @@ export default function SettingsModal({ onClose }: SettingsModalProps) {
                   />
                   <p className="text-[12px] text-ink-faint mt-1.5 leading-relaxed">
                     {t('settings.apiHomeDesc')}
+                  </p>
+                </div>
+                <div className="mb-4">
+                  <div className="text-[13px] font-medium text-ink mb-1.5">
+                    {t('settings.sqliteDbPath')}
+                  </div>
+                  <input
+                    type="text"
+                    placeholder="C:/copilot-api/copilot-api.sqlite"
+                    value={settings.sqliteDbPath}
+                    onChange={(e) =>
+                      setSettings((s) => ({
+                        ...s,
+                        sqliteDbPath: e.target.value,
+                      }))
+                    }
+                    className={inputClass}
+                  />
+                  <p className="text-[12px] text-ink-faint mt-1.5 leading-relaxed">
+                    {t('settings.sqliteDbPathDesc')}
                   </p>
                 </div>
                 <div className="mb-4">

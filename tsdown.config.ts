@@ -9,4 +9,6 @@ export default defineConfig({
 
   sourcemap: true,
   clean: true,
+  fixedExtension: false,
+  nodeProtocol: false,
 })

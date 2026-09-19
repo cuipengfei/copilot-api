@@ -15,6 +15,7 @@ const SETTINGS_PATH = path.join(
 
 const DEFAULT_SETTINGS: DesktopSettings = {
   apiHome: '',
+  sqliteDbPath: '',
   oauthApp: 'default',
   enterpriseUrl: '',
   host: '',
@@ -78,6 +79,10 @@ export function normalizeSettings(
       typeof settings?.apiHome === 'string' ?
         settings.apiHome
       : DEFAULT_SETTINGS.apiHome,
+    sqliteDbPath:
+      typeof settings?.sqliteDbPath === 'string' ?
+        settings.sqliteDbPath
+      : DEFAULT_SETTINGS.sqliteDbPath,
     oauthApp:
       settings?.oauthApp === 'opencode' ?
         'opencode'

@@ -34,6 +34,7 @@ import {
   readSettingsSync,
   setLaunchAtLoginFallback,
 } from './settings-store'
+import { applySettingsEnvOverrides } from './settings-env'
 
 const CLI_ENV_FLAGS = {
   '--api-home': 'COPILOT_API_HOME',
@@ -69,6 +70,9 @@ const noProxyServerOverride = hasNoProxyServerSwitch(process.argv)
 const initialSettings = readSettingsSync()
 applySettingsEnvOverrides(initialSettings)
 applyElectronProxyCommandLine(getEffectiveProxySettings(initialSettings))
+// QUIC runs over UDP, which proxies and some networks cannot carry. Keep the
+// Chromium network stack (used through bindElectronFetch) on TCP.
+app.commandLine.appendSwitch('disable-quic')
 bindElectronFetch()
 
 function resolveNativeBackgroundColor(theme: ThemePreference): string {
@@ -100,22 +104,6 @@ function getEffectiveProxySettings(
 }
 
 let runtimeDependenciesPromise: Promise<RuntimeDependencies> | null = null
-
-function applySettingsEnvOverrides(settings: DesktopSettings): void {
-  const apiHome = settings.apiHome.trim()
-  if (!process.env.COPILOT_API_HOME && apiHome) {
-    process.env.COPILOT_API_HOME = apiHome
-  }
-
-  if (!process.env.COPILOT_API_OAUTH_APP && settings.oauthApp === 'opencode') {
-    process.env.COPILOT_API_OAUTH_APP = 'opencode'
-  }
-
-  const enterpriseUrl = settings.enterpriseUrl.trim()
-  if (!process.env.COPILOT_API_ENTERPRISE_URL && enterpriseUrl) {
-    process.env.COPILOT_API_ENTERPRISE_URL = enterpriseUrl
-  }
-}
 
 function warmOpencodeVersion(): void {
   void import('../../src/lib/opencode')

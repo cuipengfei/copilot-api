@@ -418,9 +418,7 @@ describe("model routes", () => {
       context_window: 1_000_000,
       input_modalities: ["text", "image"],
       max_output_tokens: 384_000,
-      shell_type: "unified_exec",
-      use_responses_lite: true,
-      tool_mode: "code_mode_only",
+      shell_type: "shell_command",
     })
     expect(body.models.find((model) => model.slug === "kimi/k3")).toMatchObject(
       {

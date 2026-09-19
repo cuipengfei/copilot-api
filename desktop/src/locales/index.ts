@@ -6,6 +6,18 @@ export interface Locale {
     subtitle: string
     githubAuth: string
     codexAuth: string
+    codexAccounts: string
+    codexAccountAlias: string
+    codexAccountAliasPlaceholder: string
+    codexAccountLimit: string
+    codexAccountRemoved: string
+    codexActiveAccount: string
+    codexAddAccount: string
+    codexNoAccounts: string
+    codexRemoveAccount: string
+    codexRemoveRestartRequired: string
+    codexRestartRequired: string
+    codexUseAccount: string
     customProvider: string
     loading: string
     manualToken: string
@@ -178,6 +190,8 @@ export interface Locale {
     oauthAppDesc: string
     apiHome: string
     apiHomeDesc: string
+    sqliteDbPath: string
+    sqliteDbPathDesc: string
     enterpriseUrl: string
     enterpriseUrlDesc: string
     verbose: string

@@ -21,6 +21,17 @@ export interface AuthStatus extends AuthResult {
   mode: DesktopAuthMode
 }
 
+export interface CodexAccountSummary {
+  accountId: string
+  alias?: string
+  active: boolean
+}
+
+export interface CodexLoginInput {
+  alias?: string
+  callbackUrlOrCode?: string
+}
+
 export type ProviderType =
   'anthropic' | 'openai-compatible' | 'openai-responses'
 export type ProviderAuthType = 'authorization' | 'x-api-key'
@@ -185,6 +196,7 @@ export interface DesktopProxySettings {
 
 export interface DesktopSettings {
   apiHome: string
+  sqliteDbPath: string
   oauthApp: 'default' | 'opencode'
   enterpriseUrl: string
   host: string
@@ -209,7 +221,10 @@ declare global {
       saveToken: (token: string) => Promise<AuthResult>
       checkSavedToken: () => Promise<AuthResult>
       configureProvider: (input: ProviderAuthInput) => Promise<AuthResult>
-      startCodexLogin: (callbackUrlOrCode?: string) => Promise<AuthResult>
+      getCodexAccounts: () => Promise<Array<CodexAccountSummary>>
+      switchCodexAccount: (accountId: string) => Promise<AuthResult>
+      removeCodexAccount: (accountId: string) => Promise<AuthResult>
+      startCodexLogin: (input?: CodexLoginInput) => Promise<AuthResult>
       logout: () => Promise<void>
       startServer: (
         port: number,

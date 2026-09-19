@@ -5,6 +5,19 @@ const zh: Locale = {
     subtitle: '选择 Provider 授权或配置',
     githubAuth: '使用 GitHub 授权',
     codexAuth: '使用 OpenAI Codex 授权',
+    codexAccounts: 'Codex 账号',
+    codexAccountAlias: '账号别名（可选）',
+    codexAccountAliasPlaceholder: '例如：工作账号',
+    codexAccountLimit: '最多保存 3 个账号',
+    codexAccountRemoved: '账号已移除。',
+    codexActiveAccount: '当前',
+    codexAddAccount: '添加或重新登录账号',
+    codexNoAccounts: '尚未添加 Codex 账号',
+    codexRemoveAccount: '移除',
+    codexRemoveRestartRequired:
+      '账号已移除。正在运行的服务仍在使用该账号，请重启服务。',
+    codexRestartRequired: '账号已切换，重启服务后生效。',
+    codexUseAccount: '使用',
     customProvider: '自定义 Provider',
     loading: '请稍候…',
     manualToken: '手动填写 Copilot Token',
@@ -143,9 +156,9 @@ const zh: Locale = {
   settings: {
     title: '设置',
     restartAppNote:
-      'OAuth App、API Home 和 Enterprise URL 修改后需重启应用才能生效。',
+      'OAuth App、API Home、SQLite DB Path 和 Enterprise URL 修改后需重启应用才能生效。',
     restartAppPrompt:
-      '设置已保存。OAuth App、API Home 和 Enterprise URL 需重启应用后才能生效。',
+      '设置已保存。OAuth App、API Home、SQLite DB Path 和 Enterprise URL 需重启应用后才能生效。',
     sectionGeneral: '通用',
     launchAtLogin: '登录时启动',
     launchAtLoginDesc:
@@ -185,6 +198,9 @@ const zh: Locale = {
       '选择 opencode 后，Electron 启动时会按 opencode OAuth 流程进行鉴权。',
     apiHome: 'API Home',
     apiHomeDesc: '可选，自定义 token 与 config.json 的存放目录。',
+    sqliteDbPath: 'SQLite DB Path',
+    sqliteDbPathDesc:
+      '可选，自定义用量数据 SQLite 数据库文件路径（COPILOT_API_SQLITE_DB_PATH）。',
     enterpriseUrl: 'Enterprise URL',
     enterpriseUrlDesc:
       '可选，例如 company.ghe.com。用于连接 GitHub Enterprise。',
