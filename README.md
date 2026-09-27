@@ -88,17 +88,17 @@ Windows x64 (`.exe`), macOS Apple Silicon (`.dmg`), and Linux x64 (`.AppImage`) 
 
 | Guide | Contents |
 | --- | --- |
-| [Installation and Startup](docs/guides/en/getting-started.md) | Runtime requirements, npx, provider setup, and running from source |
-| [Claude Code](docs/guides/en/claude-code.md) | Interactive setup, settings.json, and model mappings |
-| [OpenCode](docs/guides/en/opencode.md) | Anthropic SDK setup and model configuration |
-| [Codex](docs/guides/en/codex.md) | config.toml, model catalog, and auto-review mapping |
-| [Docker](docs/guides/en/docker.md) | Docker Compose, persistent storage, and networking |
-| [Desktop App](docs/guides/en/desktop.md) | Installation, accounts, and advanced settings |
-| [Plugins and Tool Search](docs/guides/en/integrations.md) | Claude Code / OpenCode plugins and the MCP tool search bridge |
-| [Usage Monitoring](docs/guides/en/usage.md) | Usage dashboard, token history, and quota monitoring |
-| [CLI Reference](docs/guides/en/cli.md) | Commands, options, and request examples |
-| [Configuration Reference](docs/guides/en/configuration.md) | config.json options, model routing, and transport settings |
-| [API and Authentication](docs/guides/en/api.md) | Endpoints, API keys, and admin authentication |
-| [Troubleshooting](docs/guides/en/troubleshooting.md) | Known issues and workarounds |
+| [Installation and Startup](docs/guides/en/getting-started.md) | Prerequisites, project overview, `npx` and source runs, provider-only mode without Copilot, and gateway API key setup |
+| [Claude Code](docs/guides/en/claude-code.md) | The `--claude-code` interactive launcher, `.claude/settings.json` environment variables, opus / sonnet / haiku tier mapping, auto-compact window, and WebSearch behavior |
+| [OpenCode](docs/guides/en/opencode.md) | OpenCode OAuth login, the `@ai-sdk/anthropic` provider in `opencode.json`, `baseURL` conventions, model context limits, and thinking options |
+| [Codex](docs/guides/en/codex.md) | A full `config.toml` provider block, auto-review model mapping, generating `model_catalog.json`, and the merged model picker catalog with protocol adapters |
+| [Docker](docs/guides/en/docker.md) | Docker Compose quick start, the `/data` persistent mount and its ownership repair, supported environment variables, and host interface binding |
+| [Desktop App](docs/guides/en/desktop.md) | Copilot sign-in, Codex OAuth account switching, API-key providers, one-click start / stop, shared model mappings, advanced settings, and per-platform installers |
+| [Plugins and Tool Search](docs/guides/en/integrations.md) | The Responses `tool_search` MCP bridge, Claude Code `agent-inject` and `tool-search` marketplace plugins, and the opencode subagent marker plugin |
+| [Usage Monitoring](docs/guides/en/usage.md) | The usage viewer URL and query parameters, period selectors, Copilot quota progress, token and cost metric cards, trend charts, and paginated request events |
+| [CLI Reference](docs/guides/en/cli.md) | Command structure, global options, and the full option sets for the `start`, `auth`, and `debug` subcommands with example usage |
+| [Configuration Reference](docs/guides/en/configuration.md) | Every `config.json` field: gateway and admin API keys, provider definitions, model mappings, WebSocket and HTTP transport, timeouts, and context management |
+| [API and Authentication](docs/guides/en/api.md) | Allowed auth headers and CORS rules, OpenAI, Codex backend, and Anthropic endpoints, usage monitoring routes, and admin configuration endpoints |
+| [Troubleshooting](docs/guides/en/troubleshooting.md) | Known issues with workarounds, including the Copilot encrypted output decryption failure and the `useResponsesApiWebSocket` HTTP fallback |
 
 Before using GitHub Copilot, read the [GitHub Copilot Security Notice](NOTICE.md#github-copilot-security-notice).
