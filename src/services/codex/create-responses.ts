@@ -39,7 +39,7 @@ export const CODEX_API_BASE_URL = "https://chatgpt.com/backend-api"
 const CODEX_RESPONSE_METADATA_EVENT = "codex.response.metadata"
 const RESPONSE_CREATED_EVENT = "response.created"
 const CODEX_USER_AGENT_VERSION_PATTERN =
-  /\bcodex(?:[-_][a-z0-9]+)*\/(\d+\.\d+\.\d+(?:-[a-z0-9.-]+)?(?:\+[a-z0-9.-]+)?)(?=$|[\s;)])/iu
+  /\bcodex(?:[-_ ][a-z0-9]+)*\/(\d+\.\d+\.\d+)(?:-[a-z0-9.-]+)?(?:\+[a-z0-9.-]+)?(?=$|[\s;)])/iu
 const CODEX_RESPONSES_LITE_METADATA_KEY =
   "ws_request_header_x_openai_internal_codex_responses_lite"
 

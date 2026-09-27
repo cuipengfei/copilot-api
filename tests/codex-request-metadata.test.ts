@@ -130,7 +130,11 @@ describe("Codex version headers", () => {
     ["Codex/26.914.555 (Mac OS; arm64) Electron/40.0.0", "26.914.555"],
     ["codex-desktop/0.155.1 (Mac OS; arm64)", "0.155.1"],
     ["Mozilla/5.0 codex_desktop/0.155.1", "0.155.1"],
-    ["codex-tui/0.155.1-alpha.2+build.7 (Linux)", "0.155.1-alpha.2+build.7"],
+    ["Codex Desktop/0.158.0", "0.158.0"],
+    ["Codex Desktop/0.158.0-alpha.2", "0.158.0"],
+    ["Codex Desktop/0.158.0-alpha.2+build.7 (Windows; x86_64)", "0.158.0"],
+    ["Codex Desktop/0.158.0+build.7", "0.158.0"],
+    ["codex-tui/0.155.1-alpha.2+build.7 (Linux)", "0.155.1"],
   ])("extracts %s for HTTP and WS", (userAgent, version) => {
     const inbound = new Headers({ "user-agent": userAgent })
 
@@ -141,7 +145,7 @@ describe("Codex version headers", () => {
 
   test("prefers the incoming version over the UA version", () => {
     const inbound = new Headers({
-      "user-agent": "codex-tui/0.155.1 (Linux)",
+      "user-agent": "Codex Desktop/0.158.0-alpha.2",
       Version: "custom-client-version",
     })
 
@@ -159,6 +163,8 @@ describe("Codex version headers", () => {
     "notcodex/0.155.1",
     "codex-tui/dev",
     "codex-tui/0.155.1.2",
+    "Codex Desktop/dev",
+    "Codex Desktop/0.158.0.2",
     "",
   ])("omits version for unsupported UA %s", (userAgent) => {
     const inbound = new Headers({ "user-agent": userAgent })
