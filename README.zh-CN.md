@@ -248,7 +248,7 @@ npx @jeffreycao/copilot-api@latest start
 
 ### Codex `config.toml` 参考配置
 
-把以下配置加入你的 Codex `~/.codex/config.toml`：
+在 `~/.codex/config.toml` 中加入：
 
 ```toml
 model = "gpt-6-sol"
@@ -293,39 +293,9 @@ enabled = false
 > [!NOTE]
 > `name` 一定要配置为 `"OpenAI"`。
 
-### 一键生成 `model_catalog.json`
+### 自动审核模型映射
 
-Codex `0.156.0` 及以上版本目前存在无法加载 `api_key_model_discovery` 模型列表的 bug。示例默认注释了 `model_catalog_json`，请先生成文件，再取消 `model_catalog_json = "model_catalog.json"` 的注释，通过本地模型目录临时解决。未登录 GPT 账号时也可以使用此方式加载模型目录；低于 `0.156.0` 的版本不需要增加此项。[官方配置参考](https://learn.chatgpt.com/docs/config-file/config-reference)将 `model_catalog_json` 定义为启动时加载的 JSON 模型目录路径。
-
-启动网关并安装 `curl` 及 Bun 或 Node.js 后，在仓库根目录运行[生成脚本](./docs/generate-model-catalog.sh)。脚本优先使用 Bun，没有 Bun 时使用 Node.js，无需安装 `jq`：
-
-```sh
-sh docs/generate-model-catalog.sh
-```
-
-默认写入 `$HOME/.codex/model_catalog.json`，目录不存在时会自动创建。使用默认网关地址时，上面的命令等价于显式指定网关地址和输出路径：
-
-```sh
-sh docs/generate-model-catalog.sh http://localhost:4141 "$HOME/.codex/model_catalog.json"
-```
-
-如果网关启用了鉴权，请先设置环境变量 `GITHUB_COPILOT_API_KEY`。建议把配置中的 `model_catalog_json` 改成生成文件的绝对路径，避免相对路径歧义。脚本会携带 Codex `User-Agent`，校验返回的模型目录，并仅在下载和校验成功后替换目标文件。网关模型或 provider 发生变化后，重新运行脚本并重启 Codex，即可加载更新后的目录。
-
-### Codex 模型目录与协议适配
-
-Codex 客户端（`User-Agent` 以 `codex` 开头）请求顶层 `GET /v1/models` 时，网关会把原生 Codex 模型与可通过 Messages 适配的模型合并返回。除 DeepSeek 模型外，后者会声明 `use_responses_lite: true`；DeepSeek 模型使用 `use_responses_lite: false` 和 `tool_mode: null`。调用 `/v1/responses` 后，Anthropic provider 走 **Responses → Messages**，OpenAI 兼容 provider 以及只支持 Chat 的 Copilot 模型则复用现有 Messages 路由继续走 **Responses → Messages → Chat Completions**，最终统一翻译回 Responses（包括流式事件）。
-
-> **注意：** DeepSeek 模型不使用 Responses Lite（`use_responses_lite: false`、`tool_mode: null`），因此向 Codex 暴露的工具集合与其他模型（`tool_mode: "code_mode_only"`）不一致。在会话中途切换 DeepSeek 模型与 Responses Lite 模型并不兼容——一套工具集合下产生的工具调用和会话历史无法直接沿用到另一套。切换模型时请新建 Codex 会话。
-
-合并后的模型列表会直接展示在 Codex 的模型选择界面中，包含各 provider 暴露的模型：
-
-<img src="./docs/screenshots/codex-models.png" alt="Codex 模型选择界面展示网关提供的模型列表" width="900" />
-
-对 Codex 客户端而言，只有 `gpt-*` Copilot 模型走原生 Responses API；非 GPT Copilot 模型一律走适配路径，即使声明支持原生 `/responses` 也不例外。provider 的 `/v1/responses` 路由（顶层 `provider/model` 别名和 `/:provider/v1/responses`）对 Codex 客户端遵循同一规则：对 `openai-responses` provider，非 `gpt-*` 模型回退到 Messages 适配路径，`gpt-*` 模型保持原生 Responses 转发。
-
-Responses Lite 的工具定义从 `input` 中的 `additional_tools` 读取，而不是依赖顶层 `tools`。该适配支持 function、`namespace` 和 custom tool；`apply_patch` 需要由客户端声明为 `type: "custom"`，不会作为独立工具类型特殊处理。工具调用返回时会恢复原始 `name` 与 `namespace`；压缩请求在裁剪旧历史前先保存工具定义，因此压缩期间也不会丢失工具。Messages 回退路径不支持 Responses `tool_search` 模式。Anthropic 的 `output_config.effort` 仍只使用项目既有的合法档位；Responses 的 `minimal` 会降级为 `low`，`none` 则不向 Anthropic 发送 effort。
-
-当 Codex 通过顶层 GitHub Copilot 路由并设置 `approvals_reviewer = "auto_review"` 时，可在网关的 `config.json` 中将内部审核模型映射到一个支持 Responses API 的 Copilot 模型：
+通过顶层 GitHub Copilot 路由使用 `approvals_reviewer = "auto_review"` 时，在网关 `config.json` 中加入以下映射：
 
 ```json
 {
@@ -335,7 +305,31 @@ Responses Lite 的工具定义从 `input` 中的 `additional_tools` 读取，而
 }
 ```
 
-该映射只作用于顶层 GitHub Copilot 路由。provider-scoped 路由不会使用 `modelMappings`，因此内置 `/codex` provider 仍会原生处理 `codex-auto-review`。
+也可配置为 `"codex-auto-review": "codex/codex-auto-review"`，使用内置 `codex` provider。
+
+### 一键生成 `model_catalog.json`
+
+**Codex `0.156.0+`：** `api_key_model_discovery` 已成功加载模型列表，但 Codex 代码存在 bug，可通过本地模型目录临时规避。未登录 GPT 账号时也可使用本地目录；更早版本无需配置 `model_catalog_json`。
+
+启动网关，安装 `curl` 及 Bun 或 Node.js，然后在仓库根目录运行[生成脚本](./docs/generate-model-catalog.sh)：
+
+```sh
+sh docs/generate-model-catalog.sh
+```
+
+默认连接 `http://localhost:4141`，输出至 `$HOME/.codex/model_catalog.json`；如需自定义，依次追加网关地址和输出路径参数。
+
+- **鉴权：** 网关启用鉴权时，运行脚本前设置 `GITHUB_COPILOT_API_KEY`。
+- **配置：** 生成后取消 `model_catalog_json` 的注释，并填入文件的绝对路径。
+- **更新：** 网关模型或 provider 变化后，重新运行脚本并重启 Codex。
+
+### Codex 模型目录与协议适配
+
+Codex 模型选择界面会展示网关已配置 provider 提供的模型：
+
+<img src="./docs/screenshots/codex-models.png" alt="Codex 模型选择界面展示网关提供的模型列表" width="900" />
+
+> **模型切换：** 在 DeepSeek 与 Responses Lite 模型之间切换时，请新建 Codex 会话。
 
 ---
 

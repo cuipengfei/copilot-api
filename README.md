@@ -232,7 +232,7 @@ Recommended Codex version: `0.155.1`.
 
 ### Codex `config.toml` Reference
 
-Add the following configuration to your Codex `~/.codex/config.toml`:
+Add this to `~/.codex/config.toml`:
 
 ```toml
 model = "gpt-6-sol"
@@ -277,39 +277,9 @@ enabled = false
 > [!NOTE]
 > `name` must be set to `"OpenAI"`.
 
-### Generate `model_catalog.json`
+### Auto Review Model Mapping
 
-Codex `0.156.0` and later currently have a bug that prevents loading models through `api_key_model_discovery`. The example leaves `model_catalog_json` commented out by default: generate the file first, then uncomment `model_catalog_json = "model_catalog.json"` to load a local catalog as a workaround. This also works when Codex is not signed in to a GPT account. Versions earlier than `0.156.0` do not need this setting. The [official configuration reference](https://learn.chatgpt.com/docs/config-file/config-reference) describes `model_catalog_json` as a path to a JSON model catalog loaded on startup.
-
-With the gateway running and `curl` and either Bun or Node.js installed, run [the generator](./docs/generate-model-catalog.sh) from the repository root. The script prefers Bun and falls back to Node.js; `jq` is not required:
-
-```sh
-sh docs/generate-model-catalog.sh
-```
-
-By default, this writes `$HOME/.codex/model_catalog.json` and creates the directory if needed. With the default gateway URL, the command above is equivalent to specifying the URL and output path explicitly:
-
-```sh
-sh docs/generate-model-catalog.sh http://localhost:4141 "$HOME/.codex/model_catalog.json"
-```
-
-If gateway authentication is enabled, export `GITHUB_COPILOT_API_KEY` before running the script. Set `model_catalog_json` to the generated file's absolute path to avoid ambiguity with relative paths. The script sends a Codex `User-Agent`, validates the returned catalog, and replaces the destination only after a successful download and validation. Run it again after changing gateway models or providers, then restart Codex to load the updated catalog.
-
-### Codex Model Catalog and Protocol Adapters
-
-When a Codex client (`User-Agent` starts with `codex`) requests the top-level `GET /v1/models`, the gateway merges native Codex models with models available through the Messages adapter. The latter advertise `use_responses_lite: true`, except DeepSeek models, which use `use_responses_lite: false` and `tool_mode: null`. For other models, `/v1/responses` uses **Responses → Messages** for Anthropic providers, while OpenAI-compatible providers and Chat-only Copilot models reuse the existing Messages route for **Responses → Messages → Chat Completions**, then translate streaming or JSON results back to Responses.
-
-> **Note:** DeepSeek models do not use Responses Lite (`use_responses_lite: false`, `tool_mode: null`), so the tool set they advertise to Codex differs from other models, which use `tool_mode: "code_mode_only"`. Switching between a DeepSeek model and a Responses Lite model mid-session is not compatible, because tool calls and conversation history produced under one tool set do not translate to the other. Start a new Codex session when switching between them.
-
-The merged catalog is what Codex shows in its model picker, including the models exposed by your configured providers:
-
-<img src="./docs/screenshots/codex-models.png" alt="Codex model picker showing models provided by the gateway" width="900" />
-
-For Codex clients, only `gpt-*` Copilot models use the native Responses API; non-GPT Copilot models always go through the adapter, even when they advertise native `/responses` support. The same Codex rule applies on provider `/v1/responses` routes (top-level `provider/model` aliases and `/:provider/v1/responses`): for `openai-responses` providers, non-`gpt-*` models fall back to the Messages adapter, while `gpt-*` models keep native Responses forwarding.
-
-Responses Lite tool definitions are read from `input.additional_tools`, without relying on top-level `tools`. Function, `namespace`, and custom tools are supported; clients must declare `apply_patch` as `type: "custom"`, and it is not handled as a standalone special tool type. Returned calls recover their original `name` and `namespace`. Tools are collected before old history is trimmed, so compaction requests retain them. The Messages fallback does not support Responses `tool_search` mode. Anthropic `output_config.effort` keeps the project's existing valid levels; Responses `minimal` maps to `low`, while `none` omits Anthropic effort.
-
-When Codex uses the top-level GitHub Copilot route with `approvals_reviewer = "auto_review"`, map its internal review model to a Responses-capable Copilot model in the gateway's `config.json`:
+When using `approvals_reviewer = "auto_review"` through the top-level GitHub Copilot route, add this mapping to the gateway's `config.json`:
 
 ```json
 {
@@ -319,7 +289,31 @@ When Codex uses the top-level GitHub Copilot route with `approvals_reviewer = "a
 }
 ```
 
-This mapping only applies to the top-level GitHub Copilot route. Provider-scoped routes do not use `modelMappings`, so the built-in `/codex` provider continues to handle `codex-auto-review` natively.
+Alternatively, set `"codex-auto-review": "codex/codex-auto-review"` to use the built-in `codex` provider.
+
+### Generate `model_catalog.json`
+
+**Codex `0.156.0+`:** `api_key_model_discovery` loads the model list successfully, but Codex has a bug. Use a local catalog as a workaround; this also works when signed out of a GPT account. Earlier versions do not need `model_catalog_json`.
+
+Start the gateway, install `curl` and Bun or Node.js, then run [the generator](./docs/generate-model-catalog.sh) from the repository root:
+
+```sh
+sh docs/generate-model-catalog.sh
+```
+
+Defaults: gateway `http://localhost:4141`, output `$HOME/.codex/model_catalog.json`. To customize, append the gateway URL and output path in that order.
+
+- **Authentication:** If enabled, export `GITHUB_COPILOT_API_KEY` before running the script.
+- **Configuration:** After generation, uncomment `model_catalog_json` and set it to the file's absolute path.
+- **Updates:** Rerun the script and restart Codex after changing gateway models or providers.
+
+### Codex Model Catalog and Protocol Adapters
+
+Codex's model picker includes models from the gateway's configured providers:
+
+<img src="./docs/screenshots/codex-models.png" alt="Codex model picker showing models provided by the gateway" width="900" />
+
+> **Model switching:** Start a new Codex session when switching between DeepSeek and Responses Lite models.
 
 ---
 
