@@ -6,7 +6,7 @@
 
 ## GPT Tool Search
 
-对于 `gpt-5.4+` 这类 GPT Responses 模型，这个 AI gateway 可以通过一个很小的 MCP bridge 暴露 Responses `tool_search`。Claude Code 和 opencode 都可以使用同一个 bridge，前提是客户端会加载 MCP server，并且 Anthropic Messages 流量会经过这个 AI gateway。
+对于 `gpt-5.4+` 这类 GPT Responses 模型，这个 AI gateway 可以通过一个很小的 MCP bridge 暴露 Responses `tool_search`。Claude Code 和 opencode v1 都可以使用同一个 bridge，前提是客户端会加载 MCP server，并且 Anthropic Messages 流量会经过这个 AI gateway。
 
 GPT 模型不要设置 Claude Code 原生的 `ENABLE_TOOL_SEARCH`。这个开关启用的是 Claude Code 自己的客户端 tool search 模式，可能导致 deferred 工具定义不再转发给 AI gateway。这个 AI gateway 需要完整的工具定义，这样才能只保留那一小组常驻加载工具，其余工具统一转换为 Responses deferred namespace。
 
@@ -26,7 +26,7 @@ GPT 模型不要设置 Claude Code 原生的 `ENABLE_TOOL_SEARCH`。这个开关
 }
 ```
 
-请把 tool search bridge 加到 opencode 使用的 MCP 配置中：
+opencode v2 不需要这个 bridge。v2 已经通过 Code Mode 延迟加载 MCP 工具，模型只会看到一个 `execute` 工具和每个 deferred 工具对应的 namespace，Responses `tool_search` bridge 没有用武之地。请只把 tool search bridge 加到 opencode v1 使用的 MCP 配置中：
 
 ```json
 {

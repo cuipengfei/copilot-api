@@ -4,7 +4,7 @@
 
 ## GPT Tool Search
 
-For GPT Responses models such as `gpt-5.4+`, this AI gateway can expose Responses `tool_search` through a small MCP bridge. The same bridge can be used by Claude Code and opencode, as long as the client loads MCP servers and sends Anthropic Messages traffic through this gateway.
+For GPT Responses models such as `gpt-5.4+`, this AI gateway can expose Responses `tool_search` through a small MCP bridge. The same bridge can be used by Claude Code and opencode v1, as long as the client loads MCP servers and sends Anthropic Messages traffic through this gateway.
 
 Do not set Claude Code's native `ENABLE_TOOL_SEARCH` for GPT models. That flag enables Claude Code's own client-side tool search mode, and it may stop forwarding deferred tool definitions. This gateway needs the full tool definitions so it can keep the small always-loaded tool set eager and translate every other tool into Responses deferred namespaces.
 
@@ -24,7 +24,7 @@ Add the tool search bridge to the MCP config used by Claude Code:
 }
 ```
 
-Add the tool search bridge to the MCP config used by opencode:
+opencode v2 does not need this bridge. It already defers MCP tools through Code Mode, where the model sees a single `execute` tool plus one namespace per deferred tool, so the Responses `tool_search` bridge has nothing left to do. Add the tool search bridge to the MCP config used by opencode v1 only:
 
 ```json
 {
