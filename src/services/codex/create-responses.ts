@@ -38,6 +38,10 @@ export const CODEX_API_BASE_URL = "https://chatgpt.com/backend-api"
 
 const CODEX_RESPONSE_METADATA_EVENT = "codex.response.metadata"
 const RESPONSE_CREATED_EVENT = "response.created"
+const CODEX_USER_AGENT_VERSION_PATTERN =
+  /\bcodex(?:[-_][a-z0-9]+)*\/(\d+\.\d+\.\d+(?:-[a-z0-9.-]+)?(?:\+[a-z0-9.-]+)?)(?=$|[\s;)])/iu
+const CODEX_RESPONSES_LITE_METADATA_KEY =
+  "ws_request_header_x_openai_internal_codex_responses_lite"
 
 type CodexResponsesWebSocketPayload = ResponsesPayload & {
   type: "response.create"
@@ -49,6 +53,7 @@ type CodexResponsesWebSocketRequest =
   PooledWebSocketRequest<CodexResponsesWebSocketPayload>
 
 interface CodexResponsesHeaderOptions {
+  payload?: Pick<ResponsesPayload, "model" | "service_tier">
   stream?: boolean | null
 }
 
@@ -72,7 +77,12 @@ const STRIPPED_CODEX_REQUEST_HEADERS = new Set([
   "x-forwarded-proto",
 ])
 
-const STRIPPED_CODEX_WEBSOCKET_HEADERS = new Set(["accept", "content-type"])
+const STRIPPED_CODEX_WEBSOCKET_HEADERS = new Set([
+  "accept",
+  "content-type",
+  "x-openai-internal-codex-responses-lite",
+  "x-codex-turn-state",
+])
 
 const shouldForwardCodexRequestHeader = (headerName: string): boolean => {
   const headerNameLower = headerName.toLowerCase()
@@ -166,6 +176,14 @@ export function buildCodexResponsesHeaders(
     options.stream ? "text/event-stream" : "application/json",
   )
   setDefaultCodexHeader(headers, "content-type", "application/json")
+  if (options.payload) {
+    const { model, service_tier: serviceTier } = options.payload
+    const routingHint = `model=${model}`
+    headers.set(
+      "x-codex-routing-hint",
+      serviceTier ? `${routingHint};tier=${serviceTier}` : routingHint,
+    )
+  }
   return headers
 }
 
@@ -177,6 +195,14 @@ export function buildCodexRequestHeaders(requestHeaders: Headers): Headers {
   headers.set("chatgpt-account-id", accountId)
   setDefaultCodexHeader(headers, "originator", "copilot-api")
   setDefaultCodexHeader(headers, "user-agent", "copilot-api")
+  if (!headers.has("version")) {
+    const version = headers
+      .get("user-agent")
+      ?.match(CODEX_USER_AGENT_VERSION_PATTERN)?.[1]
+    if (version) {
+      headers.set("version", version)
+    }
+  }
   applyOpencodeCodexHeaders(headers)
   return headers
 }
@@ -192,8 +218,9 @@ export function resolveCodexResponsesTransport(
 
 export function buildCodexResponsesWebSocketHeaders(
   requestHeaders: Headers,
+  options: CodexResponsesHeaderOptions = {},
 ): Record<string, string> {
-  const headers = buildCodexResponsesHeaders(requestHeaders)
+  const headers = buildCodexResponsesHeaders(requestHeaders, options)
   setDefaultCodexHeader(
     headers,
     "openai-beta",
@@ -229,11 +256,28 @@ export function prepareCodexResponsesWebSocketRequest(
   requestHeaders: Headers,
   baseUrl: string = CODEX_API_BASE_URL,
 ): CodexResponsesWebSocketRequest {
-  const headers = buildCodexResponsesWebSocketHeaders(requestHeaders)
+  const headers = buildCodexResponsesWebSocketHeaders(requestHeaders, {
+    payload,
+  })
   // websocket need not x-codex-turn-state, https need this.
   return {
     headers,
     payload: buildCodexResponsesWebSocketPayload(payload),
+    preparePayload: (websocketPayload) => {
+      const clientMetadata: Record<string, string> = {
+        ...websocketPayload.client_metadata,
+        "x-codex-ws-stream-request-start-ms": Date.now().toString(),
+      }
+      const responsesLite = requestHeaders.get(
+        "x-openai-internal-codex-responses-lite",
+      )
+      if (responsesLite) {
+        clientMetadata[CODEX_RESPONSES_LITE_METADATA_KEY] = responsesLite
+      } else {
+        delete clientMetadata[CODEX_RESPONSES_LITE_METADATA_KEY]
+      }
+      return { ...websocketPayload, client_metadata: clientMetadata }
+    },
     poolKey: buildCodexResponsesWebSocketPoolKey(payload, headers, baseUrl),
     url: buildCodexResponsesWebSocketUrl(baseUrl),
   }
@@ -263,15 +307,17 @@ export async function forwardCodexResponses(
   }
 
   const normalizedPayload = normalizeCodexResponsesPayload(payload)
+  const headers = buildCodexResponsesHeaders(requestHeaders, {
+    payload: normalizedPayload,
+    stream: normalizedPayload.stream,
+  })
 
   const transportConfig = getUpstreamTransportConfig()
   const response = await fetchUpstreamWithLifecycle(
     resolveCodexResponsesUrl(baseUrl),
     {
       method: "POST",
-      headers: buildCodexResponsesHeaders(requestHeaders, {
-        stream: normalizedPayload.stream,
-      }),
+      headers,
       body: JSON.stringify(normalizedPayload),
     },
     {

@@ -1,7 +1,7 @@
-import { afterEach, beforeEach, expect, mock, test } from "bun:test"
+import { afterEach, beforeEach, expect, mock, spyOn, test } from "bun:test"
 import { Hono } from "hono"
 
-import type { ResponsesResult } from "~/lib/types/responses"
+import type { ResponsesPayload, ResponsesResult } from "~/lib/types/responses"
 
 type ListenerEvent = {
   data?: string
@@ -253,6 +253,7 @@ test("forwardCodexResponses falls back to HTTP for non-streaming responses", asy
     },
     new Headers({
       "content-type": "application/json",
+      "x-codex-routing-hint": "model=stale-model",
     }),
     undefined,
     {
@@ -280,6 +281,9 @@ test("forwardCodexResponses falls back to HTTP for non-streaming responses", asy
 
   expect(request).toBe("https://chatgpt.com/backend-api/codex/responses")
   expect(requestInit?.method).toBe("POST")
+  expect(new Headers(requestInit.headers).get("x-codex-routing-hint")).toBe(
+    "model=gpt-5.4",
+  )
   expect(requestInit?.signal).toBeInstanceOf(AbortSignal)
   expect(requestInit?.signal?.aborted).toBe(false)
 
@@ -303,6 +307,24 @@ test("forwardCodexResponses falls back to HTTP for non-streaming responses", asy
   })
   downstream.abort()
   expect(requestInit?.signal?.aborted).toBe(false)
+})
+
+test("Codex HTTP routes using the requested model and service tier", async () => {
+  mockFetchJsonResponse(createResponsesResult("gpt-5.3-codex"))
+
+  await forwardCodexResponses(
+    { model: "gpt-5.3-codex", service_tier: "priority" },
+    new Headers({ "x-codex-routing-hint": "model=stale-model;tier=default" }),
+    undefined,
+    { transport: "http" },
+  )
+
+  expect(fetchMock).toHaveBeenCalledTimes(1)
+  const requestInit = fetchMock.mock.calls[0]?.[1]
+  expect(new Headers(requestInit?.headers).get("x-codex-routing-hint")).toBe(
+    "model=gpt-5.3-codex;tier=priority",
+  )
+  expect(requestInit?.body).toContain('"service_tier":"priority"')
 })
 
 test("forwardCodexResponses moves system input messages into instructions for HTTP requests", async () => {
@@ -382,6 +404,11 @@ test("forwardCodexResponses returns HTTP event streams when stream=true", async 
   const chunks = await collectStreamChunks(response as AsyncIterable<unknown>)
 
   expect(fetchMock).toHaveBeenCalledTimes(1)
+  expect(
+    new Headers(fetchMock.mock.calls[0]?.[1]?.headers).get(
+      "x-codex-routing-hint",
+    ),
+  ).toBe("model=gpt-5.4")
   expect(MockWebSocket.instances).toHaveLength(0)
   expect(chunks).toHaveLength(1)
   expect(chunks[0]?.event).toBe("response.completed")
@@ -470,6 +497,69 @@ test("forwardCodexResponses preserves response lifecycle events", async () => {
     "response.created",
     "response.completed",
   ])
+})
+
+test("Codex refreshes metadata at send time on a reused websocket", async () => {
+  const now = spyOn(Date, "now").mockReturnValue(1_000)
+  const clientMetadata = {
+    existing: "preserved",
+    "x-codex-ws-stream-request-start-ms": "stale",
+  }
+  const headers = new Headers({
+    "user-agent": "codex-tui/0.155.1 (Linux)",
+    "x-openai-internal-codex-responses-lite": "false",
+    "x-codex-turn-state": "turn-state-websocket-123",
+    "x-codex-routing-hint": "model=stale-model",
+  })
+
+  try {
+    for (const sendTime of [2_000, 4_000]) {
+      const response = await forwardCodexResponses(
+        {
+          client_metadata: clientMetadata,
+          input: "hello",
+          model: "gpt-5.4",
+          service_tier: "priority",
+          stream: true,
+        },
+        headers,
+        undefined,
+        { transport: "websocket" },
+      )
+      now.mockReturnValue(sendTime)
+      await collectStreamChunks(response as AsyncIterable<unknown>)
+    }
+
+    expect(MockWebSocket.instances).toHaveLength(1)
+    const websocket = MockWebSocket.instances[0]
+    expect(websocket?.init.headers?.version).toBe("0.155.1")
+    expect(websocket?.init.headers?.["x-codex-routing-hint"]).toBe(
+      "model=gpt-5.4;tier=priority",
+    )
+    expect(websocket?.init.headers).not.toHaveProperty(
+      "x-openai-internal-codex-responses-lite",
+    )
+    expect(websocket?.init.headers).not.toHaveProperty("x-codex-turn-state")
+    expect(websocket?.sent).toHaveLength(2)
+    const sent = websocket?.sent.map(
+      (data) => JSON.parse(data) as ResponsesPayload,
+    )
+    expect(sent?.map((payload) => payload.client_metadata)).toEqual([
+      {
+        existing: "preserved",
+        "x-codex-ws-stream-request-start-ms": "2000",
+        ws_request_header_x_openai_internal_codex_responses_lite: "false",
+      },
+      {
+        existing: "preserved",
+        "x-codex-ws-stream-request-start-ms": "4000",
+        ws_request_header_x_openai_internal_codex_responses_lite: "false",
+      },
+    ])
+    expect(clientMetadata["x-codex-ws-stream-request-start-ms"]).toBe("stale")
+  } finally {
+    now.mockRestore()
+  }
 })
 
 test("provider Responses forwards Codex websocket metadata as HTTP headers", async () => {

@@ -5,6 +5,8 @@ import { WebSocket } from "undici"
 export interface PooledWebSocketRequest<TPayload> {
   headers: Record<string, string>
   payload: TPayload
+  // Refresh request metadata after the socket is ready, immediately before send.
+  preparePayload?: (payload: TPayload) => TPayload
   poolKey: string
   // Optional cancellation for a single pooled request. The Responses and Codex
   // request paths deliberately leave it unset: a client disconnect now drains
@@ -191,7 +193,8 @@ const runPooledWebSocketRequest = async function* <TPayload, TChunk>(
       options,
     )
     messageStream.start()
-    websocket.send(JSON.stringify(request.payload))
+    const payload = request.preparePayload?.(request.payload) ?? request.payload
+    websocket.send(JSON.stringify(payload))
 
     for await (const data of messageStream.iterable) {
       const chunk = options.createChunk(data)
