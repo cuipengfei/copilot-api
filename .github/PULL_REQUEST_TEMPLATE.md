@@ -23,7 +23,7 @@
 
   ```text
   Review Decision: BLOCKING | NON_BLOCKING
-  Findings Total: <N> (CRITICAL=<n1>, HIGH_PRIORITY=<n2>, REFERENCE=<n3>)
+  Findings Total: <N> (CRITICAL=<n1>, HIGH_PRIORITY=<n2>, SUGGESTION=<n3>)
 
   [CRITICAL]
   None
@@ -31,7 +31,7 @@
   [HIGH_PRIORITY]
   None
 
-  [REFERENCE]
+  [SUGGESTION]
   None
   ```
 
