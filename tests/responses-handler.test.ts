@@ -1802,47 +1802,68 @@ describe("responses handler token usage", () => {
     })
   })
 
-  test("uses session headers when Codex subagent header is missing", async () => {
-    createResponses.mockImplementation((payload) =>
-      Promise.resolve(createResponsesResult(payload.model)),
-    )
+  test.each([
+    new Headers({
+      "session-id": "root-session",
+      "x-root-session-id": "plugin-root",
+      "x-session-id": "child-session",
+    }),
+    new Headers({
+      "x-root-session-id": "root-session",
+      "x-session-id": "child-session",
+    }),
+    new Headers({ "x-session-id": "root-session" }),
+    new Headers({
+      "session-id": " ",
+      "x-root-session-id": " root-session ",
+      "x-session-id": "child-session",
+    }),
+    new Headers({
+      "x-root-session-id": " ",
+      "x-session-id": "root-session",
+    }),
+  ])(
+    "uses session headers when Codex subagent header is missing (%#)",
+    async (headers) => {
+      createResponses.mockImplementation((payload) =>
+        Promise.resolve(createResponsesResult(payload.model)),
+      )
 
-    const payload = {
-      input: [
-        {
-          content: [{ text: "hello", type: "input_text" }],
-          role: "user",
-        },
-      ],
-      model: "gpt-test",
-    }
+      const payload = {
+        input: [
+          {
+            content: [{ text: "hello", type: "input_text" }],
+            role: "user",
+          },
+        ],
+        model: "gpt-test",
+      }
 
-    const app = createApp()
-    const response = await app.request("/v1/responses", {
-      body: JSON.stringify(payload),
-      headers: {
-        "content-type": "application/json",
-        "session-id": "root-session",
-        "thread-id": "child-thread",
-        "x-codex-parent-thread-id": "parent-thread",
-      },
-      method: "POST",
-    })
+      headers.set("content-type", "application/json")
+      headers.set("thread-id", "child-thread")
+      headers.set("x-codex-parent-thread-id", "parent-thread")
+      const app = createApp()
+      const response = await app.request("/v1/responses", {
+        body: JSON.stringify(payload),
+        headers,
+        method: "POST",
+      })
 
-    expect(response.status).toBe(200)
-    expect(createResponses).toHaveBeenCalledTimes(1)
+      expect(response.status).toBe(200)
+      expect(createResponses).toHaveBeenCalledTimes(1)
 
-    const options = createResponses.mock.calls[0][1]
-    const expectedSessionId = getUUID("root-session")
-    const expectedRequestId = generateRequestIdFromPayload(
-      { messages: payload.input },
-      expectedSessionId,
-    )
-    expect(options?.initiator).toBe("user")
-    expect(options?.requestId).toBe(expectedRequestId)
-    expect(options?.sessionId).toBe(expectedSessionId)
-    expect(options?.subagentMarker).toBeNull()
-  })
+      const options = createResponses.mock.calls[0][1]
+      const expectedSessionId = getUUID("root-session")
+      const expectedRequestId = generateRequestIdFromPayload(
+        { messages: payload.input },
+        expectedSessionId,
+      )
+      expect(options?.initiator).toBe("user")
+      expect(options?.requestId).toBe(expectedRequestId)
+      expect(options?.sessionId).toBe(expectedSessionId)
+      expect(options?.subagentMarker).toBeNull()
+    },
+  )
 
   test("ignores unknown x-openai-subagent values", async () => {
     createResponses.mockImplementation((payload) =>

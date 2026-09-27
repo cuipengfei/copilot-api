@@ -87,7 +87,7 @@ Claude Code 集成现在拆分为两个插件：
 
 ### Opencode 插件
 
-subagent 标记生成器被打包为一个 opencode 插件，位于 `plugin/opencode/subagent-marker.js`。
+Agent Context 插件位于 `plugin/opencode/agent-context.js`，注册 ID 为 `copilot-api.agent-context`。
 
 **安装方式：**
 
@@ -95,16 +95,19 @@ subagent 标记生成器被打包为一个 opencode 插件，位于 `plugin/open
 
 ```sh
 # 克隆或下载本仓库后复制该插件
-cp plugin/opencode/subagent-marker.js ~/.config/opencode/plugins/
+cp plugin/opencode/agent-context.js ~/.config/opencode/plugins/
 ```
 
-或者手动在 `~/.config/opencode/plugins/subagent-marker.js` 创建该文件，并填入插件内容。
+或者手动在 `~/.config/opencode/plugins/agent-context.js` 创建该文件，并填入插件内容。升级时请移走插件目录中的旧 `subagent-marker.js`，避免重复加载。
+
+同一个文件支持 OpenCode v1 的 `server()` 插件入口（已核对 v1.17/v1.18）和 v2 的 `setup()` 入口（已核对 v2.0.18）。仅支持函数导出的更早 v1 版本，需要删除文件末尾的 `export default { ... }`，保留 `AgentContextPlugin` 命名导出。
 
 **功能：**
 
-- 跟踪 subagent 创建的子会话
-- 自动在 subagent 聊天消息前添加 marker system reminder（`__SUBAGENT_MARKER__...`）
-- 设置 `x-session-id` 请求头以跟踪会话
-- 让这个 AI gateway 能够把来自 subagent 的请求识别为 `x-initiator: agent`
+- 沿 `parentID` 逐层查到根会话，将 `x-root-session-id` 设置为根会话 ID，支持多层 subagent 和恢复的会话
+- v1 在子会话首条聊天消息前添加 marker system reminder（`__SUBAGENT_MARKER__...`），让这个 AI gateway 识别 subagent 请求
+- v2 使用原生的 `x-parent-session-id`，插件只处理根会话 ID，保留原生的子会话和会话 affinity 请求头
 
-该插件会挂接到 `session.created`、`session.deleted`、`chat.message` 和 `chat.headers` 事件上，以无缝提供 subagent marker 能力。
+v1 使用 `session.created`、`session.deleted`、`chat.message` 和 `chat.headers` 钩子；v2 使用 `session.hook("model.request", ...)` 修改请求头。原生的 `x-session-id` 保留为当前会话 ID。Messages API 保留 `metadata.user_id` 的解析优先级；没有该值时，先读取 `x-root-session-id`，再回退到 `x-session-id`。遇到父会话缺失、查询失败或循环引用时，保留已有请求头。
+
+Responses API 按 `session-id`、`x-root-session-id`、`x-session-id` 的顺序读取会话 ID，跳过空白值。

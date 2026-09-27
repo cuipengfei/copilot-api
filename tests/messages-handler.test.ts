@@ -727,6 +727,29 @@ describe("messages handler orchestration", () => {
     expect(findEndpointModel).toHaveBeenCalledWith("auto-model")
   })
 
+  test("prefers the root session header when dispatching to the Messages API", async () => {
+    selectedModel = {
+      id: "messages-model",
+      supported_endpoints: ["/v1/messages"],
+    }
+    const payload = createPayload()
+    const response = await createApp().request("/", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-root-session-id": "root-session",
+        "x-session-id": "child-session",
+      },
+      body: JSON.stringify(payload),
+    })
+
+    expect(response.status).toBe(200)
+    expect(await response.text()).toBe("messages")
+    expect(handleWithMessagesApi.mock.calls[0][2].sessionId).toBe(
+      actualUtilsModule.getUUID("root-session"),
+    )
+  })
+
   test("prefers dispatch-provided session, request, and subagent context", async () => {
     selectedModel = {
       id: "messages-model",

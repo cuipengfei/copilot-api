@@ -83,7 +83,7 @@ The plugin also auto-approves bridge calls through a `PermissionRequest` hook sc
 
 ### Opencode plugin
 
-The subagent marker producer is packaged as an opencode plugin located at `plugin/opencode/subagent-marker.js`.
+The Agent Context plugin is located at `plugin/opencode/agent-context.js` and registers as `copilot-api.agent-context`.
 
 **Installation:**
 
@@ -91,16 +91,19 @@ Copy the plugin file to your opencode plugins directory:
 
 ```sh
 # Clone or download this repository, then copy the plugin
-cp plugin/opencode/subagent-marker.js ~/.config/opencode/plugins/
+cp plugin/opencode/agent-context.js ~/.config/opencode/plugins/
 ```
 
-Or manually create the file at `~/.config/opencode/plugins/subagent-marker.js` with the plugin content.
+Or manually create the file at `~/.config/opencode/plugins/agent-context.js` with the plugin content. When upgrading, remove the old `subagent-marker.js` from the plugin directory to avoid loading it twice.
+
+The same file supports the OpenCode v1 `server()` plugin entrypoint (checked against v1.17/v1.18) and the v2 `setup()` entrypoint (checked against v2.0.18). For earlier v1 versions that only accept function exports, remove the final `export default { ... }` block and keep the named `AgentContextPlugin` export.
 
 **Features:**
 
-- Tracks sub-sessions created by subagents
-- Automatically prepends a marker system reminder (`__SUBAGENT_MARKER__...`) to subagent chat messages
-- Sets `x-session-id` header for session tracking
-- Enables the gateway to infer `x-initiator: agent` for subagent-originated requests
+- Follows every `parentID` to the root session and sets `x-root-session-id` to that root ID, including nested subagents and restored sessions
+- On v1, prepends a marker system reminder (`__SUBAGENT_MARKER__...`) to the first child message so the gateway can identify subagent requests
+- On v2, uses the native `x-parent-session-id`; the plugin only sets the root session ID and preserves native child-session and session affinity headers
 
-The plugin hooks into `session.created`, `session.deleted`, `chat.message`, and `chat.headers` events to provide seamless subagent marker functionality.
+v1 uses the `session.created`, `session.deleted`, `chat.message`, and `chat.headers` hooks. v2 updates headers through `session.hook("model.request", ...)`. The native `x-session-id` keeps the current session ID. The Messages API preserves the priority of `metadata.user_id`; without it, the API reads `x-root-session-id` before falling back to `x-session-id`. Missing parents, lookup failures, and cyclic ancestry leave existing headers intact.
+
+The Responses API reads `session-id`, `x-root-session-id`, then `x-session-id`, skipping blank values.

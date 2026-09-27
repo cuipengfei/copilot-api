@@ -96,3 +96,65 @@ test("getRootSessionId keeps legacy parsing before JSON fallback", () => {
     getUUID("7d0e2f61-4b5c-4a9d-8f11-2c3d4e5f6a7b"),
   )
 })
+
+test.each([
+  {
+    rootSessionId: "root-session",
+    legacySessionId: "child-session",
+    expected: "root-session",
+  },
+  {
+    rootSessionId: "root-session",
+    legacySessionId: undefined,
+    expected: "root-session",
+  },
+  {
+    rootSessionId: undefined,
+    legacySessionId: "legacy-session",
+    expected: "legacy-session",
+  },
+  {
+    rootSessionId: undefined,
+    legacySessionId: undefined,
+    expected: undefined,
+  },
+])(
+  "getRootSessionId prefers the root header and falls back to the legacy header (%#)",
+  ({ rootSessionId, legacySessionId, expected }) => {
+    const payload: AnthropicMessagesPayload = {
+      model: "test-model",
+      messages: [],
+      max_tokens: 0,
+    }
+    const headers = new Headers()
+    if (rootSessionId) headers.set("x-root-session-id", rootSessionId)
+    if (legacySessionId) headers.set("x-session-id", legacySessionId)
+    const context = {
+      req: { header: (name: string) => headers.get(name) ?? undefined },
+    } as unknown as Context
+
+    expect(getRootSessionId(payload, context)).toBe(
+      expected ? getUUID(expected) : undefined,
+    )
+  },
+)
+
+test("getRootSessionId keeps user_id metadata ahead of session headers", () => {
+  const payload: AnthropicMessagesPayload = {
+    model: "test-model",
+    messages: [],
+    max_tokens: 0,
+    metadata: { user_id: jsonStyleUserId },
+  }
+  const headers = new Headers({
+    "X-Root-Session-Id": "root-session",
+    "x-session-id": "child-session",
+  })
+  const context = {
+    req: { header: (name: string) => headers.get(name) ?? undefined },
+  } as unknown as Context
+
+  expect(getRootSessionId(payload, context)).toBe(
+    getUUID("2c4e1cf0-7a67-4d2e-9a4b-1d16d3f44752"),
+  )
+})

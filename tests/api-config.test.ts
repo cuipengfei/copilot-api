@@ -1,8 +1,14 @@
 import { afterEach, expect, test } from "bun:test"
 
-import { prepareForCompact, prepareMessageProxyHeaders } from "~/lib/api-config"
+import {
+  copilotHeaders,
+  prepareForCompact,
+  prepareMessageProxyHeaders,
+} from "~/lib/api-config"
 import { COMPACT_AUTO_CONTINUE, COMPACT_REQUEST } from "~/lib/compact"
 import { isAlphaSearchCodexPriorityEnabled } from "~/lib/config"
+import { requestContext } from "~/lib/request-context"
+import { state } from "~/lib/state"
 
 const originalOauthApp = process.env.COPILOT_API_OAUTH_APP
 
@@ -51,6 +57,32 @@ test("prepareMessageProxyHeaders leaves opencode headers untouched", () => {
     "Openai-Intent": "conversation-edits",
     "User-Agent": "opencode/1.0.0",
   })
+})
+
+test.each([
+  ["opencode/latest/2.0.18/cli", "opencode/latest/2.0.18/cli"],
+  ["  opencode/latest/2.0.18/cli  ", "opencode/latest/2.0.18/cli"],
+  ["opencode/latest/2.0.18/desktop", "opencode/latest/2.0.18/desktop"],
+  ["opencode/latest", "opencode/latest"],
+  ["opencode/1.18.32", "opencode/1.18.32, opencode/1.18.32"],
+  ["opencode/1.18.32, opencode/1.18.32", "opencode/1.18.32, opencode/1.18.32"],
+])("copilotHeaders normalizes UA %s to %s", (userAgent, expected) => {
+  process.env.COPILOT_API_OAUTH_APP = "opencode"
+
+  const headers = requestContext.run(
+    {
+      traceId: "test-trace",
+      startTime: Date.now(),
+      userAgent,
+      sessionAffinity: "child-session",
+      parentSessionId: "parent-session",
+    },
+    () => copilotHeaders(state),
+  )
+
+  expect(headers["User-Agent"]).toBe(expected)
+  expect(headers["x-session-affinity"]).toBe("child-session")
+  expect(headers["x-parent-session-id"]).toBe("parent-session")
 })
 
 test("prepareForCompact marks compact traffic as agent initiated", () => {

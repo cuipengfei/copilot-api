@@ -53,6 +53,8 @@ const getOpencodeLLMHeaders = (): Record<string, string> => {
 
 const normalizeOpencodeUserAgent = (userAgent: string): string => {
   const candidate = userAgent.trim()
+  if (candidate.startsWith("opencode/latest")) return candidate
+
   const opencodeProduct = candidate.match(/^opencode\/[^\s,]+/u)?.[0]
 
   if (!opencodeProduct || candidate.includes(`, ${opencodeProduct}`)) {
