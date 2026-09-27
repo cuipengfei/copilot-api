@@ -262,6 +262,7 @@ sandbox_mode = "danger-full-access"
 approvals_reviewer = "auto_review"
 suppress_unstable_features_warning = true
 web_search = "live"
+service_tier = "default"
 # Codex 0.156.0 及以上版本：先生成模型目录文件，再取消下一行的注释。
 # model_catalog_json = "model_catalog.json"
 

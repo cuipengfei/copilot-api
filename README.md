@@ -246,6 +246,7 @@ sandbox_mode = "danger-full-access"
 approvals_reviewer = "auto_review"
 suppress_unstable_features_warning = true
 web_search = "live"
+service_tier = "default"
 # Codex 0.156.0 and later: generate the catalog, then uncomment this line.
 # model_catalog_json = "model_catalog.json"
 
