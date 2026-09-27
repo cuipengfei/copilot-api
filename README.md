@@ -232,18 +232,27 @@ Recommended Codex version: `0.155.1`.
 
 ### Codex `config.toml` Reference
 
-Add the following `[model_providers.copilot_api]` section to your Codex `~/.codex/config.toml`:
+Add the following configuration to your Codex `~/.codex/config.toml`:
 
 ```toml
+model = "gpt-6-sol"
+model_reasoning_effort = "max"
 model_provider = "copilot_api"
 model_reasoning_summary = "auto"
+plan_mode_reasoning_effort = "max"
 model_context_window = 272000
-model_auto_compact_token_limit = 244800
+model_auto_compact_token_limit = 254800
+sandbox_mode = "danger-full-access"
+approvals_reviewer = "auto_review"
+suppress_unstable_features_warning = true
 web_search = "live"
+# Codex 0.156.0 and later: generate the catalog, then uncomment this line.
+# model_catalog_json = "model_catalog.json"
 
 [model_providers.copilot_api]
 name = "OpenAI"
 base_url = "http://localhost:4141"
+model_catalog_url = "http://localhost:4141/models"
 env_key = "GITHUB_COPILOT_API_KEY"
 requires_openai_auth = true
 supports_websockets = false
@@ -255,9 +264,11 @@ stream_idle_timeout_ms = 300000
 
 [features]
 remote_compaction_v2 = true
-# optional: set false only when the model does not support tool_search
-apps = false
+api_key_model_discovery = true
+default_mode_request_user_input = true
 standalone_web_search = true
+daemon_auto_start = false
+apps = false
 
 [analytics]
 enabled = false
@@ -265,50 +276,26 @@ enabled = false
 
 > [!NOTE]
 > `name` must be set to `"OpenAI"`.
->
-> For third-party models that do not support `tool_search`, we recommend disabling features.apps. Otherwise, each prompt may consume an additional 20,000 or more tokens.
->
-> `supports_standalone_web_search` and `[features] standalone_web_search` must both be enabled to expose the standalone `web.run` search tool.
 
-### If Codex Is Not Signed In to a GPT Account
+### Generate `model_catalog.json`
 
-```toml
-[model_providers.copilot_api]
-name = "OpenAI"
-base_url = "http://localhost:4141"
-requires_openai_auth = false
-supports_websockets = false
-supports_standalone_web_search = true
-wire_api = "responses"
-request_max_retries = 3
-stream_max_retries = 3
-stream_idle_timeout_ms = 300000
+Codex `0.156.0` and later currently have a bug that prevents loading models through `api_key_model_discovery`. The example leaves `model_catalog_json` commented out by default: generate the file first, then uncomment `model_catalog_json = "model_catalog.json"` to load a local catalog as a workaround. This also works when Codex is not signed in to a GPT account. Versions earlier than `0.156.0` do not need this setting. The [official configuration reference](https://learn.chatgpt.com/docs/config-file/config-reference) describes `model_catalog_json` as a path to a JSON model catalog loaded on startup.
 
-[features]
-standalone_web_search = true
+With the gateway running and `curl` and either Bun or Node.js installed, run [the generator](./docs/generate-model-catalog.sh) from the repository root. The script prefers Bun and falls back to Node.js; `jq` is not required:
 
-[model_providers.copilot_api.auth]
-command = "powershell.exe"
-args = [
-    "-NoProfile",
-    "-NonInteractive",
-    "-Command",
-    "[Console]::Out.Write($env:GITHUB_COPILOT_API_KEY)"
-]
+```sh
+sh docs/generate-model-catalog.sh
 ```
 
-macOS, replace the `auth` block with:
+By default, this writes `$HOME/.codex/model_catalog.json` and creates the directory if needed. With the default gateway URL, the command above is equivalent to specifying the URL and output path explicitly:
 
-```toml
-[model_providers.copilot_api.auth]
-command = "/bin/zsh"
-args = [
-    "-c",
-    "printf '%s' \"$GITHUB_COPILOT_API_KEY\""
-]
+```sh
+sh docs/generate-model-catalog.sh http://localhost:4141 "$HOME/.codex/model_catalog.json"
 ```
 
-Without this configuration, Codex cannot fetch `/v1/models` while not signed in to a GPT account, so custom models are unavailable in the model picker.
+If gateway authentication is enabled, export `GITHUB_COPILOT_API_KEY` before running the script. Set `model_catalog_json` to the generated file's absolute path to avoid ambiguity with relative paths. The script sends a Codex `User-Agent`, validates the returned catalog, and replaces the destination only after a successful download and validation. Run it again after changing gateway models or providers, then restart Codex to load the updated catalog.
+
+### Codex Model Catalog and Protocol Adapters
 
 When a Codex client (`User-Agent` starts with `codex`) requests the top-level `GET /v1/models`, the gateway merges native Codex models with models available through the Messages adapter. The latter advertise `use_responses_lite: true`, except DeepSeek models, which use `use_responses_lite: false` and `tool_mode: null`. For other models, `/v1/responses` uses **Responses → Messages** for Anthropic providers, while OpenAI-compatible providers and Chat-only Copilot models reuse the existing Messages route for **Responses → Messages → Chat Completions**, then translate streaming or JSON results back to Responses.
 

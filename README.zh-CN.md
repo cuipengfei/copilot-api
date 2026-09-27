@@ -248,18 +248,27 @@ npx @jeffreycao/copilot-api@latest start
 
 ### Codex `config.toml` 参考配置
 
-把以下 `[model_providers.copilot_api]` 段加入你的 Codex `~/.codex/config.toml`：
+把以下配置加入你的 Codex `~/.codex/config.toml`：
 
 ```toml
+model = "gpt-6-sol"
+model_reasoning_effort = "max"
 model_provider = "copilot_api"
 model_reasoning_summary = "auto"
+plan_mode_reasoning_effort = "max"
 model_context_window = 272000
-model_auto_compact_token_limit = 244800
+model_auto_compact_token_limit = 254800
+sandbox_mode = "danger-full-access"
+approvals_reviewer = "auto_review"
+suppress_unstable_features_warning = true
 web_search = "live"
+# Codex 0.156.0 及以上版本：先生成模型目录文件，再取消下一行的注释。
+# model_catalog_json = "model_catalog.json"
 
 [model_providers.copilot_api]
 name = "OpenAI"
 base_url = "http://localhost:4141"
+model_catalog_url = "http://localhost:4141/models"
 env_key = "GITHUB_COPILOT_API_KEY"
 requires_openai_auth = true
 supports_websockets = false
@@ -271,9 +280,11 @@ stream_idle_timeout_ms = 300000
 
 [features]
 remote_compaction_v2 = true
-# optional: set false only when the model does not support tool_search
-apps = false
+api_key_model_discovery = true
+default_mode_request_user_input = true
 standalone_web_search = true
+daemon_auto_start = false
+apps = false
 
 [analytics]
 enabled = false
@@ -281,50 +292,26 @@ enabled = false
 
 > [!NOTE]
 > `name` 一定要配置为 `"OpenAI"`。
->
-> 对于不支持 `tool_search` 的第三方模型，我们建议禁用 features.apps。否则，每个提示可能会额外消耗 20,000 多个 token。
->
-> 必须同时启用 `supports_standalone_web_search` 和 `[features] standalone_web_search`，Codex 才会暴露独立的 `web.run` 搜索工具。
 
-### Codex 未登录 GPT 账号时
+### 一键生成 `model_catalog.json`
 
-```toml
-[model_providers.copilot_api]
-name = "OpenAI"
-base_url = "http://localhost:4141"
-requires_openai_auth = false
-supports_websockets = false
-supports_standalone_web_search = true
-wire_api = "responses"
-request_max_retries = 3
-stream_max_retries = 3
-stream_idle_timeout_ms = 300000
+Codex `0.156.0` 及以上版本目前存在无法加载 `api_key_model_discovery` 模型列表的 bug。示例默认注释了 `model_catalog_json`，请先生成文件，再取消 `model_catalog_json = "model_catalog.json"` 的注释，通过本地模型目录临时解决。未登录 GPT 账号时也可以使用此方式加载模型目录；低于 `0.156.0` 的版本不需要增加此项。[官方配置参考](https://learn.chatgpt.com/docs/config-file/config-reference)将 `model_catalog_json` 定义为启动时加载的 JSON 模型目录路径。
 
-[features]
-standalone_web_search = true
+启动网关并安装 `curl` 及 Bun 或 Node.js 后，在仓库根目录运行[生成脚本](./docs/generate-model-catalog.sh)。脚本优先使用 Bun，没有 Bun 时使用 Node.js，无需安装 `jq`：
 
-[model_providers.copilot_api.auth]
-command = "powershell.exe"
-args = [
-    "-NoProfile",
-    "-NonInteractive",
-    "-Command",
-    "[Console]::Out.Write($env:GITHUB_COPILOT_API_KEY)"
-]
+```sh
+sh docs/generate-model-catalog.sh
 ```
 
-macOS 将 `auth` 段替换为：
+默认写入 `$HOME/.codex/model_catalog.json`，目录不存在时会自动创建。使用默认网关地址时，上面的命令等价于显式指定网关地址和输出路径：
 
-```toml
-[model_providers.copilot_api.auth]
-command = "/bin/zsh"
-args = [
-    "-c",
-    "printf '%s' \"$GITHUB_COPILOT_API_KEY\""
-]
+```sh
+sh docs/generate-model-catalog.sh http://localhost:4141 "$HOME/.codex/model_catalog.json"
 ```
 
-未按上述方式配置时，Codex 未登录 GPT 账号拉不到 `/v1/models`，无法选择自定义模型。
+如果网关启用了鉴权，请先设置环境变量 `GITHUB_COPILOT_API_KEY`。建议把配置中的 `model_catalog_json` 改成生成文件的绝对路径，避免相对路径歧义。脚本会携带 Codex `User-Agent`，校验返回的模型目录，并仅在下载和校验成功后替换目标文件。网关模型或 provider 发生变化后，重新运行脚本并重启 Codex，即可加载更新后的目录。
+
+### Codex 模型目录与协议适配
 
 Codex 客户端（`User-Agent` 以 `codex` 开头）请求顶层 `GET /v1/models` 时，网关会把原生 Codex 模型与可通过 Messages 适配的模型合并返回。除 DeepSeek 模型外，后者会声明 `use_responses_lite: true`；DeepSeek 模型使用 `use_responses_lite: false` 和 `tool_mode: null`。调用 `/v1/responses` 后，Anthropic provider 走 **Responses → Messages**，OpenAI 兼容 provider 以及只支持 Chat 的 Copilot 模型则复用现有 Messages 路由继续走 **Responses → Messages → Chat Completions**，最终统一翻译回 Responses（包括流式事件）。
 
