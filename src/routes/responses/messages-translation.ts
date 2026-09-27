@@ -919,7 +919,7 @@ function translateToolChoice(
   toolChoice: ResponsesPayload["tool_choice"],
   registry: MessagesToolRegistry,
 ): AnthropicMessagesPayload["tool_choice"] {
-  if (!toolChoice) return undefined
+  if (!toolChoice || registry.tools.length === 0) return undefined
   if (typeof toolChoice === "string") {
     if (toolChoice === "required") return { type: "any" }
     return { type: toolChoice }
