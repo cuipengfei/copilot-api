@@ -19,7 +19,7 @@ model_provider = "copilot_api"
 model_reasoning_summary = "auto"
 plan_mode_reasoning_effort = "max"
 model_context_window = 272000
-model_auto_compact_token_limit = 254800
+model_auto_compact_token_limit = 244800
 # Sandbox policy. Use "workspace-write" to restrict it.
 sandbox_mode = "danger-full-access"
 approvals_reviewer = "auto_review"
