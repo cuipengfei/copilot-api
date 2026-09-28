@@ -662,5 +662,5 @@ const createCodexResponsesWebSocketStreamChunk = (
 
 function shouldIncludeHeader(headerName: string): boolean {
   const header = headerName.toLowerCase()
-  return !header.includes("trace") && !header.startsWith("x-codex-turn-state")
+  return !header.includes("trace") && !header.startsWith("x-codex-turn")
 }
