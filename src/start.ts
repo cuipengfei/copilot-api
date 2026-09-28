@@ -91,10 +91,6 @@ async function setupCopilotMode(
   await setupCopilotToken()
   await cacheModels()
 
-  consola.info(
-    `Available models: \n${state.models?.data.map((model) => `- ${model.id}`).join("\n")}`,
-  )
-
   if (claudeCode) {
     runClaudeCode(serverUrl)
   }
@@ -138,7 +134,6 @@ function runClaudeCode(serverUrl: string): void {
       CLAUDE_CODE_DISABLE_TERMINAL_TITLE: "true",
       CLAUDE_CODE_ENABLE_AWAY_SUMMARY: "0",
       CLAUDE_CODE_TOTAL_TOKENS_REMINDER: "off",
-      CLAUDE_CODE_EFFORT_LEVEL: "max",
       MCP_CONNECT_TIMEOUT_MS: "20000",
     },
     "claude",
@@ -235,7 +230,7 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   }
 
   consola.box(
-    `🌐 Usage Viewer: ${serverUrl}/usage-viewer?endpoint=${serverUrl}/usage`,
+    `🌐 Dashboard Viewer: ${serverUrl}/usage-viewer?endpoint=${serverUrl}/usage`,
   )
 
   const { createServer } = await import("./server")
