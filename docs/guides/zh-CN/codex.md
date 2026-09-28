@@ -21,7 +21,7 @@ model_provider = "copilot_api"
 model_reasoning_summary = "auto"
 plan_mode_reasoning_effort = "max"
 model_context_window = 272000
-model_auto_compact_token_limit = 254800
+model_auto_compact_token_limit = 244800
 # 沙箱策略。可改用 "workspace-write" 以启用限制。
 sandbox_mode = "danger-full-access"
 approvals_reviewer = "auto_review"
