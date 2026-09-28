@@ -666,12 +666,7 @@ describe("responses handler token usage", () => {
     const dispatchOptions = handleMessages.mock.calls[0]?.[2]
     const expectedSessionId = getUUID("root-session")
     expect(dispatchOptions?.sessionId).toBe(expectedSessionId)
-    expect(dispatchOptions?.requestId).toBe(
-      generateRequestIdFromPayload(
-        { messages: payload.input },
-        expectedSessionId,
-      ),
-    )
+    expect(dispatchOptions?.requestId).toBe(getUUID("child-thread_"))
     expect(dispatchOptions?.subagentMarker).toEqual({
       agent_id: "child-thread",
       agent_type: "collab_spawn",
@@ -1741,12 +1736,7 @@ describe("responses handler token usage", () => {
     const expectedSessionId = getUUID("root-session")
     expect(options?.initiator).toBe("agent")
     expect(options?.sessionId).toBe(expectedSessionId)
-    expect(options?.requestId).toBe(
-      generateRequestIdFromPayload(
-        { messages: payload.input },
-        expectedSessionId,
-      ),
-    )
+    expect(options?.requestId).toBe(getUUID("child-thread_"))
     expect(options?.subagentMarker).toEqual({
       agent_id: "child-thread",
       agent_type: "collab_spawn",
@@ -1854,12 +1844,8 @@ describe("responses handler token usage", () => {
 
       const options = createResponses.mock.calls[0][1]
       const expectedSessionId = getUUID("root-session")
-      const expectedRequestId = generateRequestIdFromPayload(
-        { messages: payload.input },
-        expectedSessionId,
-      )
       expect(options?.initiator).toBe("user")
-      expect(options?.requestId).toBe(expectedRequestId)
+      expect(options?.requestId).toBe(getUUID("child-thread_"))
       expect(options?.sessionId).toBe(expectedSessionId)
       expect(options?.subagentMarker).toBeNull()
     },

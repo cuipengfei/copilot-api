@@ -100,10 +100,11 @@ export const handleResponses = async (c: Context) => {
 
   const incomingSessionId = getIncomingResponsesSessionId(c)
   const sessionId = incomingSessionId ? getUUID(incomingSessionId) : undefined
-  const requestId = generateRequestIdFromPayload(
-    { messages: payload.input },
-    sessionId,
-  )
+  const threadId = c.req.header("thread-id")
+  const requestId =
+    threadId ?
+      getUUID(threadId + "_")
+    : generateRequestIdFromPayload({ messages: payload.input }, sessionId)
   logger.debug("Generated request ID:", requestId)
 
   const fallbackSessionId = sessionId ?? getUUID(requestId)
