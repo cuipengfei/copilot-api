@@ -4,6 +4,7 @@ import { Hono } from "hono"
 import type { ResolvedProviderConfig } from "~/lib/config"
 import { installModelsDevCatalog } from "~/lib/models-dev-cache"
 import type { ModelsResponse } from "~/lib/types/models"
+import type { CodexModelsResponse } from "~/routes/models/codex-models-types"
 import bundledCodexCatalogJson from "~/routes/models/models.json"
 
 import { modelsDevCatalogFixture } from "./fixtures/models-dev-catalog"
@@ -79,16 +80,8 @@ const createDefaultCodexCatalogModels = () => [
   },
 ]
 
-const bundledCodexModels = (
-  bundledCodexCatalogJson as {
-    models: Array<{
-      slug: string
-      visibility?: string
-      supported_in_api?: boolean
-      model_messages?: { instructions_template?: string }
-    }>
-  }
-).models
+const bundledCodexModels = (bundledCodexCatalogJson as CodexModelsResponse)
+  .models
 const bundledCodexSlugs = bundledCodexModels.map((model) => model.slug)
 const CODEX_CATALOG_ETAG = 'W/"catalog-1"'
 
@@ -731,15 +724,19 @@ describe("model routes", () => {
     const synthetic = body.models.find(
       (model) => model.slug === "claude-sonnet-4-6",
     )
-    expect(synthetic).toMatchObject({
-      display_name: "claude-sonnet-4.6",
-      shell_type: "unified_exec",
-    })
-    expect(synthetic?.available_in_plans).toContain("pro")
     const template = bundledCodexModels.find(
       (model) =>
         model.visibility === "list" && model.supported_in_api !== false,
     )
+    if (!template) {
+      throw new Error("Bundled Codex catalog has no visible API model")
+    }
+    expect(body.models).toContainEqual(template)
+    expect(synthetic).toMatchObject({
+      display_name: "claude-sonnet-4.6",
+      shell_type: template?.shell_type,
+      available_in_plans: template?.available_in_plans,
+    })
     const modelMessages = synthetic?.model_messages as
       | { instructions_template?: string }
       | undefined
