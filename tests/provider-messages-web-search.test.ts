@@ -25,7 +25,6 @@ const findEndpointModel = mock((model: string) => ({
 
 await mock.module("~/lib/config", () => ({
   ...actualConfigModule,
-  getMessageApiWebSearchModel: () => messageApiWebSearchModel,
   getProviderConfig: (name: string) => providerConfigs[name] ?? null,
   isResponsesApiWebSearchEnabled: () => true,
   isResponsesApiWebSocketEnabled: () => false,
@@ -59,12 +58,16 @@ await mock.module("~/lib/token-usage", () => ({
 const { providerMessageRoutes } =
   await import("~/routes/provider/messages/route")
 const { messageRoutes } = await import("~/routes/messages/route")
+const { webSearchFlowDependencies } =
+  await import("~/routes/messages/web-search/fulfill")
 const { state } = await import("~/lib/state")
 const { responsesUtilsDependencies } = await import("~/routes/responses/utils")
 
 const originalCodexAccessToken = state.codexAccessToken
 const originalCodexAccountId = state.codexAccountId
 const defaultResponsesUtilsDependencies = { ...responsesUtilsDependencies }
+const originalGetMessageApiWebSearchModel =
+  webSearchFlowDependencies.getMessageApiWebSearchModel
 
 const makeResponsesResult = (
   overrides: Partial<ResponsesResult> = {},
@@ -352,6 +355,8 @@ beforeEach(() => {
   state.codexAccessToken = "codex-token"
   state.codexAccountId = "codex-account"
   messageApiWebSearchModel = undefined
+  webSearchFlowDependencies.getMessageApiWebSearchModel = () =>
+    messageApiWebSearchModel
   responsesResultOverride = undefined
   responsesStreamFactory = undefined
   findEndpointModel.mockClear()
@@ -370,6 +375,8 @@ afterEach(() => {
   state.codexAccessToken = originalCodexAccessToken
   state.codexAccountId = originalCodexAccountId
   Object.assign(responsesUtilsDependencies, defaultResponsesUtilsDependencies)
+  webSearchFlowDependencies.getMessageApiWebSearchModel =
+    originalGetMessageApiWebSearchModel
   providerConfigs = {}
   messageApiWebSearchModel = undefined
   responsesResultOverride = undefined

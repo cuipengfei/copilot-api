@@ -54,14 +54,14 @@ Every counted finding must be reproducible from the checked context.
 - `location` must point to the exact file and line that anchors the issue. For multi-location issues, cite the clearest anchor and describe the occurrence count only when it was verified.
 - `reason` must connect evidence to impact: what the code does, why that behavior is risky, and which scenario exposes it.
 - `fix` must be a concrete action that would address the verified issue.
-- Do not rely on general best practices alone. A style preference, refactor idea, or speculative edge case belongs in `REFERENCE` or outside counted findings.
+- Do not rely on general best practices alone. A style preference, refactor idea, or speculative edge case belongs in `SUGGESTION` or outside counted findings.
 - Do not assert runtime behavior of third-party libraries, frameworks, CLIs, upstream provider APIs (GitHub Copilot, OpenAI, Anthropic, etc.), or services unless it was verified from installed code, official docs, tests, or existing project usage.
 
 ## Uncertainty Handling
 
 Separate verified issues from uncertainty.
 
-- **Verified issue**: supported by inspected evidence and eligible for `CRITICAL`, `HIGH_PRIORITY`, or `REFERENCE`.
+- **Verified issue**: supported by inspected evidence and eligible for `CRITICAL`, `HIGH_PRIORITY`, or `SUGGESTION`.
 - **Unverified risk**: plausible but not proven from available context; mention in `Test Notes` or `Release Risk`, not in counted findings.
 - **Open question**: required context is missing or ambiguous; mention briefly outside counted findings.
 
@@ -71,7 +71,7 @@ Use cautious language for uncertainty. Do not write that something "will" fail, 
 
 - **CRITICAL (must fix)**: can cause outages, token/credential leakage, data loss, security issues, broken core flows (auth, provider resolution, request translation, streaming), or release blockers.
 - **HIGH_PRIORITY (should fix)**: likely bugs, footguns, hard-to-maintain design, missing key tests, or noticeable risk.
-- **REFERENCE (non-blocking)**: improvements, refactors, readability, minor perf issues, style alignment, or low-risk follow-up notes.
+- **SUGGESTION (non-blocking)**: improvements, refactors, readability, minor perf issues, style alignment, or low-risk follow-up notes.
 
 Severity must follow verified impact, not reviewer confidence or preference. Do not escalate a finding to `CRITICAL` or `HIGH_PRIORITY` unless the checked evidence shows a concrete failure mode, compatibility break, security/privacy risk, data-safety risk, or release-blocking test gap.
 
@@ -142,7 +142,7 @@ Provide these short summaries so the review output can be consumed by automation
 
 ```text
 Review Decision: BLOCKING | NON_BLOCKING
-Findings Total: <N> (CRITICAL=<n1>, HIGH_PRIORITY=<n2>, REFERENCE=<n3>)
+Findings Total: <N> (CRITICAL=<n1>, HIGH_PRIORITY=<n2>, SUGGESTION=<n3>)
 
 [CRITICAL]
 1. reason=<reason>; location=<file>:<line>; fix=<action>; occurrences=<count>
@@ -150,16 +150,16 @@ Findings Total: <N> (CRITICAL=<n1>, HIGH_PRIORITY=<n2>, REFERENCE=<n3>)
 [HIGH_PRIORITY]
 1. reason=<reason>; location=<file>:<line>; fix=<action>; occurrences=<count>
 
-[REFERENCE]
+[SUGGESTION]
 1. reason=<reason>; location=<file>:<line>; fix=<action>; occurrences=<count>
 ```
 
 Formatting rules for this block:
 
-- Always emit all three sections in this order: `CRITICAL`, `HIGH_PRIORITY`, `REFERENCE`.
+- Always emit all three sections in this order: `CRITICAL`, `HIGH_PRIORITY`, `SUGGESTION`.
 - If a section has no findings, write `None` on the next line.
 - `Review Decision` is `BLOCKING` when `CRITICAL > 0` or `HIGH_PRIORITY > 0`; otherwise use `NON_BLOCKING`.
-- `Findings Total` must equal the sum of `CRITICAL`, `HIGH_PRIORITY`, and `REFERENCE`.
+- `Findings Total` must equal the sum of `CRITICAL`, `HIGH_PRIORITY`, and `SUGGESTION`.
 - Keep the structured field names unchanged. Put evidence inside `reason` and the exact anchor inside `location`; do not add new fields to the structured block.
 
 Keep both summaries concise and avoid unnecessary special characters outside the required structured fields.
@@ -170,7 +170,7 @@ The counts must be carried in the `Findings Total` line inside `CODE_REVIEW_SUMM
 
 ## Output Language
 
-All review output is written in English, regardless of reviewer locale or timezone. The structured field names (`Review Decision`, `Findings Total`, `CRITICAL`, `HIGH_PRIORITY`, `REFERENCE`, `reason`, `location`, `fix`, `occurrences`) must remain exactly as defined for automation compatibility.
+All review output is written in English, regardless of reviewer locale or timezone. The structured field names (`Review Decision`, `Findings Total`, `CRITICAL`, `HIGH_PRIORITY`, `SUGGESTION`, `reason`, `location`, `fix`, `occurrences`) must remain exactly as defined for automation compatibility.
 
 ## Reviewer Output Template
 

@@ -19,6 +19,10 @@ export interface Locale {
     codexRestartRequired: string
     codexUseAccount: string
     customProvider: string
+    modelsDevProvider: string
+    modelsDevManual: string
+    modelsDevLoading: string
+    modelsDevUnavailable: string
     loading: string
     manualToken: string
     providerApiKey: string

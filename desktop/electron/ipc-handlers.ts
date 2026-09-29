@@ -3,6 +3,7 @@ import fs from 'node:fs/promises'
 import { ipcMain, shell, BrowserWindow } from 'electron'
 
 import { normalizeApiKeys } from '../../src/lib/request-auth'
+import { loadModelsDevProviderOptions } from '../../src/lib/models-dev-cache'
 import { PATHS } from '../../src/lib/paths'
 import {
   isValidServerHost,
@@ -246,6 +247,11 @@ export function registerIpcHandlers(
         return { success: false, mode: 'none', error: (err as Error).message }
       }
     },
+  )
+
+  ipcMain.handle(
+    'auth:get-models-dev-providers',
+    async () => await loadModelsDevProviderOptions(),
   )
 
   ipcMain.handle(

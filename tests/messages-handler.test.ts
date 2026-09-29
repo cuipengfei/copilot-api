@@ -66,7 +66,6 @@ await mock.module("~/lib/state", () => ({
 await mock.module("~/lib/config", () => ({
   ...actualConfigModule,
   getClaudeAutoModel: () => claudeAutoModel,
-  getSmallModel: () => "small-model",
   isMessagesApiEnabled: () => messagesApiEnabled,
   isResponsesApiWebSocketEnabled: () => responsesApiWebSocketEnabled,
   resolveMappedModel: (model: string) => modelMappings[model] ?? model,
@@ -674,7 +673,9 @@ describe("messages handler orchestration", () => {
 
     expect(response.status).toBe(200)
     expect(await response.text()).toBe("messages")
-    expect(findEndpointModel).toHaveBeenCalledWith("small-model")
+    expect(findEndpointModel).toHaveBeenCalledWith(
+      actualConfigModule.getSmallModel(),
+    )
 
     const expectedSessionId = actualUtilsModule.getUUID("session-123")
     const expectedRequestId = actualUtilsModule.generateRequestIdFromPayload(
@@ -724,6 +725,29 @@ describe("messages handler orchestration", () => {
     expect(await response.text()).toBe("messages")
     expect(findEndpointModel).toHaveBeenCalledTimes(1)
     expect(findEndpointModel).toHaveBeenCalledWith("auto-model")
+  })
+
+  test("prefers the root session header when dispatching to the Messages API", async () => {
+    selectedModel = {
+      id: "messages-model",
+      supported_endpoints: ["/v1/messages"],
+    }
+    const payload = createPayload()
+    const response = await createApp().request("/", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-root-session-id": "root-session",
+        "x-session-id": "child-session",
+      },
+      body: JSON.stringify(payload),
+    })
+
+    expect(response.status).toBe(200)
+    expect(await response.text()).toBe("messages")
+    expect(handleWithMessagesApi.mock.calls[0][2].sessionId).toBe(
+      actualUtilsModule.getUUID("root-session"),
+    )
   })
 
   test("prefers dispatch-provided session, request, and subagent context", async () => {

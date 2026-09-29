@@ -323,6 +323,7 @@ export function normalizeOpenAIUsage(
 export function normalizeResponsesUsage(
   usage:
     | {
+        cost?: number
         input_tokens?: number
         input_tokens_details?: {
           cached_tokens?: number
@@ -346,6 +347,7 @@ export function normalizeResponsesUsage(
       cache_creation_input_tokens: cacheWriteTokens,
     }),
     cache_read_input_tokens: cachedTokens,
+    cost: normalizeOptionalCost(usage?.cost),
     input_tokens: Math.max(0, inputTokens - cachedTokens - cacheWriteTokens),
     output_tokens: normalizeToken(usage?.output_tokens),
     total_tokens: normalizeOptionalToken(usage?.total_tokens),

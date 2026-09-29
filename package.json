@@ -1,14 +1,15 @@
 {
   "$schema": "https://json.schemastore.org/package.json",
   "name": "@jeffreycao/copilot-api",
-  "version": "2.6.1",
+  "version": "2.6.20",
   "description": "GitHub Copilot, OpenAI Codex, OpenCode Go, and third-party AI provider gateway with OpenAI and Anthropic API compatibility.",
   "keywords": [
     "github-copilot",
     "codex",
     "ai-gateway",
     "opencode",
-    "anthropic-compatible"
+    "anthropic-compatible",
+    "openai-responses"
   ],
   "homepage": "https://github.com/caozhiyuan/copilot-api",
   "bugs": "https://github.com/caozhiyuan/copilot-api/issues",
@@ -75,6 +76,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
+    "@opencode-ai/models": "0.0.85",
     "@typescript/native": "npm:typescript@^7.0.2",
     "@types/bun": "^1.4.2",
     "@types/proxy-from-env": "^1.0.4",

@@ -2,6 +2,9 @@ import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test"
 import { Hono } from "hono"
 
 import type { ResolvedProviderConfig } from "~/lib/config"
+import { installModelsDevCatalog } from "~/lib/models-dev-cache"
+
+import { modelsDevCatalogFixture } from "./fixtures/models-dev-catalog"
 
 const actualConfigModule = await import("~/lib/config")
 const actualTokenUsageModule = await import("~/lib/token-usage")
@@ -101,6 +104,7 @@ const parseSseData = (text: string): Array<Record<string, unknown>> =>
     )
 
 beforeEach(() => {
+  installModelsDevCatalog(modelsDevCatalogFixture)
   providerConfig = {
     name: "dashscope",
     type: "openai-compatible",
@@ -610,6 +614,39 @@ describe("openai-compatible provider context cache", () => {
 })
 
 describe("openai-compatible provider message content", () => {
+  test("joins multiple DashScope assistant text blocks into a string", async () => {
+    const app = createApp()
+    const response = await app.request("/dash/v1/messages", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        max_tokens: 128,
+        messages: [
+          { role: "user", content: "first" },
+          {
+            role: "assistant",
+            content: [
+              { type: "text", text: "Hello, " },
+              { type: "text", text: "world." },
+            ],
+          },
+          { role: "user", content: "continue" },
+        ],
+        model: "qwen-plus",
+      }),
+    })
+
+    expect(response.status).toBe(200)
+    const init = fetchMock.mock.calls[0][1] as RequestInit
+    const body = JSON.parse(init.body as string) as {
+      messages: Array<Record<string, unknown>>
+    }
+    expect(body.messages[1]).toMatchObject({
+      role: "assistant",
+      content: "Hello, world.",
+    })
+  })
+
   test("sends assistant thinking history as reasoning_content", async () => {
     const app = createApp()
     const response = await app.request("/dash/v1/messages", {
@@ -653,12 +690,7 @@ describe("openai-compatible provider message content", () => {
       messages: Array<Record<string, unknown>>
     }
     expect(body.messages[1]).toMatchObject({
-      content: [
-        {
-          type: "text",
-          text: "previous answer",
-        },
-      ],
+      content: "previous answer",
       reasoning_content: "empty signature thinking",
       role: "assistant",
     })

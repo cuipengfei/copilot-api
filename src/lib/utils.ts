@@ -122,7 +122,7 @@ export const getRootSessionId = (
   const sessionId =
     userId ?
       parseUserIdMetadata(userId).sessionId || undefined
-    : c.req.header("x-session-id")
+    : (c.req.header("x-root-session-id") ?? c.req.header("x-session-id"))
 
   return sessionId ? getUUID(sessionId) : sessionId
 }

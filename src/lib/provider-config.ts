@@ -11,19 +11,25 @@ import {
   type ProviderConfig,
   type ProviderType,
 } from "./config-store"
+import {
+  getModelsDevModelApi,
+  getModelsDevModelPricing,
+  getModelsDevModelProviderType,
+  getModelsDevProviderApi,
+  getOpencodeGoModelProviderType,
+} from "./models-dev-cache"
 
 export interface ResolvedProviderConfig {
   name: string
   type: ProviderType
   baseUrl: string
+  modelsDevProviderId?: string
   apiKey: string
   authType: ProviderAuthType
+  authTypeExplicit?: boolean
   pricingCurrency?: string
   models?: Record<string, ModelConfig>
 }
-
-const OPENCODE_ANTHROPIC_MODEL_PATTERN = /^(?:qwen|minimax)/iu
-const OPENCODE_RESPONSES_MODEL_PATTERN = /^(?:gpt|grok|muse-spark)(?:[-_.]|$)/iu
 
 export function normalizeProviderBaseUrl(url: string): string {
   return url.trim().replace(/\/+$/u, "")
@@ -178,8 +184,10 @@ export function getProviderConfig(name: string): ResolvedProviderConfig | null {
     name: providerName,
     type,
     baseUrl,
+    modelsDevProviderId: provider.modelsDevProviderId,
     apiKey,
     authType,
+    authTypeExplicit: provider.authType !== undefined,
     pricingCurrency: normalizePricingCurrency(provider.pricingCurrency),
     models: provider.models,
   }
@@ -195,15 +203,72 @@ export function resolveEffectiveProviderType(
   }
 
   if (providerConfig.name === "opencode-go") {
-    if (OPENCODE_ANTHROPIC_MODEL_PATTERN.test(model)) {
-      return "anthropic"
-    }
-    if (OPENCODE_RESPONSES_MODEL_PATTERN.test(model)) {
+    return getOpencodeGoModelProviderType(model)
+  }
+
+  if (providerConfig.modelsDevProviderId) {
+    const catalogType = getModelsDevModelProviderType(
+      providerConfig.modelsDevProviderId,
+      model,
+    )
+    if (catalogType) return catalogType
+  }
+
+  if (providerConfig.name === "openrouter") {
+    if (model.includes("gpt-")) {
       return "openai-responses"
     }
   }
 
   return providerConfig.type
+}
+
+export function resolveProviderConfigForModel(
+  providerConfig: ResolvedProviderConfig,
+  model: string,
+): ResolvedProviderConfig {
+  const type = resolveEffectiveProviderType(providerConfig, model)
+  const modelApi =
+    (
+      providerConfig.modelsDevProviderId
+      && providerConfig.baseUrl
+        === getModelsDevProviderApi(providerConfig.modelsDevProviderId)
+    ) ?
+      getModelsDevModelApi(providerConfig.modelsDevProviderId, model)
+    : undefined
+  const configuredModel = providerConfig.models?.[model]
+  const catalogPricing =
+    providerConfig.modelsDevProviderId ?
+      getModelsDevModelPricing(providerConfig.modelsDevProviderId, model)
+    : undefined
+  const useCatalogPricing =
+    catalogPricing !== undefined && configuredModel?.pricing === undefined
+  if (type === providerConfig.type && !modelApi && !useCatalogPricing) {
+    return providerConfig
+  }
+
+  return {
+    ...providerConfig,
+    type,
+    baseUrl: modelApi ?? providerConfig.baseUrl,
+    models:
+      useCatalogPricing ?
+        {
+          ...providerConfig.models,
+          [model]: { ...configuredModel, pricing: catalogPricing },
+        }
+      : providerConfig.models,
+    pricingCurrency: useCatalogPricing ? "USD" : providerConfig.pricingCurrency,
+    authType:
+      (
+        type !== providerConfig.type
+        && !providerConfig.authTypeExplicit
+        && providerConfig.authType !== "azure-entra"
+        && providerConfig.authType !== "oauth2"
+      ) ?
+        resolveProviderAuthType(providerConfig.name, undefined, type)
+      : providerConfig.authType,
+  }
 }
 
 function normalizePricingCurrency(

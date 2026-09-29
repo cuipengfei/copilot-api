@@ -114,6 +114,7 @@ const { responsesMessagesDependencies } =
 const { responsesChatDependencies } =
   await import("~/routes/responses/chat-handler")
 const { responsesRoutes } = await import("~/routes/responses/route")
+const { taskTitleDependencies } = await import("~/routes/responses/task-title")
 const { responsesUtilsDependencies } = await import("~/routes/responses/utils")
 const { generateRequestIdFromPayload, getUUID } = await import("~/lib/utils")
 
@@ -125,6 +126,7 @@ const defaultResponsesMessagesDependencies = {
 }
 const defaultResponsesChatDependencies = { ...responsesChatDependencies }
 const defaultResponsesUtilsDependencies = { ...responsesUtilsDependencies }
+const defaultTaskTitleDependencies = { ...taskTitleDependencies }
 
 const DB_PATH_ENV = "COPILOT_API_SQLITE_DB_PATH"
 
@@ -234,6 +236,134 @@ afterEach(async () => {
   )
   Object.assign(responsesChatDependencies, defaultResponsesChatDependencies)
   Object.assign(responsesUtilsDependencies, defaultResponsesUtilsDependencies)
+  Object.assign(taskTitleDependencies, defaultTaskTitleDependencies)
+})
+
+describe("Codex task title model routing on Responses", () => {
+  const taskTitlePrompt =
+    "Generate a concise, single-line task title of at most 36 characters and under five words where possible."
+  const titleInput = [
+    { role: "user", content: [{ type: "input_text", text: taskTitlePrompt }] },
+  ]
+
+  beforeEach(() => {
+    state.models = {
+      object: "list",
+      data: [
+        {
+          capabilities: { limits: { max_prompt_tokens: 128000 } },
+          id: "gpt-test",
+          supported_endpoints: ["/responses"],
+        },
+        {
+          capabilities: { limits: { max_prompt_tokens: 128000 } },
+          id: "gpt-small",
+          supported_endpoints: ["/responses"],
+        },
+      ],
+    } as typeof state.models
+    taskTitleDependencies.getSmallModelForProvider = (provider) =>
+      provider === "copilot" ? "gpt-small" : undefined
+    createResponses.mockImplementation((payload) =>
+      Promise.resolve(createResponsesResult(payload.model)),
+    )
+  })
+
+  for (const [name, input, userAgent, expectedModel] of [
+    ["the final input item matches", titleInput, "codex/1.0", "gpt-small"],
+    [
+      "the penultimate input item matches",
+      [
+        ...titleInput,
+        { role: "user", content: [{ type: "input_text", text: "Continue" }] },
+      ],
+      "codex/1.0",
+      "gpt-small",
+    ],
+    [
+      "only an earlier input item matches",
+      [
+        ...titleInput,
+        { role: "user", content: [{ type: "input_text", text: "Continue" }] },
+        { role: "user", content: [{ type: "input_text", text: "Again" }] },
+      ],
+      "codex/1.0",
+      "gpt-test",
+    ],
+    ["the client is not Codex", titleInput, "other-client/1.0", "gpt-test"],
+  ] as const) {
+    test(`selects ${expectedModel} when ${name}`, async () => {
+      const response = await createApp().request("/v1/responses", {
+        body: JSON.stringify({ model: "gpt-test", input }),
+        headers: {
+          "content-type": "application/json",
+          "user-agent": userAgent,
+        },
+        method: "POST",
+      })
+
+      expect(response.status).toBe(200)
+      expect(createResponses).toHaveBeenCalledTimes(1)
+      expect(createResponses.mock.calls[0]?.[0].model).toBe(expectedModel)
+    })
+  }
+
+  test("keeps the requested model when the Copilot small model is disabled", async () => {
+    taskTitleDependencies.getSmallModelForProvider = () => undefined
+
+    const response = await createApp().request("/v1/responses", {
+      body: JSON.stringify({ model: "gpt-test", input: titleInput }),
+      headers: {
+        "content-type": "application/json",
+        "user-agent": "codex/1.0",
+      },
+      method: "POST",
+    })
+
+    expect(response.status).toBe(200)
+    expect(createResponses.mock.calls[0]?.[0].model).toBe("gpt-test")
+  })
+
+  test("keeps request tools without remapping the configured small model", async () => {
+    taskTitleDependencies.getSmallModelForProvider = () => "gpt-small"
+    responsesHandlerDependencies.resolveMappedModel = (model) =>
+      model === "gpt-small" ? "gpt-test" : model
+    const tools = [
+      {
+        type: "function",
+        name: "list_files",
+        parameters: { type: "object" },
+        strict: false,
+      },
+    ]
+
+    const response = await createApp().request("/v1/responses", {
+      body: JSON.stringify({
+        model: "gpt-test",
+        input: [
+          { role: "developer", type: "additional_tools", tools },
+          ...titleInput,
+        ],
+        tools,
+        tool_choice: "required",
+      }),
+      headers: {
+        "content-type": "application/json",
+        "user-agent": "codex/1.0",
+      },
+      method: "POST",
+    })
+
+    expect(response.status).toBe(200)
+    const forwarded = createResponses.mock.calls[0]?.[0]
+    expect(forwarded.model).toBe("gpt-small")
+    expect(forwarded.tools).toEqual(tools)
+    expect(forwarded.tool_choice).toBe("required")
+    expect(forwarded.input).toEqual([
+      { role: "developer", type: "additional_tools", tools },
+      ...titleInput,
+    ])
+  })
 })
 
 describe("responses reasoning transport isolation", () => {
@@ -569,12 +699,7 @@ describe("responses handler token usage", () => {
     const dispatchOptions = handleMessages.mock.calls[0]?.[2]
     const expectedSessionId = getUUID("root-session")
     expect(dispatchOptions?.sessionId).toBe(expectedSessionId)
-    expect(dispatchOptions?.requestId).toBe(
-      generateRequestIdFromPayload(
-        { messages: payload.input },
-        expectedSessionId,
-      ),
-    )
+    expect(dispatchOptions?.requestId).toBe(getUUID("child-thread_"))
     expect(dispatchOptions?.subagentMarker).toEqual({
       agent_id: "child-thread",
       agent_type: "collab_spawn",
@@ -1644,12 +1769,7 @@ describe("responses handler token usage", () => {
     const expectedSessionId = getUUID("root-session")
     expect(options?.initiator).toBe("agent")
     expect(options?.sessionId).toBe(expectedSessionId)
-    expect(options?.requestId).toBe(
-      generateRequestIdFromPayload(
-        { messages: payload.input },
-        expectedSessionId,
-      ),
-    )
+    expect(options?.requestId).toBe(getUUID("child-thread_"))
     expect(options?.subagentMarker).toEqual({
       agent_id: "child-thread",
       agent_type: "collab_spawn",
@@ -1705,47 +1825,64 @@ describe("responses handler token usage", () => {
     })
   })
 
-  test("uses session headers when Codex subagent header is missing", async () => {
-    createResponses.mockImplementation((payload) =>
-      Promise.resolve(createResponsesResult(payload.model)),
-    )
+  test.each([
+    new Headers({
+      "session-id": "root-session",
+      "x-root-session-id": "plugin-root",
+      "x-session-id": "child-session",
+    }),
+    new Headers({
+      "x-root-session-id": "root-session",
+      "x-session-id": "child-session",
+    }),
+    new Headers({ "x-session-id": "root-session" }),
+    new Headers({
+      "session-id": " ",
+      "x-root-session-id": " root-session ",
+      "x-session-id": "child-session",
+    }),
+    new Headers({
+      "x-root-session-id": " ",
+      "x-session-id": "root-session",
+    }),
+  ])(
+    "uses session headers when Codex subagent header is missing (%#)",
+    async (headers) => {
+      createResponses.mockImplementation((payload) =>
+        Promise.resolve(createResponsesResult(payload.model)),
+      )
 
-    const payload = {
-      input: [
-        {
-          content: [{ text: "hello", type: "input_text" }],
-          role: "user",
-        },
-      ],
-      model: "gpt-responses-test",
-    }
+      const payload = {
+        input: [
+          {
+            content: [{ text: "hello", type: "input_text" }],
+            role: "user",
+          },
+        ],
+        model: "gpt-responses-test",
+      }
 
-    const app = createApp()
-    const response = await app.request("/v1/responses", {
-      body: JSON.stringify(payload),
-      headers: {
-        "content-type": "application/json",
-        "session-id": "root-session",
-        "thread-id": "child-thread",
-        "x-codex-parent-thread-id": "parent-thread",
-      },
-      method: "POST",
-    })
+      headers.set("content-type", "application/json")
+      headers.set("thread-id", "child-thread")
+      headers.set("x-codex-parent-thread-id", "parent-thread")
+      const app = createApp()
+      const response = await app.request("/v1/responses", {
+        body: JSON.stringify(payload),
+        headers,
+        method: "POST",
+      })
 
-    expect(response.status).toBe(200)
-    expect(createResponses).toHaveBeenCalledTimes(1)
+      expect(response.status).toBe(200)
+      expect(createResponses).toHaveBeenCalledTimes(1)
 
-    const options = createResponses.mock.calls[0][1]
-    const expectedSessionId = getUUID("root-session")
-    const expectedRequestId = generateRequestIdFromPayload(
-      { messages: payload.input },
-      expectedSessionId,
-    )
-    expect(options?.initiator).toBe("user")
-    expect(options?.requestId).toBe(expectedRequestId)
-    expect(options?.sessionId).toBe(expectedSessionId)
-    expect(options?.subagentMarker).toBeNull()
-  })
+      const options = createResponses.mock.calls[0][1]
+      const expectedSessionId = getUUID("root-session")
+      expect(options?.initiator).toBe("user")
+      expect(options?.requestId).toBe(getUUID("child-thread_"))
+      expect(options?.sessionId).toBe(expectedSessionId)
+      expect(options?.subagentMarker).toBeNull()
+    },
+  )
 
   test("ignores unknown x-openai-subagent values", async () => {
     createResponses.mockImplementation((payload) =>

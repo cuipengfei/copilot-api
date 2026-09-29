@@ -544,7 +544,7 @@ const mapIncompleteDetails = (
 }
 
 const mapUsage = (
-  usage: ChatCompletionResponse["usage"],
+  usage: ChatCompletionResponse["usage"] | null,
 ): ResponseUsage | null => {
   if (!usage) {
     return null

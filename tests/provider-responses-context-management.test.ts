@@ -2,8 +2,11 @@ import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test"
 import { Hono } from "hono"
 
 import type { ResolvedProviderConfig } from "~/lib/config"
+import { installModelsDevCatalog } from "~/lib/models-dev-cache"
 import { state } from "~/lib/state"
 import type { ResponsesResult } from "~/lib/types/responses"
+
+import { modelsDevCatalogFixture } from "./fixtures/models-dev-catalog"
 
 let providerConfig: ResolvedProviderConfig | null = null
 
@@ -17,7 +20,10 @@ const { providerResponsesHandlerDependencies } =
   await import("~/routes/provider/responses/handler")
 const { responsesHandlerDependencies } =
   await import("~/routes/responses/handler")
+const { responsesMessagesDependencies } =
+  await import("~/routes/responses/messages-handler")
 const { responsesUtilsDependencies } = await import("~/routes/responses/utils")
+const { taskTitleDependencies } = await import("~/routes/responses/task-title")
 
 const defaultProviderMessagesHandlerDependencies = {
   ...providerMessagesHandlerDependencies,
@@ -26,7 +32,11 @@ const defaultProviderResponsesHandlerDependencies = {
   ...providerResponsesHandlerDependencies,
 }
 const defaultResponsesHandlerDependencies = { ...responsesHandlerDependencies }
+const defaultResponsesMessagesDependencies = {
+  ...responsesMessagesDependencies,
+}
 const defaultResponsesUtilsDependencies = { ...responsesUtilsDependencies }
+const defaultTaskTitleDependencies = { ...taskTitleDependencies }
 const originalFetch = globalThis.fetch
 
 const DB_PATH_ENV = "COPILOT_API_SQLITE_DB_PATH"
@@ -129,10 +139,156 @@ afterEach(async () => {
     responsesHandlerDependencies,
     defaultResponsesHandlerDependencies,
   )
+  Object.assign(
+    responsesMessagesDependencies,
+    defaultResponsesMessagesDependencies,
+  )
   Object.assign(responsesUtilsDependencies, defaultResponsesUtilsDependencies)
+  Object.assign(taskTitleDependencies, defaultTaskTitleDependencies)
 
   await closeUsageStore()
   Reflect.deleteProperty(process.env, DB_PATH_ENV)
+})
+
+describe("Codex task title model routing on provider Responses", () => {
+  const taskTitlePrompt =
+    "Generate a concise, single-line task title of at most 36 characters and under five words where possible."
+  const titleInput = [
+    { role: "user", content: [{ type: "input_text", text: taskTitlePrompt }] },
+  ]
+
+  beforeEach(() => {
+    taskTitleDependencies.getSmallModelForProvider = (provider) =>
+      provider === "codex" ? "gpt-codex-small"
+      : provider === "copilot" ? "gpt-copilot-small"
+      : provider === "openai" ? "gpt-openai-small"
+      : undefined
+  })
+
+  for (const [name, path, requestedModel, input, userAgent, expectedModel] of [
+    [
+      "Codex provider",
+      "/codex/v1/responses",
+      "gpt-test",
+      titleInput,
+      "codex/1.0",
+      "gpt-codex-small",
+    ],
+    [
+      "Copilot provider",
+      "/copilot/v1/responses",
+      "gpt-test",
+      titleInput,
+      "codex/1.0",
+      "gpt-copilot-small",
+    ],
+    [
+      "configured third-party provider",
+      "/openai/v1/responses",
+      "gpt-test",
+      titleInput,
+      "codex/1.0",
+      "gpt-openai-small",
+    ],
+    [
+      "public provider alias",
+      "/v1/responses",
+      "openai/gpt-test",
+      titleInput,
+      "codex/1.0",
+      "gpt-openai-small",
+    ],
+    [
+      "non-Codex request",
+      "/openai/v1/responses",
+      "gpt-test",
+      titleInput,
+      "other-client/1.0",
+      "gpt-test",
+    ],
+    [
+      "unmatched input",
+      "/openai/v1/responses",
+      "gpt-test",
+      [
+        ...titleInput,
+        { role: "user", content: [{ type: "input_text", text: "Continue" }] },
+        { role: "user", content: [{ type: "input_text", text: "Again" }] },
+      ],
+      "codex/1.0",
+      "gpt-test",
+    ],
+  ] as const) {
+    test(`forwards ${expectedModel} for ${name}`, async () => {
+      const response = await createApp().request(path, {
+        body: JSON.stringify({ model: requestedModel, input }),
+        headers: {
+          "content-type": "application/json",
+          "user-agent": userAgent,
+        },
+        method: "POST",
+      })
+
+      expect(response.status).toBe(200)
+      expect(fetchMock).toHaveBeenCalledTimes(1)
+      const [, init] = fetchMock.mock.calls[0]
+      const body = parseJsonRequestBody((init as RequestInit).body) as {
+        model: string
+      }
+      expect(body.model).toBe(expectedModel)
+    })
+  }
+
+  test("does not reuse another provider's small model", async () => {
+    providerConfig = { ...providerConfig!, name: "dashscope" }
+
+    const response = await createApp().request("/dashscope/v1/responses", {
+      body: JSON.stringify({ model: "gpt-test", input: titleInput }),
+      headers: {
+        "content-type": "application/json",
+        "user-agent": "codex/1.0",
+      },
+      method: "POST",
+    })
+
+    expect(response.status).toBe(200)
+    const [, init] = fetchMock.mock.calls[0]
+    const body = parseJsonRequestBody((init as RequestInit).body) as {
+      model: string
+    }
+    expect(body.model).toBe("gpt-test")
+  })
+
+  test("uses the configured small model as the public model for Messages fallback", async () => {
+    providerConfig = { ...providerConfig!, type: "anthropic" }
+    responsesMessagesDependencies.handleCompletionPayload = mock(() =>
+      Promise.resolve(
+        Response.json({
+          content: [{ type: "text", text: "Title" }],
+          id: "msg-title",
+          model: "gpt-openai-small",
+          role: "assistant",
+          stop_reason: "end_turn",
+          stop_sequence: null,
+          type: "message",
+          usage: { input_tokens: 5, output_tokens: 1 },
+        }),
+      ),
+    )
+
+    const response = await createApp().request("/openai/v1/responses", {
+      body: JSON.stringify({ model: "gpt-test", input: titleInput }),
+      headers: {
+        "content-type": "application/json",
+        "user-agent": "codex/1.0",
+      },
+      method: "POST",
+    })
+
+    expect(response.status).toBe(200)
+    const body = (await response.json()) as ResponsesResult
+    expect(body.model).toBe("gpt-openai-small")
+  })
 })
 
 describe("provider Responses context management", () => {
@@ -278,12 +434,13 @@ describe("provider Responses context management", () => {
   })
 
   test("normalizes Grok effort across the Codex Messages fallback", async () => {
+    installModelsDevCatalog(modelsDevCatalogFixture)
     providerConfig = {
       apiKey: "provider-key",
       authType: "authorization",
       baseUrl: "https://openai-responses.example",
       models: {
-        "grok-4.5": {},
+        "grok-4.7": {},
       },
       name: "opencode-go",
       type: "openai-responses",
@@ -293,7 +450,7 @@ describe("provider Responses context management", () => {
     const response = await app.request("/opencode-go/v1/responses", {
       body: JSON.stringify({
         input: "hello",
-        model: "grok-4.5",
+        model: "grok-4.7",
         reasoning: { effort: "max" },
       }),
       headers: {
@@ -310,7 +467,7 @@ describe("provider Responses context management", () => {
     const body = parseJsonRequestBody((init as RequestInit).body) as {
       reasoning?: { effort?: string }
     }
-    expect(body.reasoning?.effort).toBe("high")
+    expect(body.reasoning?.effort).toBe("xhigh")
   })
 
   for (const effort of ["none", "low", "max", "turbo"] as const) {
@@ -450,6 +607,105 @@ describe("provider Responses context management", () => {
     }
     expect(body.model).toBe("gpt-test")
     expect((init as RequestInit).signal).toBeInstanceOf(AbortSignal)
+  })
+
+  test("forwards safe Codex HTTP response headers", async () => {
+    const originalCodexAccessToken = state.codexAccessToken
+    const originalCodexAccountId = state.codexAccountId
+    providerConfig = {
+      apiKey: "",
+      authType: "oauth2",
+      baseUrl: "https://chatgpt.example/backend-api",
+      models: { "gpt-test": {} },
+      name: "codex",
+      type: "openai-responses",
+    }
+    state.codexAccessToken = "synthetic-codex-token"
+    state.codexAccountId = "synthetic-account"
+    fetchMock.mockImplementation((_url, init) => {
+      const body = parseJsonRequestBody(init?.body) as { model: string }
+      const headers = new Headers({
+        connection: "keep-alive",
+        "content-encoding": "gzip",
+        "content-length": "9999",
+        "openai-processing-ms": "42",
+        "transfer-encoding": "chunked",
+        "x-codex-turn-state": "turn-state-http-123",
+        "x-request-id": "request-http-123",
+      })
+      headers.append("set-cookie", "session=a; Path=/")
+      headers.append("set-cookie", "affinity=b; Path=/")
+      return Promise.resolve(
+        new Response(JSON.stringify(createResponsesResult(body.model)), {
+          headers,
+        }),
+      )
+    })
+
+    try {
+      const response = await createApp().request("/codex/v1/responses", {
+        body: JSON.stringify({ input: "hello", model: "gpt-test" }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      })
+
+      expect(response.status).toBe(200)
+      expect(response.headers.get("x-codex-turn-state")).toBe(
+        "turn-state-http-123",
+      )
+      expect(response.headers.get("x-request-id")).toBe("request-http-123")
+      expect(response.headers.get("openai-processing-ms")).toBe("42")
+      expect(response.headers.has("connection")).toBe(false)
+      expect(response.headers.has("content-encoding")).toBe(false)
+      expect(response.headers.has("content-length")).toBe(false)
+      expect(response.headers.has("transfer-encoding")).toBe(false)
+    } finally {
+      state.codexAccessToken = originalCodexAccessToken
+      state.codexAccountId = originalCodexAccountId
+    }
+  })
+
+  test("does not forward Codex HTTP response headers on upstream errors", async () => {
+    const originalCodexAccessToken = state.codexAccessToken
+    const originalCodexAccountId = state.codexAccountId
+    providerConfig = {
+      apiKey: "",
+      authType: "oauth2",
+      baseUrl: "https://chatgpt.example/backend-api",
+      models: { "gpt-test": {} },
+      name: "codex",
+      type: "openai-responses",
+    }
+    state.codexAccessToken = "synthetic-codex-token"
+    state.codexAccountId = "synthetic-account"
+    fetchMock.mockImplementation(() =>
+      Promise.resolve(
+        new Response("upstream denied", {
+          headers: {
+            "set-cookie": "upstream-session=secret; Path=/",
+            "www-authenticate": "Bearer realm=upstream",
+            "x-upstream-private": "do-not-forward",
+          },
+          status: 401,
+        }),
+      ),
+    )
+
+    try {
+      const response = await createApp().request("/codex/v1/responses", {
+        body: JSON.stringify({ input: "hello", model: "gpt-test" }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      })
+
+      expect(response.status).toBe(401)
+      expect(response.headers.get("set-cookie")).toBeNull()
+      expect(response.headers.get("www-authenticate")).toBeNull()
+      expect(response.headers.get("x-upstream-private")).toBeNull()
+    } finally {
+      state.codexAccessToken = originalCodexAccessToken
+      state.codexAccountId = originalCodexAccountId
+    }
   })
 
   test("keeps codex-prefixed provider models on the native Responses route for Codex clients", async () => {

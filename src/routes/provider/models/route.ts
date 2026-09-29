@@ -2,6 +2,7 @@ import { Hono } from "hono"
 
 import { forwardError } from "~/lib/error"
 import { createHandlerLogger } from "~/lib/logger"
+import { getOpencodeGoModelRecords } from "~/lib/models-dev-cache"
 import { resolveProviderConfig } from "~/lib/provider-resolver"
 import {
   handleCodexModelsProxy,
@@ -45,6 +46,22 @@ providerModelRoutes.get("/", async (c) => {
         data: models.data,
         has_more: false,
       })
+    }
+
+    if (providerConfig.name === "opencode-go") {
+      const models = getOpencodeGoModelRecords()
+      if (models.length === 0) {
+        return c.json(
+          {
+            error: {
+              message: "OpenCode Go model catalog is unavailable",
+              type: "service_unavailable",
+            },
+          },
+          503,
+        )
+      }
+      return c.json({ object: "list", data: models, has_more: false })
     }
 
     const upstreamResponse = await forwardProviderModels(

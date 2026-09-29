@@ -19,6 +19,11 @@ const en: Locale = {
     codexRestartRequired: 'Account selected. Restart the server to apply it.',
     codexUseAccount: 'Use',
     customProvider: 'Custom provider',
+    modelsDevProvider: 'models.dev provider',
+    modelsDevManual: 'Enter manually',
+    modelsDevLoading: 'Loading models.dev providers…',
+    modelsDevUnavailable:
+      'Could not load models.dev. You can enter a provider manually.',
     loading: 'Please wait…',
     manualToken: 'Enter Copilot token manually',
     providerApiKey: 'API key',

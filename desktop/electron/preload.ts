@@ -7,6 +7,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   checkSavedToken: () => ipcRenderer.invoke('auth:check-saved'),
   configureProvider: (input: unknown) =>
     ipcRenderer.invoke('auth:configure-provider', input),
+  getModelsDevProviders: () =>
+    ipcRenderer.invoke('auth:get-models-dev-providers'),
   getCodexAccounts: () => ipcRenderer.invoke('auth:get-codex-accounts'),
   switchCodexAccount: (accountId: string) =>
     ipcRenderer.invoke('auth:switch-codex-account', accountId),

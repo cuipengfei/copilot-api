@@ -15,30 +15,6 @@ interface CodexModelDefinition {
 
 const CODEX_MODELS: Array<CodexModelDefinition> = [
   {
-    contextWindow: 100_000,
-    id: "gpt-5.3-codex-spark",
-    input: ["text"],
-    maxTokens: 32_000,
-    name: "GPT-5.3 Codex Spark",
-    reasoningEfforts: ["minimal", "low", "medium", "high", "xhigh"],
-  },
-  {
-    contextWindow: 272_000,
-    id: "gpt-5.4-mini",
-    input: ["text", "image"],
-    maxTokens: 128_000,
-    name: "GPT-5.4 mini",
-    reasoningEfforts: ["minimal", "low", "medium", "high", "xhigh"],
-  },
-  {
-    contextWindow: 272_000,
-    id: "gpt-5.5",
-    input: ["text", "image"],
-    maxTokens: 128_000,
-    name: "GPT-5.5",
-    reasoningEfforts: ["minimal", "low", "medium", "high", "xhigh"],
-  },
-  {
     contextWindow: 872_000,
     id: "gpt-5.6-sol",
     input: ["text", "image"],
@@ -69,6 +45,22 @@ const CODEX_MODELS: Array<CodexModelDefinition> = [
     maxTokens: 128_000,
     name: "GPT-6 Astra",
     reasoningEfforts: ["low", "medium", "high", "xhigh", "max"],
+  },
+  {
+    contextWindow: 872_000,
+    id: "gpt-6-luna",
+    input: ["text", "image"],
+    maxTokens: 128_000,
+    name: "GPT-6 Luna",
+    reasoningEfforts: ["none", "low", "medium", "high", "xhigh", "max"],
+  },
+  {
+    contextWindow: 872_000,
+    id: "gpt-6-sol",
+    input: ["text", "image"],
+    maxTokens: 128_000,
+    name: "GPT-6 Sol",
+    reasoningEfforts: ["none", "low", "medium", "high", "xhigh", "max"],
   },
 ]
 

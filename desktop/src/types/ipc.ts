@@ -36,6 +36,12 @@ export type ProviderType =
   'anthropic' | 'openai-compatible' | 'openai-responses'
 export type ProviderAuthType = 'authorization' | 'x-api-key'
 export type ProviderAuthTypeInput = ProviderAuthType | '__default__'
+export interface ModelsDevProviderOption {
+  id: string
+  name: string
+  api: string
+  type: ProviderType
+}
 export type QuickProviderName =
   'opencode-go' | 'kimi' | 'deepseek' | 'dashscope' | 'openrouter'
 
@@ -53,6 +59,7 @@ export type ProviderAuthInput =
       name: string
       provider: 'custom'
       type: ProviderType
+      modelsDevProviderId?: string
     }
 
 export interface ServerStatus {
@@ -221,6 +228,7 @@ declare global {
       saveToken: (token: string) => Promise<AuthResult>
       checkSavedToken: () => Promise<AuthResult>
       configureProvider: (input: ProviderAuthInput) => Promise<AuthResult>
+      getModelsDevProviders: () => Promise<Array<ModelsDevProviderOption>>
       getCodexAccounts: () => Promise<Array<CodexAccountSummary>>
       switchCodexAccount: (accountId: string) => Promise<AuthResult>
       removeCodexAccount: (accountId: string) => Promise<AuthResult>

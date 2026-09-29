@@ -99,6 +99,37 @@ describe('desktop provider auth', () => {
     })
   })
 
+  test('stores the selected models.dev provider ID with its API URL', () => {
+    let writtenProviderConfig: ProviderConfig | undefined
+    configureDesktopProvider(
+      {
+        apiKey: ' catalog-key ',
+        baseUrl: 'https://api.example.com/openai/v1/',
+        modelsDevProviderId: 'catalog-provider',
+        name: 'catalog-provider',
+        provider: 'custom',
+        type: 'openai-responses',
+      },
+      {
+        getEnabledProviders: () => ['catalog-provider'],
+        getRawProviderConfig: () => null,
+        setProviderConfig(_name, provider) {
+          writtenProviderConfig = provider
+          return provider
+        },
+      },
+    )
+
+    expect(writtenProviderConfig).toEqual({
+      apiKey: 'catalog-key',
+      baseUrl: 'https://api.example.com/openai/v1',
+      enabled: true,
+      modelsDevProviderId: 'catalog-provider',
+      pricingCurrency: undefined,
+      type: 'openai-responses',
+    })
+  })
+
   test('configures openrouter with a fixed anthropic provider type', () => {
     let writtenProviderConfig: ProviderConfig | undefined
 

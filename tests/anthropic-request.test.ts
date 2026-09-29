@@ -163,6 +163,62 @@ describe("Anthropic to OpenAI translation logic", () => {
     expect(isValidChatCompletionRequest(openAIPayload)).toBe(true)
   })
 
+  test("omits tool_choice when tools are absent or empty", () => {
+    const choices: Array<NonNullable<AnthropicMessagesPayload["tool_choice"]>> =
+      [
+        { type: "auto" },
+        { type: "any" },
+        { type: "none" },
+        { type: "tool", name: "getWeather" },
+      ]
+
+    for (const tools of [undefined, []]) {
+      for (const toolChoice of choices) {
+        const result = translateToOpenAI({
+          model: "gpt-4o",
+          messages: [{ role: "user", content: "Hello!" }],
+          max_tokens: 150,
+          tools,
+          tool_choice: toolChoice,
+        })
+
+        expect(result.tool_choice).toBeUndefined()
+        expect(JSON.parse(JSON.stringify(result))).not.toHaveProperty(
+          "tool_choice",
+        )
+      }
+    }
+  })
+
+  test("preserves tool choices when tools are available", () => {
+    const payload: AnthropicMessagesPayload = {
+      model: "gpt-4o",
+      messages: [{ role: "user", content: "Check the weather" }],
+      max_tokens: 150,
+      tools: [{ name: "getWeather", input_schema: { type: "object" } }],
+    }
+
+    expect(translateToOpenAI(payload).tool_choice).toBeUndefined()
+    expect(
+      translateToOpenAI({ ...payload, tool_choice: { type: "auto" } })
+        .tool_choice,
+    ).toBe("auto")
+    expect(
+      translateToOpenAI({ ...payload, tool_choice: { type: "any" } })
+        .tool_choice,
+    ).toBe("required")
+    expect(
+      translateToOpenAI({ ...payload, tool_choice: { type: "none" } })
+        .tool_choice,
+    ).toBe("none")
+    expect(
+      translateToOpenAI({
+        ...payload,
+        tool_choice: { type: "tool", name: "getWeather" },
+      }).tool_choice,
+    ).toEqual({ type: "function", function: { name: "getWeather" } })
+  })
+
   test("should translate comprehensive Anthropic payload to valid OpenAI payload", () => {
     const anthropicPayload: AnthropicMessagesPayload = {
       model: "gpt-4o",

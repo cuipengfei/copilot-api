@@ -53,6 +53,11 @@ interface MergedCodexModelsOptions {
   codexProviderName?: string
 }
 
+interface CodexCatalogResult {
+  catalog: CodexModelsResponse
+  etag: string | null
+}
+
 export function isCodexUserAgent(userAgent: string | undefined): boolean {
   return CODEX_USER_AGENT_PATTERN.test(userAgent?.trim() ?? "")
 }
@@ -106,13 +111,14 @@ export async function handleMergedCodexModels(
     | Promise<Array<SyntheticCodexModelCandidate>>,
   options: MergedCodexModelsOptions = {},
 ): Promise<Response> {
-  const [upstreamCatalog, candidates] = await Promise.all([
+  const [upstreamCatalogResult, candidates] = await Promise.all([
     tryGetCodexCatalog(c),
     Promise.resolve(candidatesRequest).catch((error: unknown) => {
       logger.warn("models.codex.candidates_error", { error })
       return []
     }),
   ])
+  const upstreamCatalog = upstreamCatalogResult?.catalog
   const upstreamModels = upstreamCatalog?.models ?? FALLBACK_CODEX_MODELS
   const template = selectTemplate(upstreamModels)
   const catalogModelsBySlug = new Map(
@@ -170,7 +176,12 @@ export async function handleMergedCodexModels(
     ...(upstreamCatalog ?? {}),
     models,
   }
-  return c.json(response)
+  const result = c.json(response)
+  if (upstreamCatalogResult?.etag) {
+    result.headers.set("ETag", upstreamCatalogResult.etag)
+    result.headers.set("Cache-Control", "private, no-store")
+  }
+  return result
 }
 
 function createCatalogAlias(
@@ -269,7 +280,7 @@ export function createSyntheticCodexModel(
 
 async function tryGetCodexCatalog(
   c: Context,
-): Promise<CodexModelsResponse | null> {
+): Promise<CodexCatalogResult | null> {
   try {
     const providerConfig = await resolveProviderConfig("codex")
     if (!providerConfig) return null
@@ -287,7 +298,10 @@ async function tryGetCodexCatalog(
       logger.warn("models.codex.catalog_invalid")
       return null
     }
-    return body
+    return {
+      catalog: body,
+      etag: response.headers.get("ETag"),
+    }
   } catch (error) {
     logger.warn("models.codex.catalog_error", { error })
     return null

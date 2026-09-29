@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Copilot API Usage Dashboard</title>
+    <title>Copilot API Dashboard</title>
 
     <script src="https://cdn.tailwindcss.com"></script>
 
@@ -111,6 +111,128 @@
           132px;
         gap: 12px;
         align-items: end;
+      }
+
+      [hidden] {
+        display: none !important;
+      }
+
+      .page-tabs {
+        display: inline-flex;
+        gap: 4px;
+        margin-bottom: 14px;
+        padding: 4px;
+        border: 1px solid var(--color-bg-light-2);
+        border-radius: 10px;
+        background: rgba(255, 255, 255, 0.88);
+      }
+
+      .page-tab {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 8px 14px;
+        border-radius: 7px;
+        color: var(--color-gray);
+        font-size: 14px;
+        font-weight: 700;
+        cursor: pointer;
+      }
+
+      .page-tab[aria-selected="true"] {
+        background: var(--color-blue);
+        color: #ffffff;
+      }
+
+      .page-tab:focus-visible,
+      .models-action:focus-visible {
+        outline: 2px solid var(--color-blue);
+        outline-offset: 3px;
+      }
+
+      .control-surface.models-view {
+        grid-template-columns: minmax(320px, 1fr) minmax(220px, 320px) 132px;
+      }
+
+      .models-toolbar {
+        flex-wrap: wrap;
+        padding: 14px;
+      }
+
+      .models-toolbar .models-search {
+        width: min(340px, 100%);
+      }
+
+      .models-table-scroll {
+        overflow-x: auto;
+      }
+
+      .models-table {
+        width: 100%;
+        min-width: 640px;
+        border-collapse: collapse;
+        table-layout: fixed;
+        text-align: left;
+        font-size: 13px;
+      }
+
+      .models-table th,
+      .models-table td {
+        padding: 14px;
+        border-bottom: 1px solid var(--color-bg-light-2);
+        overflow-wrap: anywhere;
+      }
+
+      .models-table th {
+        background: #f8fafc;
+        color: var(--color-gray);
+        font-size: 12px;
+        font-weight: 700;
+      }
+
+      .models-id {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+
+      .models-id code {
+        min-width: 0;
+        color: var(--color-fg-lightest);
+        font-size: 12px;
+      }
+
+      .models-action {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        flex-shrink: 0;
+        color: var(--color-blue);
+        font-size: 12px;
+        font-weight: 650;
+        cursor: pointer;
+      }
+
+      .models-action:hover {
+        color: var(--color-blue-accent);
+        text-decoration: underline;
+      }
+
+      .models-table .models-json-cell {
+        padding: 0;
+      }
+
+      .models-json {
+        margin: 0;
+        max-height: 480px;
+        overflow-y: auto;
+        padding: 16px;
+        background: #f8fafc;
+        color: var(--color-fg-medium);
+        font-size: 12px;
+        line-height: 1.6;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
       }
 
       .field-label {
@@ -365,6 +487,10 @@
         .endpoint-field {
           grid-column: 1 / -1;
         }
+
+        .control-surface.models-view {
+          grid-template-columns: minmax(0, 1fr) 132px;
+        }
       }
 
       @media (max-width: 640px) {
@@ -376,8 +502,13 @@
           display: block;
         }
 
-        .control-surface {
+        .control-surface,
+        .control-surface.models-view {
           grid-template-columns: 1fr;
+        }
+
+        .models-toolbar .models-search {
+          width: 100%;
         }
 
         .endpoint-field {
@@ -396,14 +527,47 @@
         <header class="topbar">
           <div class="topbar-row">
             <div>
-              <h1 class="page-title">Token Usage</h1>
-              <p class="page-subtitle">Copilot quota and token billing dashboard</p>
+              <h1 class="page-title">Copilot API Dashboard</h1>
+              <p class="page-subtitle">Token usage and available models</p>
             </div>
+          </div>
+
+          <div
+            id="page-tabs"
+            class="page-tabs"
+            role="tablist"
+            aria-label="Dashboard views"
+          >
+            <button
+              id="usage-tab"
+              type="button"
+              class="page-tab"
+              role="tab"
+              data-tab="usage"
+              aria-selected="true"
+              aria-controls="content-area"
+            >
+              <i data-lucide="bar-chart-3" class="h-4 w-4" aria-hidden="true"></i>
+              Token Usage
+            </button>
+            <button
+              id="models-tab"
+              type="button"
+              class="page-tab"
+              role="tab"
+              data-tab="models"
+              aria-selected="false"
+              aria-controls="content-area"
+              tabindex="-1"
+            >
+              <i data-lucide="boxes" class="h-4 w-4" aria-hidden="true"></i>
+              Models
+            </button>
           </div>
 
           <form id="endpoint-form" class="control-surface">
             <div class="endpoint-field">
-              <label for="endpoint-url" class="field-label">Usage Endpoint URL</label>
+              <label for="endpoint-url" class="field-label">Endpoint URL</label>
               <input
                 type="text"
                 id="endpoint-url"
@@ -422,7 +586,7 @@
                 spellcheck="false"
               />
             </div>
-            <div>
+            <div id="token-usage-period-field">
               <label for="token-usage-period" class="field-label">Period</label>
               <select
                 id="token-usage-period"
@@ -446,7 +610,12 @@
           </p>
         </header>
 
-        <main id="content-area" class="content-area"></main>
+        <main
+          id="content-area"
+          class="content-area"
+          role="tabpanel"
+          aria-labelledby="usage-tab"
+        ></main>
       </div>
     </div>
 
@@ -459,6 +628,12 @@
           "token-usage-period"
         );
         const contentArea = document.getElementById("content-area");
+        const pageTabs = document.getElementById("page-tabs");
+        const tabButtons = [
+          document.getElementById("usage-tab"),
+          document.getElementById("models-tab"),
+        ];
+        const periodField = document.getElementById("token-usage-period-field");
         const fetchButton = document.getElementById("fetch-button");
         const fetchButtonLabel = fetchButton.querySelector("span");
 
@@ -503,6 +678,13 @@
 
         // --- State Management ---
         const state = {
+          activeTab: "usage",
+          models: null,
+          modelsError: null,
+          isModelsLoading: false,
+          modelsConnectionKey: null,
+          modelsRequestId: 0,
+          modelsSearch: "",
           isLoading: false,
           isTokenUsageLoading: false,
           isEventsLoading: false,
@@ -834,12 +1016,28 @@
         }
 
         function updateControls() {
-          fetchButton.disabled = state.isLoading;
-          fetchButtonLabel.textContent = state.isLoading
+          const isLoading =
+            state.activeTab === "models"
+              ? state.isModelsLoading
+              : state.isLoading;
+          fetchButton.disabled = isLoading;
+          fetchButtonLabel.textContent = isLoading
             ? "Refreshing..."
             : "Refresh";
           tokenUsagePeriodSelect.disabled =
             state.isLoading || state.isTokenUsageLoading;
+          periodField.hidden = state.activeTab === "models";
+          endpointForm.classList.toggle(
+            "models-view",
+            state.activeTab === "models"
+          );
+          contentArea.setAttribute("aria-labelledby", `${state.activeTab}-tab`);
+          contentArea.setAttribute("aria-busy", String(isLoading));
+          for (const button of tabButtons) {
+            const selected = button.dataset.tab === state.activeTab;
+            button.setAttribute("aria-selected", String(selected));
+            button.tabIndex = selected ? 0 : -1;
+          }
         }
 
         function formatNumber(value) {
@@ -977,8 +1175,17 @@
         /**
          * Renders the entire UI based on the current state.
          */
-        function render() {
+        function render(view = state.activeTab) {
+          if (view !== state.activeTab) {
+            return;
+          }
           updateControls();
+
+          if (state.activeTab === "models") {
+            contentArea.innerHTML = renderModelsSection();
+            createIcons();
+            return;
+          }
 
           if (state.isLoading) {
             contentArea.innerHTML = renderSpinner();
@@ -1018,6 +1225,223 @@
 
           // Replace placeholder icons with actual Lucide icons
           createIcons();
+        }
+
+        function getModelField(model, fields) {
+          for (const field of fields) {
+            if (typeof model?.[field] === "string" && model[field].trim()) {
+              return model[field];
+            }
+          }
+          return "";
+        }
+
+        function getFilteredModels() {
+          const query = state.modelsSearch.trim().toLowerCase();
+          return (state.models || []).filter((model) => [
+            getModelField(model, ["id"]),
+            getModelField(model, ["display_name", "name"]),
+            getModelField(model, ["owned_by", "vendor"]),
+          ].some((value) => value.toLowerCase().includes(query)));
+        }
+
+        function getModelsCountText() {
+          const total = state.models?.length || 0;
+          return state.modelsSearch.trim()
+            ? `${getFilteredModels().length} of ${total} models`
+            : `${total} models`;
+        }
+
+        function renderModelsSection() {
+          return `
+            <section class="panel" aria-label="Available models">
+              <div class="panel-header models-toolbar">
+                <div>
+                  <h2 class="panel-title">Models</h2>
+                  <p id="models-count" class="panel-meta">${getModelsCountText()}</p>
+                </div>
+                <input
+                  type="search"
+                  class="input-control input-focus models-search"
+                  data-model-search
+                  aria-label="Search models by ID, name or vendor"
+                  placeholder="Search by ID, name or vendor"
+                  value="${escapeHtml(state.modelsSearch)}"
+                  ${state.isModelsLoading || !state.models ? "disabled" : ""}
+                />
+              </div>
+              <div id="models-results">${renderModelsResults()}</div>
+              <p id="models-feedback" class="px-4 text-xs" role="status" aria-live="polite"></p>
+            </section>
+          `;
+        }
+
+        function renderModelsResults() {
+          if (state.isModelsLoading) {
+            return renderSpinner();
+          }
+          if (state.modelsError) {
+            return `<div class="p-4">${renderError(state.modelsError, "Could not load models")}</div>`;
+          }
+          if (!state.models) {
+            return renderEmptyState("Refresh to load models for this endpoint.");
+          }
+          if (state.models.length === 0) {
+            return renderEmptyState("This endpoint returned no models.");
+          }
+          const models = getFilteredModels();
+          if (models.length === 0) {
+            return renderEmptyState("No models match your search.");
+          }
+          return `
+            <div class="models-table-scroll">
+              <table class="models-table" aria-label="Model list">
+                <thead>
+                  <tr>
+                    <th scope="col" style="width: 40%;">Model ID</th>
+                    <th scope="col" style="width: 28%;">Name</th>
+                    <th scope="col" style="width: 18%;">Vendor</th>
+                    <th scope="col" style="width: 14%;">Details</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${models.map((model, index) => {
+                    const id = getModelField(model, ["id"]);
+                    const name = getModelField(model, ["display_name", "name"]);
+                    const vendor = getModelField(model, ["owned_by", "vendor"]);
+                    return `
+                      <tr>
+                        <td>
+                          <div class="models-id">
+                            <code>${escapeHtml(id || "—")}</code>
+                            ${id ? `<button type="button" class="models-action" data-model-copy="${escapeHtml(id)}" aria-label="Copy model ID ${escapeHtml(id)}"><i data-lucide="copy" class="h-3 w-3" aria-hidden="true"></i>Copy</button>` : ""}
+                          </div>
+                        </td>
+                        <td>${escapeHtml(name || "—")}</td>
+                        <td>${escapeHtml(vendor || "—")}</td>
+                        <td><button type="button" class="models-action" data-model-details="model-details-${index}" aria-controls="model-details-${index}" aria-expanded="false">View JSON</button></td>
+                      </tr>
+                      <tr id="model-details-${index}" hidden>
+                        <td colspan="4" class="models-json-cell"><pre class="models-json">${escapeHtml(JSON.stringify(model, null, 2))}</pre></td>
+                      </tr>
+                    `;
+                  }).join("")}
+                </tbody>
+              </table>
+            </div>
+          `;
+        }
+
+        function getModelsConnectionKey() {
+          return JSON.stringify([
+            endpointUrlInput.value.trim(),
+            apiKeyInput.value.trim(),
+          ]);
+        }
+
+        function syncModelsConnection() {
+          const key = getModelsConnectionKey();
+          if (state.modelsConnectionKey !== key) {
+            state.modelsConnectionKey = key;
+            state.modelsRequestId += 1;
+            state.models = null;
+            state.modelsError = null;
+            state.isModelsLoading = false;
+          }
+        }
+
+        function handleModelsConnectionChange() {
+          syncModelsConnection();
+          if (state.activeTab === "models") {
+            render();
+          }
+        }
+
+        async function fetchModels() {
+          syncEndpointCredential();
+          syncModelsConnection();
+          const connectionKey = state.modelsConnectionKey;
+          const requestId = ++state.modelsRequestId;
+          const isCurrentRequest = () =>
+            requestId === state.modelsRequestId
+            && connectionKey === getModelsConnectionKey();
+          state.models = null;
+          state.modelsError = null;
+          state.isModelsLoading = true;
+          render("models");
+          try {
+            const endpoint = endpointUrlInput.value.trim();
+            if (!endpoint) {
+              throw new Error("Endpoint URL cannot be empty.");
+            }
+            const payload = await fetchJson(deriveEndpointUrl(endpoint, "models"));
+            if (!Array.isArray(payload?.data)) {
+              throw new Error("Model response must contain a data array.");
+            }
+            if (isCurrentRequest()) {
+              state.models = payload.data;
+            }
+          } catch (error) {
+            if (isCurrentRequest()) {
+              state.modelsError = getErrorMessage(error);
+            }
+          } finally {
+            if (isCurrentRequest()) {
+              state.isModelsLoading = false;
+              render("models");
+            }
+          }
+        }
+
+        function activateTab(tab) {
+          if (tab !== "usage" && tab !== "models") {
+            return;
+          }
+          syncEndpointCredential();
+          syncModelsConnection();
+          state.activeTab = tab;
+          render();
+          if (tab === "models" && !state.models && !state.isModelsLoading) {
+            void fetchModels();
+          }
+        }
+
+        function handleTabsKeydown(event) {
+          const keys = ["ArrowLeft", "ArrowRight", "Home", "End"];
+          if (!keys.includes(event.key)) {
+            return;
+          }
+          event.preventDefault();
+          const index = state.activeTab === "usage" ? 0 : 1;
+          const nextIndex = event.key === "Home" ? 0
+            : event.key === "End" ? 1
+            : 1 - index;
+          activateTab(tabButtons[nextIndex].dataset.tab);
+          tabButtons[nextIndex].focus();
+        }
+
+        function handleModelsSearch(event) {
+          if (!event.target.matches("[data-model-search]")) {
+            return;
+          }
+          state.modelsSearch = event.target.value;
+          document.getElementById("models-results").innerHTML =
+            renderModelsResults();
+          document.getElementById("models-count").textContent = getModelsCountText();
+          document.getElementById("models-feedback").textContent = "";
+          createIcons();
+        }
+
+        async function copyModelId(id) {
+          const feedback = document.getElementById("models-feedback");
+          try {
+            await navigator.clipboard.writeText(id);
+            feedback.textContent = "Model ID copied.";
+          } catch {
+            feedback.textContent =
+              "Could not copy. Select the model ID and copy it manually.";
+          }
+          feedback.classList.add("py-3");
         }
 
         /**
@@ -2123,7 +2547,7 @@
             state.tokenUsageEventsError = getErrorMessage(error);
           } finally {
             state.isLoading = false;
-            render();
+            render("usage");
           }
         }
 
@@ -2212,7 +2636,7 @@
             state.tokenUsageEventsError = getErrorMessage(error);
           } finally {
             state.isTokenUsageLoading = false;
-            render();
+            render("usage");
           }
         }
 
@@ -2244,7 +2668,7 @@
             }
           } finally {
             state.isEventsLoading = false;
-            render();
+            render("usage");
           }
         }
 
@@ -2259,7 +2683,11 @@
           syncEndpointCredential();
           storeApiKey(apiKeyInput.value, endpointUrlInput.value.trim());
           syncUrlState();
-          void fetchData();
+          if (state.activeTab === "models") {
+            void fetchModels();
+          } else {
+            void fetchData();
+          }
         }
 
         function handlePeriodChange() {
@@ -2271,7 +2699,21 @@
           if (!(event.target instanceof Element)) {
             return;
           }
-
+          const copyButton = event.target.closest("[data-model-copy]");
+          if (copyButton) {
+            void copyModelId(copyButton.dataset.modelCopy);
+            return;
+          }
+          const detailsButton = event.target.closest("[data-model-details]");
+          if (detailsButton) {
+            const details = document.getElementById(
+              detailsButton.dataset.modelDetails
+            );
+            details.hidden = !details.hidden;
+            detailsButton.setAttribute("aria-expanded", String(!details.hidden));
+            detailsButton.textContent = details.hidden ? "View JSON" : "Hide JSON";
+            return;
+          }
           const trendMetric = event.target.closest("[data-trend-metric]");
           if (trendMetric) {
             state.tokenUsageTrendMetric =
@@ -2344,16 +2786,29 @@
          */
         function init() {
           endpointForm.addEventListener("submit", handleFormSubmit);
+          pageTabs.addEventListener("click", (event) => {
+            const button = event.target.closest("[data-tab]");
+            if (button) {
+              activateTab(button.dataset.tab);
+            }
+          });
+          pageTabs.addEventListener("keydown", handleTabsKeydown);
           tokenUsagePeriodSelect.addEventListener("change", handlePeriodChange);
           apiKeyInput.addEventListener("input", () => {
             storeApiKey(
               apiKeyInput.value,
               endpointUrlInput.value.trim()
             );
+            handleModelsConnectionChange();
           });
-          endpointUrlInput.addEventListener("change", syncEndpointCredential);
+          endpointUrlInput.addEventListener("input", handleModelsConnectionChange);
+          endpointUrlInput.addEventListener("change", () => {
+            syncEndpointCredential();
+            handleModelsConnectionChange();
+          });
           contentArea.addEventListener("click", handleContentAreaClick);
           contentArea.addEventListener("change", handleContentAreaChange);
+          contentArea.addEventListener("input", handleModelsSearch);
 
           const urlParams = new URLSearchParams(window.location.search);
           const periodFromUrl = normalizePeriod(urlParams.get("period"));

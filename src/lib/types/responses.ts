@@ -14,6 +14,7 @@ export interface ResponsesPayload {
   top_p?: number | null
   max_output_tokens?: number | null
   metadata?: Metadata | null
+  client_metadata?: Record<string, string> | null
   stream?: boolean | null
   safety_identifier?: string | null
   prompt_cache_key?: string | null
@@ -394,6 +395,7 @@ export interface ResponseUsage {
   output_tokens_details?: {
     reasoning_tokens: number
   }
+  cost?: number
 }
 
 export type ResponseStreamEvent =

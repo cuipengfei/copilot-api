@@ -6,7 +6,7 @@ import { streamSSE } from "hono/streaming"
 import {
   type ModelConfig,
   type ResolvedProviderConfig,
-  resolveEffectiveProviderType,
+  resolveProviderConfigForModel,
 } from "~/lib/config"
 import {
   applyDashScopePreserveThinkingDefault,
@@ -47,12 +47,11 @@ export async function handleProviderChatCompletionsForProvider(
   },
 ): Promise<Response> {
   const { payload, provider } = options
-  const providerConfig = await resolveProviderConfig(provider)
-  if (
-    !providerConfig
-    || resolveEffectiveProviderType(providerConfig, payload.model)
-      !== "openai-compatible"
-  ) {
+  const configuredProvider = await resolveProviderConfig(provider)
+  const providerConfig =
+    configuredProvider
+    && resolveProviderConfigForModel(configuredProvider, payload.model)
+  if (!providerConfig || providerConfig.type !== "openai-compatible") {
     return c.json(
       {
         error: {
