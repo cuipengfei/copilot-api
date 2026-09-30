@@ -1,0 +1,21 @@
+{
+  // Local node typecheck project for this branch. Inherits compilerOptions
+  // (composite, paths, types) from the upstream-shaped tsconfig.node.json,
+  // which must stay byte-identical to czy-all so upstream merges stay clean.
+  // The per-file ../src allowlist is replaced here with directory globs so
+  // new local modules are picked up without editing the upstream file.
+  "extends": "./tsconfig.node.json",
+  "include": [
+    "electron.vite.config.*",
+    "electron/**/*",
+    "tests/**/*",
+    "src/lib/auto-start-server.ts",
+    "src/lib/server-url.ts",
+    "src/locales/**/*",
+    "src/types/**/*",
+    "../src/lib/**/*.ts",
+    "../src/services/**/*.ts",
+    "../src/routes/responses/utils.ts",
+    "../src/routes/responses/messages-translation.ts"
+  ]
+}

@@ -39,6 +39,14 @@ export const THINKING_TEXT = "Thinking..."
 export const RICH_TOOL_RESULT_MOVED_TEXT =
   "Rich tool result content was moved to a user message because this upstream does not support it in tool messages."
 
+// 本地观察：格式化 claude 思考块过滤的每请求丢弃摘要，
+// 避免复制上游过滤条件。
+export const createDroppedThinkingLog = (
+  modelId: string,
+  dropped: number,
+): string =>
+  `drop thinking block, reason: claude translation filter for ${modelId}; dropped ${dropped} block(s)`
+
 interface TranslationCapabilities {
   supportPdf: boolean
   toolContentSupportType: Array<ToolContentSupportType>
@@ -175,9 +183,7 @@ function translateAnthropicMessagesToOpenAI(
     return handleAssistantMessage(message, modelId, capabilities, droppedBlocks)
   })
   if (droppedBlocks.count > 0) {
-    consola.info(
-      `drop thinking block, reason: claude translation filter for ${modelId}; dropped ${droppedBlocks.count} block(s)`,
-    )
+    consola.info(createDroppedThinkingLog(modelId, droppedBlocks.count))
   }
   return [...systemMessages, ...otherMessages]
 }
@@ -393,13 +399,15 @@ function handleAssistantMessage(
     (block): block is AnthropicThinkingBlock => block.type === "thinking",
   )
 
+  // 本地观察接缝：在上游 claude 过滤前后紧挨计数，
+  // 保持过滤体本身与上游一致。
+  const thinkingBlocksBeforeFilter = thinkingBlocks.length
   if (modelId.startsWith("claude")) {
     // Keep signature-only blocks (empty thinking text): the signature, not the
     // summary text, carries reasoning continuity and is forwarded upstream as
     // reasoning_opaque. Dropping empty-text blocks would silently lose those
     // signatures. The THINKING_TEXT placeholder is still excluded: it is a
     // synthetic value emitted by older versions, never real model output.
-    const beforeFilter = thinkingBlocks.length
     thinkingBlocks = thinkingBlocks.filter(
       (b) =>
         b.thinking !== THINKING_TEXT
@@ -407,8 +415,8 @@ function handleAssistantMessage(
         // gpt signature has @ in it, so filter those out for claude models
         && !b.signature.includes("@"),
     )
-    droppedBlocks.count += beforeFilter - thinkingBlocks.length
   }
+  droppedBlocks.count += thinkingBlocksBeforeFilter - thinkingBlocks.length
 
   const thinkingContents = thinkingBlocks
     .filter((b) => b.thinking && b.thinking !== THINKING_TEXT)

@@ -18,12 +18,10 @@ import {
   prepareForCompact,
   prepareInteractionHeaders,
 } from "~/lib/api-config"
-import { getAutoSessionTokenForModel } from "~/lib/auto-session"
 import { COMPACT_REQUEST, type CompactType } from "~/lib/compact"
 import { getUpstreamTransportConfig } from "~/lib/config"
 import {
   logCopilotQuotaSnapshots,
-  logCopilotRateLimits,
   type CopilotQuotaSnapshot,
 } from "~/lib/copilot-rate-limit"
 import { HTTPError } from "~/lib/error"
@@ -45,12 +43,8 @@ import {
   trackGhostTextShown,
 } from "~/services/telemetry/telemetry"
 
-import { retryAfterInvalidAutoModeSelector } from "./auto-session-retry"
-import { retryAfterTlsCertificateVerificationFailure } from "../tls-retry"
-import {
-  isReasoningItem,
-  normalizeResponsesInputForReplay,
-} from "~/routes/responses/utils"
+import { attachAutoSessionToken } from "~/services/copilot/auto-session-retry"
+import { sendResponsesRequestWithReasoningReplay } from "~/services/copilot/responses-compat"
 import type { CopilotUsage } from "~/lib/token-usage"
 
 export type { CopilotUsage }
@@ -61,7 +55,6 @@ import {
   getResponsesStreamTerminalDisposition,
 } from "~/services/responses-websocket-helpers"
 import { createResponsesHttpEventStream } from "~/services/responses-http"
-import { fetchUpstreamWithLifecycle } from "~/services/upstream-http"
 
 interface ResponsesRequestOptions {
   vision: boolean
@@ -72,16 +65,6 @@ interface ResponsesRequestOptions {
   compactType?: CompactType
   transport?: ResponsesTransport
   clientSignal?: AbortSignal
-}
-
-const attachAutoSessionToken = async (
-  headers: Record<string, string>,
-  model: string,
-): Promise<void> => {
-  const autoToken = await getAutoSessionTokenForModel(model)
-  if (autoToken) {
-    headers["Copilot-Session-Token"] = autoToken
-  }
 }
 
 export const createResponses = async (
@@ -167,30 +150,6 @@ interface ResponsesHttpContext {
   clientSignal?: AbortSignal
 }
 
-const hasStrippableReasoningItem = (payload: ResponsesPayload): boolean => {
-  return (
-    Array.isArray(payload.input)
-    && payload.input.some(
-      (item) => isReasoningItem(item) && item.encrypted_content !== undefined,
-    )
-  )
-}
-
-const getResponseErrorMessage = async (
-  response: Response,
-): Promise<string | undefined> => {
-  try {
-    const parsed = JSON.parse(await response.clone().text()) as {
-      error?: { message?: unknown }
-    }
-    return typeof parsed.error?.message === "string" ?
-        parsed.error.message
-      : undefined
-  } catch {
-    return undefined
-  }
-}
-
 const createHttpResponses = async (
   payload: ResponsesPayload,
   headers: Record<string, string>,
@@ -198,48 +157,12 @@ const createHttpResponses = async (
 ): Promise<CreateResponsesReturn> => {
   const url = `${copilotBaseUrl(state)}/responses`
   const transportConfig = getUpstreamTransportConfig()
-  const sendRequest = () =>
-    retryAfterTlsCertificateVerificationFailure(
-      () =>
-        fetchUpstreamWithLifecycle(
-          url,
-          { method: "POST", headers, body: JSON.stringify(payload) },
-          {
-            clientSignal,
-            headersTimeoutMs: transportConfig.headersTimeoutMs,
-            streamInactivityTimeoutMs:
-              transportConfig.streamInactivityTimeoutMs,
-          },
-        ),
-      { signal: clientSignal },
-    )
-
-  let response = await retryAfterInvalidAutoModeSelector(
-    await sendRequest(),
+  const response = await sendResponsesRequestWithReasoningReplay(url, {
+    payload,
     headers,
-    payload.model,
-    sendRequest,
-  )
-
-  logCopilotRateLimits(response.headers)
-
-  if (!response.ok) {
-    const errorMessage = await getResponseErrorMessage(response)
-    const shouldStripReasoningAndRetry =
-      response.status >= 400
-      && response.status < 500
-      && errorMessage?.includes("belong") === true
-      && hasStrippableReasoningItem(payload)
-
-    if (shouldStripReasoningAndRetry) {
-      consola.warn(
-        `drop thinking block, reason: upstream ${response.status} response mentions "belong" (instance-bound item ID); stripping reasoning.encrypted_content and retrying once`,
-      )
-      normalizeResponsesInputForReplay(payload)
-      response = await sendRequest()
-      logCopilotRateLimits(response.headers)
-    }
-  }
+    clientSignal,
+    transportConfig,
+  })
 
   if (!response.ok) {
     consola.error("Failed to create responses", response)

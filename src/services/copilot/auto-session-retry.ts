@@ -22,6 +22,16 @@ export const isInvalidAutoModeSelectorResponse = async (
   return body.includes(INVALID_AUTO_MODE_SELECTOR)
 }
 
+export const attachAutoSessionToken = async (
+  headers: Record<string, string>,
+  model: string,
+): Promise<void> => {
+  const autoToken = await getAutoSessionTokenForModel(model)
+  if (autoToken) {
+    headers["Copilot-Session-Token"] = autoToken
+  }
+}
+
 export const retryAfterInvalidAutoModeSelector = async (
   response: Response,
   headers: Record<string, string>,
@@ -38,10 +48,7 @@ export const retryAfterInvalidAutoModeSelector = async (
   invalidateAutoSession()
   delete headers["Copilot-Session-Token"]
 
-  const autoToken = await getAutoSessionTokenForModel(model)
-  if (autoToken) {
-    headers["Copilot-Session-Token"] = autoToken
-  }
+  await attachAutoSessionToken(headers, model)
 
   return retry()
 }

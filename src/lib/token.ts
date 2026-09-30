@@ -34,10 +34,9 @@ import {
   initTelemetry,
   trackAuthNewToken,
 } from "~/services/telemetry/telemetry"
-import { parseSku } from "~/services/telemetry/types"
-
 import { HTTPError } from "./error"
 import { state } from "./state"
+import { applyCopilotTokenMetadata } from "./token-metadata"
 
 let copilotRefreshLoopController: AbortController | null = null
 let codexRefreshLoopController: AbortController | null = null
@@ -56,49 +55,6 @@ export interface PersistCodexCredentialsOptions {
   enableProvider?: boolean
   insertIfMissing?: boolean
   syncProvider?: boolean
-}
-
-function inferAccountTypeFromApiUrl(
-  apiUrl: string | undefined,
-): string | undefined {
-  if (!apiUrl) return undefined
-  if (apiUrl.includes("api.business.githubcopilot.com")) return "business"
-  if (apiUrl.includes("api.enterprise.githubcopilot.com")) return "enterprise"
-  if (apiUrl.includes("api.individual.githubcopilot.com")) return "individual"
-  if (apiUrl.includes("api.githubcopilot.com")) return "individual"
-  return undefined
-}
-
-function applyCopilotTokenMetadata(
-  metadata: Awaited<ReturnType<typeof getCopilotToken>>,
-): void {
-  const {
-    token,
-    endpoints,
-    organization_list,
-    enterprise_list,
-    tracking_id,
-    telemetry,
-  } = metadata
-
-  const previousToken = state.copilotToken
-  state.copilotToken = token
-  if (previousToken !== token) {
-    invalidateAutoSession()
-  }
-  if (endpoints?.api) {
-    state.copilotApiUrl = endpoints.api
-  }
-  state.copilotTrackingId = tracking_id
-  state.copilotTelemetryEnabled = telemetry === "enabled"
-  state.sku = parseSku(token)
-  state.organizationList = organization_list
-  state.enterpriseList = enterprise_list
-
-  const inferredAccountType = inferAccountTypeFromApiUrl(endpoints?.api)
-  if (inferredAccountType) {
-    state.accountType = inferredAccountType
-  }
 }
 
 interface CopilotUserIdentity {
@@ -444,7 +400,9 @@ export const setupCopilotToken = async (
   }
 
   const response = await dependencies.getCopilotToken()
-  applyCopilotTokenMetadata(response)
+  const previousToken = state.copilotToken
+  applyCopilotTokenResponse(response)
+  applyCopilotTokenMetadata(response, previousToken)
   initTelemetry(response.token, response.endpoints?.telemetry)
   trackAuthNewToken()
 
@@ -603,7 +561,9 @@ const runCopilotRefreshLoop = async (
 
     try {
       const response = await dependencies.getCopilotToken()
-      applyCopilotTokenMetadata(response)
+      const previousToken = state.copilotToken
+      applyCopilotTokenResponse(response)
+      applyCopilotTokenMetadata(response, previousToken)
       initTelemetry(response.token, response.endpoints?.telemetry)
       trackAuthNewToken()
       refreshAtMs = getRefreshDeadlineMs(response.refresh_in)

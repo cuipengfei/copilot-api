@@ -37,7 +37,7 @@ export const zstdDecompressionMiddleware: MiddlewareHandler = async (
     headers.delete("content-length")
 
     c.req.raw = new Request(c.req.raw.url, {
-      body: decompressedBody,
+      body: new Uint8Array(decompressedBody),
       headers,
       method: c.req.raw.method,
       signal: c.req.raw.signal,

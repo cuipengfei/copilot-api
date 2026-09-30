@@ -2,10 +2,10 @@ import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test"
 import { Hono } from "hono"
 
 import type { ResolvedProviderConfig } from "~/lib/config"
-import { installModelsDevCatalog } from "~/lib/models-dev-cache"
 import type { ModelsResponse } from "~/lib/types/models"
 import bundledCodexCatalogJson from "~/routes/models/models.json"
 
+import { installModelsDevCatalog } from "~/lib/models-dev-cache"
 import rawModelsResponse from "./fixtures/copilot-models-raw-response.json"
 import { modelsDevCatalogFixture } from "./fixtures/models-dev-catalog"
 
@@ -551,36 +551,6 @@ describe("model routes", () => {
       context_window: 128_000,
       input_modalities: ["text", "image"],
       max_output_tokens: 8_000,
-    })
-    expect(fetchMock).toHaveBeenCalledTimes(1)
-  })
-
-  test("maps the OpenRouter image modality into Codex candidates", async () => {
-    enabledProviders = ["openrouter"]
-    providerConfigs = {
-      openrouter: {
-        apiKey: "openrouter-key",
-        authType: "authorization",
-        baseUrl: "https://openrouter.example",
-        name: "openrouter",
-        type: "anthropic",
-      },
-    }
-
-    const response = await createApp().request("/v1/models?client=codex", {
-      headers: { "user-agent": "codex-cli/1.0.0" },
-    })
-
-    expect(response.status).toBe(200)
-    const body = (await response.json()) as {
-      models: Array<Record<string, unknown> & { slug: string }>
-    }
-    expect(
-      body.models.find(
-        (model) => model.slug === "openrouter/openai/gpt-5.1-codex",
-      ),
-    ).toMatchObject({
-      input_modalities: ["image", "text"],
     })
     expect(fetchMock).toHaveBeenCalledTimes(1)
   })
@@ -1455,5 +1425,37 @@ describe("GET /models - sorting", () => {
 
     const lastModels = response.data.slice(-embeddingModels.length)
     expect(lastModels.every((m) => m.type === "embeddings")).toBe(true)
+  })
+})
+
+describe("OpenRouter provider models", () => {
+  test("maps the OpenRouter image modality into Codex candidates", async () => {
+    enabledProviders = ["openrouter"]
+    providerConfigs = {
+      openrouter: {
+        apiKey: "openrouter-key",
+        authType: "authorization",
+        baseUrl: "https://openrouter.example",
+        name: "openrouter",
+        type: "anthropic",
+      },
+    }
+
+    const response = await createApp().request("/v1/models?client=codex", {
+      headers: { "user-agent": "codex-cli/1.0.0" },
+    })
+
+    expect(response.status).toBe(200)
+    const body = (await response.json()) as {
+      models: Array<Record<string, unknown> & { slug: string }>
+    }
+    expect(
+      body.models.find(
+        (model) => model.slug === "openrouter/openai/gpt-5.1-codex",
+      ),
+    ).toMatchObject({
+      input_modalities: ["image", "text"],
+    })
+    expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 })

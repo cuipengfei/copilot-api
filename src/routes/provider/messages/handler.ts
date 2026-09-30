@@ -37,10 +37,6 @@ import {
 import { HTTPError } from "~/lib/error"
 import { createHandlerLogger, debugJson, debugLazy } from "~/lib/logger"
 import { resolveProviderConfig } from "~/lib/provider-resolver"
-import {
-  applyForwardableResponseHeaders,
-  jsonWithForwardedHeaders,
-} from "~/lib/response-headers"
 import { writeSSEIfConnected } from "~/lib/sse"
 import { resolveBridgeToolSearchName } from "~/lib/tool-search"
 import {
@@ -102,6 +98,10 @@ import {
   applyModelDefaults,
   normalizeProviderResponsesReasoningEffort,
 } from "~/routes/provider/utils"
+import {
+  applyForwardableResponseHeaders,
+  jsonWithForwardedHeaders,
+} from "~/lib/response-headers"
 import consola from "consola"
 
 const logger = createHandlerLogger("provider-messages-handler")
@@ -645,10 +645,24 @@ const createOpenAICompatiblePayload = (
     }
   }
 
-  normalizeOpenAICompatibleReasoningContent(openAIPayload, {
-    modelConfig,
-    providerConfig,
-  })
+  const reasoningTextOpaqueDrops = countReasoningTextOpaqueDrops(
+    openAIPayload.messages,
+  )
+  const { reasoningField } = normalizeOpenAICompatibleReasoningContent(
+    openAIPayload,
+    {
+      modelConfig,
+      providerConfig,
+    },
+  )
+  if (reasoningTextOpaqueDrops > 0) {
+    consola.info(
+      describeReasoningTextOpaqueDrops(
+        reasoningField,
+        reasoningTextOpaqueDrops,
+      ),
+    )
+  }
 
   applyOpenAICompatibleRequestOverrides(openAIPayload, {
     extraBody: modelConfig?.extraBody,
@@ -708,13 +722,40 @@ const applyMiMoThinking = (
   }
 }
 
+// 本地观察：normalizeOpenAICompatibleReasoningContent 会删除其访问的每条
+// assistant 消息的 reasoning_text/reasoning_opaque，丢弃计数可由调用前输入
+// 直接得出，上游函数体因此不含本地行。
+export const countReasoningTextOpaqueDrops = (
+  messages: ChatCompletionsPayload["messages"],
+): number => {
+  let dropped = 0
+  for (const message of messages) {
+    if (message.role !== "assistant") {
+      continue
+    }
+    if (
+      message.reasoning_text !== undefined
+      || message.reasoning_opaque !== undefined
+    ) {
+      dropped++
+    }
+  }
+  return dropped
+}
+
+export const describeReasoningTextOpaqueDrops = (
+  reasoningField: string,
+  dropped: number,
+): string =>
+  `drop thinking block, reason: openai-compatible provider does not recognize reasoning_text/reasoning_opaque; deleted after mapping to ${reasoningField} in ${dropped} message(s)`
+
 const normalizeOpenAICompatibleReasoningContent = (
   payload: ChatCompletionsPayload,
   options: {
     modelConfig: ModelConfig | undefined
     providerConfig: ResolvedProviderConfig
   },
-): void => {
+): { reasoningField: string } => {
   // Some models (e.g. opencode-go hy3/hy4) follow the OpenRouter convention
   // and expect the reasoning text in the "reasoning" field of assistant
   // history messages instead of the default "reasoning_content" field
@@ -726,7 +767,6 @@ const normalizeOpenAICompatibleReasoningContent = (
     )?.reasoningField
     ?? "reasoning_content"
 
-  let dropped = 0
   for (const message of payload.messages) {
     if (message.role !== "assistant") {
       continue
@@ -750,21 +790,10 @@ const normalizeOpenAICompatibleReasoningContent = (
       delete message.reasoning
     }
 
-    if (
-      message.reasoning_text !== undefined
-      || message.reasoning_opaque !== undefined
-    ) {
-      dropped++
-    }
-
     delete message.reasoning_text
     delete message.reasoning_opaque
   }
-  if (dropped > 0) {
-    consola.info(
-      `drop thinking block, reason: openai-compatible provider does not recognize reasoning_text/reasoning_opaque; deleted after mapping to ${reasoningField} in ${dropped} message(s)`,
-    )
-  }
+  return { reasoningField }
 }
 
 const applyOpenAICompatibleRequestOverrides = (

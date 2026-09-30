@@ -4,26 +4,11 @@ import { streamSSE } from "hono/streaming"
 
 import {
   isResponsesApiWebSearchEnabled as isConfiguredResponsesApiWebSearchEnabled,
-  resolveEffortForLog,
   resolveMappedModel,
 } from "~/lib/config"
-import { HTTPError } from "~/lib/error"
-import {
-  colorizeModel,
-  createHandlerLogger,
-  debugJson,
-  debugJsonTail,
-  resolvePremiumInfo,
-  shouldUseColor,
-  writeStreamLog,
-} from "~/lib/logger"
+import { createHandlerLogger, debugJson, debugJsonTail } from "~/lib/logger"
 import { findEndpointModel } from "~/lib/models"
 import { resolveConfiguredProviderModelAlias } from "~/lib/provider-resolver"
-import {
-  applyForwardableResponseHeaders,
-  getAttachedResponseHeaders,
-  jsonWithForwardedHeaders,
-} from "~/lib/response-headers"
 import { writeSSEIfConnected } from "~/lib/sse"
 import { isCodexUserAgent } from "~/routes/models/codex-models"
 import {
@@ -46,7 +31,6 @@ import {
 } from "~/lib/utils"
 import type { SubagentMarker } from "~/lib/subagent"
 import type {
-  Reasoning,
   ResponsesPayload,
   ResponsesResult,
   ResponsesTransport,
@@ -56,6 +40,17 @@ import { createResponses as createCopilotResponses } from "~/services/copilot/cr
 
 import { handleResponsesViaMessages } from "./messages-handler"
 import { handleResponsesViaChatCompletions } from "./chat-handler"
+import {
+  applyForwardableResponseHeaders,
+  getAttachedResponseHeaders,
+  jsonWithForwardedHeaders,
+  createResponsesStreamErrorEvent,
+  logResponsesCompletion,
+  prepareNativeResponsesRequest,
+  retryResponsesWithoutImages,
+  shouldUseChatFallback,
+  writeResponsesStreamError,
+} from "./local-behavior"
 import { createStreamIdTracker, fixStreamIds } from "./stream-id-sync"
 import { getCodexTaskTitleModel } from "./task-title"
 import {
@@ -66,15 +61,12 @@ import {
   getResponsesRequestOptions,
   normalizeInputImageDetails,
   normalizeResponsesReasoningEffort,
-  sanitizeAllInputImages,
   sanitizeOversizedInputImages,
   sanitizeUnsupportedInputFields,
 } from "./utils"
 import consola from "consola"
 
 const logger = createHandlerLogger("responses-handler")
-
-const cm = (model: string) => (shouldUseColor() ? colorizeModel(model) : model)
 
 export const responsesHandlerDependencies = {
   createResponses: createCopilotResponses,
@@ -147,27 +139,34 @@ export const handleResponses = async (c: Context) => {
   }
   const responsesTransport = getResponsesTransportForModel(selectedModel)
 
-  const fallback = getFallback(
-    c,
-    payload.model,
-    selectedModel,
-    responsesTransport,
-  )
-  if (fallback === "messages") {
-    filterReasoningForTransport(payload, true)
-    return await handleResponsesViaMessages(c, {
+  if (
+    shouldUseChatFallback({
+      userAgent: c.req.header("user-agent"),
+      selectedModel,
+      responsesTransport,
+    })
+  ) {
+    return await handleResponsesViaChatCompletions(c, {
+      clientSignal: c.req.raw.signal,
       payload,
-      publicModel,
-      targetModel: payload.model,
       subagentMarker,
       requestId,
       sessionId: fallbackSessionId,
     })
   }
-  if (fallback === "chat") {
-    return await handleResponsesViaChatCompletions(c, {
-      clientSignal: c.req.raw.signal,
+
+  const useMessagesFallback = shouldFallbackToMessages(
+    c,
+    payload.model,
+    selectedModel,
+    responsesTransport,
+  )
+  if (useMessagesFallback) {
+    filterReasoningForTransport(payload, true)
+    return await handleResponsesViaMessages(c, {
       payload,
+      publicModel,
+      targetModel: payload.model,
       subagentMarker,
       requestId,
       sessionId: fallbackSessionId,
@@ -242,10 +241,7 @@ export const handleResponses = async (c: Context) => {
 
   debugJson(logger, "Translated Responses payload:", payload)
 
-  const effortForLog = ensureReasoningEffort(payload)
-  consola.info(
-    `IN ${cm(payload.model)} [effort=${effortForLog.value} (${effortForLog.source})]`,
-  )
+  prepareNativeResponsesRequest(payload)
 
   const { vision, initiator: inferredInitiator } =
     getResponsesRequestOptions(payload)
@@ -261,30 +257,19 @@ export const handleResponses = async (c: Context) => {
     transport: responsesTransport,
   }
 
-  let response: Awaited<ReturnType<typeof createCopilotResponses>>
-  try {
-    response = await responsesHandlerDependencies.createResponses(
-      payload,
-      responseOptions,
+  const response = await responsesHandlerDependencies
+    .createResponses(payload, responseOptions)
+    .catch((error: unknown) =>
+      retryResponsesWithoutImages({
+        error,
+        payload,
+        retry: () =>
+          responsesHandlerDependencies.createResponses(payload, {
+            ...responseOptions,
+            vision: getResponsesRequestOptions(payload).vision,
+          }),
+      }),
     )
-  } catch (error) {
-    if (!(error instanceof HTTPError) || error.response.status !== 413) {
-      throw error
-    }
-
-    const retrySanitizedImageCount = sanitizeAllInputImages(payload)
-    if (retrySanitizedImageCount === 0) {
-      throw error
-    }
-
-    logger.warn(
-      `Omitted ${retrySanitizedImageCount} input image(s) after Copilot Responses rejected the payload as too large`,
-    )
-    response = await responsesHandlerDependencies.createResponses(payload, {
-      ...responseOptions,
-      vision: getResponsesRequestOptions(payload).vision,
-    })
-  }
 
   if (isStreamingRequested(payload) && isAsyncIterable(response)) {
     logger.debug("Forwarding native Responses stream")
@@ -338,11 +323,12 @@ export const handleResponses = async (c: Context) => {
         )
       } finally {
         await iterator.return?.()
-        const premium = await resolvePremiumInfo(response, "responses/stream")
-        writeStreamLog(
-          { model: payload.model, chunks: chunkCount, done: true, premium },
-          true,
-        )
+        await logResponsesCompletion({
+          model: payload.model,
+          response,
+          chunks: chunkCount,
+          streaming: true,
+        })
         recordUsage(usage, copilotUsage)
         if (!stream.closed) {
           await stream.close()
@@ -365,39 +351,37 @@ export const handleResponses = async (c: Context) => {
     },
     copilotUsageToTokens(result.copilot_usage),
   )
-  const premium = await resolvePremiumInfo(response, "responses/non-stream")
-  writeStreamLog({ model: payload.model, chunks: 0, done: true, premium }, true)
+  await logResponsesCompletion({
+    model: payload.model,
+    response,
+    chunks: 0,
+    streaming: false,
+  })
   return jsonWithForwardedHeaders(result, getAttachedResponseHeaders(response))
 }
 
 const isStreamingRequested = (payload: ResponsesPayload): boolean =>
   Boolean(payload.stream)
 
-const getFallback = (
+const shouldFallbackToMessages = (
   c: Context,
   modelId: string,
   selectedModel: { supported_endpoints?: Array<string> } | undefined,
   responsesTransport: ResponsesTransport | null,
-): "chat" | "messages" | null => {
+): boolean => {
   if (isCodexUserAgent(c.req.header("user-agent"))) {
-    return !(modelId.startsWith("gpt") || modelId.startsWith("codex")) ?
-        "messages"
-      : null
+    return !(modelId.startsWith("gpt") || modelId.startsWith("codex"))
   }
 
   if (responsesTransport) {
-    return null
+    return false
   }
 
   const supportedEndpoints = selectedModel?.supported_endpoints ?? []
-  if (supportedEndpoints.includes("/v1/messages")) return "messages"
-  if (
-    supportedEndpoints.includes("/chat/completions")
-    || supportedEndpoints.includes("/v1/chat/completions")
-  ) {
-    return "chat"
-  }
-  return null
+  return (
+    supportedEndpoints.includes("/v1/messages")
+    || supportedEndpoints.includes("/chat/completions")
+  )
 }
 
 const parseResponsesStreamEvent = (
@@ -515,61 +499,4 @@ const getCodexResponsesSubagentMarker = (c: Context): SubagentMarker | null => {
 const getTrimmedHeader = (c: Context, name: string): string | undefined => {
   const value = c.req.header(name)?.trim()
   return value || undefined
-}
-
-const ensureReasoningEffort = (
-  payload: ResponsesPayload,
-): ReturnType<typeof resolveEffortForLog> => {
-  const effortForLog = resolveEffortForLog(
-    payload.reasoning?.effort ?? undefined,
-    payload.model,
-  )
-
-  if (!payload.reasoning?.effort) {
-    payload.reasoning = {
-      ...payload.reasoning,
-      effort: effortForLog.value as NonNullable<Reasoning>["effort"],
-    }
-  }
-
-  return effortForLog
-}
-
-const createResponsesStreamErrorEvent = (model: string, err: unknown) => {
-  const message = err instanceof Error ? err.message : "Stream error"
-  return {
-    type: "response.failed",
-    sequence_number: 0,
-    response: {
-      id: "resp_stream_error",
-      object: "response",
-      created_at: Math.floor(Date.now() / 1000),
-      model,
-      output: [],
-      output_text: "",
-      status: "failed",
-      error: { message },
-      incomplete_details: null,
-      instructions: null,
-      metadata: null,
-      parallel_tool_calls: false,
-      temperature: null,
-      tool_choice: "auto",
-      tools: [],
-      top_p: null,
-      usage: null,
-    },
-  }
-}
-
-const writeResponsesStreamError = async (
-  stream: Parameters<Parameters<typeof streamSSE>[1]>[0],
-  errorEvent: ReturnType<typeof createResponsesStreamErrorEvent>,
-) => {
-  await writeSSEIfConnected(stream, {
-    event: errorEvent.type,
-    data: JSON.stringify(errorEvent),
-  }).catch(() => {
-    // stream already closed
-  })
 }
