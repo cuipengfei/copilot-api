@@ -60,6 +60,8 @@ enabled = false
 > `name` 一定要配置为 `"OpenAI"`。
 >
 > 使用 Codex 需先通过 ChatGPT 或 API Key 登录。`requires_openai_auth = true` 用于在 UI 中显示登录账号信息，ChatGPT 登录时还可显示额度和订阅信息；请求鉴权仍优先使用 `env_key`。如需绕过 Codex 客户端的账号限制，可尝试设为 `false`。
+>
+> `GITHUB_COPILOT_API_KEY` 需设置为系统级用户环境变量，以便 Codex 应用也能读取。填写任一[网关 API Key](cli.md#auth-命令选项)；未配置 Key 时，填写任意非空占位值即可。未设置时，Codex 会报 `Missing environment variable` 错误。
 
 ### 自动审核模型映射
 
