@@ -18,6 +18,9 @@ model_reasoning_effort = "max"
 model_provider = "copilot_api"
 model_reasoning_summary = "auto"
 plan_mode_reasoning_effort = "max"
+# Adjust the context window and auto-compaction threshold (in tokens) as needed.
+# Under OpenAI API pricing, GPT models such as gpt-6.1-sol charge 2x input and
+# cache rates and 1.5x output rates when input exceeds 272000 tokens.
 model_context_window = 272000
 model_auto_compact_token_limit = 244800
 # Sandbox policy. Use "workspace-write" to restrict it.
