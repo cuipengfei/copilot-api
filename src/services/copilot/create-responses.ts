@@ -73,7 +73,7 @@ export const createResponses = async (
     vision,
     initiator,
     subagentMarker,
-    requestId,
+    requestId: requestedRequestId,
     sessionId,
     compactType,
     transport = "http",
@@ -90,25 +90,20 @@ export const createResponses = async (
     await resolveInitiatorWithSmartAgent(initiator)
 
   const headers: Record<string, string> = {
-    ...copilotHeaders(state, requestId, vision),
+    ...copilotHeaders(state, requestedRequestId, vision),
     "x-initiator": effectiveInitiator,
   }
 
   prepareInteractionHeaders(sessionId, Boolean(subagentMarker), headers)
 
   // Extract requestId from already-built headers (do NOT re-generate)
-  const actualRequestId = headers["x-request-id"]
+  const requestId = headers["x-request-id"]
 
   prepareForCompact(headers, compactType)
   await attachAutoSessionToken(headers, payload.model)
 
   const start = Date.now()
-  trackRequestSent(
-    payload.model,
-    state.accountType,
-    actualRequestId,
-    modelCallId,
-  )
+  trackRequestSent(payload.model, state.accountType, requestId, modelCallId)
 
   // service_tier is not supported by github copilot
   payload.service_tier = undefined
@@ -124,7 +119,7 @@ export const createResponses = async (
       payload,
       headers,
       {
-        requestId: actualRequestId,
+        requestId,
         subagentMarker,
       },
     )
@@ -136,7 +131,7 @@ export const createResponses = async (
   }
 
   return await createHttpResponses(payload, headers, {
-    actualRequestId,
+    requestId,
     modelCallId,
     start,
     clientSignal,
@@ -144,7 +139,7 @@ export const createResponses = async (
 }
 
 interface ResponsesHttpContext {
-  actualRequestId: string
+  requestId: string
   modelCallId: string
   start: number
   clientSignal?: AbortSignal
@@ -153,7 +148,7 @@ interface ResponsesHttpContext {
 const createHttpResponses = async (
   payload: ResponsesPayload,
   headers: Record<string, string>,
-  { actualRequestId, modelCallId, start, clientSignal }: ResponsesHttpContext,
+  { requestId, modelCallId, start, clientSignal }: ResponsesHttpContext,
 ): Promise<CreateResponsesReturn> => {
   const url = `${copilotBaseUrl(state)}/responses`
   const transportConfig = getUpstreamTransportConfig()
@@ -170,7 +165,7 @@ const createHttpResponses = async (
       model: payload.model,
       durationMs: Date.now() - start,
       statusCode: response.status,
-      requestId: actualRequestId,
+      requestId,
       modelCallId,
     })
     throw new HTTPError("Failed to create responses", response)
@@ -178,27 +173,27 @@ const createHttpResponses = async (
 
   const timeSinceIssuedMs = Date.now() - start
   trackPanelRequest({
-    headerRequestId: actualRequestId,
+    headerRequestId: requestId,
     apiType: "responses",
     modelCallId,
   })
   trackGhostTextShown({
-    headerRequestId: actualRequestId,
+    headerRequestId: requestId,
     ...(state.sku !== undefined ? { sku: state.sku } : {}),
     timeSinceIssuedMs,
     timeSinceDisplayedMs: 0,
   })
 
-  if (actualRequestId) {
-    scheduleFeedbackEvents(actualRequestId)
-    schedulePostResponseEvents(actualRequestId, payload.model)
+  if (requestId) {
+    scheduleFeedbackEvents(requestId)
+    schedulePostResponseEvents(requestId, payload.model)
   }
 
   if (payload.stream) {
     trackResponseSuccess({
       model: payload.model,
       durationMs: Date.now() - start,
-      requestId: actualRequestId,
+      requestId,
       finishReason: "stream",
       modelCallId,
     })
@@ -217,7 +212,7 @@ const createHttpResponses = async (
   trackResponseSuccess({
     model: payload.model,
     durationMs: Date.now() - start,
-    requestId: actualRequestId,
+    requestId,
     finishReason,
     promptTokens: result.usage?.input_tokens,
     completionTokens: result.usage?.output_tokens,

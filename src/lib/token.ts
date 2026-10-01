@@ -30,13 +30,11 @@ import {
 import { getCopilotUsage } from "~/services/github/get-copilot-usage"
 import { getDeviceCode } from "~/services/github/get-device-code"
 import { pollAccessToken } from "~/services/github/poll-access-token"
-import {
-  initTelemetry,
-  trackAuthNewToken,
-} from "~/services/telemetry/telemetry"
 import { HTTPError } from "./error"
 import { state } from "./state"
-import { applyCopilotTokenMetadata } from "./token-metadata"
+import { applyCopilotTokenExchange } from "./token-metadata"
+
+export { applyCopilotTokenResponse } from "./token-metadata"
 
 let copilotRefreshLoopController: AbortController | null = null
 let codexRefreshLoopController: AbortController | null = null
@@ -364,20 +362,6 @@ export function refreshCodexCredentialsOnce(
   return attempt
 }
 
-export const applyCopilotTokenResponse = (
-  response: GetCopilotTokenResponse,
-): void => {
-  state.copilotToken = response.token
-
-  // The token exchange response is authoritative for routing the token it just
-  // issued: `/copilot_internal/user` can disagree (e.g. enterprise seats via an
-  // org entitlement advertise the business host, while the issued token is
-  // bound to the enterprise host, causing 421 Misdirected Request).
-  if (response.endpoints?.api) {
-    state.copilotApiUrl = response.endpoints.api
-  }
-}
-
 export const setupCopilotToken = async (
   dependencies: CopilotTokenDependencies = defaultCopilotTokenDependencies,
 ) => {
@@ -400,16 +384,12 @@ export const setupCopilotToken = async (
   }
 
   const response = await dependencies.getCopilotToken()
-  const previousToken = state.copilotToken
-  applyCopilotTokenResponse(response)
-  applyCopilotTokenMetadata(response, previousToken)
-  initTelemetry(response.token, response.endpoints?.telemetry)
-  trackAuthNewToken()
+  applyCopilotTokenExchange(response)
 
   // Display the Copilot token to the screen
   consola.debug("GitHub Copilot Token fetched successfully!")
   if (state.showToken) {
-    consola.info("Copilot token:", response.token)
+    consola.info("Copilot token:", state.copilotToken)
   }
 
   stopCopilotRefreshLoop()
@@ -561,16 +541,12 @@ const runCopilotRefreshLoop = async (
 
     try {
       const response = await dependencies.getCopilotToken()
-      const previousToken = state.copilotToken
-      applyCopilotTokenResponse(response)
-      applyCopilotTokenMetadata(response, previousToken)
-      initTelemetry(response.token, response.endpoints?.telemetry)
-      trackAuthNewToken()
+      applyCopilotTokenExchange(response)
       refreshAtMs = getRefreshDeadlineMs(response.refresh_in)
       retryDelayMs = RETRY_REFRESH_DELAY_MS
       consola.debug("Copilot token refreshed")
       if (state.showToken) {
-        consola.info("Refreshed Copilot token:", response.token)
+        consola.info("Refreshed Copilot token:", state.copilotToken)
       }
     } catch (error) {
       consola.error("Failed to refresh Copilot token:", error)

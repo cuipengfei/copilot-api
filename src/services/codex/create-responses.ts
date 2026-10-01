@@ -18,7 +18,6 @@ import {
   isResponsesApiWebSocketEnabled as isConfiguredResponsesApiWebSocketEnabled,
 } from "~/lib/config"
 import { HTTPError } from "~/lib/error"
-import { attachResponseHeaders } from "~/lib/response-headers"
 import { state } from "~/lib/state"
 import {
   createPooledWebSocketStream,
@@ -31,10 +30,13 @@ import {
   getResponsesStreamTerminalDisposition,
 } from "~/services/responses-websocket-helpers"
 import { createResponsesHttpEventStream } from "~/services/responses-http"
-import { retryAfterTlsCertificateVerificationFailure } from "~/services/tls-retry"
-import { fetchUpstreamWithLifecycle } from "~/services/upstream-http"
 import { requestContext } from "~/lib/request-context"
 import consola from "consola"
+
+import {
+  attachCodexResponsesHeaders,
+  fetchCodexResponsesUpstream,
+} from "./create-responses-local"
 
 export const CODEX_API_BASE_URL = "https://chatgpt.com/backend-api"
 
@@ -315,22 +317,18 @@ export async function forwardCodexResponses(
   })
 
   const transportConfig = getUpstreamTransportConfig()
-  const response = await retryAfterTlsCertificateVerificationFailure(
-    () =>
-      fetchUpstreamWithLifecycle(
-        resolveCodexResponsesUrl(baseUrl),
-        {
-          method: "POST",
-          headers,
-          body: JSON.stringify(normalizedPayload),
-        },
-        {
-          clientSignal: options.clientSignal,
-          headersTimeoutMs: transportConfig.headersTimeoutMs,
-          streamInactivityTimeoutMs: transportConfig.streamInactivityTimeoutMs,
-        },
-      ),
-    { signal: options.clientSignal },
+  const response = await fetchCodexResponsesUpstream(
+    resolveCodexResponsesUrl(baseUrl),
+    {
+      method: "POST",
+      headers,
+      body: JSON.stringify(normalizedPayload),
+    },
+    {
+      clientSignal: options.clientSignal,
+      headersTimeoutMs: transportConfig.headersTimeoutMs,
+      streamInactivityTimeoutMs: transportConfig.streamInactivityTimeoutMs,
+    },
   )
 
   if (!response.ok) {
@@ -340,13 +338,13 @@ export async function forwardCodexResponses(
   options.onResponseHeaders?.(response.headers)
 
   if (normalizedPayload.stream) {
-    return attachResponseHeaders(
+    return attachCodexResponsesHeaders(
       createResponsesSafeStream(createResponsesHttpEventStream(response)),
       response.headers,
     )
   }
 
-  return attachResponseHeaders(
+  return attachCodexResponsesHeaders(
     (await response.json()) as ResponsesResult,
     response.headers,
   )

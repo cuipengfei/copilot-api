@@ -171,35 +171,31 @@ function resolveTokenDetails(
 }
 
 function toPersistedEvent(
-  input: TokenUsageEventInput,
+  rawInput: TokenUsageEventInput,
 ): PersistedTokenUsageEvent | null {
   const totalNanoAiu =
-    normalizeOptionalToken(input.copilotUsage?.total_nano_aiu)
-    ?? normalizeOptionalToken(input.total_nano_aiu)
-  if (!hasAnyToken({ ...input, total_nano_aiu: totalNanoAiu })) {
+    normalizeOptionalToken(rawInput.copilotUsage?.total_nano_aiu)
+    ?? normalizeOptionalToken(rawInput.total_nano_aiu)
+  const input = { ...rawInput, total_nano_aiu: totalNanoAiu }
+  if (!hasAnyToken(input)) {
     return null
   }
 
   const now = new Date()
-  const cost = resolveTokenDetails(input.copilotUsage?.token_details)
-  const pricingCost = resolveTokenUsageCost({
-    ...input,
-    total_nano_aiu: totalNanoAiu,
-    at: now,
-  })
+  const cost = resolveTokenUsageCost({ ...input, at: now })
   return {
     cache_creation_input_tokens: normalizeToken(
       input.cache_creation_input_tokens,
     ),
     cache_read_input_tokens: normalizeToken(input.cache_read_input_tokens),
-    cost_currency: pricingCost?.currency ?? null,
-    cost_source: pricingCost?.source ?? null,
+    cost_currency: cost?.currency ?? null,
+    cost_source: cost?.source ?? null,
     created_at_ms: now.getTime(),
     created_at_utc: now.toISOString(),
     endpoint: input.endpoint,
     input_tokens: normalizeToken(input.input_tokens),
     model: input.model.trim() || "unknown",
-    ...cost,
+    ...resolveTokenDetails(input.copilotUsage?.token_details),
     output_tokens: normalizeToken(input.output_tokens),
     provider_name: input.providerName?.trim() || null,
     session_id: resolveTokenUsageSessionId(
@@ -208,7 +204,7 @@ function toPersistedEvent(
     ),
     source: input.source,
     total_nano_aiu: totalNanoAiu ?? null,
-    total_cost_nanos: pricingCost?.total_cost_nanos ?? null,
+    total_cost_nanos: cost?.total_cost_nanos ?? null,
     total_tokens: resolveTotalTokens(input),
     trace_id: resolveTraceId(input.traceId),
     user_id: resolveUserId(input),

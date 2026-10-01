@@ -12,7 +12,7 @@ import {
 import {
   countReasoningTextOpaqueDrops,
   describeReasoningTextOpaqueDrops,
-} from "~/routes/provider/messages/handler"
+} from "~/routes/provider/messages/local-behavior"
 
 // Observes consola output through consola's public reporter API. No mocks, no
 // spies, no dependency replacement: the code under test calls the real

@@ -152,7 +152,7 @@ const OPENCODE_VERSION = "opencode/1.14.29"
 const OPENCODE_LLM_USER_AGENT =
   "opencode/1.14.29 ai-sdk/provider-utils/4.0.23 runtime/bun/1.3.13, opencode/1.14.29"
 
-export const COPILOT_VERSION = "0.67.0"
+const COPILOT_VERSION = "0.67.0"
 const EDITOR_PLUGIN_VERSION = `copilot-chat/${COPILOT_VERSION}`
 const USER_AGENT = `GitHubCopilotChat/${COPILOT_VERSION}`
 const CLAUDE_AGENT_USER_AGENT =
@@ -163,7 +163,7 @@ const EDITOR_WEBSOCKET_PLUGIN_VERSION = `copilot-chat/${COPILOT_WEBSOCKET_VERSIO
 const API_VERSION = "2026-08-01"
 const WEBSOCKET_API_VERSION = API_VERSION
 
-const resolveCopilotOriginBaseUrl = (state: State): string => {
+export const copilotBaseUrl = (state: State) => {
   if (state.copilotApiUrl) {
     return state.copilotApiUrl
   }
@@ -185,9 +185,6 @@ const resolveCopilotOriginBaseUrl = (state: State): string => {
       "https://api.githubcopilot.com"
     : `https://api.${state.accountType}.githubcopilot.com`
 }
-
-export const copilotBaseUrl = (state: State): string =>
-  resolveCopilotOriginBaseUrl(state)
 
 export const prepareMessageProxyHeaders = (headers: Record<string, string>) => {
   if (isOpencodeOauthApp()) {
@@ -238,8 +235,6 @@ export const copilotModelsHeaders = (state: State) => {
   delete headers["content-type"]
   return headers
 }
-
-const intent = "conversation-agent"
 
 export const copilotHeaders = (
   state: State,
@@ -391,13 +386,13 @@ const githubCopilotHeaders = (
     "editor-version": `vscode/${state.vsCodeVersion}`,
     "editor-plugin-version": EDITOR_PLUGIN_VERSION,
     "user-agent": USER_AGENT,
-    "openai-intent": intent,
+    "openai-intent": "conversation-agent",
     "x-github-api-version": API_VERSION,
     "x-request-id": requestIdValue,
     "x-vscode-user-agent-library-version": "electron-fetch",
     "x-interaction-id": state.interactionId,
     "x-agent-task-id": requestIdValue,
-    "x-interaction-type": intent,
+    "x-interaction-type": "conversation-agent",
   }
 
   if (vision) headers["copilot-vision-request"] = "true"
@@ -433,3 +428,5 @@ export const GITHUB_BASE_URL = "https://github.com"
 export const GITHUB_CLIENT_ID = "Iv1.b507a08c87ecfe98"
 export const GITHUB_APP_SCOPES = ["read:user"].join(" ")
 export const OPENCODE_GITHUB_CLIENT_ID = "Ov23li8tweQw6odWQebz"
+
+export { COPILOT_VERSION }

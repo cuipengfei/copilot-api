@@ -8,13 +8,13 @@ import type { SubagentMarker } from "~/lib/subagent"
 import type { Model } from "~/lib/types/models"
 
 import { debugJson, debugJsonTail, debugLazy } from "~/lib/logger"
+import { writeSSEIfConnected } from "~/lib/sse"
+import { resolveBridgeToolSearchName } from "~/lib/tool-search"
 import {
   applyForwardableResponseHeaders,
   getAttachedResponseHeaders,
   jsonWithForwardedHeaders,
 } from "~/lib/response-headers"
-import { writeSSEIfConnected } from "~/lib/sse"
-import { resolveBridgeToolSearchName } from "~/lib/tool-search"
 import {
   createCopilotTokenUsageRecorder,
   mergeAnthropicUsage,
@@ -62,6 +62,7 @@ import {
   type AnthropicStreamState,
   type CopilotUsage,
 } from "~/lib/types/anthropic"
+import { resolveResponsesStreamCopilotUsage } from "./local-behavior"
 import {
   translateToAnthropic,
   translateToOpenAI,
@@ -313,22 +314,13 @@ export const handleWithResponsesApi = async (
           || responseEvent.type === "response.failed"
           || responseEvent.type === "response.incomplete"
         ) {
+          const resolvedCopilotUsage =
+            resolveResponsesStreamCopilotUsage(responseEvent)
           usage = {
             ...normalizeResponsesUsage(responseEvent.response.usage),
-            total_nano_aiu: normalizeOptionalToken(
-              responseEvent.copilot_usage?.total_nano_aiu
-                ?? responseEvent.response.copilot_usage?.total_nano_aiu,
-            ),
+            total_nano_aiu: resolvedCopilotUsage.totalNanoAiu,
           }
-          const topLevelCopilotUsage = responseEvent.copilot_usage
-          if (
-            topLevelCopilotUsage
-            && Object.keys(topLevelCopilotUsage).length > 0
-          ) {
-            copilotUsage = topLevelCopilotUsage
-          } else {
-            copilotUsage = responseEvent.response.copilot_usage ?? null
-          }
+          copilotUsage = resolvedCopilotUsage.copilotUsage
         }
 
         const events = translateResponsesStreamEvent(responseEvent, streamState)

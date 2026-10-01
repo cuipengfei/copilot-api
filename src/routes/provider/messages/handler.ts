@@ -102,6 +102,11 @@ import {
   applyForwardableResponseHeaders,
   jsonWithForwardedHeaders,
 } from "~/lib/response-headers"
+import {
+  dropUnsupportedThinkingBudget,
+  forwardResponsesStreamHeaders,
+  logReasoningTextOpaqueDrops,
+} from "./local-behavior"
 import consola from "consola"
 
 const logger = createHandlerLogger("provider-messages-handler")
@@ -627,12 +632,7 @@ const createOpenAICompatiblePayload = (
   if (isDashScopeProvider) {
     applyOpenAICompatibleThinkingBudget(openAIPayload, payload)
   } else {
-    if (openAIPayload.thinking_budget !== undefined) {
-      delete openAIPayload.thinking_budget
-      consola.info(
-        "drop thinking config, reason: provider does not support thinking_budget; removed before forwarding",
-      )
-    }
+    dropUnsupportedThinkingBudget(openAIPayload)
   }
 
   if (payload.top_k !== undefined) {
@@ -645,24 +645,16 @@ const createOpenAICompatiblePayload = (
     }
   }
 
-  const reasoningTextOpaqueDrops = countReasoningTextOpaqueDrops(
-    openAIPayload.messages,
-  )
-  const { reasoningField } = normalizeOpenAICompatibleReasoningContent(
-    openAIPayload,
-    {
-      modelConfig,
-      providerConfig,
-    },
-  )
-  if (reasoningTextOpaqueDrops > 0) {
-    consola.info(
-      describeReasoningTextOpaqueDrops(
-        reasoningField,
-        reasoningTextOpaqueDrops,
-      ),
-    )
-  }
+  logReasoningTextOpaqueDrops({
+    messages: openAIPayload.messages,
+    model: openAIPayload.model,
+    modelConfig,
+    providerConfig,
+  })
+  normalizeOpenAICompatibleReasoningContent(openAIPayload, {
+    modelConfig,
+    providerConfig,
+  })
 
   applyOpenAICompatibleRequestOverrides(openAIPayload, {
     extraBody: modelConfig?.extraBody,
@@ -722,40 +714,13 @@ const applyMiMoThinking = (
   }
 }
 
-// 本地观察：normalizeOpenAICompatibleReasoningContent 会删除其访问的每条
-// assistant 消息的 reasoning_text/reasoning_opaque，丢弃计数可由调用前输入
-// 直接得出，上游函数体因此不含本地行。
-export const countReasoningTextOpaqueDrops = (
-  messages: ChatCompletionsPayload["messages"],
-): number => {
-  let dropped = 0
-  for (const message of messages) {
-    if (message.role !== "assistant") {
-      continue
-    }
-    if (
-      message.reasoning_text !== undefined
-      || message.reasoning_opaque !== undefined
-    ) {
-      dropped++
-    }
-  }
-  return dropped
-}
-
-export const describeReasoningTextOpaqueDrops = (
-  reasoningField: string,
-  dropped: number,
-): string =>
-  `drop thinking block, reason: openai-compatible provider does not recognize reasoning_text/reasoning_opaque; deleted after mapping to ${reasoningField} in ${dropped} message(s)`
-
 const normalizeOpenAICompatibleReasoningContent = (
   payload: ChatCompletionsPayload,
   options: {
     modelConfig: ModelConfig | undefined
     providerConfig: ResolvedProviderConfig
   },
-): { reasoningField: string } => {
+): void => {
   // Some models (e.g. opencode-go hy3/hy4) follow the OpenRouter convention
   // and expect the reasoning text in the "reasoning" field of assistant
   // history messages instead of the default "reasoning_content" field
@@ -793,7 +758,6 @@ const normalizeOpenAICompatibleReasoningContent = (
     delete message.reasoning_text
     delete message.reasoning_opaque
   }
-  return { reasoningField }
 }
 
 const applyOpenAICompatibleRequestOverrides = (
@@ -1047,12 +1011,7 @@ const streamResponsesProviderMessages = ({
   logger.debug("provider.messages.responses.streaming", {
     provider,
   })
-  if ("headers" in upstreamResponse) {
-    applyForwardableResponseHeaders(
-      c,
-      (upstreamResponse as unknown as { headers: Headers }).headers,
-    )
-  }
+  forwardResponsesStreamHeaders(c, upstreamResponse)
   const recordUsage = createProviderMessagesUsageRecorder(
     payload,
     provider,

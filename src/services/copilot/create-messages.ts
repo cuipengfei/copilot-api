@@ -9,13 +9,6 @@ import type {
   AnthropicResponse,
 } from "~/lib/types/anthropic"
 
-import { copilotBaseUrl, prepareMessageProxyHeaders } from "~/lib/api-config"
-import { logCopilotRateLimits } from "~/lib/copilot-rate-limit"
-import { HTTPError } from "~/lib/error"
-import { attachPremiumInfo, getPremiumInfoFromHeaders } from "~/lib/logger"
-import { attachResponseHeaders } from "~/lib/response-headers"
-import { state } from "~/lib/state"
-import { parseUserIdMetadata } from "~/lib/utils"
 import {
   trackRequestSent,
   trackResponseSuccess,
@@ -25,13 +18,20 @@ import {
   trackPanelRequest,
   trackGhostTextShown,
 } from "~/services/telemetry/telemetry"
-
 import {
   buildMessagesHeaders,
   getAnthropicEffortForModel,
   prepareMessagesRequest,
   sendWithSignatureRetry,
 } from "~/services/copilot/messages-compat"
+
+import { copilotBaseUrl, prepareMessageProxyHeaders } from "~/lib/api-config"
+import { logCopilotRateLimits } from "~/lib/copilot-rate-limit"
+import { HTTPError } from "~/lib/error"
+import { attachPremiumInfo, getPremiumInfoFromHeaders } from "~/lib/logger"
+import { attachResponseHeaders } from "~/lib/response-headers"
+import { state } from "~/lib/state"
+import { parseUserIdMetadata } from "~/lib/utils"
 
 export type MessagesStream = ReturnType<typeof events>
 export type CreateMessagesReturn = AnthropicResponse | MessagesStream

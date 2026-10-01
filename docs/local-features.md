@@ -130,7 +130,7 @@
 - smart-agent 沿用现有配置、配额判断和缓存，状态仍以共享 `state` 为来源。
 - upstream headers 与 premium 信息分别通过现有 metadata 机制传递。
 - route 层保留实际响应头转发；用量统计和成本展示沿用实际返回字段。
-- token 更新继续使用上游的 token 与 endpoint 设置函数；[token-metadata.ts](../src/lib/token-metadata.ts) 更新账号、组织、Telemetry 元数据及 Auto-session 失效状态。
+- token 响应由 [token-metadata.ts](../src/lib/token-metadata.ts) 的 `applyCopilotTokenExchange` 设置 token 与 endpoint，更新 Auto-session、账号与组织元数据，随后初始化 Telemetry；[token.ts](../src/lib/token.ts) 保留原有调用入口和导出。
 
 **本地实现**：[smart-agent.ts](../src/lib/smart-agent.ts)、[response-headers.ts](../src/lib/response-headers.ts)。
 
@@ -193,7 +193,7 @@
 
 **行为**：请求入口记录原始模型、目标模型、effort 与来源；Messages 路由使用自己的 IN/OUT 日志。协议转换和 provider 转发保留 thinking block、thinking config 的移除数量与原因记录。
 
-**源码与接入**：[logger.ts](../src/lib/logger.ts)、[server.ts](../src/server.ts)、[Messages handler](../src/routes/messages/handler.ts)、[preprocess.ts](../src/routes/messages/preprocess.ts)、[non-stream-translation.ts](../src/routes/messages/non-stream-translation.ts)、[responses-translation.ts](../src/routes/messages/responses-translation.ts) 与 [provider Messages handler](../src/routes/provider/messages/handler.ts)。
+**源码与接入**：[logger.ts](../src/lib/logger.ts)、[server.ts](../src/server.ts)、[Messages handler](../src/routes/messages/handler.ts)、[preprocess.ts](../src/routes/messages/preprocess.ts)、[non-stream-translation.ts](../src/routes/messages/non-stream-translation.ts)、[responses-translation.ts](../src/routes/messages/responses-translation.ts)、[provider Messages handler](../src/routes/provider/messages/handler.ts) 与 [provider Messages local-behavior.ts](../src/routes/provider/messages/local-behavior.ts)。
 
 **验证入口**：[logger.test.ts](../tests/logger.test.ts)、[logger-local.test.ts](../tests/logger-local.test.ts)、[models-log.test.ts](../tests/models-log.test.ts) 与 [translation-drop-observation.test.ts](../tests/translation-drop-observation.test.ts)。本地日志观察使用实际转换结果，转换算法继续由原模块负责。
 
@@ -217,7 +217,7 @@
 
 **行为**：Chat、Responses 与 Messages 转换保留 `copilot_usage`。流式转换累计最新用量，在对应的完成事件或 `message_delta` 中传递；Messages 流开始事件通过 `mergeUsage` 合并已有用量。web-search 合成事件和用量记录器继续携带 Copilot 用量。
 
-**源码与接入**：[Messages 转换目录](../src/routes/messages/)、[messages-stream-translation.ts](../src/routes/responses/messages-stream-translation.ts)、[web-search fulfill](../src/routes/messages/web-search/fulfill.ts) 与 [api-flows.ts](../src/routes/messages/api-flows.ts)。
+**源码与接入**：[Messages 转换目录](../src/routes/messages/)、[messages-stream-translation.ts](../src/routes/responses/messages-stream-translation.ts)、[web-search fulfill](../src/routes/messages/web-search/fulfill.ts)、[api-flows.ts](../src/routes/messages/api-flows.ts) 与 [Messages local-behavior.ts](../src/routes/messages/local-behavior.ts)。
 
 **验证入口**：[web-search-fulfill.test.ts](../tests/web-search-fulfill.test.ts)、[responses-stream-collection.test.ts](../tests/responses-stream-collection.test.ts) 与 [anthropic-response.test.ts](../tests/anthropic-response.test.ts)。
 
@@ -233,7 +233,7 @@
 
 **行为**：允许转发的上游响应头经过统一筛选，随 JSON、SSE 或对应错误响应返回客户端。覆盖 Messages 的三条 API 路径、Responses fallback、web-search、provider 路由与 Codex Responses service。
 
-**源码与接入**：[response-headers.ts](../src/lib/response-headers.ts) 的 `applyForwardableResponseHeaders`、`jsonWithForwardedHeaders` 与 `getAttachedResponseHeaders`，以及各 handler 的回包位置。
+**源码与接入**：[response-headers.ts](../src/lib/response-headers.ts) 的 `applyForwardableResponseHeaders`、`jsonWithForwardedHeaders` 与 `getAttachedResponseHeaders`，[Codex Responses helper](../src/services/codex/create-responses-local.ts) 的响应头附着，以及各 handler 的回包位置。
 
 **验证入口**：[chat-completions-headers.test.ts](../tests/chat-completions-headers.test.ts)、[responses-handler.test.ts](../tests/responses-handler.test.ts) 与现有 provider 路由测试。
 
