@@ -58,6 +58,8 @@ enabled = false
 
 > [!NOTE]
 > `name` 一定要配置为 `"OpenAI"`。
+>
+> 使用 Codex 需先通过 ChatGPT 或 API Key 登录。`requires_openai_auth = true` 用于在 UI 中显示登录账号信息，ChatGPT 登录时还可显示额度和订阅信息；请求鉴权仍优先使用 `env_key`。如需绕过 Codex 客户端的账号限制，可尝试设为 `false`。
 
 ### 自动审核模型映射
 
@@ -75,7 +77,7 @@ enabled = false
 
 ### 一键生成 `model_catalog.json`
 
-**Codex `0.156.0+`：** `api_key_model_discovery` 已成功加载模型列表，但 Codex 代码存在 bug，可通过本地模型目录临时规避。未登录 GPT 账号时也可使用本地目录；更早版本无需配置 `model_catalog_json`。
+**Codex `0.156.0+`：** `api_key_model_discovery` 已成功加载模型列表，但 Codex 代码存在 bug，可通过本地模型目录临时规避。使用 API Key 登录时也可使用本地目录；更早版本无需配置 `model_catalog_json`。
 
 启动网关，安装 `curl` 及 Bun 或 Node.js，然后在仓库根目录运行[生成脚本](../../generate-model-catalog.sh)：
 
