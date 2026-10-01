@@ -9,7 +9,7 @@
 | [安装与启动](getting-started.md) | 运行环境、npx、provider 配置与源码运行 |
 | [Claude Code](claude-code.md) | 交互式配置、settings.json 与模型映射 |
 | [OpenCode](opencode.md) | Anthropic SDK 接入与模型配置 |
-| [Codex](codex.md) | config.toml、模型目录与自动审核映射 |
+| [Codex](codex.md) | config.toml、`GITHUB_COPILOT_API_KEY` 设置、模型目录与自动审核映射 |
 | [Docker](docker.md) | Docker Compose、持久化存储与网络设置 |
 | [桌面应用](desktop.md) | 安装、账号管理与高级设置 |
 | [插件与工具搜索](integrations.md) | Claude Code / OpenCode 插件与 MCP 工具搜索桥接 |
@@ -17,4 +17,4 @@
 | [命令行参考](cli.md) | 命令、参数与请求示例 |
 | [配置参考](configuration.md) | config.json 配置项、模型路由与传输设置 |
 | [API 与认证](api.md) | 端点、API Key 与管理接口认证 |
-| [故障排查](troubleshooting.md) | 已知问题与处理方法 |
+| [故障排查](troubleshooting.md) | Copilot 加密输出失败与 Claude 模型缺失的处理方法 |
