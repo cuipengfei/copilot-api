@@ -21,6 +21,8 @@ describe("Codex service tier price estimates", () => {
     { model: "gpt-6-sol", standardCost: 433_000 },
     { model: "gpt-6.1-sol", standardCost: 429_000 },
     { model: "gpt-6-luna", standardCost: 21_650 },
+    { model: "codex-auto-review", standardCost: 21_650 },
+    { model: "gpt-reserve", standardCost: 21_650 },
     { model: "gpt-5.6", standardCost: 866_000 },
     { model: "gpt-5.6-sol", standardCost: 866_000 },
     { model: "gpt-5.6-terra", standardCost: 473_000 },

@@ -733,6 +733,10 @@ describe("model routes", () => {
         }>
       }
       expect(body.data.map((model) => model.id)).toContain("codex/gpt-6-astra")
+      expect(body.data.map((model) => model.id)).toContain(
+        "codex/codex-auto-review",
+      )
+      expect(body.data.map((model) => model.id)).toContain("codex/gpt-reserve")
       expect(body.data.map((model) => model.id)).toContain("codex/gpt-5.6-sol")
       expect(
         body.data.find((model) => model.id === "codex/gpt-6.1-sol"),

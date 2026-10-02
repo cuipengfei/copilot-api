@@ -142,6 +142,43 @@ describe("builtin provider model registry", () => {
     })
   })
 
+  test("prices Codex review and reserve models exactly like GPT-6 Luna", () => {
+    const luna = builtinProviderModelRegistry.getModelConfig(
+      "codex",
+      "gpt-6-luna",
+    )
+    expect(luna?.pricing?.tiers).toHaveLength(2)
+    for (const modelId of ["codex-auto-review", "gpt-reserve"]) {
+      expect(builtinProviderModelRegistry.getModelIds("codex")).toContain(
+        modelId,
+      )
+      expect(
+        builtinProviderModelRegistry.getModelConfig("codex", modelId),
+      ).toEqual(luna)
+    }
+  })
+
+  test("removes selected older Codex models while retaining GPT-5.5 pricing", () => {
+    for (const modelId of ["gpt-5.3-codex", "gpt-5.4", "gpt-5.4-mini"]) {
+      expect(builtinProviderModelRegistry.getModelIds("codex")).not.toContain(
+        modelId,
+      )
+      expect(
+        builtinProviderModelRegistry.getModelConfig("codex", modelId),
+      ).toBeUndefined()
+    }
+    expect(
+      builtinProviderModelRegistry.getModelConfig("codex", "gpt-5.5"),
+    ).toEqual({
+      pricing: {
+        tiers: [
+          { cachedInput: 0.5, input: 5, maxInputTokens: 272_000, output: 30 },
+          { cachedInput: 1, input: 10, output: 45 },
+        ],
+      },
+    })
+  })
+
   test("returns empty results for unknown providers and models", () => {
     expect(builtinProviderModelRegistry.getModelIds("unknown")).toEqual([])
     expect(
