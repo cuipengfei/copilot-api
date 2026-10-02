@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, type CSSProperties } from 'react'
 import SettingsModal from './SettingsModal'
+import ProviderManagementModal from './ProviderManagementModal'
 import TitleBarMenu from './TitleBarMenu'
 import WindowControls from './WindowControls'
 import { useLanguage } from '../contexts/LanguageContext'
@@ -51,6 +52,7 @@ interface HeaderProps {
   onRestart?: () => void
   onStop?: () => void
   onSettingsClose?: () => void
+  onProvidersClose?: () => void
   isRunning?: boolean
   isRestarting?: boolean
 }
@@ -60,11 +62,13 @@ export default function Header({
   onRestart,
   onStop,
   onSettingsClose,
+  onProvidersClose,
   isRunning,
   isRestarting,
 }: HeaderProps) {
   const { t } = useLanguage()
   const [showSettings, setShowSettings] = useState(false)
+  const [showProviders, setShowProviders] = useState(false)
   const [showSettingsMenu, setShowSettingsMenu] = useState(false)
   const settingsMenuRef = useRef<HTMLDivElement>(null)
   const showServerStatus = Boolean(onStop)
@@ -150,6 +154,15 @@ export default function Header({
             </div>
           : null}
 
+          {onProvidersClose && (
+            <button
+              type="button"
+              onClick={() => setShowProviders(true)}
+              className="rounded-lg px-2 py-1.5 text-xs text-ink-soft hover:bg-sunken"
+            >
+              {t('providers.title')}
+            </button>
+          )}
           <div className="relative" ref={settingsMenuRef}>
             <button
               onClick={handleSettingsAction}
@@ -208,6 +221,15 @@ export default function Header({
             setShowSettings(false)
             onSettingsClose?.()
           }}
+        />
+      )}
+      {showProviders && (
+        <ProviderManagementModal
+          onClose={() => {
+            setShowProviders(false)
+            onProvidersClose?.()
+          }}
+          serverRunning={isRunning}
         />
       )}
     </>

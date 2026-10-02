@@ -17,6 +17,7 @@ import {
 import { formatTokenCost, formatTokenCosts } from '../lib/token-usage-format'
 import { buildServerBaseUrl } from '../lib/server-url'
 import ModelMappingsPage from './ModelMappingsPage'
+import ProviderManagementPanel from '../components/ProviderManagementPanel'
 import type {
   DesktopAuthMode,
   ServerAuthInfo,
@@ -61,7 +62,8 @@ interface Model {
 }
 
 type TranslateFn = ReturnType<typeof useLanguage>['t']
-type DashboardTab = 'dashboard' | 'tokenUsage' | 'advancedConfig' | 'logs'
+type DashboardTab =
+  'dashboard' | 'tokenUsage' | 'providers' | 'advancedConfig' | 'logs'
 
 const numberFormatter = new Intl.NumberFormat()
 const TOKEN_USAGE_EVENTS_PAGE_SIZE = 10
@@ -172,6 +174,22 @@ const IconMappings = () => (
     <path d="m12 4 3 3-3 3" />
     <path d="M20 17H9" />
     <path d="m12 14-3 3 3 3" />
+  </svg>
+)
+
+const IconProviders = () => (
+  <svg
+    width="16"
+    height="16"
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="1.8"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    aria-hidden="true"
+  >
+    <path d="M8 3v4m8-4v4M6 7h12v3a6 6 0 0 1-12 0V7Zm6 9v5" />
   </svg>
 )
 
@@ -299,6 +317,10 @@ export default function DashboardPage({
   const [logs, setLogs] = useState<string[]>([])
   const logEndRef = useRef<HTMLDivElement>(null)
   const intentionalStop = useRef(false)
+  useEffect(() => {
+    if (!started && tab !== 'dashboard' && tab !== 'providers')
+      setTab('dashboard')
+  }, [started, tab])
   const tokenUsageRequestId = useRef(0)
   const tokenUsageEventsRequestId = useRef(0)
 
@@ -725,6 +747,11 @@ export default function DashboardPage({
       label: t('dashboard.tabTokenUsage'),
     },
     {
+      icon: <IconProviders />,
+      key: 'providers',
+      label: t('providers.title'),
+    },
+    {
       icon: <IconMappings />,
       key: 'advancedConfig',
       label: t('header.advancedConfig'),
@@ -732,7 +759,7 @@ export default function DashboardPage({
     { icon: <IconLogs />, key: 'logs', label: t('dashboard.tabLogs') },
   ]
   const showRefreshButton =
-    started && tab !== 'advancedConfig' && tab !== 'logs'
+    started && tab !== 'providers' && tab !== 'advancedConfig' && tab !== 'logs'
 
   return (
     <div className="flex flex-col h-screen bg-canvas">
@@ -753,44 +780,58 @@ export default function DashboardPage({
         </div>
       )}
 
-      {/* Tabs shown only while the server is running */}
-      {started && (
-        <div className="flex items-center justify-between gap-3 px-4 h-[52px] bg-surface border-b border-line-soft shrink-0">
-          <div className="flex min-w-0 h-full items-stretch gap-4">
-            {dashboardTabs.map((tabItem) => (
-              <button
-                key={tabItem.key}
-                onClick={() => setTab(tabItem.key)}
-                className={`inline-flex items-center gap-1.5 px-3 text-[14px] border-b-2 transition-colors ${
-                  tab === tabItem.key ?
-                    'font-semibold text-ink border-accent'
-                  : 'text-ink-faint border-transparent hover:text-ink-soft'
-                }`}
-              >
-                {tabItem.icon}
-                {tabItem.label}
-              </button>
-            ))}
-          </div>
-          {showRefreshButton && (
+      {/* Providers remain configurable while the server is stopped. */}
+      <div className="flex items-center justify-between gap-3 px-4 h-[52px] bg-surface border-b border-line-soft shrink-0">
+        <div
+          role="tablist"
+          className="flex min-w-0 h-full items-stretch gap-1 overflow-x-auto sm:gap-3"
+        >
+          {dashboardTabs.map((tabItem) => (
             <button
-              onClick={handleRefreshActiveTab}
-              disabled={isActiveTabRefreshing}
-              className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md border border-line bg-surface px-2.5 text-[13px] text-ink-soft transition-colors hover:bg-sunken hover:text-ink disabled:opacity-40"
+              key={tabItem.key}
+              role="tab"
+              aria-selected={tab === tabItem.key}
+              disabled={
+                !started
+                && tabItem.key !== 'dashboard'
+                && tabItem.key !== 'providers'
+              }
+              onClick={() => setTab(tabItem.key)}
+              className={`inline-flex items-center gap-1.5 px-2 sm:px-3 text-[13px] whitespace-nowrap border-b-2 transition-colors disabled:cursor-not-allowed disabled:opacity-35 ${
+                tab === tabItem.key ?
+                  'font-semibold text-ink border-accent'
+                : 'text-ink-faint border-transparent hover:text-ink-soft'
+              }`}
             >
-              <IconRefresh spinning={isActiveTabRefreshing} />
-              {isActiveTabRefreshing ?
-                t('dashboard.refreshing')
-              : t('dashboard.refresh')}
+              {tabItem.icon}
+              {tabItem.label}
             </button>
-          )}
+          ))}
         </div>
-      )}
+        {showRefreshButton && (
+          <button
+            onClick={handleRefreshActiveTab}
+            disabled={isActiveTabRefreshing}
+            className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md border border-line bg-surface px-2.5 text-[13px] text-ink-soft transition-colors hover:bg-sunken hover:text-ink disabled:opacity-40"
+          >
+            <IconRefresh spinning={isActiveTabRefreshing} />
+            {isActiveTabRefreshing ?
+              t('dashboard.refreshing')
+            : t('dashboard.refresh')}
+          </button>
+        )}
+      </div>
 
       {/* Content area */}
-      <div className="flex-1 overflow-auto">
+      <div
+        className={
+          tab === 'providers' ?
+            'min-h-0 flex-1 overflow-hidden'
+          : 'min-h-0 flex-1 overflow-auto'
+        }
+      >
         {/* Empty state: start form */}
-        {!started && (
+        {!started && tab !== 'providers' && (
           <div className="h-full flex flex-col items-center justify-center gap-4 px-6">
             <div className="w-11 h-11 bg-sunken rounded-xl flex items-center justify-center text-ink-soft dark:bg-[#4f94f8] dark:text-white">
               <IconLaunch />
@@ -1097,6 +1138,10 @@ export default function DashboardPage({
               t={t}
             />
           </div>
+        )}
+
+        {tab === 'providers' && (
+          <ProviderManagementPanel serverRunning={started && !stopping} />
         )}
 
         {/* Model mappings tab */}

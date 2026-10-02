@@ -1,3 +1,4 @@
+import { isGitHubCopilotEnabled } from '../../src/lib/github-copilot-provider'
 import {
   getRawProviderConfig,
   isSupportedProviderType,
@@ -29,6 +30,7 @@ const CUSTOM_PROVIDER_AUTH_TYPES = ['x-api-key', 'authorization'] as const
 
 interface AuthStatusDependencies {
   listEnabledProviders?: () => string[]
+  isGitHubCopilotEnabled?: () => boolean
   readToken?: () => Promise<string | null>
   verifyGitHubToken?: (token: string) => Promise<void>
 }
@@ -75,7 +77,11 @@ function assertCustomProviderName(providerName: string): void {
     )
   }
 
-  if (providerName === 'copilot' || providerName === 'codex') {
+  if (
+    providerName === 'copilot'
+    || providerName === 'github-copilot'
+    || providerName === 'codex'
+  ) {
     throw new Error(
       `Provider name '${providerName}' is reserved for a builtin provider`,
     )
@@ -141,6 +147,9 @@ function buildProviderConfig(
     ...(options.authType ? { authType: options.authType } : {}),
     pricingCurrency:
       options.pricingCurrency ?? existingProviderConfig.pricingCurrency,
+    ...(existingProviderConfig.codexModels !== undefined ?
+      { codexModels: existingProviderConfig.codexModels }
+    : {}),
     ...(existingProviderConfig.models ?
       { models: existingProviderConfig.models }
     : {}),
@@ -180,7 +189,10 @@ export async function getDesktopAuthStatus(
     dependencies.listEnabledProviders ?? getEnabledDesktopProviders
 
   const token = await readSavedToken()
-  if (token) {
+  if (
+    token
+    && (dependencies.isGitHubCopilotEnabled ?? isGitHubCopilotEnabled)()
+  ) {
     try {
       await verifyGitHubToken(token)
       return {

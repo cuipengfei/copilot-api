@@ -7,6 +7,7 @@ import { serve, type ServerHandler } from "srvx"
 import invariant from "tiny-invariant"
 
 import { runProviderSetup } from "./auth"
+import { isGitHubCopilotEnabled } from "./lib/github-copilot-provider"
 import { listEnabledProviders, mergeConfigWithDefaults } from "./lib/config"
 import {
   GITHUB_TOKEN_ENV,
@@ -161,10 +162,16 @@ async function setupProviderMode(
     return
   }
 
+  if (!isGitHubCopilotEnabled()) {
+    throw new Error(
+      "No enabled providers found. Enable GitHub Copilot with `copilot-api provider enable github-copilot`, or enable another configured provider.",
+    )
+  }
+
   consola.info("No enabled providers found. Setting one up...")
   await runProviderSetup()
 
-  if (state.githubToken) {
+  if (state.githubToken && isGitHubCopilotEnabled()) {
     // The setup flow persisted the token with the credential store.
     await setupCopilotMode(state.githubToken, "file", serverUrl, claudeCode)
     return
@@ -217,8 +224,11 @@ export async function runServer(options: RunServerOptions): Promise<void> {
 
   const serverUrl = formatServerUrl(binding.clientHostname, options.port)
 
-  const resolvedGitHubToken = await resolveGitHubToken(options.githubToken)
-  if (resolvedGitHubToken) {
+  const resolvedGitHubToken =
+    isGitHubCopilotEnabled() ?
+      await resolveGitHubToken(options.githubToken)
+    : null
+  if (resolvedGitHubToken && isGitHubCopilotEnabled()) {
     await setupCopilotMode(
       resolvedGitHubToken.token,
       resolvedGitHubToken.source,

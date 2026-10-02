@@ -29,6 +29,7 @@ export interface ResolvedProviderConfig {
   authTypeExplicit?: boolean
   pricingCurrency?: string
   models?: Record<string, ModelConfig>
+  codexModels?: Array<string>
 }
 
 export function normalizeProviderBaseUrl(url: string): string {
@@ -190,6 +191,7 @@ export function getProviderConfig(name: string): ResolvedProviderConfig | null {
     authTypeExplicit: provider.authType !== undefined,
     pricingCurrency: normalizePricingCurrency(provider.pricingCurrency),
     models: provider.models,
+    codexModels: provider.codexModels,
   }
 }
 
@@ -281,9 +283,11 @@ function normalizePricingCurrency(
 export function listEnabledProviders(): Array<string> {
   const config = getConfig()
   const providerNames = Object.keys(config.providers ?? {})
-  return providerNames.filter((name) => getProviderConfig(name) !== null)
+  return providerNames.filter(
+    (name) => !isReservedProviderName(name) && getProviderConfig(name) !== null,
+  )
 }
 
 export function isReservedProviderName(name: string): boolean {
-  return name.trim() === "copilot"
+  return name.trim() === "copilot" || name.trim() === "github-copilot"
 }

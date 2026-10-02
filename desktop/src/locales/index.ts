@@ -2,6 +2,44 @@ import en from './en'
 import zh from './zh'
 
 export interface Locale {
+  providers: {
+    title: string
+    close: string
+    description: string
+    enabledScope: string
+    configured: string
+    catalogBudget: string
+    unsaved: string
+    autoDescription: string
+    selectedDescription: string
+    noneDescription: string
+    hiddenTitle: string
+    hiddenDescription: string
+    availableCount: string
+    loading: string
+    empty: string
+    enabled: string
+    disabled: string
+    selection: string
+    auto: string
+    selected: string
+    none: string
+    modelIds: string
+    searchModels: string
+    selectedCount: string
+    selectVisible: string
+    clearSelection: string
+    loadingModels: string
+    noModels: string
+    manualModels: string
+    modelSourceHint: string
+    modelsError: string
+    restartHint: string
+    saved: string
+    savedRestart: string
+    save: string
+    saving: string
+  }
   auth: {
     subtitle: string
     githubAuth: string

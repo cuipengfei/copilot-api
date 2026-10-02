@@ -1,8 +1,13 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test"
 import { Hono } from "hono"
+import fs from "node:fs"
+import os from "node:os"
+import path from "node:path"
 
 import type { ResolvedProviderConfig } from "~/lib/config"
 import { installModelsDevCatalog } from "~/lib/models-dev-cache"
+import { PATHS } from "~/lib/paths"
+import { invalidateConfigCache } from "~/lib/config-store"
 import type { ModelsResponse } from "~/lib/types/models"
 import type { CodexModelsResponse } from "~/routes/models/codex-models-types"
 import bundledCodexCatalogJson from "~/routes/models/models.json"
@@ -13,8 +18,37 @@ const actualConfigModule = await import("~/lib/config")
 const actualTokenModule = await import("~/lib/token")
 
 let enabledProviders: Array<string> = []
-let providerConfigs: Record<string, ResolvedProviderConfig | null> = {}
+let providerConfigs: Record<
+  string,
+  (ResolvedProviderConfig & { enabled?: boolean }) | null
+> = {}
 let codexSetupError: Error | null = null
+let codexCatalogMetadata: Record<string, unknown> = {}
+const originalConfigPath = PATHS.CONFIG_PATH
+let catalogConfigDir: string | undefined
+
+function setCatalogLimit(maxModels: number) {
+  catalogConfigDir = fs.mkdtempSync(path.join(os.tmpdir(), "catalog-route-"))
+  PATHS.CONFIG_PATH = path.join(catalogConfigDir, "config.json")
+  fs.writeFileSync(
+    PATHS.CONFIG_PATH,
+    JSON.stringify({ codexModelCatalog: { maxModels } }),
+  )
+  invalidateConfigCache()
+}
+
+function enableCodexCatalog() {
+  enabledProviders = ["codex"]
+  providerConfigs.codex = {
+    name: "codex",
+    type: "openai-responses",
+    baseUrl: "https://chatgpt.com/backend-api",
+    apiKey: "codex-token",
+    authType: "oauth2",
+  }
+  state.codexAccessToken = "codex-access-token"
+  state.codexAccountId = "account-123"
+}
 
 await mock.module("~/lib/config", () => ({
   ...actualConfigModule,
@@ -99,7 +133,7 @@ const fetchMock = mock((url: string | URL | Request, _init?: RequestInit) => {
   if (requestUrl.startsWith("https://chatgpt.com/backend-api/codex/models")) {
     return Promise.resolve(
       Response.json(
-        { models: codexCatalogModels },
+        { ...codexCatalogMetadata, models: codexCatalogModels },
         { headers: { ETag: CODEX_CATALOG_ETAG } },
       ),
     )
@@ -216,8 +250,16 @@ const fetchMock = mock((url: string | URL | Request, _init?: RequestInit) => {
   )
 })
 
-function createApp() {
+function createApp(fullCatalog = true) {
   const app = new Hono()
+  // Translation tests inspect every model; quota tests opt into ordinary requests.
+  if (fullCatalog)
+    app.use("*", async (c, next) => {
+      if (c.req.header("user-agent")?.startsWith("codex")) {
+        c.req.raw.headers.set("x-full-model-catalog", "true")
+      }
+      await next()
+    })
   app.route("/models", modelRoutes)
   app.route("/v1/models", modelRoutes)
   app.route("/:provider/v1/models", providerModelRoutes)
@@ -229,6 +271,7 @@ beforeEach(() => {
   enabledProviders = []
   providerConfigs = {}
   codexSetupError = null
+  codexCatalogMetadata = {}
   codexCatalogModels = createDefaultCodexCatalogModels()
   state.models = undefined
   fetchMock.mockClear()
@@ -237,6 +280,11 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  PATHS.CONFIG_PATH = originalConfigPath
+  invalidateConfigCache()
+  if (catalogConfigDir)
+    fs.rmSync(catalogConfigDir, { recursive: true, force: true })
+  catalogConfigDir = undefined
   ;(globalThis as unknown as { fetch: typeof fetch }).fetch = originalFetch
   state.models = undefined
   state.codexAccessToken = undefined
@@ -244,6 +292,145 @@ afterEach(() => {
 })
 
 describe("model routes", () => {
+  test("ignores legacy count limits and strips full-export headers from all upstreams", async () => {
+    enableCodexCatalog()
+    enabledProviders.push("opencode-go")
+    providerConfigs["opencode-go"] = createProviderConfig(
+      "opencode-go",
+      "https://opencode.example",
+    )
+    setCatalogLimit(1)
+    const response = await createApp(false).request(
+      "/models?client_version=0.160.0",
+      {
+        headers: {
+          "user-agent": "codex-tui/0.160.0",
+          "X-Full-Model-Catalog": "false",
+        },
+      },
+    )
+    const body = (await response.json()) as CodexModelsResponse
+    expect(body.models.length).toBeGreaterThan(1)
+    expect(body.models[0]).not.toHaveProperty("base_instructions")
+    expect(body.models[0].model_messages.instructions_template).toBe(
+      "Native instructions",
+    )
+    expect(response.headers.get("cache-control")).toBe("private, no-store")
+    for (const call of fetchMock.mock.calls) {
+      expect(new Headers(call[1]?.headers).has("x-full-model-catalog")).toBe(
+        false,
+      )
+    }
+  })
+  test("full export preserves configured selections despite the default exclusions and quotas", async () => {
+    enabledProviders = ["custom"]
+    providerConfigs = {
+      codex: {
+        ...createProviderConfig("codex", "https://unused.example"),
+        enabled: false,
+      },
+      custom: {
+        ...createProviderConfig("custom", "https://bad.example"),
+        codexModels: ["gpt-5.5", "chosen"],
+        models: { "gpt-5.5": {}, chosen: {}, hidden: {} },
+      },
+    }
+    setCatalogLimit(1)
+    state.models = createCopilotModels(
+      Array.from({ length: 25 }, (_, i) => `auto-${i}`),
+    )
+    for (const record of state.models.data)
+      record.supported_endpoints = ["/v1/messages"]
+    const response = await createApp(false).request(
+      "/models?client_version=0.160.0",
+      {
+        headers: {
+          "user-agent": "codex-tui/0.160.0",
+          "x-full-model-catalog": "true",
+        },
+      },
+    )
+    const body = (await response.json()) as CodexModelsResponse
+    const slugs = body.models.map((model) => model.slug)
+    expect(slugs).toContain("custom/gpt-5.5")
+    expect(slugs).toContain("custom/chosen")
+    expect(slugs).not.toContain("custom/hidden")
+    expect(slugs).not.toContain("codex/gpt-native")
+    expect(body.models.length).toBeGreaterThan(20)
+    const ordinary = await createApp(false).request(
+      "/models?client_version=0.160.0",
+      { headers: { "user-agent": "codex-tui/0.160.0" } },
+    )
+    const limited = (await ordinary.json()) as CodexModelsResponse
+    expect(limited.models.length).toBeGreaterThan(1)
+    expect(limited.models.map((model) => model.slug)).toContain(
+      "custom/gpt-5.5",
+    )
+    expect(Buffer.byteLength(JSON.stringify(limited))).toBeLessThanOrEqual(
+      1024 * 1024,
+    )
+    providerConfigs.custom!.baseUrl = "https://ordinary.example"
+    const normal = await createApp(false).request("/v1/models")
+    const normalBody = (await normal.json()) as { data: Array<{ id: string }> }
+    expect(normalBody.data.map((model) => model.id)).toContain(
+      "custom/qwen-plus",
+    )
+  })
+  test("filters Codex native models and aliases without discarding the synthesis template", async () => {
+    enableCodexCatalog()
+    providerConfigs.codex!.codexModels = ["gpt-native"]
+    codexCatalogModels.push({ ...codexCatalogModels[0], slug: "hidden-native" })
+    const response = await createApp(false).request(
+      "/models?client_version=0.160.0",
+      {
+        headers: {
+          "user-agent": "codex-tui/0.160.0",
+          "x-full-model-catalog": "true",
+        },
+      },
+    )
+    const body = (await response.json()) as CodexModelsResponse
+    expect(body.models.map((model) => model.slug)).toEqual([
+      "gpt-native",
+      "codex/gpt-native",
+    ])
+    providerConfigs.codex!.codexModels = []
+    const empty = await createApp(false).request("/models", {
+      headers: { "user-agent": "codex-tui/0.160.0" },
+    })
+    expect(((await empty.json()) as CodexModelsResponse).models).toEqual([])
+  })
+  test("returns a small 502 when catalog metadata alone exceeds the byte budget", async () => {
+    enableCodexCatalog()
+    codexCatalogMetadata = { huge: "x".repeat(1024 * 1024) }
+    const response = await createApp(false).request("/models", {
+      headers: { "user-agent": "codex-tui/0.160.0" },
+    })
+    expect(response.status).toBe(502)
+    expect((await response.text()).length).toBeLessThan(200)
+  })
+  test("applies the same policy to provider-scoped Codex catalogs", async () => {
+    enableCodexCatalog()
+    providerConfigs.codex!.codexModels = ["gpt-native"]
+    codexCatalogModels.push({ ...codexCatalogModels[0], slug: "hidden-native" })
+    const response = await createApp(false).request(
+      "/codex/v1/models?client_version=0.160.0",
+      {
+        headers: {
+          "user-agent": "codex-tui/0.160.0",
+          "X-Full-Model-Catalog": "true",
+        },
+      },
+    )
+    const body = (await response.json()) as CodexModelsResponse
+    expect(body.models.map((model) => model.slug)).toEqual(["gpt-native"])
+    expect(body.models[0]).not.toHaveProperty("base_instructions")
+    expect(
+      new Headers(fetchMock.mock.calls[0]?.[1]?.headers).has(
+        "x-full-model-catalog",
+      ),
+    ).toBe(false)
+  })
   test("aggregates Copilot and provider models without mutating state.models", async () => {
     state.models = createCopilotModels(["gpt-5-mini"])
     enabledProviders = ["dash"]
@@ -610,7 +797,7 @@ describe("model routes", () => {
     })
 
     expect(response.status).toBe(200)
-    expect(response.headers.get("etag")).toBe(CODEX_CATALOG_ETAG)
+    expect(response.headers.get("etag")).toBeNull()
     expect(fetchMock).toHaveBeenCalledTimes(1)
     expect(fetchMock.mock.calls[0]?.[0]).toBe(
       "https://chatgpt.com/backend-api/codex/models?client=codex",
@@ -643,7 +830,7 @@ describe("model routes", () => {
     })
 
     expect(response.status).toBe(200)
-    expect(response.headers.get("etag")).toBe(CODEX_CATALOG_ETAG)
+    expect(response.headers.get("etag")).toBeNull()
     expect(response.headers.get("cache-control")).toBe("private, no-store")
     const body = (await response.json()) as {
       models: Array<Record<string, unknown> & { slug: string }>
@@ -850,13 +1037,29 @@ describe("model routes", () => {
     const body = (await response.json()) as {
       models: Array<Record<string, unknown> & { slug: string }>
     }
+    const expectedSol: Record<string, unknown> & { slug: string } = {
+      ...solCatalogModel,
+      model_messages: {
+        ...bundledCodexCatalogJson.models[0].model_messages,
+        instructions_template: solCatalogModel.base_instructions,
+      },
+    }
+    const expectedLuna: Record<string, unknown> & { slug: string } = {
+      ...lunaCatalogModel,
+      model_messages: {
+        ...bundledCodexCatalogJson.models[0].model_messages,
+        instructions_template: lunaCatalogModel.base_instructions,
+      },
+    }
+    delete expectedSol.base_instructions
+    delete expectedLuna.base_instructions
     expect(body.models.find((model) => model.slug === "gpt-5.6-sol")).toEqual(
-      solCatalogModel,
+      expectedSol,
     )
     expect(
       body.models.find((model) => model.slug === "codex/gpt-5.6-sol"),
     ).toEqual({
-      ...solCatalogModel,
+      ...expectedSol,
       slug: "codex/gpt-5.6-sol",
       display_name: "codex GPT-5.6 Sol",
       priority: 1_000,
@@ -864,7 +1067,7 @@ describe("model routes", () => {
     expect(
       body.models.find((model) => model.slug === "opencode-go/gpt-5.6-luna"),
     ).toEqual({
-      ...lunaCatalogModel,
+      ...expectedLuna,
       slug: "opencode-go/gpt-5.6-luna",
       display_name: "opencode-go GPT-5.6 Luna",
       priority: expect.any(Number),
@@ -873,6 +1076,7 @@ describe("model routes", () => {
       body.models.find((model) => model.slug === "codex/gpt-remote-only"),
     ).toEqual({
       ...remoteOnlyCatalogModel,
+      model_messages: bundledCodexCatalogJson.models[0].model_messages,
       slug: "codex/gpt-remote-only",
       display_name: "codex GPT Remote Only",
       priority: 1_002,

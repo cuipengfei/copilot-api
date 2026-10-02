@@ -27,6 +27,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
   saveSettings: (settings: unknown) =>
     ipcRenderer.invoke('settings:save', settings),
   getModelMappingsConfig: () => ipcRenderer.invoke('config:get-model-mappings'),
+  getProviderManagementConfig: () =>
+    ipcRenderer.invoke('config:get-provider-management'),
+  getProviderModelOptions: () =>
+    ipcRenderer.invoke('config:get-provider-model-options'),
+  saveProviderManagementConfig: (input: unknown) =>
+    ipcRenderer.invoke('config:save-provider-management', input),
   saveModelMappings: (modelMappings: Record<string, string>) =>
     ipcRenderer.invoke('config:save-model-mappings', modelMappings),
 

@@ -1,4 +1,6 @@
 import consola from "consola"
+
+import { assertGitHubCopilotEnabled } from "./github-copilot-provider"
 import { setTimeout as delay } from "node:timers/promises"
 
 import { isOpencodeOauthApp } from "~/lib/api-config"
@@ -376,6 +378,7 @@ export const applyCopilotTokenResponse = (
 export const setupCopilotToken = async (
   dependencies: CopilotTokenDependencies = defaultCopilotTokenDependencies,
 ) => {
+  assertGitHubCopilotEnabled()
   if (isOpencodeOauthApp()) {
     if (!state.githubToken) throw new Error(`opencode token not found`)
 

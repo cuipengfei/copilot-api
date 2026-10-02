@@ -6,7 +6,7 @@
 
 This AI gateway can also power Codex.
 
-Recommended Codex version: `0.155.1`.
+Codex `0.160.0` and above receive the canonical `model_messages.instructions_template` field without the deprecated `base_instructions` duplicate. Older clients retain legacy instruction fields.
 
 ### Codex `config.toml` Reference
 
@@ -80,7 +80,7 @@ Alternatively, set `"codex-auto-review": "codex/codex-auto-review"` to use the b
 
 ### Generate `model_catalog.json`
 
-**Codex `0.156.0+`:** `api_key_model_discovery` loads the model list successfully, but Codex has a bug. Use a local catalog as a workaround; this also works with API key sign-in. Earlier versions do not need `model_catalog_json`.
+Use a local catalog for the full selected model list. Ordinary gateway catalog responses have a 1 MiB JSON size limit and no model-count limit. The generator sends `x-full-model-catalog: true`, bypassing size and default-exclusion limits while retaining provider enable states and `codexModels` selections. This header never reaches upstream providers. See [configuration](configuration.md) for provider selections.
 
 Start the gateway, install `curl` and Bun or Node.js, then run [the generator](../../generate-model-catalog.sh) from the repository root:
 

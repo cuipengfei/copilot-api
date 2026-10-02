@@ -8,7 +8,7 @@
 
 这个 AI gateway 也可以为 Codex 提供后端能力。
 
-推荐使用 Codex `0.155.1` 版本。
+Codex `0.160.0` 及以上版本使用规范字段 `model_messages.instructions_template`，不再返回重复的旧字段 `base_instructions`；较旧客户端保留兼容字段。
 
 ### Codex `config.toml` 参考配置
 
@@ -82,7 +82,7 @@ enabled = false
 
 ### 一键生成 `model_catalog.json`
 
-**Codex `0.156.0+`：** `api_key_model_discovery` 已成功加载模型列表，但 Codex 代码存在 bug，可通过本地模型目录临时规避。使用 API Key 登录时也可使用本地目录；更早版本无需配置 `model_catalog_json`。
+本地目录可保存完整的已选模型列表。普通网关目录的完整 JSON 不超过 1 MiB，不限制模型数量。生成脚本携带 `x-full-model-catalog: true`，绕过大小和默认模型排除限制，仍遵守 provider 启停状态及 `codexModels` 名单；该 header 不会转发给上游。Provider 名单设置详见[配置说明](configuration.md)。
 
 启动网关，安装 `curl` 及 Bun 或 Node.js，然后在仓库根目录运行[生成脚本](../../generate-model-catalog.sh)：
 

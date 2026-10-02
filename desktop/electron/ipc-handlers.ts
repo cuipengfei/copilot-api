@@ -5,6 +5,12 @@ import { ipcMain, shell, BrowserWindow } from 'electron'
 import { normalizeApiKeys } from '../../src/lib/request-auth'
 import { loadModelsDevProviderOptions } from '../../src/lib/models-dev-cache'
 import { PATHS } from '../../src/lib/paths'
+import { invalidateConfigCache } from '../../src/lib/config-store'
+import { loadProviderModelOptions } from './provider-model-options'
+import {
+  getProviderManagementConfig,
+  saveProviderManagementConfig,
+} from '../../src/lib/provider-management'
 import {
   isValidServerHost,
   resolveEffectiveServerHost,
@@ -305,6 +311,8 @@ export function registerIpcHandlers(
   ipcMain.handle(
     'server:start',
     async (_event, port: number, authMode?: DesktopAuthMode, host?: string) => {
+      // CLI changes must be visible when the user starts or restarts the server.
+      invalidateConfigCache()
       const token = await readToken()
       const providerMode = shouldStartInProviderMode(authMode)
       const enabledProviders = getEnabledDesktopProviders()
@@ -389,6 +397,16 @@ export function registerIpcHandlers(
   })
   ipcMain.handle('config:get-model-mappings', async () =>
     fetchModelMappingsConfig(),
+  )
+  ipcMain.handle('config:get-provider-management', () => {
+    invalidateConfigCache()
+    return getProviderManagementConfig()
+  })
+  ipcMain.handle('config:save-provider-management', (_event, input: unknown) =>
+    saveProviderManagementConfig(input),
+  )
+  ipcMain.handle('config:get-provider-model-options', () =>
+    loadProviderModelOptions(),
   )
   ipcMain.handle(
     'config:save-model-mappings',

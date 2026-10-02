@@ -1,4 +1,15 @@
 import type { LangPreference } from '../locales'
+import type {
+  ProviderManagementConfig,
+  ProviderManagementUpdate,
+  ProviderModelOptions,
+} from '../../../src/lib/types/provider-management'
+
+export type {
+  ProviderManagementConfig,
+  ProviderManagementUpdate,
+  ProviderModelOptions,
+}
 
 export interface DeviceCodeInfo {
   user_code: string
@@ -244,12 +255,17 @@ declare global {
       getSettings: () => Promise<DesktopSettings>
       saveSettings: (settings: DesktopSettings) => Promise<void>
       getModelMappingsConfig: () => Promise<ModelMappingsConfig>
+      getProviderManagementConfig: () => Promise<ProviderManagementConfig>
+      saveProviderManagementConfig: (
+        input: ProviderManagementUpdate,
+      ) => Promise<ProviderManagementConfig>
       saveModelMappings: (
         modelMappings: Record<string, string>,
       ) => Promise<void>
       openUrl: (url: string) => Promise<void>
       fetchUsage: () => Promise<unknown>
       fetchModels: () => Promise<unknown>
+      getProviderModelOptions: () => Promise<ProviderModelOptions>
       fetchTokenUsage: (period: TokenUsagePeriod) => Promise<unknown>
       fetchTokenUsageDaily: (period: TokenUsagePeriod) => Promise<unknown>
       fetchTokenUsageEvents: (

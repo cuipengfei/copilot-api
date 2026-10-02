@@ -14,6 +14,7 @@ interface ConfigFileShape {
       apiKey?: string
       authType?: string
       baseUrl?: string
+      codexModels?: Array<string>
       enabled?: boolean
       models?: Record<string, unknown>
       modelsDevProviderId?: string
@@ -415,13 +416,14 @@ describe("auth login validation", () => {
     })
   })
 
-  test("preserves quick provider model settings when reconfiguring credentials", () => {
+  test("preserves quick provider model settings and hidden Codex selection when reconfiguring credentials", () => {
     const tempDir = createTempDir()
     writeConfigFile(tempDir, {
       providers: {
         dashscope: {
           apiKey: "old-key",
           baseUrl: "https://old.example",
+          codexModels: [],
           enabled: true,
           models: {
             "qwen-plus": {
@@ -450,6 +452,7 @@ describe("auth login validation", () => {
     expect(readConfigFile(tempDir).providers?.dashscope).toEqual({
       apiKey: "new-key",
       baseUrl: "https://dashscope.aliyuncs.com/compatible-mode",
+      codexModels: [],
       enabled: true,
       models: {
         "qwen-plus": {
@@ -581,7 +584,7 @@ describe("auth login validation", () => {
     })
   })
 
-  test("preserves custom provider model settings when reconfiguring credentials", () => {
+  test("preserves custom provider model settings and Codex selection when reconfiguring credentials", () => {
     const tempDir = createTempDir()
     writeConfigFile(tempDir, {
       providers: {
@@ -589,6 +592,7 @@ describe("auth login validation", () => {
           apiKey: "old-key",
           authType: "x-api-key",
           baseUrl: "https://old.example",
+          codexModels: ["qwen-plus"],
           enabled: true,
           models: {
             "qwen-plus": {
@@ -617,6 +621,7 @@ describe("auth login validation", () => {
     expect(readConfigFile(tempDir).providers?.dash).toEqual({
       apiKey: "new-key",
       baseUrl: "https://new.example",
+      codexModels: ["qwen-plus"],
       enabled: true,
       models: {
         "qwen-plus": {

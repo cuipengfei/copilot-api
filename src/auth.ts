@@ -160,7 +160,11 @@ function assertCustomProviderName(providerName: string): void {
     )
   }
 
-  if (providerName === "copilot" || providerName === "codex") {
+  if (
+    providerName === "copilot"
+    || providerName === "github-copilot"
+    || providerName === "codex"
+  ) {
     throw new Error(
       `Provider name '${providerName}' is reserved for a builtin provider`,
     )
@@ -454,6 +458,9 @@ function buildCustomProviderConfig(
     ...(options.authType ? { authType: options.authType } : {}),
     pricingCurrency:
       options.pricingCurrency ?? existingProviderConfig.pricingCurrency,
+    ...(existingProviderConfig.codexModels !== undefined ?
+      { codexModels: existingProviderConfig.codexModels }
+    : {}),
     ...(existingProviderConfig.models ?
       { models: existingProviderConfig.models }
     : {}),

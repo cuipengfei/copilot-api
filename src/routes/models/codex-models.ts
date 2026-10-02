@@ -1,6 +1,14 @@
 import type { Context } from "hono"
 
-import type { ResolvedProviderConfig } from "~/lib/config"
+import { getRawProviderConfig, type ResolvedProviderConfig } from "~/lib/config"
+import {
+  isModernCodexClient,
+  serializeCodexModelCatalog,
+} from "~/lib/codex-model-catalog"
+import {
+  getProviderCodexModels,
+  isProviderCodexModelVisible,
+} from "~/lib/provider-management"
 import { createHandlerLogger } from "~/lib/logger"
 import { resolveProviderConfig } from "~/lib/provider-resolver"
 import type {
@@ -46,7 +54,11 @@ const FALLBACK_CODEX_MODELS = (
 ).models
 const FALLBACK_BASE_INSTRUCTIONS =
   FALLBACK_CODEX_MODELS.find((model) => model.base_instructions?.trim())
-    ?.base_instructions ?? ""
+    ?.base_instructions
+  ?? FALLBACK_CODEX_MODELS.find((model) =>
+    model.model_messages?.instructions_template?.trim(),
+  )?.model_messages.instructions_template
+  ?? ""
 
 interface MergedCodexModelsOptions {
   includeCodexProviderAliases?: boolean
@@ -55,7 +67,6 @@ interface MergedCodexModelsOptions {
 
 interface CodexCatalogResult {
   catalog: CodexModelsResponse
-  etag: string | null
 }
 
 export function isCodexUserAgent(userAgent: string | undefined): boolean {
@@ -101,7 +112,26 @@ export async function handleCodexModelsProxy(
     c.req.url,
     c.req.raw.headers,
   )
-  return createProviderProxyResponse(upstreamResponse)
+  if (!upstreamResponse.ok) return createProviderProxyResponse(upstreamResponse)
+  const catalog: unknown = await upstreamResponse.json().catch(() => null)
+  if (!isCodexModelsResponse(catalog)) {
+    return c.json(
+      { error: { message: "Invalid Codex model catalog", type: "api_error" } },
+      502,
+    )
+  }
+  const providerConfig = getRawProviderConfig("codex")
+  return createCodexCatalogResponse(
+    c,
+    {
+      ...catalog,
+      models: catalog.models.filter((model) =>
+        isProviderCodexModelVisible(providerConfig, model.slug),
+      ),
+    },
+    new Set(getProviderCodexModels(providerConfig)),
+    FALLBACK_CODEX_MODELS[0].model_messages,
+  )
 }
 
 export async function handleMergedCodexModels(
@@ -124,10 +154,41 @@ export async function handleMergedCodexModels(
   const catalogModelsBySlug = new Map(
     upstreamModels.map((model) => [model.slug, model]),
   )
-  const seenSlugs = new Set(upstreamModels.map((model) => model.slug))
+  const codexConfig = getRawProviderConfig("codex")
+  const copilotConfig = getRawProviderConfig("github-copilot")
+  const visibleUpstreamModels = upstreamModels.filter(
+    (model) =>
+      isProviderCodexModelVisible(codexConfig, model.slug)
+      && (upstreamCatalog !== undefined
+        || codexConfig !== null
+        || isProviderCodexModelVisible(copilotConfig, model.slug)),
+  )
+  const explicitSlugs = new Set<string>()
+  const codexSelection = getProviderCodexModels(codexConfig)
+  for (const model of visibleUpstreamModels) {
+    if (codexSelection?.includes(model.slug)) {
+      explicitSlugs.add(model.slug)
+      explicitSlugs.add(`codex/${model.slug}`)
+    }
+  }
+  const visibleCandidates = candidates.filter((candidate) => {
+    const providerName = candidate.providerName ?? "github-copilot"
+    const modelId =
+      candidate.catalogSlug
+      ?? (candidate.providerName ?
+        candidate.slug.slice(providerName.length + 1)
+      : candidate.slug)
+    const config = getRawProviderConfig(providerName)
+    if (!isProviderCodexModelVisible(config, modelId)) return false
+    if (getProviderCodexModels(config)?.includes(modelId)) {
+      explicitSlugs.add(candidate.slug)
+    }
+    return true
+  })
+  const seenSlugs = new Set(visibleUpstreamModels.map((model) => model.slug))
   const codexProviderAliases =
     options.includeCodexProviderAliases ?
-      upstreamModels.flatMap((model, index) => {
+      visibleUpstreamModels.flatMap((model, index) => {
         const slug = `codex/${model.slug}`
         if (seenSlugs.has(slug)) return []
         seenSlugs.add(slug)
@@ -139,7 +200,7 @@ export async function handleMergedCodexModels(
         ]
       })
     : []
-  const syntheticModels = candidates
+  const syntheticModels = visibleCandidates
     .filter((candidate) => !seenSlugs.has(candidate.slug))
     .flatMap((candidate, index) => {
       const priorityBase = getCandidatePriorityBase(candidate)
@@ -167,7 +228,7 @@ export async function handleMergedCodexModels(
     })
 
   const models = [
-    ...upstreamModels,
+    ...visibleUpstreamModels,
     ...codexProviderAliases,
     ...syntheticModels,
   ].sort((a, b) => getModelPriority(a) - getModelPriority(b))
@@ -176,12 +237,41 @@ export async function handleMergedCodexModels(
     ...(upstreamCatalog ?? {}),
     models,
   }
-  const result = c.json(response)
-  if (upstreamCatalogResult?.etag) {
-    result.headers.set("ETag", upstreamCatalogResult.etag)
-    result.headers.set("Cache-Control", "private, no-store")
+  return createCodexCatalogResponse(
+    c,
+    response,
+    explicitSlugs,
+    template.model_messages ?? FALLBACK_CODEX_MODELS[0].model_messages,
+  )
+}
+
+function createCodexCatalogResponse(
+  c: Context,
+  response: CodexModelsResponse,
+  explicitSlugs: ReadonlySet<string>,
+  fallback: CodexModel["model_messages"],
+): Response {
+  const body = serializeCodexModelCatalog(response, {
+    headers: c.req.raw.headers,
+    modern: isModernCodexClient(c.req.url, c.req.raw.headers),
+    explicitSlugs,
+    fallback,
+  })
+  if (body === null) {
+    return c.json(
+      {
+        error: {
+          message: "Codex model catalog metadata exceeds 1 MiB",
+          type: "api_error",
+        },
+      },
+      502,
+    )
   }
-  return result
+  return c.body(body, 200, {
+    "Content-Type": "application/json",
+    "Cache-Control": "private, no-store",
+  })
 }
 
 function createCatalogAlias(
@@ -300,7 +390,6 @@ async function tryGetCodexCatalog(
     }
     return {
       catalog: body,
-      etag: response.headers.get("ETag"),
     }
   } catch (error) {
     logger.warn("models.codex.catalog_error", { error })

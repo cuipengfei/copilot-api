@@ -131,6 +131,7 @@ export interface ProviderConfig {
   accountId?: string
   pricingCurrency?: string
   models?: Record<string, ModelConfig>
+  codexModels?: Array<string>
 }
 
 const modelResponsesApiCompactThresholds = {
@@ -484,6 +485,11 @@ export function mergeConfigWithDefaults(): AppConfig {
 export function getConfig(): AppConfig {
   cachedConfig ??= mergeDefaultConfig(readConfigFromDisk()).mergedConfig
   return cachedConfig
+}
+
+// Refresh this process on its next read without rewriting defaults to disk.
+export function invalidateConfigCache(): void {
+  cachedConfig = null
 }
 
 export function reloadConfig(): AppConfig {

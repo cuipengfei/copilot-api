@@ -11,6 +11,7 @@ import type {
 } from '../types/ipc'
 import { useLanguage } from '../contexts/LanguageContext'
 import Header from '../components/Header'
+import { refreshProviderAuthStatus } from '../lib/provider-management-auth'
 
 interface AuthPageProps {
   onBack?: () => void
@@ -401,7 +402,15 @@ export default function AuthPage({ onBack, onSuccess }: AuthPageProps) {
 
   return (
     <div className="flex flex-col h-screen bg-canvas">
-      <Header />
+      <Header
+        onProvidersClose={() => {
+          void refreshProviderAuthStatus(
+            window.electronAPI.getAuthStatus,
+            onSuccess,
+            !onBack,
+          ).catch((reason: unknown) => setError(String(reason)))
+        }}
+      />
 
       <div className="flex-1 overflow-y-auto min-h-0 flex flex-col">
         {onBack && (
