@@ -17,7 +17,7 @@ export const createEmbeddings = async (payload: EmbeddingRequest) => {
 }
 
 export interface EmbeddingRequest {
-  input: string | Array<string>
+  input: Array<string>
   model: string
 }
 
