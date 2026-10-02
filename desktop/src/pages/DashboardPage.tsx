@@ -268,13 +268,14 @@ function formatCellText(value: string | null | undefined): string {
 }
 
 export default function DashboardPage({
-  authMode,
+  authMode: initialAuthMode,
   defaultPort,
   defaultHost,
   initialServerStatus,
   onChangeAuth,
 }: DashboardPageProps) {
   const { t } = useLanguage()
+  const [authMode, setAuthMode] = useState(initialAuthMode)
   const [started, setStarted] = useState(initialServerStatus?.running ?? false)
   const [port, setPort] = useState<string>(
     String(initialServerStatus?.port ?? defaultPort),
@@ -413,6 +414,12 @@ export default function DashboardPage({
       })
   }, [started])
 
+  const refreshAuthMode = async () => {
+    const status = await window.electronAPI.getAuthStatus()
+    setAuthMode(status.mode)
+    return status.mode
+  }
+
   const handleStart = async () => {
     if (Number.isNaN(portNum) || portNum < 1 || portNum > 65535) {
       setStartError(t('dashboard.invalidPort'))
@@ -425,7 +432,7 @@ export default function DashboardPage({
     try {
       const status = await window.electronAPI.startServer(
         portNum,
-        authMode,
+        await refreshAuthMode(),
         normalizedHost,
       )
       if (status.running) {
@@ -481,7 +488,7 @@ export default function DashboardPage({
       await window.electronAPI.stopServer()
       const status = await window.electronAPI.startServer(
         portNum,
-        authMode,
+        await refreshAuthMode(),
         normalizedHost,
       )
       if (status.running) {
@@ -536,7 +543,7 @@ export default function DashboardPage({
     setLoading(true)
     try {
       // Proxy HTTP requests through IPC so the main process bypasses renderer CORS.
-      if (authMode === 'copilot') {
+      if ((await refreshAuthMode()) === 'copilot') {
         const [usageData, modelsData] = await Promise.all([
           window.electronAPI.fetchUsage(),
           window.electronAPI.fetchModels(),

@@ -78,6 +78,7 @@ beforeEach(async () => {
       saveProviderManagementConfig: saveConfig,
       getProviderModelOptions: getModelOptions,
       fetchModels,
+      getAuthStatus: () => Promise.resolve({ success: true, mode: 'provider' }),
       getServerStatus: () => Promise.resolve({ running: false }),
       getLogs: () => Promise.resolve([]),
       onServerStatus: () => () => {},
@@ -146,6 +147,64 @@ async function changeText(
   })
 }
 describe('provider management UI', () => {
+  test('uses current Copilot authorization when starting, restarting, and refreshing', async () => {
+    const getAuthStatus = mock(() =>
+      Promise.resolve({ success: true, mode: 'copilot' }),
+    )
+    const startServer = mock<typeof window.electronAPI.startServer>(() =>
+      Promise.resolve({ running: true }),
+    )
+    const fetchUsage = mock(() =>
+      Promise.resolve({ copilot_plan: 'copilot_pro' }),
+    )
+    Object.assign(window.electronAPI, {
+      getAuthStatus,
+      startServer,
+      getServerAuthInfo: () => Promise.resolve({ enabled: false }),
+      stopServer: () => Promise.resolve({ running: false }),
+      fetchUsage,
+    })
+    await act(async () => {
+      root.render(
+        createElement(LanguageProvider, {
+          children: createElement(DashboardPage, {
+            authMode: 'provider',
+            defaultPort: 4141,
+            defaultHost: '127.0.0.1',
+            onChangeAuth: () => {},
+          }),
+        }),
+      )
+    })
+    await act(async () => {
+      button('Start server').click()
+    })
+    expect(startServer).toHaveBeenCalledWith(4141, 'copilot', '127.0.0.1')
+    expect(fetchUsage).toHaveBeenCalled()
+    expect(container.textContent).toContain('copilot_pro')
+
+    getAuthStatus.mockImplementation(() =>
+      Promise.resolve({ success: true, mode: 'provider' }),
+    )
+    await act(async () => {
+      button('Restart').click()
+    })
+    expect(startServer.mock.calls.at(-1)).toEqual([
+      4141,
+      'provider',
+      '127.0.0.1',
+    ])
+    expect(container.textContent).not.toContain('copilot_pro')
+
+    getAuthStatus.mockImplementation(() =>
+      Promise.resolve({ success: true, mode: 'copilot' }),
+    )
+    await act(async () => {
+      button('Refresh').click()
+    })
+    expect(container.textContent).toContain('copilot_pro')
+  })
+
   test('places the Providers tab before Model Mappings and allows management while stopped', async () => {
     await act(async () => {
       root.render(

@@ -62,6 +62,32 @@ afterEach(() => {
 })
 
 describe("config admin api key", () => {
+  test("merges default model mappings without replacing user entries", () => {
+    const tempDir = createTempConfigDir()
+    const configPath = writeConfigFile(tempDir, {
+      auth: { adminApiKey: "existing-admin-key" },
+      modelMappings: {
+        "codex-auto-review": "gpt-5.6-luna",
+        custom: "provider/model",
+      },
+    })
+
+    runConfigScript(
+      tempDir,
+      `import assert from "node:assert/strict";
+       const { mergeConfigWithDefaults, resolveMappedModel } = await import("./src/lib/config");
+       mergeConfigWithDefaults();
+       assert.equal(resolveMappedModel("codex-auto-review"), "gpt-5.6-luna");
+       assert.equal(resolveMappedModel("gpt-reserve"), "codex/gpt-reserve");
+       assert.equal(resolveMappedModel("custom"), "provider/model");`,
+    )
+    expect(readConfigFile(configPath).modelMappings).toEqual({
+      "codex-auto-review": "gpt-5.6-luna",
+      "gpt-reserve": "codex/gpt-reserve",
+      custom: "provider/model",
+    })
+  })
+
   test("generates and persists an admin api key when missing", () => {
     const tempDir = createTempConfigDir()
     const configPath = writeConfigFile(tempDir, {
@@ -83,6 +109,8 @@ describe("config admin api key", () => {
     expect(typeof config.auth?.adminApiKey).toBe("string")
     expect(config.auth?.adminApiKey?.length).toBeGreaterThan(0)
     expect(config.modelMappings).toEqual({
+      "codex-auto-review": "codex/codex-auto-review",
+      "gpt-reserve": "codex/gpt-reserve",
       "claude-opus-4-7": "gpt-5-mini",
     })
   })
@@ -127,6 +155,8 @@ describe("config admin api key", () => {
     const config = readConfigFile(configPath)
     expect(config.auth?.adminApiKey).toBe(generatedAdminApiKey)
     expect(config.modelMappings).toEqual({
+      "codex-auto-review": "codex/codex-auto-review",
+      "gpt-reserve": "codex/gpt-reserve",
       "claude-opus-4-7": "dash/qwen-plus",
     })
   })
@@ -162,6 +192,8 @@ describe("config admin api key", () => {
     expect(config.auth?.adminApiKey?.length).toBeGreaterThan(0)
     expect(config.auth?.adminApiKey).not.toBe(generatedAdminApiKey)
     expect(config.modelMappings).toEqual({
+      "codex-auto-review": "codex/codex-auto-review",
+      "gpt-reserve": "codex/gpt-reserve",
       "claude-opus-4-7": "gpt-5-mini",
     })
   })
