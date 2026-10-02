@@ -149,7 +149,10 @@ export const defaultConfig: AppConfig = {
     apiKeys: [],
   },
   providers: {},
-  modelMappings: {},
+  modelMappings: {
+    "codex-auto-review": "codex/codex-auto-review",
+    "gpt-reserve": "codex/gpt-reserve",
+  },
   smallModels: {
     codex: "gpt-6-luna",
     copilot: "gpt-6-luna",
