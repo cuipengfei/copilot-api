@@ -9,6 +9,7 @@ import invariant from "tiny-invariant"
 import { runProviderSetup } from "./auth"
 import { isGitHubCopilotEnabled } from "./lib/github-copilot-provider"
 import { listEnabledProviders, mergeConfigWithDefaults } from "./lib/config"
+import { setupCopilotRuntime } from "~/lib/copilot-runtime"
 import {
   GITHUB_TOKEN_ENV,
   readGitHubToken,
@@ -30,14 +31,6 @@ import {
 } from "./lib/server-host"
 import { generateEnvScript } from "./lib/shell"
 import { state } from "./lib/state"
-import { logUser, setupCopilotToken } from "./lib/token"
-import { cacheModels } from "./services/copilot/models-cache"
-import {
-  cacheMacMachineId,
-  cacheVSCodeVersion,
-  cacheVsCodeSessionId,
-  cacheVsCodeDeviceId,
-} from "./services/vscode-env"
 
 interface RunServerOptions {
   host: string
@@ -74,7 +67,7 @@ async function setupCopilotMode(
   serverUrl: string,
   claudeCode: boolean,
 ): Promise<void> {
-  state.githubToken = githubToken
+  state.githubTokenSource = source
   consola.info(
     source === "cli" ? "Using provided GitHub token"
     : source === "env" ?
@@ -82,15 +75,7 @@ async function setupCopilotMode(
     : "Using GitHub token from local file",
   )
 
-  await logUser()
-
-  await cacheVSCodeVersion()
-  cacheMacMachineId()
-  cacheVsCodeSessionId()
-  await cacheVsCodeDeviceId()
-
-  await setupCopilotToken()
-  await cacheModels()
+  await setupCopilotRuntime(githubToken)
 
   if (claudeCode) {
     runClaudeCode(serverUrl)

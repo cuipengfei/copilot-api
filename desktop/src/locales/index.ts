@@ -34,7 +34,7 @@ export interface Locale {
     modelSourceHint: string
     modelsError: string
     saved: string
-    savedRestart: string
+    savedRefreshed: string
     save: string
     saving: string
   }
@@ -51,8 +51,8 @@ export interface Locale {
     codexAddAccount: string
     codexNoAccounts: string
     codexRemoveAccount: string
-    codexRemoveRestartRequired: string
-    codexRestartRequired: string
+    codexAccountRemovedRefreshed: string
+    codexAccountRefreshed: string
     codexUseAccount: string
     customProvider: string
     modelsDevProvider: string
@@ -206,6 +206,8 @@ export interface Locale {
     minimizeToTrayDesc: string
     sectionSecurity: string
     serverKeysNote: string
+    serverKeysSaveFailed: string
+    desktopSettingsSaveFailed: string
     apiKeysLabel: string
     apiKeysDesc: string
     adminKeyLabel: string

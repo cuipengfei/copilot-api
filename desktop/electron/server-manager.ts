@@ -14,7 +14,7 @@ import {
 } from '../../src/lib/server-host'
 import { applyDesktopProxySettingsToEnv } from './electron-proxy-config'
 import { tMain } from './i18n'
-import { buildServerStartArgs } from './server-start-args'
+import { buildServerStartArgs, buildServerStartEnv } from './server-start-args'
 
 let serverProcess: UtilityProcess | null = null
 let currentPort = 4141
@@ -183,7 +183,6 @@ function getServerPath(): string {
 
 export async function startServer(
   port: number,
-  githubToken: string | null,
   serverOptions?: {
     verbose?: boolean
     showToken?: boolean
@@ -247,21 +246,7 @@ export async function startServer(
   // Clear the previous log buffer before each new server start.
   logBuffer.length = 0
 
-  const env: NodeJS.ProcessEnv = {
-    ...process.env,
-    NODE_ENV: 'production',
-  }
-  const normalizedGithubToken = githubToken?.trim()
-  if (normalizedGithubToken) {
-    // Never pass the token as an argument: process arguments are readable by
-    // every local user through the process list.
-    env.COPILOT_API_GITHUB_TOKEN = normalizedGithubToken
-  } else {
-    // Drop any inherited value, otherwise a token exported in the shell that
-    // launched the app would silently switch the server to Copilot mode and
-    // ignore the configured providers.
-    delete env.COPILOT_API_GITHUB_TOKEN
-  }
+  const env = buildServerStartEnv(process.env)
   const proxyEnabled =
     serverOptions?.proxy ?
       applyDesktopProxySettingsToEnv(env, serverOptions.proxy)

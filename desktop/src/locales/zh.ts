@@ -33,7 +33,7 @@ const zh: Locale = {
     modelSourceHint: '列表来自本地目录与运行中服务；未列出的模型可手动添加。',
     modelsError: '模型列表读取失败，仍可手动填写模型 ID。',
     saved: '配置已保存。',
-    savedRestart: '已保存，请重启服务使修改生效。',
+    savedRefreshed: '已保存，运行中的服务已自动刷新配置。',
     save: '保存',
     saving: '正在保存…',
   },
@@ -50,9 +50,8 @@ const zh: Locale = {
     codexAddAccount: '添加或重新登录账号',
     codexNoAccounts: '尚未添加 Codex 账号',
     codexRemoveAccount: '移除',
-    codexRemoveRestartRequired:
-      '账号已移除。正在运行的服务仍在使用该账号，请重启服务。',
-    codexRestartRequired: '账号已切换，重启服务后生效。',
+    codexAccountRemovedRefreshed: '账号已移除，运行中的服务已自动刷新配置。',
+    codexAccountRefreshed: '账号已切换，配置已自动刷新，新请求将使用所选账号。',
     codexUseAccount: '使用',
     customProvider: '自定义 Provider',
     modelsDevProvider: 'models.dev Provider',
@@ -209,20 +208,23 @@ const zh: Locale = {
     minimizeToTrayDesc: '关闭窗口时隐藏到系统托盘，不退出程序',
     sectionSecurity: '安全',
     serverKeysNote:
-      'API Keys 和 Admin Key 保存在 config.json 中，修改后需重启正在运行的服务才能生效。',
+      'API Keys 和 Admin Key 保存在 config.json 中，保存后会自动刷新运行中的服务。',
+    serverKeysSaveFailed: '服务密钥保存或刷新失败',
+    desktopSettingsSaveFailed: '桌面设置保存或服务刷新失败',
     apiKeysLabel: 'API Keys',
     apiKeysDesc:
       '每行一个 API Key。客户端通过 x-api-key 或 Authorization: Bearer 使用其中任意一个 Key 认证。',
     adminKeyLabel: 'Admin Key',
     adminKeyPlaceholder: '填写新的 Admin Key（可选）',
     adminKeyDesc:
-      '用于 /admin/* 接口。留空会移除该字段，下次启动服务时自动生成新的。',
+      '用于 /admin/* 接口。留空会移除该字段，刷新或启动服务时自动生成新的。',
     sectionNetwork: '网络',
     host: '监听地址',
-    hostDesc: 'API 服务绑定的地址，留空使用 127.0.0.1，下次启动服务时生效',
+    hostDesc:
+      'API 服务绑定的地址，留空使用 127.0.0.1。保存后会自动重启运行中的服务',
     hostInvalid: '监听地址无效，请填写如 127.0.0.1 或 0.0.0.0 这样的地址',
     proxySystemNote:
-      '默认使用系统代理。选择自定义代理后，Electron 和新启动的本地服务会使用下方配置；选择不使用代理后将直连网络。已运行的服务需重启后生效。',
+      '默认使用系统代理。选择自定义代理后，Electron 和本地服务会使用下方配置；选择不使用代理后将直连网络。保存后会自动重启运行中的服务。',
     proxyMode: '代理模式',
     proxyModeSystem: '系统代理',
     proxyModeCustom: '自定义代理',

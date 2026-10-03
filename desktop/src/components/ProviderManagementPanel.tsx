@@ -201,7 +201,7 @@ export default function ProviderManagementPanel({
           role="status"
           className="mb-4 rounded-xl border border-green-200 bg-green-50 px-4 py-3 text-[13px] text-green-700 dark:border-green-500/25 dark:bg-green-500/10 dark:text-green-400"
         >
-          {t(serverRunning ? 'providers.savedRestart' : 'providers.saved')}
+          {t(serverRunning ? 'providers.savedRefreshed' : 'providers.saved')}
         </p>
       )}
       {!config && !error && (

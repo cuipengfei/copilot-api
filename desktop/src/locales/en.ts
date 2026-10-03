@@ -37,7 +37,7 @@ const en: Locale = {
     modelsError:
       'Could not load the model list. You can still enter model IDs manually.',
     saved: 'Configuration saved.',
-    savedRestart: 'Saved. Restart the server to apply changes.',
+    savedRefreshed: 'Saved. The running server refreshed its configuration.',
     save: 'Save',
     saving: 'Saving…',
   },
@@ -54,9 +54,10 @@ const en: Locale = {
     codexAddAccount: 'Add or sign in again',
     codexNoAccounts: 'No Codex accounts added yet',
     codexRemoveAccount: 'Remove',
-    codexRemoveRestartRequired:
-      'Account removed. Restart the running server so it stops using it.',
-    codexRestartRequired: 'Account selected. Restart the server to apply it.',
+    codexAccountRemovedRefreshed:
+      'Account removed. The running server refreshed its configuration.',
+    codexAccountRefreshed:
+      'Account selected. Configuration refreshed; new requests use this account.',
     codexUseAccount: 'Use',
     customProvider: 'Custom provider',
     modelsDevProvider: 'models.dev provider',
@@ -221,21 +222,24 @@ const en: Locale = {
     minimizeToTrayDesc: "Hide to system tray when closing, don't quit",
     sectionSecurity: 'Security',
     serverKeysNote:
-      'API Keys and Admin Key are stored in config.json. Restart the running service to apply changes.',
+      'API Keys and Admin Key are stored in config.json. Saving automatically refreshes the running service.',
+    serverKeysSaveFailed: 'Server key saving or refresh failed',
+    desktopSettingsSaveFailed:
+      'Desktop settings saving or service refresh failed',
     apiKeysLabel: 'API Keys',
     apiKeysDesc:
       'One API key per line. Clients authenticate with one of these keys via x-api-key or Authorization: Bearer.',
     adminKeyLabel: 'Admin Key',
     adminKeyPlaceholder: 'Enter a new Admin Key (optional)',
     adminKeyDesc:
-      'Used for /admin/* endpoints. Leave empty to remove it; the next server start generates a new one automatically.',
+      'Used for /admin/* endpoints. Leave empty to remove it; refreshing or starting the service generates a new one automatically.',
     sectionNetwork: 'Network',
     host: 'Listening host',
     hostDesc:
-      'Address the API server binds to; leave empty for 127.0.0.1. Takes effect the next time the server starts',
+      'Address the API server binds to; leave empty for 127.0.0.1. Saving automatically restarts the running service',
     hostInvalid: 'Invalid listening host, for example 127.0.0.1 or 0.0.0.0',
     proxySystemNote:
-      'System proxy is used by default. When custom proxy is selected, Electron and newly started local services use the settings below; when no proxy is selected, network requests connect directly. Restart any running service to apply changes.',
+      'System proxy is used by default. With a custom proxy, Electron and local services use the settings below; with no proxy, requests connect directly. Saving automatically restarts the running service.',
     proxyMode: 'Proxy mode',
     proxyModeSystem: 'System proxy',
     proxyModeCustom: 'Custom proxy',

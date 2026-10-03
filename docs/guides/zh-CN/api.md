@@ -82,3 +82,6 @@ curl http://localhost:4141/admin/config/model-mappings \
 | ------------------------------------ | ---- | --------------------------------------------------------------- |
 | `GET /admin/config/model-mappings`   | `GET` | 返回当前 `config.json` 路径以及生效中的 `modelMappings` 映射。 |
 | `POST /admin/config/model-mappings`  | `POST` | 只更新 `config.json` 里的 `modelMappings` 字段，并回传更新后的结果。 |
+| `POST /admin/config/reload` | `POST` | 重新读取配置并刷新当前服务进程，无需重启。 |
+
+刷新接口无需请求体，返回 `{ configPath, reloaded: true }`。修改 admin key 后，用修改前仍在生效的 key 发起刷新；无效 JSON 会保留上一次生效的配置。桌面端保存网关配置后会自动调用此接口。

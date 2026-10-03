@@ -4,6 +4,7 @@ import type { ModelsResponse } from "~/lib/types/models"
 
 export interface State {
   githubToken?: string
+  githubTokenSource?: "cli" | "env" | "file"
   userName?: string
   copilotToken?: string
   codexAccessToken?: string

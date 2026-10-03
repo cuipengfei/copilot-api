@@ -301,7 +301,7 @@ export default function AuthPage({ onBack, onSuccess }: AuthPageProps) {
 
       await loadCodexAccounts()
       setCodexAlias('')
-      setCodexNotice(t('auth.codexRestartRequired'))
+      setCodexNotice(t('auth.codexAccountRefreshed'))
       setView('codex-accounts')
     } catch (err) {
       setError((err as Error).message)
@@ -328,7 +328,7 @@ export default function AuthPage({ onBack, onSuccess }: AuthPageProps) {
       }
 
       await loadCodexAccounts()
-      setCodexNotice(t('auth.codexRestartRequired'))
+      setCodexNotice(t('auth.codexAccountRefreshed'))
     } catch (err) {
       setError((err as Error).message)
     } finally {
@@ -358,7 +358,7 @@ export default function AuthPage({ onBack, onSuccess }: AuthPageProps) {
       await loadCodexAccounts()
       setCodexNotice(
         (await isServerRunning()) ?
-          t('auth.codexRemoveRestartRequired')
+          t('auth.codexAccountRemovedRefreshed')
         : t('auth.codexAccountRemoved'),
       )
     } catch (err) {

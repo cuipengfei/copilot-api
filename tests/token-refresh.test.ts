@@ -25,7 +25,7 @@ const expiredCredentials: CodexCredentials = {
 
 const rotatedCredentials: CodexCredentials = {
   accessToken: "rotated-access-token",
-  accountId: "acct_new",
+  accountId: expiredCredentials.accountId,
   expiresAt: Date.now() + 60 * 60 * 1000,
   refreshToken: "rotated-refresh-token",
 }

@@ -294,6 +294,7 @@ export default function SettingsModal({ onClose }: SettingsModalProps) {
       const nextApiKeys = normalizeServerKeysText(apiKeysText)
       const nextAdminApiKey = adminApiKey.trim()
       const serverKeysUpdate: ServerKeysConfigUpdate = {}
+      const saveErrors: string[] = []
       if (
         loadedServerKeys !== null
         && nextApiKeys.join('\n') !== loadedServerKeys.apiKeys.join('\n')
@@ -311,14 +312,29 @@ export default function SettingsModal({ onClose }: SettingsModalProps) {
         loadedServerKeys !== null
         && Object.keys(serverKeysUpdate).length > 0
       ) {
-        const savedKeys =
-          await window.electronAPI.saveServerKeys(serverKeysUpdate)
-        setApiKeysText(savedKeys.apiKeys.join('\n'))
-        setAdminApiKey(savedKeys.adminApiKey)
-        setLoadedServerKeys(savedKeys)
+        try {
+          const savedKeys =
+            await window.electronAPI.saveServerKeys(serverKeysUpdate)
+          setApiKeysText(savedKeys.apiKeys.join('\n'))
+          setAdminApiKey(savedKeys.adminApiKey)
+          setLoadedServerKeys(savedKeys)
+        } catch (error) {
+          saveErrors.push(
+            `${t('settings.serverKeysSaveFailed')}: ${error instanceof Error ? error.message : String(error)}`,
+          )
+        }
       }
 
-      await window.electronAPI.saveSettings(settings)
+      try {
+        await window.electronAPI.saveSettings(settings)
+      } catch (error) {
+        saveErrors.push(
+          `${t('settings.desktopSettingsSaveFailed')}: ${error instanceof Error ? error.message : String(error)}`,
+        )
+      }
+      if (saveErrors.length > 0) {
+        throw new Error(saveErrors.join('\n'))
+      }
       setLangPref(settings.language)
       setThemePref(settings.theme)
 

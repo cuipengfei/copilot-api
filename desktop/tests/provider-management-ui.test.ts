@@ -399,7 +399,7 @@ describe('provider management UI', () => {
       },
     })
     expect(container.querySelector('[role="status"]')?.textContent).toContain(
-      'Restart',
+      'refreshed its configuration',
     )
     expect(
       [...container.querySelectorAll('button')].some(

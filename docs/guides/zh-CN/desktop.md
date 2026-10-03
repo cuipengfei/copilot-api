@@ -6,7 +6,9 @@
 
 ## Electron 桌面应用
 
-如果你更喜欢图形界面，仓库里还提供了位于 `desktop/` 的 Electron 桌面应用。它支持 GitHub Copilot 登录、OpenAI Codex OAuth 与最多 3 个 Codex 账号的手动切换、移除未在使用的账号，以及 Kimi、DeepSeek、DashScope、OpenRouter 或自定义 provider 的 API Key 配置。切换 Codex 账号后，界面会提示手动重启服务。授权或配置 provider 后，可以一键启动或停止本地代理，并在界面里直接查看本地端点、鉴权 Header、可用模型、额度和日志。
+如果你更喜欢图形界面，仓库里还提供了位于 `desktop/` 的 Electron 桌面应用。它支持 GitHub Copilot 登录、OpenAI Codex OAuth 与最多 3 个 Codex 账号的手动切换、移除未在使用的账号，以及 Kimi、DeepSeek、DashScope、OpenRouter 或自定义 provider 的 API Key 配置。Provider 配置、服务 API Key 和账号修改后，会自动刷新运行中的服务，新请求使用更新后的配置。授权或配置 provider 后，可以一键启动或停止本地代理，并在界面里直接查看本地端点、鉴权 Header、可用模型、额度和日志。
+
+监听地址、代理、详细日志和 Token 日志属于服务启动选项，保存后会自动重启正在运行的服务，进行中的请求可能中断。OAuth App、API Home、SQLite DB Path 和 Enterprise URL 仍需重启桌面应用。服务未运行时只保存设置，不会自动启动。
 
 再次发起 GitHub 登录会取代之前的尝试，包括 token 保存阶段。被取代的尝试不会报告成功，也不会覆盖后续已完成登录的凭据与账号设置。
 

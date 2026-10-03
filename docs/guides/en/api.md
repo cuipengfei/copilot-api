@@ -78,3 +78,6 @@ These endpoints are reserved for local administrative actions and only accept `a
 | ------------------------------------- | ------ | --------------------------------------------------------------------------- |
 | `GET /admin/config/model-mappings`    | `GET`  | Returns the current `config.json` path and the active `modelMappings` map.  |
 | `POST /admin/config/model-mappings`   | `POST` | Updates only the `modelMappings` field in `config.json` and returns it back. |
+| `POST /admin/config/reload` | `POST` | Reloads configuration into the current server process without restarting. |
+
+The reload endpoint requires no request body and returns `{ configPath, reloaded: true }`. After changing the admin key on disk, authenticate the reload with the previous active key. Invalid JSON preserves the last working configuration. The desktop calls this endpoint automatically after saving gateway configuration.

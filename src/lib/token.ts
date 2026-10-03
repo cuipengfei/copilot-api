@@ -37,8 +37,8 @@ import { state } from "./state"
 
 let copilotRefreshLoopController: AbortController | null = null
 let codexRefreshLoopController: AbortController | null = null
-let codexRefreshInFlight: Promise<CodexCredentials> | null = null
-let codexCredentialsPendingPersistence: CodexCredentials | null = null
+const codexRefreshInFlight = new Map<string, Promise<CodexCredentials>>()
+const codexCredentialsPendingPersistence = new Map<string, CodexCredentials>()
 
 export interface CodexAccountSummary {
   accountId: string
@@ -258,8 +258,13 @@ export async function persistCodexCredentials(
         enabled: options.enableProvider ? true : undefined,
       })
     }
-    applyCodexCredentials(credentials)
-    codexCredentialsPendingPersistence = null
+    if (
+      options.syncProvider !== false
+      || getConfiguredCodexAccountId() === credentials.accountId
+    ) {
+      applyCodexCredentials(credentials)
+    }
+    codexCredentialsPendingPersistence.delete(credentials.accountId)
   }
 
   if (options.syncProvider === false) {
@@ -305,7 +310,7 @@ export function refreshCodexCredentialsOnce(
   credentials: CodexCredentials,
   dependencies: CodexRefreshDependencies = defaultCodexRefreshDependencies,
 ): Promise<CodexCredentials> {
-  const inFlight = codexRefreshInFlight
+  const inFlight = codexRefreshInFlight.get(credentials.accountId)
   if (inFlight) {
     return inFlight
   }
@@ -314,11 +319,16 @@ export function refreshCodexCredentialsOnce(
     // A successful refresh may have rotated the upstream token before local
     // persistence failed. Retry writing that exact result instead of calling
     // the refresh endpoint again with the consumed token.
-    const pendingPersistence = codexCredentialsPendingPersistence
+    const pendingPersistence = codexCredentialsPendingPersistence.get(
+      credentials.accountId,
+    )
     if (pendingPersistence) {
       await dependencies.persistCodexCredentials(pendingPersistence)
-      if (codexCredentialsPendingPersistence === pendingPersistence) {
-        codexCredentialsPendingPersistence = null
+      if (
+        codexCredentialsPendingPersistence.get(credentials.accountId)
+        === pendingPersistence
+      ) {
+        codexCredentialsPendingPersistence.delete(credentials.accountId)
       }
       return pendingPersistence
     }
@@ -328,7 +338,11 @@ export function refreshCodexCredentialsOnce(
     // rotated credentials in state and skip the call when they are still valid.
     const current = dependencies.getCurrentCredentials()
     const rotated =
-      current && current.refreshToken !== credentials.refreshToken ?
+      (
+        current
+        && current.accountId === credentials.accountId
+        && current.refreshToken !== credentials.refreshToken
+      ) ?
         current
       : null
 
@@ -338,19 +352,22 @@ export function refreshCodexCredentialsOnce(
 
     const base = rotated ?? credentials
     const refreshed = await dependencies.refreshCodexCredentials(base)
-    codexCredentialsPendingPersistence = refreshed
+    codexCredentialsPendingPersistence.set(credentials.accountId, refreshed)
     await dependencies.persistCodexCredentials(refreshed)
-    if (codexCredentialsPendingPersistence === refreshed) {
-      codexCredentialsPendingPersistence = null
+    if (
+      codexCredentialsPendingPersistence.get(credentials.accountId)
+      === refreshed
+    ) {
+      codexCredentialsPendingPersistence.delete(credentials.accountId)
     }
     return refreshed
   })()
 
-  codexRefreshInFlight = attempt
+  codexRefreshInFlight.set(credentials.accountId, attempt)
 
   const clearAttempt = () => {
-    if (codexRefreshInFlight === attempt) {
-      codexRefreshInFlight = null
+    if (codexRefreshInFlight.get(credentials.accountId) === attempt) {
+      codexRefreshInFlight.delete(credentials.accountId)
     }
   }
 
@@ -551,6 +568,7 @@ const runCopilotRefreshLoop = async (
 
     try {
       const response = await dependencies.getCopilotToken()
+      if (signal.aborted) return
       applyCopilotTokenResponse(response)
       refreshAtMs = getRefreshDeadlineMs(response.refresh_in)
       retryDelayMs = RETRY_REFRESH_DELAY_MS

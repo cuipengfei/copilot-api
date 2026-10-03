@@ -33,10 +33,7 @@ export async function readServerKeysConfig(): Promise<ServerKeysConfig> {
 
 // Merges only the provided auth fields into the latest config on disk, so a
 // save does not clobber external updates (CLI auth keys, or a server startup
-// regenerating a cleared admin key). Changes take effect when the server
-// process restarts; do not reload the desktop main process cache here so an
-// emptied adminApiKey stays removed until the server startup merge regenerates
-// it (matching ensureAdminApiKey behavior).
+// regenerating a cleared admin key).
 export function writeServerKeysConfig(
   keys: ServerKeysConfigUpdate,
 ): ServerKeysConfig {
