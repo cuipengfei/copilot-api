@@ -78,6 +78,11 @@ export async function cacheModels(
   fetcher: ModelsFetcher = getCopilotModels,
   intervalMs: number = MODELS_REFRESH_BASE_MS,
 ): Promise<void> {
+  // A fresh population supersedes whatever the previous loop was doing. This
+  // is the path a config reload takes when the GitHub token changes, so a
+  // request still in flight for the old account must not join this generation
+  // and overwrite state.models once it comes back.
+  refreshGeneration++
   const generation = refreshGeneration
   await refreshModels(fetcher, generation)
   if (generation !== refreshGeneration) return
