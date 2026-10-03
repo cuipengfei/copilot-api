@@ -13,6 +13,11 @@ export interface PollAccessTokenDependencies {
   sleep: (ms: number) => Promise<unknown>
 }
 
+export interface PollAccessTokenOptions {
+  // Stops polling; the returned promise rejects with the signal's reason.
+  signal?: AbortSignal
+}
+
 const defaultPollAccessTokenDependencies: PollAccessTokenDependencies = {
   now: () => Date.now(),
   sleep,
@@ -26,7 +31,9 @@ const toSleepDuration = (intervalSeconds: number) =>
 export async function pollAccessToken(
   deviceCode: DeviceCodeResponse,
   dependencies: PollAccessTokenDependencies = defaultPollAccessTokenDependencies,
+  options: PollAccessTokenOptions = {},
 ): Promise<string> {
+  const { signal } = options
   const { clientId, headers } = getOauthAppConfig()
   const { accessTokenUrl } = getOauthUrls()
   const expiresAt = dependencies.now() + deviceCode.expires_in * 1000
@@ -37,6 +44,8 @@ export async function pollAccessToken(
   )
 
   while (true) {
+    signal?.throwIfAborted()
+
     if (dependencies.now() >= expiresAt) {
       throw new Error(
         "GitHub device code expired before authorization completed. Please log in again.",
@@ -51,6 +60,7 @@ export async function pollAccessToken(
         device_code: deviceCode.device_code,
         grant_type: "urn:ietf:params:oauth:grant-type:device_code",
       }),
+      signal,
     })
 
     if (json) {
@@ -77,7 +87,35 @@ export async function pollAccessToken(
       }
     }
 
-    await dependencies.sleep(toSleepDuration(intervalSeconds))
+    await sleepUnlessAborted(
+      dependencies.sleep,
+      toSleepDuration(intervalSeconds),
+      signal,
+    )
+  }
+}
+
+async function sleepUnlessAborted(
+  sleepFor: PollAccessTokenDependencies["sleep"],
+  ms: number,
+  signal: AbortSignal | undefined,
+): Promise<void> {
+  if (!signal) {
+    await sleepFor(ms)
+    return
+  }
+
+  signal.throwIfAborted()
+  let onAbort: (() => void) | undefined
+  // Listen before starting the sleep so an abort during it is never missed.
+  const aborted = new Promise<never>((_resolve, reject) => {
+    onAbort = () => reject(signal.reason as Error)
+    signal.addEventListener("abort", onAbort, { once: true })
+  })
+  try {
+    await Promise.race([aborted, sleepFor(ms)])
+  } finally {
+    if (onAbort) signal.removeEventListener("abort", onAbort)
   }
 }
 
@@ -85,6 +123,7 @@ export async function pollAccessToken(
  * Resolves to `undefined` when the poll should simply be retried. The device
  * code stays valid until it expires, so a dropped connection (for example a
  * proxy closing the socket) or a non-2xx response must not abort the login.
+ * A request aborted through `init.signal` rejects instead.
  */
 async function requestAccessToken(
   url: string,
@@ -100,6 +139,10 @@ async function requestAccessToken(
 
     return (await response.json()) as AccessTokenResponse
   } catch (error) {
+    if (init.signal?.aborted) {
+      throw error
+    }
+
     consola.warn(
       `Failed to poll access token, will retry: ${describeError(error)}`,
     )

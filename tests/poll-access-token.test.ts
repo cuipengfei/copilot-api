@@ -311,3 +311,89 @@ test("gives up once the device code has expired", async () => {
   expect(calls).toHaveLength(5)
   expect(sleeps).toEqual([6_000, 6_000, 6_000, 6_000, 6_000])
 })
+
+test("does not poll when the signal is already aborted", async () => {
+  const calls = mockFetch(() => Promise.resolve(tokenResponse()))
+  const { dependencies } = createFakeClock()
+  const controller = new AbortController()
+  controller.abort()
+
+  const failure = await pollAccessToken(deviceCode, dependencies, {
+    signal: controller.signal,
+  }).then(
+    () => null,
+    (error: unknown) => error,
+  )
+
+  expect((failure as Error).name).toBe("AbortError")
+  expect(calls).toHaveLength(0)
+})
+
+test("stops waiting between polls when the signal is aborted", async () => {
+  const calls = mockFetch(() =>
+    Promise.resolve(Response.json({ error: "authorization_pending" })),
+  )
+  const controller = new AbortController()
+  const sleeps: Array<number> = []
+  const dependencies: PollAccessTokenDependencies = {
+    now: () => 0,
+    sleep: (ms) => {
+      sleeps.push(ms)
+      controller.abort()
+      return new Promise(() => {})
+    },
+  }
+
+  const failure = await pollAccessToken(deviceCode, dependencies, {
+    signal: controller.signal,
+  }).then(
+    () => null,
+    (error: unknown) => error,
+  )
+
+  expect((failure as Error).name).toBe("AbortError")
+  expect(calls).toHaveLength(1)
+  expect(calls[0]?.init?.signal).toBe(controller.signal)
+  expect(sleeps).toEqual([6_000])
+})
+
+test("does not retry a poll request aborted in flight", async () => {
+  const controller = new AbortController()
+  const calls = mockFetch(() => {
+    controller.abort()
+    return Promise.reject(controller.signal.reason as Error)
+  })
+  const { dependencies, sleeps } = createFakeClock()
+
+  const failure = await pollAccessToken(deviceCode, dependencies, {
+    signal: controller.signal,
+  }).then(
+    () => null,
+    (error: unknown) => error,
+  )
+
+  expect((failure as Error).name).toBe("AbortError")
+  expect(calls).toHaveLength(1)
+  expect(sleeps).toEqual([])
+  expect(warnings).toEqual([])
+})
+
+test("polls normally when a signal is provided but not aborted", async () => {
+  const calls = mockFetch((attempt) =>
+    Promise.resolve(
+      attempt === 1 ?
+        Response.json({ error: "authorization_pending" })
+      : tokenResponse(),
+    ),
+  )
+  const { dependencies, sleeps } = createFakeClock()
+  const controller = new AbortController()
+
+  const token = await pollAccessToken(deviceCode, dependencies, {
+    signal: controller.signal,
+  })
+
+  expect(token).toBe("gho_test_token")
+  expect(calls).toHaveLength(2)
+  expect(sleeps).toEqual([6_000])
+})
