@@ -71,6 +71,11 @@ async function applyConfigReload(): Promise<void> {
   }
 
   stopCopilotRefreshLoop()
+  // The old Copilot runtime ends here rather than when its replacement
+  // finishes initializing. setupCopilotRuntime() can fail before it reaches
+  // cacheModels(), and a models loop left running would then repopulate the
+  // credentials this branch is clearing, using the cleared Copilot token.
+  stopModelsRefreshLoop()
   state.copilotToken = undefined
   state.models = undefined
   if (state.githubTokenSource !== "cli") {

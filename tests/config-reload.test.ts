@@ -6,6 +6,7 @@ import {
   mock,
   spyOn,
   test,
+  type Mock,
 } from "bun:test"
 import fs from "node:fs"
 import os from "node:os"
@@ -35,6 +36,8 @@ const setupCopilotToken = tokens.setupCopilotToken
 const stopCopilotRefreshLoop = tokens.stopCopilotRefreshLoop
 let tempDir: string
 let originalState: State
+let setupCopilotTokenMock: Mock<typeof tokens.setupCopilotToken>
+let stopModelsRefreshLoopMock: Mock<typeof models.stopModelsRefreshLoop>
 
 function saveConfig(overrides: AppConfig = {}): void {
   writeConfigToDisk({
@@ -75,15 +78,20 @@ beforeEach(() => {
     state.userName = "test-user"
     return Promise.resolve()
   })
-  spyOn(tokens, "setupCopilotToken").mockImplementation(() => {
-    state.copilotToken = `copilot-${state.githubToken}`
-    return Promise.resolve()
-  })
+  setupCopilotTokenMock = spyOn(tokens, "setupCopilotToken").mockImplementation(
+    () => {
+      state.copilotToken = `copilot-${state.githubToken}`
+      return Promise.resolve()
+    },
+  )
   spyOn(models, "cacheModels").mockImplementation(() => {
     state.models = { object: "list", data: [] }
     return Promise.resolve()
   })
-  spyOn(models, "stopModelsRefreshLoop").mockImplementation(() => {})
+  stopModelsRefreshLoopMock = spyOn(
+    models,
+    "stopModelsRefreshLoop",
+  ).mockImplementation(() => {})
   spyOn(vscode, "cacheVSCodeVersion").mockResolvedValue(undefined)
   spyOn(vscode, "cacheMacMachineId").mockImplementation(() => {})
   spyOn(vscode, "cacheVsCodeSessionId").mockImplementation(() => {})
@@ -192,7 +200,8 @@ describe("running server config reload", () => {
     expect(state.copilotToken).toBeUndefined()
     expect(state.models).toBeUndefined()
     expect(state.userName).toBeUndefined()
-    expect(models.stopModelsRefreshLoop).toHaveBeenCalledTimes(1)
+    // Once for the reinitialized runtime, once for the removed token.
+    expect(models.stopModelsRefreshLoop).toHaveBeenCalledTimes(2)
   })
 
   test("allows a retry after Copilot initialization fails", async () => {
@@ -204,6 +213,29 @@ describe("running server config reload", () => {
     expect(failure).toHaveProperty("message", "upstream offline")
     await reloadServerConfig()
     expect(state.copilotToken).toBe("copilot-saved-github-token")
+  })
+
+  test("stops the models loop before a token switch that fails to initialize", async () => {
+    saveConfig({ providers: { "github-copilot": { enabled: true } } })
+    await reloadServerConfig()
+    expect(state.models).toBeDefined()
+
+    const calls: Array<string> = []
+    stopModelsRefreshLoopMock.mockImplementation(() => {
+      calls.push("stopModelsRefreshLoop")
+    })
+    setupCopilotTokenMock.mockImplementationOnce(() => {
+      calls.push("setupCopilotToken")
+      return Promise.reject(new Error("upstream offline"))
+    })
+    spyOn(credentials, "readGitHubToken").mockResolvedValue("changed-token")
+
+    // setupCopilotToken() runs before cacheModels(), so this never reaches the
+    // point where a new models generation would supersede the old one.
+    const failure = await reloadServerConfig().catch((error: unknown) => error)
+    expect(failure).toHaveProperty("message", "upstream offline")
+    expect(calls).toEqual(["stopModelsRefreshLoop", "setupCopilotToken"])
+    expect(state.models).toBeUndefined()
   })
 
   test("serializes reloads instead of losing config changes during initialization", async () => {
