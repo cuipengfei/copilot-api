@@ -10,6 +10,8 @@ Recommended Codex version: `0.160.0` or newer. These clients can load the model 
 
 Remote catalog responses are limited to 1 MiB of JSON. When the merged catalog is larger, the gateway keeps models selected through provider `codexModels` first and drops the rest. Select the models you need on the Providers page, or generate a local catalog for the complete list.
 
+When `modelMappings` maps a bare `model` to the same `codex/model`, the Codex catalog omits the duplicate `codex/model` entry and retains the bare entry's complete metadata. This also applies to the default `codex-auto-review` and `gpt-reserve` mappings. Explicit prefixed requests remain supported; mappings to another model or provider retain the prefixed entry.
+
 ### Codex `config.toml` Reference
 
 Add this to `~/.codex/config.toml`:

@@ -7,7 +7,7 @@ import path from "node:path"
 import type { ResolvedProviderConfig } from "~/lib/config"
 import { installModelsDevCatalog } from "~/lib/models-dev-cache"
 import { PATHS } from "~/lib/paths"
-import { invalidateConfigCache } from "~/lib/config-store"
+import { defaultConfig, invalidateConfigCache } from "~/lib/config-store"
 import type { ModelsResponse } from "~/lib/types/models"
 import type { CodexModelsResponse } from "~/routes/models/codex-models-types"
 import bundledCodexCatalogJson from "~/routes/models/models.json"
@@ -24,6 +24,7 @@ let providerConfigs: Record<
 > = {}
 let codexSetupError: Error | null = null
 let codexCatalogMetadata: Record<string, unknown> = {}
+let modelMappings: Record<string, string> = {}
 const originalConfigPath = PATHS.CONFIG_PATH
 let catalogConfigDir: string | undefined
 
@@ -54,6 +55,7 @@ await mock.module("~/lib/config", () => ({
   ...actualConfigModule,
   getProviderConfig: (provider: string) => providerConfigs[provider] ?? null,
   getRawProviderConfig: (provider: string) => providerConfigs[provider] ?? null,
+  getModelMappings: () => modelMappings,
   listEnabledProviders: () => enabledProviders,
 }))
 
@@ -272,6 +274,7 @@ beforeEach(() => {
   providerConfigs = {}
   codexSetupError = null
   codexCatalogMetadata = {}
+  modelMappings = { ...defaultConfig.modelMappings }
   codexCatalogModels = createDefaultCodexCatalogModels()
   state.models = undefined
   fetchMock.mockClear()
@@ -376,6 +379,68 @@ describe("model routes", () => {
       "custom/qwen-plus",
     )
   })
+  test.each([
+    { source: "gpt-native", target: undefined, includeAlias: true },
+    { source: "gpt-native", target: "codex/gpt-native", includeAlias: false },
+    { source: "gpt-native", target: "gpt-native", includeAlias: true },
+    { source: "gpt-native", target: "custom/gpt-native", includeAlias: true },
+    { source: "gpt-native", target: "codex/other-model", includeAlias: true },
+    { source: "other-name", target: "codex/gpt-native", includeAlias: true },
+  ])(
+    "omits a Codex alias only when its bare name maps to that same model: %j",
+    async ({ source, target, includeAlias }) => {
+      enableCodexCatalog()
+      if (target !== undefined) modelMappings[source] = target
+      for (const fullCatalog of [false, true]) {
+        const response = await createApp(false).request("/models", {
+          headers: {
+            "user-agent": "codex-tui/0.160.0",
+            ...(fullCatalog ? { "x-full-model-catalog": "true" } : {}),
+          },
+        })
+        expect(response.status).toBe(200)
+        const body = (await response.json()) as CodexModelsResponse
+        expect(body.models.map((model) => model.slug)).toEqual(
+          includeAlias ? ["gpt-native", "codex/gpt-native"] : ["gpt-native"],
+        )
+        expect(body.models[0]).toMatchObject({
+          display_name: "GPT Native",
+          model_messages: { instructions_template: "Native instructions" },
+        })
+      }
+    },
+  )
+  test("omits default review and reserve aliases while retaining their bare catalog entries", async () => {
+    enableCodexCatalog()
+    codexCatalogModels = ["codex-auto-review", "gpt-reserve"].map((slug) => ({
+      ...createDefaultCodexCatalogModels()[0],
+      slug,
+    }))
+    const response = await createApp(false).request("/models", {
+      headers: { "user-agent": "codex-tui/0.160.0" },
+    })
+    const body = (await response.json()) as CodexModelsResponse
+    expect(body.models.map((model) => model.slug)).toEqual([
+      "codex-auto-review",
+      "gpt-reserve",
+    ])
+  })
+  test.each(["codex-auto-review", "gpt-reserve"])(
+    "retains the Codex alias when the default %s mapping is overridden",
+    async (slug) => {
+      enableCodexCatalog()
+      modelMappings[slug] = slug
+      codexCatalogModels = [{ ...createDefaultCodexCatalogModels()[0], slug }]
+      const response = await createApp(false).request("/models", {
+        headers: { "user-agent": "codex-tui/0.160.0" },
+      })
+      const body = (await response.json()) as CodexModelsResponse
+      expect(body.models.map((model) => model.slug)).toEqual([
+        slug,
+        `codex/${slug}`,
+      ])
+    },
+  )
   test("filters Codex native models and aliases without discarding the synthesis template", async () => {
     enableCodexCatalog()
     providerConfigs.codex!.codexModels = ["gpt-native"]

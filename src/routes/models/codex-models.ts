@@ -1,6 +1,10 @@
 import type { Context } from "hono"
 
-import { getRawProviderConfig, type ResolvedProviderConfig } from "~/lib/config"
+import {
+  getModelMappings,
+  getRawProviderConfig,
+  type ResolvedProviderConfig,
+} from "~/lib/config"
 import {
   isModernCodexClient,
   serializeCodexModelCatalog,
@@ -194,11 +198,12 @@ export async function handleMergedCodexModels(
     return true
   })
   const seenSlugs = new Set(visibleUpstreamModels.map((model) => model.slug))
+  const modelMappings = getModelMappings()
   const codexProviderAliases =
     options.includeCodexProviderAliases ?
       visibleUpstreamModels.flatMap((model, index) => {
         const slug = `codex/${model.slug}`
-        if (seenSlugs.has(slug)) return []
+        if (seenSlugs.has(slug) || modelMappings[model.slug] === slug) return []
         seenSlugs.add(slug)
         return [
           {

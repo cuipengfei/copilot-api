@@ -23,9 +23,12 @@ export default function ProviderModelPicker({
   const [search, setSearch] = useState('')
   const selected = parseModelSelection(value)
   const available = [...new Set([...options, ...selected])].sort()
-  const filtered = available.filter((id) =>
-    id.toLowerCase().includes(search.trim().toLowerCase()),
-  )
+  const filtered = available
+    .filter((id) => id.toLowerCase().includes(search.trim().toLowerCase()))
+    .sort((left, right) => {
+      if (readOnly) return 0
+      return Number(selected.includes(right)) - Number(selected.includes(left))
+    })
   const toggle = (id: string, checked: boolean) => {
     onChange(
       (checked ?
@@ -36,7 +39,7 @@ export default function ProviderModelPicker({
   }
 
   return (
-    <div className="mt-5 flex min-h-64 flex-1 flex-col gap-3">
+    <div className="mt-5 flex min-h-80 flex-1 flex-col gap-3">
       <div className="relative shrink-0">
         <svg
           className="pointer-events-none absolute left-3 top-3 text-ink-faint"
@@ -91,7 +94,7 @@ export default function ProviderModelPicker({
           </div>
         )}
       </div>
-      <div className="grid min-h-24 flex-1 auto-rows-min grid-cols-1 content-start gap-2 overflow-y-auto p-0.5 sm:grid-cols-2">
+      <div className="grid min-h-48 flex-1 auto-rows-min grid-cols-1 content-start gap-2 overflow-y-auto p-0.5 sm:grid-cols-2">
         {filtered.map((id) => {
           const checked = !readOnly && selected.includes(id)
           return (

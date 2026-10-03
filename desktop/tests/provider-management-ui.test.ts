@@ -231,9 +231,6 @@ describe('provider management UI', () => {
     expect(container.querySelector('[role="dialog"]')).toBeNull()
     expect(container.querySelectorAll('nav button')).toHaveLength(2)
     expect(container.querySelector('h3')?.textContent).toBe('dashscope')
-    expect(container.textContent).toContain(
-      'Provider enablement applies to all clients and requests.',
-    )
     expect(fetchModels).not.toHaveBeenCalled()
     expect(
       [...container.querySelectorAll('button')].filter(
@@ -279,7 +276,7 @@ describe('provider management UI', () => {
       providers: { dashscope: { codexModels: ['qwen-plus'] } },
     })
   })
-  test('searches and selects discovered models without typing IDs, preserving unknown selections', async () => {
+  test('keeps selected models first while searching and preserves unknown selections', async () => {
     getConfig.mockImplementation(() =>
       Promise.resolve({
         ...fixture,
@@ -294,6 +291,18 @@ describe('provider management UI', () => {
       }),
     )
     await render({ serverRunning: true })
+    const modelOrder = () =>
+      [
+        ...container.querySelectorAll(
+          'input[type="checkbox"]:not([role="switch"])',
+        ),
+      ].map((node) => node.getAttribute('aria-label'))
+    expect(modelOrder()).toEqual([
+      'codex: unknown-model',
+      'codex: gpt-5.5',
+      'codex: gpt-6.1-sol',
+      'codex: live-model',
+    ])
     expect(
       container.querySelector<HTMLInputElement>(
         '[aria-label="codex: unknown-model"]',
@@ -310,11 +319,23 @@ describe('provider management UI', () => {
       )?.checked,
     ).toBe(true)
     await changeText(container.querySelector('input[type="search"]')!, '')
+    expect(modelOrder()).toEqual([
+      'codex: live-model',
+      'codex: unknown-model',
+      'codex: gpt-5.5',
+      'codex: gpt-6.1-sol',
+    ])
     await act(async () => {
       container
         .querySelector<HTMLInputElement>('[aria-label="codex: gpt-5.5"]')!
         .click()
     })
+    expect(modelOrder()).toEqual([
+      'codex: gpt-5.5',
+      'codex: live-model',
+      'codex: unknown-model',
+      'codex: gpt-6.1-sol',
+    ])
     await act(async () => {
       button('Save').click()
     })

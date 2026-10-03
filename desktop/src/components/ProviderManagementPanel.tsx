@@ -263,7 +263,7 @@ export default function ProviderManagementPanel({
             ))}
           </nav>
           <div className="flex min-h-0 min-w-0 flex-col overflow-hidden rounded-2xl border border-line-soft bg-surface shadow-sm">
-            <div className="flex shrink-0 items-center justify-between gap-4 border-b border-line-soft px-5 py-5">
+            <div className="flex shrink-0 items-center justify-between gap-4 border-b border-line-soft px-5 py-3">
               <div className="min-w-0">
                 <h3 className="truncate text-lg font-semibold text-ink">
                   {current.name}
@@ -271,9 +271,6 @@ export default function ProviderManagementPanel({
                 <span className="mt-1 inline-block rounded-md bg-sunken px-2 py-0.5 text-[11px] text-ink-soft">
                   {protocolLabels[current.type] ?? current.type}
                 </span>
-                <p className="mt-2 text-[11px] text-ink-faint">
-                  {t('providers.enabledScope')}
-                </p>
               </div>
               <label className="inline-flex cursor-pointer items-center gap-2.5 text-[12px] font-medium text-ink-soft">
                 {t(
@@ -359,11 +356,6 @@ export default function ProviderManagementPanel({
             </div>
           </div>
         </fieldset>
-      )}
-      {config && (
-        <p className="mt-4 shrink-0 text-[11px] leading-5 text-ink-faint">
-          {t('providers.restartHint')}
-        </p>
       )}
     </section>
   )

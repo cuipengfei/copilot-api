@@ -6,7 +6,6 @@ const en: Locale = {
     close: 'Close',
     description:
       'Enable providers for all clients and choose which models appear in Codex.',
-    enabledScope: 'Provider enablement applies to all clients and requests.',
     configured: 'Your providers',
     catalogBudget: '1 MiB catalog',
     unsaved: 'Unsaved changes',
@@ -37,8 +36,6 @@ const en: Locale = {
       'The list combines the local catalog and the running server. You can add other model IDs manually.',
     modelsError:
       'Could not load the model list. You can still enter model IDs manually.',
-    restartHint:
-      'Changes apply after restarting the running server. Disabling preserves credentials and model settings.',
     saved: 'Configuration saved.',
     savedRestart: 'Saved. Restart the server to apply changes.',
     save: 'Save',

@@ -6,7 +6,6 @@ export interface Locale {
     title: string
     close: string
     description: string
-    enabledScope: string
     configured: string
     catalogBudget: string
     unsaved: string
@@ -34,7 +33,6 @@ export interface Locale {
     manualModels: string
     modelSourceHint: string
     modelsError: string
-    restartHint: string
     saved: string
     savedRestart: string
     save: string
