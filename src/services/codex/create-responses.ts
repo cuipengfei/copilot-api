@@ -209,12 +209,19 @@ export function buildCodexRequestHeaders(requestHeaders: Headers): Headers {
   return headers
 }
 
+export const codexResponsesDependencies = {
+  isResponsesApiWebSocketEnabled: () =>
+    isConfiguredResponsesApiWebSocketEnabled(),
+}
+
 export function resolveCodexResponsesTransport(
   transport?: ResponsesTransport,
 ): ResponsesTransport {
   return (
     transport
-    ?? (isConfiguredResponsesApiWebSocketEnabled() ? "websocket" : "http")
+    ?? (codexResponsesDependencies.isResponsesApiWebSocketEnabled() ?
+      "websocket"
+    : "http")
   )
 }
 

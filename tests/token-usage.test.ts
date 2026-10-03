@@ -761,6 +761,42 @@ describe("token usage storage", () => {
     expect(events.total).toBe(4)
   })
 
+  test("buckets daily usage by runtime local days when SQLite uses another timezone", async () => {
+    // Changing TZ at runtime moves the JavaScript timezone but not SQLite's
+    // 'localtime', reproducing hosts where the two disagree.
+    const originalTz = process.env.TZ
+    const originalZone = Intl.DateTimeFormat().resolvedOptions().timeZone
+    process.env.TZ = "Pacific/Kiritimati"
+    try {
+      setSystemTime(localDate(2026, 4, 1, 0))
+      recordTokenUsageEvent({
+        endpoint: "responses",
+        input_tokens: 3,
+        model: "day-start",
+        source: "copilot",
+      })
+      setSystemTime(localDate(2026, 4, 2))
+
+      const response = await createTokenUsageApp().request(
+        "/token-usage/daily?period=this_month",
+      )
+      const daily = (await response.json()) as TokenUsageDailySummary
+
+      expect(daily.days.map((day) => day.date)).toEqual([
+        "2026-05-01",
+        "2026-05-02",
+      ])
+      expect(daily.days[0]?.totals.input_tokens).toBe(3)
+      expect(daily.days[0]?.byModel.map((model) => model.model)).toEqual([
+        "day-start",
+      ])
+    } finally {
+      // Deleting TZ alone keeps the current zone, so restore it explicitly.
+      process.env.TZ = originalTz ?? originalZone
+      if (originalTz === undefined) Reflect.deleteProperty(process.env, "TZ")
+    }
+  })
+
   test("returns an empty lifetime range when there are no events", async () => {
     setSystemTime(localDate(2026, 4, 15))
     const app = createTokenUsageApp()
