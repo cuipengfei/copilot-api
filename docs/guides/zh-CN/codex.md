@@ -60,6 +60,9 @@ standalone_web_search = true
 daemon_auto_start = false
 apps = false
 
+[desktop]
+enabled-reasoning-efforts = ["low", "medium", "high", "xhigh", "ultra", "max"]
+
 [analytics]
 enabled = false
 ```
