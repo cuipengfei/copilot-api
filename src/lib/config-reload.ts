@@ -6,6 +6,7 @@ import { readGitHubToken, readGitHubTokenFromEnv } from "~/lib/credential-store"
 import { isGitHubCopilotEnabled } from "~/lib/github-copilot-provider"
 import { state } from "~/lib/state"
 import { stopCodexRefreshLoop, stopCopilotRefreshLoop } from "~/lib/token"
+import { stopModelsRefreshLoop } from "~/services/copilot/models-cache"
 
 let pendingReload: Promise<void> = Promise.resolve()
 
@@ -29,6 +30,7 @@ async function applyConfigReload(): Promise<void> {
       "Config reload: Copilot is disabled; stopping its refresh loop",
     )
     stopCopilotRefreshLoop()
+    stopModelsRefreshLoop()
     return
   }
 
@@ -43,6 +45,10 @@ async function applyConfigReload(): Promise<void> {
       "Config reload: no GitHub token is available; clearing Copilot credentials",
     )
     stopCopilotRefreshLoop()
+    // cacheModels() schedules its own timer that no AbortController owns.
+    // Leaving it running would keep polling the Copilot models endpoint with
+    // the credentials this branch just cleared, once per refresh interval.
+    stopModelsRefreshLoop()
     state.githubToken = undefined
     state.copilotToken = undefined
     state.models = undefined

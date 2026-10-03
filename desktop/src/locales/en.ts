@@ -204,6 +204,8 @@ const en: Locale = {
     processExit: 'Process exited with code {{code}}',
     invalidHost:
       'Invalid listening host; use an address such as 127.0.0.1 or 0.0.0.0',
+    restartFailed:
+      'Failed to restart the running service after saving these settings',
   },
   settings: {
     title: 'Settings',

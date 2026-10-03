@@ -220,6 +220,21 @@ describe('desktop saves automatically refresh the running gateway', () => {
     )
   })
 
+  test('completes GitHub sign-in when the running service cannot refresh', async () => {
+    spyOn(auth, 'getCopilotAccountType').mockResolvedValue('business')
+    spyOn(globalThis, 'fetch').mockRejectedValueOnce(
+      new Error('connection failed'),
+    )
+    expect(await invoke('auth:save-token', 'github-token')).toEqual({
+      success: true,
+      mode: 'copilot',
+    })
+    // The account type is written after the token, so it is only persisted
+    // when a failed refresh no longer aborts the sign-in flow.
+    expect(settings.accountType).toBe('business')
+    expect(activeAdminApiKey).toBe('old-admin')
+  })
+
   test('rotates keys using the active old admin key', async () => {
     const saved = await invoke('auth:save-server-keys', {
       apiKeys: ['new-api'],

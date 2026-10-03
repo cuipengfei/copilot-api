@@ -191,6 +191,7 @@ const zh: Locale = {
     startTimeout: '服务启动超时，端口 {{port}} 可能已被占用',
     processExit: '进程退出，代码 {{code}}',
     invalidHost: '监听地址无效，请填写如 127.0.0.1 或 0.0.0.0 这样的地址',
+    restartFailed: '保存设置后重启运行中的服务失败',
   },
   settings: {
     title: '设置',

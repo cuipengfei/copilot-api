@@ -223,6 +223,21 @@ const { saveAndRefresh: saveAndRefreshConfig, setActiveAdminApiKey } =
     },
   })
 
+// A failed refresh leaves the running service on the previous configuration,
+// but the credentials are already persisted. Sign-in must still finish, so the
+// stale server is reported as a warning instead of failing the whole call.
+function saveCredentialsAndRefresh(save: () => Promise<void>): Promise<void> {
+  return saveAndRefreshConfig(save, {
+    ignoreRefreshFailure: true,
+    onRefreshError: (error) => {
+      console.warn(
+        'Credentials saved, but the running server did not refresh:',
+        error,
+      )
+    },
+  })
+}
+
 export function registerIpcHandlers(
   mainWindow: BrowserWindow,
   options: IpcHandlersOptions = {},
@@ -240,7 +255,7 @@ export function registerIpcHandlers(
       getGitHubUser,
       getCopilotAccountType,
       readSettings,
-      saveToken: (token) => saveAndRefreshConfig(() => saveToken(token)),
+      saveToken: (token) => saveCredentialsAndRefresh(() => saveToken(token)),
       writeSettings,
       onSuccess: () => {
         if (!mainWindow.isDestroyed()) {
@@ -269,7 +284,7 @@ export function registerIpcHandlers(
         getGitHubUser(token),
         getCopilotAccountType(token),
       ])
-      await saveAndRefreshConfig(() => saveToken(token))
+      await saveCredentialsAndRefresh(() => saveToken(token))
       // Detect and persist the account type automatically
       const settings = await readSettings()
       await writeSettings({ ...settings, accountType })
@@ -452,7 +467,7 @@ export function registerIpcHandlers(
             options.getEffectiveProxySettings?.(settings) ?? settings.proxy,
         })
         if (!status.running) {
-          throw new Error(status.error ?? 'Failed to restart the server')
+          throw new Error(status.error ?? (await tMain('server.restartFailed')))
         }
         setActiveAdminApiKey((await readServerKeysConfig()).adminApiKey)
       }

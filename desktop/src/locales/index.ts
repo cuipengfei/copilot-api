@@ -192,6 +192,7 @@ export interface Locale {
     startTimeout: string
     processExit: string
     invalidHost: string
+    restartFailed: string
   }
   settings: {
     title: string

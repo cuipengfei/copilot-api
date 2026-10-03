@@ -83,6 +83,7 @@ beforeEach(() => {
     state.models = { object: "list", data: [] }
     return Promise.resolve()
   })
+  spyOn(models, "stopModelsRefreshLoop").mockImplementation(() => {})
   spyOn(vscode, "cacheVSCodeVersion").mockResolvedValue(undefined)
   spyOn(vscode, "cacheMacMachineId").mockImplementation(() => {})
   spyOn(vscode, "cacheVsCodeSessionId").mockImplementation(() => {})
@@ -116,6 +117,7 @@ describe("running server config reload", () => {
     expect(getConfig().useMessagesApi).toBe(false)
     expect(tokens.stopCodexRefreshLoop).toHaveBeenCalledTimes(1)
     expect(tokens.stopCopilotRefreshLoop).toHaveBeenCalledTimes(1)
+    expect(models.stopModelsRefreshLoop).toHaveBeenCalledTimes(1)
     expect(tokens.setupCopilotToken).not.toHaveBeenCalled()
   })
 
@@ -190,6 +192,7 @@ describe("running server config reload", () => {
     expect(state.copilotToken).toBeUndefined()
     expect(state.models).toBeUndefined()
     expect(state.userName).toBeUndefined()
+    expect(models.stopModelsRefreshLoop).toHaveBeenCalledTimes(1)
   })
 
   test("allows a retry after Copilot initialization fails", async () => {
