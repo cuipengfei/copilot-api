@@ -1,34 +1,40 @@
 # Repository Guidelines
 
-## Project Structure & Module Organization
+## Project Layout
 
-This is a Bun/TypeScript API gateway project. Core server and route code lives in `src/`, with shared utilities under `src/lib/`, API protocol contract types (OpenAI Chat Completions, OpenAI Responses, Anthropic Messages) under `src/lib/types/`, provider integrations under `src/services/`, and HTTP routes under `src/routes/`. Tests are in `tests/` and follow the same feature names as the source modules they cover. Static web assets are in `pages/`; documentation and screenshots are in `docs/`. The Electron desktop app is isolated under `desktop/` with its own source, assets, and package files. Plugin scripts live in `plugin/` and are excluded from the root ESLint config.
+- `src/`: Bun/TypeScript API gateway; `routes/` handles HTTP endpoints, `services/` integrates providers, `lib/` holds shared logic, and `lib/types/` defines OpenAI Chat Completions, OpenAI Responses, and Anthropic Messages contracts.
+- `tests/`: gateway tests named after the features they cover; `pages/`: static web assets; `docs/`: documentation and screenshots; `plugin/`: plugin scripts.
+- `desktop/`: Electron app with its own package, source, and checks; root ESLint excludes both `desktop/` and `plugin/`.
 
-## Build, Test, and Development Commands
+## Commands
 
-- `bun run dev`: run the API in watch mode with system CA enabled.
-- `bun run start`: run the production entrypoint locally.
-- `bun run build`: build the package with `tsdown`.
-- `bun run build:desktop`: build the desktop server bundle.
-- `bun run typecheck`: run TypeScript checks with `noEmit`.
-- `bun run lint` or `bun run lint:all`: run ESLint and Prettier checks.
-- `bun test`: run all Bun tests.
-- `bun test tests/provider-resolver.test.ts`: run one test file.
+Run from the repository root unless noted:
 
-## Coding Style & Naming Conventions
+- `bun run dev` / `bun run start`: watch / production API entrypoint, with system CA enabled.
+- `bun run build`: package build; `bun run build:desktop`: desktop server bundle.
+- `bun run typecheck` / `bun run lint`: gateway TypeScript / ESLint checks.
+- `bun run typecheck:all` / `bun run lint:all`: gateway and desktop checks.
+- `bun test tests/provider-resolver.test.ts`: one test file; `bun test tests`: gateway suite; `bun test`: all discovered tests.
+- `bun run --cwd desktop test`: desktop tests; `bun run --cwd desktop build`: Electron app build.
 
-Use ES modules and strict TypeScript. Prefer `~/*` imports for files under `src/`. Use `camelCase` for variables and functions, `PascalCase` for types/classes, and descriptive filenames such as `responses-stream-translation.ts`. Avoid `any`; model request, response, entity, and DTO fields from the actual source types. Formatting is enforced by ESLint plus Prettier, with semicolons disabled.
+## Code Style
 
-Run `bun run lint --fix <files>` to format changed files with the repository's ESLint/Prettier configuration. Do not run standalone `prettier` or `bunx prettier`; they may ignore the inline repository options (including `semi: false`) and rewrite entire files with the wrong style.
+- Use ES modules, strict TypeScript, and `~/*` imports within `src/`; avoid `any` and derive request/response fields from actual contract types.
+- Use `camelCase` for variables/functions, `PascalCase` for types/classes, and descriptive filenames such as `responses-stream-translation.ts`.
+- Format gateway files with `bun run lint --fix <files>`; use the desktop package's lint configuration for desktop files.
+- ESLint embeds Prettier options, including `semi: false`; do not run standalone `prettier` or `bunx prettier`.
 
-## Testing Guidelines
+## Verification
 
-Use Bun's built-in test runner. Add or update tests in `tests/` with `*.test.ts` names. When code changes are made, changed code must reach at least 85% unit test coverage. Cover request translation, provider behavior, auth, config, and streaming edge cases near the modified code.
+- Use Bun tests named `*.test.ts` in `tests/` or `desktop/tests/`, matching the affected package.
+- Changed code must reach at least 80% unit test coverage; use `bun test --coverage <test-files>` to inspect coverage.
+- Test affected request translation, providers, auth, config, and streaming edge cases; run the relevant tests, lint, and typecheck for code changes, expanding validation for shared behavior.
+- For documentation-only changes, verify referenced paths/commands and inspect the diff; application tests are unnecessary.
 
-## Commit & Pull Request Guidelines
+## Security
 
-Recent history uses Conventional Commit prefixes such as `feat:` and `chore:`. Keep commit subjects short and imperative, for example `feat: support custom provider auth flow`. Pull requests should include a clear summary, linked issues when applicable, test evidence (`bun test`, targeted tests, lint/typecheck), and screenshots for desktop or UI changes.
+Never commit tokens, local credentials, or generated secrets; carefully check auth, proxy, TLS, and token refresh changes, especially in `src/lib/`, `src/auth.ts`, and `src/services/github/`.
 
-## Security & Configuration Tips
+## Commits and Pull Requests
 
-Do not commit tokens, local credentials, or generated secrets. Review auth, proxy, TLS, and token refresh changes carefully, especially files under `src/lib/`, `src/auth.ts`, and `src/services/github/`.
+Use short, imperative Conventional Commit subjects such as `feat: support custom provider auth flow`; PRs should describe the resulting behavior, link relevant issues, list checks and results, and include screenshots for desktop/UI changes.
