@@ -63,7 +63,7 @@ enabled = false
 > [!NOTE]
 > `name` must be set to `"OpenAI"`.
 >
-> Sign in to Codex with ChatGPT or an API key before use. `requires_openai_auth = true` shows account information in the UI, plus quota usage and subscription details for ChatGPT sign-in; request authentication still prioritizes `env_key`. To bypass account restrictions in the Codex client, try setting it to `false`.
+> Sign in to Codex with ChatGPT or an API key before use. `requires_openai_auth = true` shows account information in the UI, plus quota usage and subscription details for ChatGPT sign-in; request authentication still prioritizes `env_key`. To bypass account restrictions in the Codex client, try setting it to `false`. Note that `false` also hides Remote (**Control this Mac** under **Settings → Connections**) in the desktop app ([openai/codex#36879](https://github.com/openai/codex/issues/36879)).
 >
 > Set `GITHUB_COPILOT_API_KEY` as a system-level user environment variable so the Codex app can read it too. Use one of the [gateway API keys](cli.md#auth-command-options), or any non-empty placeholder when none are configured; if it is unset, Codex fails with a `Missing environment variable` error.
 
