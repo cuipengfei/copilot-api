@@ -74,3 +74,29 @@ test("stopModelsRefreshLoop prevents further refreshes", async () => {
 
   expect(fetcherMock.mock.calls.length).toBe(callsAfterStop)
 })
+
+test("a refresh already in flight neither writes state nor revives the loop", async () => {
+  const inFlight = Promise.withResolvers<ReturnType<typeof makeModels>>()
+  const secondFetchStarted = Promise.withResolvers<void>()
+  let calls = 0
+  fetcherMock.mockImplementation(() => {
+    calls += 1
+    if (calls === 1) return Promise.resolve(makeModels(["m1"]))
+    secondFetchStarted.resolve()
+    return inFlight.promise
+  })
+
+  await cacheModels(fetcherMock as never, TEST_INTERVAL_MS)
+  const before = state.models
+
+  // The timer has fired and /models is in flight when the reload stops the
+  // loop, which is also when a sign-out clears state.models.
+  await secondFetchStarted.promise
+  stopModelsRefreshLoop()
+  inFlight.resolve(makeModels(["m1", "stale"]))
+  await sleep(300)
+
+  expect(state.models).toBe(before)
+  expect(state.models?.data.map((m) => m.id)).not.toContain("stale")
+  expect(fetcherMock.mock.calls.length).toBe(calls)
+})
