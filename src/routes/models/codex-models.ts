@@ -179,8 +179,16 @@ export async function handleMergedCodexModels(
         candidate.slug.slice(providerName.length + 1)
       : candidate.slug)
     const config = getRawProviderConfig(providerName)
-    if (!isProviderCodexModelVisible(config, modelId)) return false
-    if (getProviderCodexModels(config)?.includes(modelId)) {
+    const selectedModels = getProviderCodexModels(config)
+    const selectionId =
+      (
+        providerName === "github-copilot"
+        && selectedModels?.includes(candidate.slug)
+      ) ?
+        candidate.slug
+      : modelId
+    if (!isProviderCodexModelVisible(config, selectionId)) return false
+    if (selectedModels?.includes(selectionId)) {
       explicitSlugs.add(candidate.slug)
     }
     return true

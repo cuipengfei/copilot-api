@@ -400,6 +400,31 @@ describe("model routes", () => {
     })
     expect(((await empty.json()) as CodexModelsResponse).models).toEqual([])
   })
+  test.each(["claude-sonnet-4.6", "claude-sonnet-4-6"])(
+    "keeps the Copilot Claude model selected as %s",
+    async (selectedId) => {
+      const copilotModels = createCopilotModels(["claude-sonnet-4.6"])
+      copilotModels.data[0].supported_endpoints = ["/v1/messages"]
+      state.models = copilotModels
+      providerConfigs["github-copilot"] = {
+        ...createProviderConfig(
+          "github-copilot",
+          "https://api.githubcopilot.com",
+        ),
+        codexModels: [selectedId],
+      }
+
+      const response = await createApp().request("/v1/models", {
+        headers: { "user-agent": "codex-cli/1.0.0" },
+      })
+      expect(response.status).toBe(200)
+      const body = (await response.json()) as CodexModelsResponse
+      expect(body.models.map((model) => model.slug)).toEqual([
+        "claude-sonnet-4-6",
+      ])
+    },
+  )
+
   test("returns a small 502 when catalog metadata alone exceeds the byte budget", async () => {
     enableCodexCatalog()
     codexCatalogMetadata = { huge: "x".repeat(1024 * 1024) }
