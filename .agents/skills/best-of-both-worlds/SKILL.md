@@ -413,6 +413,21 @@ gh pr view <number> --json state,mergedAt,mergeable,mergeStateStatus,headRefOid,
 
 若 GitHub 显示 PR `MERGED` 或 base 已包含 head，则本地解决 PR 冲突流程完成；若状态仍为 `UNKNOWN`，等待后重查；若仍 `CONFLICTING`，停止并报告实际状态。
 
+### 第八步：合并后核对 `dev` 的 CI
+
+无论第七步通过 GitHub merge 还是本地 `dev <- czy-all` 推送完成，都要确认远端 `dev` 的实际 head SHA，再检查该 SHA 对应的 GitHub Actions CI 运行；PR 合并状态与合并前的 checks 不代替这项检查。
+
+```bash
+git fetch origin dev
+git rev-parse origin/dev
+gh run list --branch dev --commit <dev-head-sha> --workflow CI --json databaseId,headSha,status,conclusion,url
+gh run watch <run-id> --exit-status
+```
+
+- 若运行尚未创建或仍在运行，等待并重新检查；确认 `headSha` 与远端 `dev` 一致后才判定结果。找不到对应运行时说明未验证，不得宣称 CI 通过。
+- 若失败，读取失败作业日志，定位原因；在 `dev` 修复并运行项目规定的完整检查。只在明确授权提交及推送后更新 `origin/dev`，再检查新提交对应的 CI，直到通过或明确报告阻塞。不得把修复写入 `czy-all`，也不得把已合并的 PR 当作修复提交的 CI 结果。
+- 若通过，报告远端 `dev` SHA、运行链接、结论与本地工作区状态。
+
 ## 污染恢复流程：如果本地修复误入 `czy-all`
 
 若发现 `czy-all` 上出现了测试/lint/build/typecheck/skill/config 等本仓库修复提交，不要把污染状态继续合入 `dev`。先恢复 `czy-all` 的 buffer 语义。
@@ -666,6 +681,7 @@ czy-all 侧：
 - 若通过本地解决 PR 冲突，已记录用户对进入本地 merge、每个冲突块、lint 自动改动、验证后 commit/push 的明确授权原话；若验证一度失败，已记录用户对每次修复方案的明确授权原话，且修复后已重跑全部验证至全绿；`dev` 已包含 `czy-all` head，已推送 `origin/dev`，且 PR 已自动变为 merged/closed
 - 若有冲突，已逐块分析，而不是整边覆盖
 - 若无冲突，已向用户明确汇报 checks / merge 状态，并处理到“等待项已说明”或“最终 merge 已完成”这两个收尾之一
+- PR 合并后，已核对远端 `dev` head SHA 对应的 CI 运行及最终结论；失败修复与新提交的 CI 已按第八步继续验证。
 
 ## 一句话目标
 

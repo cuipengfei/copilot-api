@@ -13,9 +13,14 @@
     "src/lib/server-url.ts",
     "src/locales/**/*",
     "src/types/**/*",
+    "src/lib/**/*",
+    "src/components/**/*",
+    "src/contexts/**/*",
+    "src/pages/**/*",
     "../src/lib/**/*.ts",
     "../src/services/**/*.ts",
     "../src/routes/responses/utils.ts",
-    "../src/routes/responses/messages-translation.ts"
+    "../src/routes/responses/messages-translation.ts",
+    "../src/routes/models/codex-models-types.ts"
   ]
 }
