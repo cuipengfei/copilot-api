@@ -417,7 +417,7 @@ async function stopServerProcess(notifyStatus: boolean): Promise<void> {
   await waitForProcessExit(proc)
 
   if (notifyStatus && !serverProcess) {
-    statusCallback?.({ running: false })
+    statusCallback?.({ running: false, intentional: true })
   }
 }
 

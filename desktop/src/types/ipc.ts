@@ -76,6 +76,7 @@ export type ProviderAuthInput =
 export interface ServerStatus {
   running: boolean
   restarting?: boolean
+  intentional?: boolean
   port?: number
   host?: string
   error?: string

@@ -349,7 +349,7 @@
       }
 
       .metric-grid-tight {
-        grid-template-columns: repeat(7, minmax(0, 1fr));
+        grid-template-columns: repeat(8, minmax(0, 1fr));
       }
 
       .metric-card {
@@ -1035,6 +1035,16 @@
           return Number.isFinite(value) ? Number(value).toLocaleString() : "0";
         }
 
+        function formatCacheHitRate(usage) {
+          const inputTokens =
+            usage.input_tokens +
+            usage.cache_read_input_tokens +
+            usage.cache_creation_input_tokens;
+          return inputTokens > 0
+            ? `${((usage.cache_read_input_tokens / inputTokens) * 100).toFixed(1)}%`
+            : "—";
+        }
+
         function getMetricDisplayText(value) {
           return typeof value === "number" ? formatNumber(value) : value;
         }
@@ -1658,6 +1668,7 @@
                       getMetricDisplayText(totals.output_tokens),
                       getMetricDisplayText(totals.cache_read_input_tokens),
                       getMetricDisplayText(totals.cache_creation_input_tokens),
+                      formatCacheHitRate(totals),
                       getMetricDisplayText(totals.request_count),
                       formatTokenUsageCosts(totals.costs),
                     ]);
@@ -1690,6 +1701,12 @@
                         "Cache Write",
                         totals.cache_creation_input_tokens,
                         "var(--color-yellow-accent)",
+                        metricFontSize
+                      ),
+                      renderTokenUsageMetric(
+                        "Cache Hit Rate",
+                        formatCacheHitRate(totals),
+                        "var(--color-aqua-accent)",
                         metricFontSize
                       ),
                       renderTokenUsageMetric(
@@ -2219,6 +2236,7 @@
                   <td class="px-4 py-2 text-right" style="color: var(--color-fg-dark);">${formatNumber(
                     model.cache_creation_input_tokens
                   )}</td>
+                  <td class="px-4 py-2 text-right" style="color: var(--color-fg-dark);">${formatCacheHitRate(model)}</td>
                   <td class="px-4 py-2 text-right font-semibold" style="color: var(--color-yellow-accent);">${formatNumber(
                     model.total_tokens
                   )}</td>
@@ -2234,7 +2252,7 @@
 
           return `
             <div class="overflow-auto ${state.isTokenUsageLoading ? "opacity-60" : ""}">
-              <table class="data-table min-w-[860px] text-left">
+              <table class="data-table min-w-[960px] text-left">
                 <thead>
                   <tr>
                     <th class="px-4 py-2 font-semibold">Model</th>
@@ -2243,6 +2261,7 @@
                     <th class="px-4 py-2 text-right font-semibold">Output</th>
                     <th class="px-4 py-2 text-right font-semibold">Cache Read</th>
                     <th class="px-4 py-2 text-right font-semibold">Cache Write</th>
+                    <th class="px-4 py-2 text-right font-semibold">Cache Hit Rate</th>
                     <th class="px-4 py-2 text-right font-semibold">Total Tokens</th>
                     <th class="px-4 py-2 text-right font-semibold">Total Cost</th>
                   </tr>

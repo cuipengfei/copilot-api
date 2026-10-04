@@ -403,6 +403,7 @@ export default function AuthPage({ onBack, onSuccess }: AuthPageProps) {
   return (
     <div className="flex flex-col h-screen bg-canvas">
       <Header
+        onOpenAuthConfig={handleBack}
         onProvidersClose={() => {
           void refreshProviderAuthStatus(
             window.electronAPI.getAuthStatus,

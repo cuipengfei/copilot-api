@@ -38,6 +38,7 @@
     "src/components/ProviderManagementModal.tsx",
     "src/components/ProviderManagementPanel.tsx",
     "src/pages/DashboardPage.tsx",
+    "src/pages/AuthPage.tsx",
     "src/pages/ModelMappingsPage.tsx",
     "src/components/Header.tsx",
     "src/components/AppUpdatePanel.tsx",

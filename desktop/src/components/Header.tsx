@@ -50,6 +50,7 @@ const IconStop = () => (
 
 interface HeaderProps {
   onChangeAuth?: () => void
+  onOpenAuthConfig?: () => void
   onRestart?: () => void
   onStop?: () => void
   onSettingsClose?: () => void
@@ -60,6 +61,7 @@ interface HeaderProps {
 
 export default function Header({
   onChangeAuth,
+  onOpenAuthConfig,
   onRestart,
   onStop,
   onSettingsClose,
@@ -69,6 +71,9 @@ export default function Header({
 }: HeaderProps) {
   const { t } = useLanguage()
   const [showSettings, setShowSettings] = useState(false)
+  const [settingsSection, setSettingsSection] = useState<'general' | 'updates'>(
+    'general',
+  )
   const [showProviders, setShowProviders] = useState(false)
   const [showSettingsMenu, setShowSettingsMenu] = useState(false)
   const settingsMenuRef = useRef<HTMLDivElement>(null)
@@ -94,6 +99,11 @@ export default function Header({
       return
     }
 
+    openSettings()
+  }
+
+  const openSettings = () => {
+    setSettingsSection('general')
     setShowSettings(true)
   }
 
@@ -111,7 +121,14 @@ export default function Header({
             <span className="text-sm font-bold text-ink">Copilot API</span>
           </div>
           <div className="w-px h-4 bg-line" />
-          <TitleBarMenu onOpenSettings={() => setShowSettings(true)} />
+          <TitleBarMenu
+            onOpenSettings={openSettings}
+            onOpenAuthConfig={onOpenAuthConfig ?? onChangeAuth}
+            onCheckUpdates={() => {
+              setSettingsSection('updates')
+              setShowSettings(true)
+            }}
+          />
         </div>
 
         <div
@@ -192,7 +209,7 @@ export default function Header({
                 <button
                   onClick={() => {
                     setShowSettingsMenu(false)
-                    setShowSettings(true)
+                    openSettings()
                   }}
                   className="flex items-center gap-2 w-full px-3 py-2.5 text-[13px] text-ink-soft hover:bg-sunken transition-colors text-left"
                 >
@@ -221,6 +238,8 @@ export default function Header({
 
       {showSettings && (
         <SettingsModal
+          initialSection={settingsSection}
+          checkForUpdatesOnOpen={settingsSection === 'updates'}
           onClose={() => {
             setShowSettings(false)
             onSettingsClose?.()

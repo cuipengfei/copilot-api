@@ -7,10 +7,12 @@ import ProviderManagementPanel from '../src/components/ProviderManagementPanel'
 import DashboardPage from '../src/pages/DashboardPage'
 import { LanguageProvider } from '../src/contexts/LanguageContext'
 import type {
+  AppUpdateStatus,
   ProviderManagementConfig,
   ProviderManagementUpdate,
   ProviderModelOptions,
   ServerStatus,
+  TokenUsageSummary,
 } from '../src/types/ipc'
 
 const fixture: ProviderManagementConfig = {
@@ -150,6 +152,190 @@ async function changeText(
   })
 }
 describe('provider management UI', () => {
+  test('shows token-weighted cache hit rates in the model breakdown', async () => {
+    const totals = {
+      request_count: 10,
+      input_tokens: 200,
+      output_tokens: 9000,
+      cache_read_input_tokens: 600,
+      cache_creation_input_tokens: 200,
+      costs: [],
+      total_tokens: 10000,
+    }
+    const summary: TokenUsageSummary = {
+      period: 'today',
+      range: { start_ms: 0, end_ms: 1, start_utc: '', end_utc: '' },
+      totals,
+      byModel: [
+        { ...totals, model: 'cached-model' },
+        { ...totals, model: 'uncached-model', cache_read_input_tokens: 0 },
+        {
+          ...totals,
+          model: 'empty-model',
+          input_tokens: 0,
+          cache_read_input_tokens: 0,
+          cache_creation_input_tokens: 0,
+        },
+      ],
+    }
+    Object.assign(window.electronAPI, {
+      getServerStatus: () => Promise.resolve({ running: true }),
+      getServerAuthInfo: () => Promise.resolve({ enabled: false }),
+      fetchTokenUsage: () => Promise.resolve(summary),
+      fetchTokenUsageDaily: () => Promise.resolve({ ...summary, days: [] }),
+      fetchTokenUsageEvents: () =>
+        Promise.resolve({
+          period: summary.period,
+          range: summary.range,
+          items: [],
+          page: 1,
+          page_size: 10,
+          total: 0,
+          total_pages: 1,
+        }),
+    })
+    await act(async () => {
+      root.render(
+        createElement(LanguageProvider, {
+          children: createElement(DashboardPage, {
+            authMode: 'provider',
+            defaultPort: 4141,
+            defaultHost: '127.0.0.1',
+            onChangeAuth: () => {},
+          }),
+        }),
+      )
+    })
+    await act(async () => button('Token usage').click())
+    const metricLabel = [...container.querySelectorAll('div')].find(
+      (node) =>
+        node.childElementCount === 0 && node.textContent === 'Cache hit rate',
+    )
+    expect(metricLabel?.parentElement?.textContent).toBe('60.0%Cache hit rate')
+    const table = container.querySelector('table')
+    expect(
+      [...table!.querySelectorAll('th')].map((node) => node.textContent),
+    ).toEqual([
+      'Model',
+      'Requests',
+      'Input',
+      'Output',
+      'Cache read',
+      'Cache write',
+      'Cache hit rate',
+      'Total Tokens',
+      'Total Cost',
+    ])
+    const rows = [...table!.querySelectorAll('tbody tr')]
+    expect(
+      rows.map((row) => row.querySelectorAll('td')[6].textContent),
+    ).toEqual(['60.0%', '0.0%', '—'])
+    expect(rows.every((row) => row.querySelectorAll('td').length === 9)).toBe(
+      true,
+    )
+  })
+
+  test('does not report the update installer stopping the server as a crash', async () => {
+    let notify: ((status: ServerStatus) => void) | undefined
+    let notifyUpdate: ((status: AppUpdateStatus) => void) | undefined
+    const updateStatus: AppUpdateStatus = {
+      phase: 'downloaded',
+      currentVersion: '2.6.30',
+      version: '2.6.31',
+      manualInstall: false,
+      releaseUrl:
+        'https://github.com/caozhiyuan/copilot-api/releases/tag/v2.6.31',
+    }
+    Object.assign(window.electronAPI, {
+      getServerStatus: () =>
+        Promise.resolve({ running: true, port: 4141, host: '127.0.0.1' }),
+      getServerAuthInfo: () => Promise.resolve({ enabled: false }),
+      onServerStatus: (callback: (status: ServerStatus) => void) => {
+        notify = callback
+        return () => {
+          notify = undefined
+        }
+      },
+      getAppUpdateStatus: () => Promise.resolve(updateStatus),
+      onAppUpdateStatus: (callback: (status: AppUpdateStatus) => void) => {
+        notifyUpdate = callback
+        return () => {
+          notifyUpdate = undefined
+        }
+      },
+      installAppUpdate: () => {
+        const installing = { ...updateStatus, phase: 'installing' as const }
+        notifyUpdate?.(installing)
+        notify?.({ running: false, intentional: true })
+        return Promise.resolve(installing)
+      },
+    })
+    await act(async () => {
+      root.render(
+        createElement(LanguageProvider, {
+          children: createElement(DashboardPage, {
+            authMode: 'provider',
+            defaultPort: 4141,
+            defaultHost: '127.0.0.1',
+            onChangeAuth: () => {},
+          }),
+        }),
+      )
+    })
+    await act(async () => button('Restart and install').click())
+    expect(container.textContent).toContain(
+      'Stopping the server and installing…',
+    )
+    expect(container.textContent).not.toContain('Server stopped unexpectedly')
+    expect(button('Start server')).toBeDefined()
+
+    await act(async () => {
+      notifyUpdate?.({ ...updateStatus, error: 'installer failed' })
+    })
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+      'installer failed',
+    )
+    expect(container.textContent).not.toContain('Server stopped unexpectedly')
+
+    await act(async () => {
+      notify?.({ running: true, port: 4141, host: '127.0.0.1' })
+    })
+    await act(async () => {
+      notify?.({ running: false, error: 'Process exited with code 9' })
+    })
+    expect(container.textContent).toContain('Process exited with code 9')
+  })
+
+  test('preserves explicit errors even for an intentional stop', async () => {
+    let notify: ((status: ServerStatus) => void) | undefined
+    Object.assign(window.electronAPI, {
+      getServerStatus: () => Promise.resolve({ running: true }),
+      getServerAuthInfo: () => Promise.resolve({ enabled: false }),
+      onServerStatus: (callback: (status: ServerStatus) => void) => {
+        notify = callback
+        return () => {
+          notify = undefined
+        }
+      },
+    })
+    await act(async () => {
+      root.render(
+        createElement(LanguageProvider, {
+          children: createElement(DashboardPage, {
+            authMode: 'provider',
+            defaultPort: 4141,
+            defaultHost: '127.0.0.1',
+            onChangeAuth: () => {},
+          }),
+        }),
+      )
+    })
+    await act(async () => {
+      notify?.({ running: false, intentional: true, error: 'stop failed' })
+    })
+    expect(container.textContent).toContain('stop failed')
+  })
+
   test.each(['Logs', 'Token usage', 'Model mappings'])(
     'keeps the %s tab during an automatic restart',
     async (tabLabel) => {

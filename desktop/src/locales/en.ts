@@ -148,6 +148,7 @@ const en: Locale = {
     tokenUsageCache: 'Cache',
     tokenUsageCacheRead: 'Cache read',
     tokenUsageCacheWrite: 'Cache write',
+    tokenUsageCacheHitRate: 'Cache hit rate',
     tokenUsageCost: 'Cost',
     tokenUsageEndpoint: 'Endpoint',
     tokenUsageEvents: 'Event details',
@@ -203,6 +204,7 @@ const en: Locale = {
   menu: {
     file: 'File',
     fileSettings: 'Settings',
+    fileAuthConfig: 'Auth config',
     fileQuit: 'Quit',
     view: 'View',
     viewReload: 'Reload',

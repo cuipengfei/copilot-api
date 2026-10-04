@@ -78,11 +78,11 @@ afterEach(async () => {
   previousGlobals.clear()
 })
 
-async function render(compact = false) {
+async function render(compact = false, checkOnMount = false) {
   await act(async () => {
     root.render(
       createElement(LanguageProvider, {
-        children: createElement(AppUpdatePanel, { compact }),
+        children: createElement(AppUpdatePanel, { compact, checkOnMount }),
       }),
     )
   })
@@ -99,6 +99,33 @@ async function click() {
 }
 
 describe('desktop update UI', () => {
+  test('keeps a newly downloaded update when the menu check returns an older snapshot', async () => {
+    let finishCheck: ((status: AppUpdateStatus) => void) | undefined
+    check.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finishCheck = resolve
+        }),
+    )
+    await render(false, true)
+    expect(check).toHaveBeenCalledTimes(1)
+    await emit({ phase: 'downloaded', version: '2.6.32' })
+    await act(async () => {
+      finishCheck?.({
+        ...initial,
+        phase: 'downloading',
+        version: '2.6.32',
+        percent: 10,
+      })
+    })
+    expect(container.textContent).toContain(
+      'Version 2.6.32 is ready to install',
+    )
+    expect(container.querySelector('button')?.textContent).toBe(
+      'Restart and install',
+    )
+  })
+
   test('shows the installed version and offers a manual check', async () => {
     await render()
     expect(container.textContent).toContain('Current version: 2.6.29')

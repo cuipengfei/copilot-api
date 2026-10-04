@@ -139,6 +139,7 @@ const zh: Locale = {
     tokenUsageCache: '缓存',
     tokenUsageCacheRead: '缓存读',
     tokenUsageCacheWrite: '缓存写',
+    tokenUsageCacheHitRate: '缓存命中率',
     tokenUsageCost: '费用',
     tokenUsageEndpoint: '端点',
     tokenUsageEvents: '事件明细',
@@ -194,6 +195,7 @@ const zh: Locale = {
   menu: {
     file: '文件',
     fileSettings: '设置',
+    fileAuthConfig: '授权配置',
     fileQuit: '退出',
     view: '视图',
     viewReload: '重新加载',

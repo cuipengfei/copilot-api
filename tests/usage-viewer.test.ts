@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test"
 import { readFile } from "node:fs/promises"
 import { runInNewContext } from "node:vm"
+import { Window } from "happy-dom"
+import type { TokenUsageSummary } from "../desktop/src/types/ipc"
 
 const pagePath = new URL("../pages/index.html", import.meta.url)
 
@@ -92,6 +94,170 @@ describe("usage viewer period contract", () => {
     for (const builder of ["Summary", "Daily", "Events"]) {
       expect(html).toContain(`function buildTokenUsage${builder}Url`)
       expect(html).toContain('url.searchParams.set("period", period)')
+    }
+  })
+})
+
+describe("usage viewer model cache hit rate", () => {
+  test("renders rates including cache writes and excluding output tokens", async () => {
+    const html = await readUsageViewerPage()
+    const source = [
+      extractInlineFunctionRange(
+        html,
+        "        function escapeHtml(value) {",
+        "        function getErrorMessage(error) {",
+      ),
+      extractInlineFunctionRange(
+        html,
+        "        function formatNumber(value) {",
+        "        function formatDateTime(value) {",
+      ),
+      extractInlineFunctionRange(
+        html,
+        "        function renderTokenUsageValueLines(value) {",
+        "        function renderTokenUsageEventsTable(eventsPage) {",
+      ),
+      extractInlineFunctionRange(
+        html,
+        "        function renderEmptyState(message) {",
+        "        function renderSpinner() {",
+      ),
+      extractInlineFunctionRange(
+        html,
+        "        function renderTokenUsageSection() {",
+        "        function getTokenUsageTrendMetrics() {",
+      ),
+      "({ renderTokenUsageModelBreakdown, formatCacheHitRate, renderTokenUsageSection })",
+    ].join("\n")
+    const state: {
+      isTokenUsageLoading: boolean
+      tokenUsageSummary?: TokenUsageSummary
+    } = { isTokenUsageLoading: false }
+    const viewer = runInNewContext(source, {
+      state,
+      renderTokenUsageRangeText: () => "Today",
+      renderTokenUsageDailyTrend: () => "",
+      renderPaginationButton: () => "",
+      renderTokenUsageEventsTable: () => "",
+    }) as {
+      renderTokenUsageModelBreakdown: (summary: TokenUsageSummary) => string
+      formatCacheHitRate: (usage: TokenUsageSummary["totals"]) => string
+      renderTokenUsageSection: () => string
+    }
+    const totals = {
+      request_count: 10,
+      input_tokens: 200,
+      output_tokens: 9000,
+      cache_read_input_tokens: 600,
+      cache_creation_input_tokens: 200,
+      costs: [],
+      total_tokens: 10000,
+    }
+    const examples = [
+      { ...totals, model: "<cached-model>", expected: "60.0%" },
+      {
+        ...totals,
+        model: "uncached-model",
+        cache_read_input_tokens: 0,
+        expected: "0.0%",
+      },
+      {
+        ...totals,
+        model: "fully-cached",
+        input_tokens: 0,
+        cache_creation_input_tokens: 0,
+        expected: "100.0%",
+      },
+      {
+        ...totals,
+        model: "rounded",
+        input_tokens: 2,
+        cache_read_input_tokens: 1,
+        cache_creation_input_tokens: 0,
+        expected: "33.3%",
+      },
+      {
+        ...totals,
+        model: "empty-model",
+        input_tokens: 0,
+        cache_read_input_tokens: 0,
+        cache_creation_input_tokens: 0,
+        expected: "—",
+      },
+    ]
+    const summary: TokenUsageSummary = {
+      period: "today",
+      range: { start_ms: 0, end_ms: 1, start_utc: "", end_utc: "" },
+      totals,
+      byModel: examples,
+    }
+    const rendered = viewer.renderTokenUsageModelBreakdown(summary)
+    const win = new Window()
+    try {
+      win.document.body.innerHTML = rendered
+      expect(
+        [...win.document.querySelectorAll("th")].map(
+          (node) => node.textContent,
+        ),
+      ).toEqual([
+        "Model",
+        "Requests",
+        "Input",
+        "Output",
+        "Cache Read",
+        "Cache Write",
+        "Cache Hit Rate",
+        "Total Tokens",
+        "Total Cost",
+      ])
+      const rows = [...win.document.querySelectorAll("tbody tr")]
+      expect(
+        rows.map((row) => row.querySelectorAll("td")[6].textContent),
+      ).toEqual(examples.map((example) => example.expected))
+      expect(rows.every((row) => row.querySelectorAll("td").length === 9)).toBe(
+        true,
+      )
+      expect(rows[0].querySelector("td")?.textContent).toBe("<cached-model>")
+      expect(win.document.querySelector("cached-model")).toBeNull()
+      for (const example of examples) {
+        expect(viewer.formatCacheHitRate(example)).toBe(example.expected)
+      }
+      expect(
+        viewer.renderTokenUsageModelBreakdown({ ...summary, byModel: [] }),
+      ).toContain("No token usage recorded")
+      state.tokenUsageSummary = summary
+      win.document.body.innerHTML = viewer.renderTokenUsageSection()
+      const cacheMetric = [
+        ...win.document.querySelectorAll(".metric-card"),
+      ].find(
+        (node) =>
+          node.querySelector(".metric-label")?.textContent?.trim()
+          === "Cache Hit Rate",
+      )
+      expect(cacheMetric?.querySelector(".metric-value")?.textContent).toBe(
+        "60.0%",
+      )
+      state.tokenUsageSummary = {
+        ...summary,
+        totals: {
+          ...totals,
+          input_tokens: 0,
+          cache_read_input_tokens: 0,
+          cache_creation_input_tokens: 0,
+        },
+      }
+      win.document.body.innerHTML = viewer.renderTokenUsageSection()
+      expect(
+        [...win.document.querySelectorAll(".metric-card")]
+          .find(
+            (node) =>
+              node.querySelector(".metric-label")?.textContent?.trim()
+              === "Cache Hit Rate",
+          )
+          ?.querySelector(".metric-value")?.textContent,
+      ).toBe("—")
+    } finally {
+      await win.happyDOM.close()
     }
   })
 })

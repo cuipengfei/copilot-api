@@ -14,7 +14,11 @@ import {
   shouldShowCopilotQuotaUsage,
   shouldShowCopilotUsageSummary,
 } from '../lib/copilot-usage-display'
-import { formatTokenCost, formatTokenCosts } from '../lib/token-usage-format'
+import {
+  formatCacheHitRate,
+  formatTokenCost,
+  formatTokenCosts,
+} from '../lib/token-usage-format'
 import { buildServerBaseUrl } from '../lib/server-url'
 import ModelMappingsPage from './ModelMappingsPage'
 import ProviderManagementPanel from '../components/ProviderManagementPanel'
@@ -373,7 +377,12 @@ export default function DashboardPage({
       if (!status.running) {
         if (!intentionalStop.current) {
           setRestarting(false)
-          setServerError(status.error ?? t('dashboard.serverUnexpectedStop'))
+          setServerError(
+            status.error
+              ?? (status.intentional ? '' : (
+                t('dashboard.serverUnexpectedStop')
+              )),
+          )
           setStarted(false)
           void window.electronAPI
             .getLogs()
@@ -1329,7 +1338,7 @@ function TokenUsagePanel({
         </div>
       </div>
 
-      <div className="grid grid-cols-2 gap-2 lg:grid-cols-3 xl:grid-cols-6">
+      <div className="grid grid-cols-2 gap-2 lg:grid-cols-4">
         <TokenUsageMetric
           label={t('dashboard.tokenUsageTotal')}
           value={formatTokenCount(calcTokenTotal(totals))}
@@ -1359,6 +1368,12 @@ function TokenUsagePanel({
           value={formatTokenCount(totals.cache_creation_input_tokens)}
           loading={loading}
           tone="amber"
+        />
+        <TokenUsageMetric
+          label={t('dashboard.tokenUsageCacheHitRate')}
+          value={formatCacheHitRate(totals)}
+          loading={loading}
+          tone="cyan"
         />
         <TokenUsageMetric
           label={t('dashboard.tokenUsageRequests')}
@@ -1410,7 +1425,7 @@ function TokenUsagePanel({
             <div
               className={`h-44 overflow-auto ${loading ? 'opacity-60' : ''}`}
             >
-              <table className="w-full min-w-[860px] text-left text-[13px]">
+              <table className="w-full min-w-[960px] text-left text-[13px]">
                 <thead className="sticky top-0 bg-surface text-ink-faint">
                   <tr className="border-b border-line-soft">
                     <th className="px-2.5 py-1.5 font-semibold">
@@ -1430,6 +1445,9 @@ function TokenUsagePanel({
                     </th>
                     <th className="px-2.5 py-1.5 text-right font-semibold">
                       {t('dashboard.tokenUsageCacheWrite')}
+                    </th>
+                    <th className="px-2.5 py-1.5 text-right font-semibold">
+                      {t('dashboard.tokenUsageCacheHitRate')}
                     </th>
                     <th className="px-2.5 py-1.5 text-right font-semibold">
                       {t('dashboard.tokenUsageTotalTokens')}
@@ -1940,6 +1958,9 @@ function TokenUsageModelRow({ model }: { model: TokenUsageModelSummary }) {
       </td>
       <td className="px-2.5 py-1.5 text-right text-ink-soft">
         {formatTokenCount(model.cache_creation_input_tokens)}
+      </td>
+      <td className="px-2.5 py-1.5 text-right text-ink-soft">
+        {formatCacheHitRate(model)}
       </td>
       <td className="px-2.5 py-1.5 text-right font-semibold text-ink">
         {formatTokenCount(calcTokenTotal(model))}

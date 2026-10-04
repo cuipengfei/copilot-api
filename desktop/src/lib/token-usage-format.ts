@@ -1,4 +1,21 @@
+import type { TokenUsageTotals } from '../types/ipc'
+
 const COST_NANOS_PER_UNIT = 1_000_000_000
+
+export function formatCacheHitRate(
+  usage: Pick<
+    TokenUsageTotals,
+    'input_tokens' | 'cache_read_input_tokens' | 'cache_creation_input_tokens'
+  >,
+): string {
+  const inputTokens =
+    usage.input_tokens
+    + usage.cache_read_input_tokens
+    + usage.cache_creation_input_tokens
+  return inputTokens > 0 ?
+      `${((usage.cache_read_input_tokens / inputTokens) * 100).toFixed(1)}%`
+    : '—'
+}
 
 export interface TokenUsageCostLike {
   amount?: number

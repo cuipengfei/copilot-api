@@ -106,7 +106,40 @@ test('stops deliberately without reporting a nonzero exit as a crash', () => {
     stopExitCode = 1
     await manager.stopServer()
     assert.equal(manager.isRunning(), false)
-    assert.deepEqual(events, [{ running: false }])
+    assert.deepEqual(events, [{ running: false, intentional: true }])
+  `)
+})
+
+test('marks the update installer shutdown as intentional before quitting', () => {
+  runManagerScenario(`
+    await manager.startServer(0)
+    events.length = 0
+    const { createUpdateManager } = await import('./electron/update-manager')
+    let installed = false
+    const updater = Object.assign(new EventEmitter(), {
+      autoDownload: true,
+      autoInstallOnAppQuit: true,
+      allowPrerelease: true,
+      allowDowngrade: true,
+      checkForUpdates: () => Promise.resolve(null),
+      downloadUpdate: () => Promise.resolve([]),
+      quitAndInstall() {
+        assert.equal(manager.isRunning(), false)
+        assert.deepEqual(events, [{ running: false, intentional: true }])
+        installed = true
+      },
+    })
+    const updates = createUpdateManager(updater, {
+      currentVersion: '2.6.30',
+      enabled: true,
+      nativeUpdates: true,
+      checkRelease: () => Promise.resolve(null),
+      beforeInstall: () => manager.stopServer(),
+      onStatus: () => {},
+    })
+    updater.emit('update-downloaded', { version: '2.6.31' })
+    await updates.install()
+    assert.equal(installed, true)
   `)
 })
 

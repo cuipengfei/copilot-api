@@ -4,10 +4,13 @@ import { act, createElement } from 'react'
 import type { Root } from 'react-dom/client'
 
 import SettingsModal from '../src/components/SettingsModal'
+import Header from '../src/components/Header'
+import AuthPage from '../src/pages/AuthPage'
 import { LanguageProvider } from '../src/contexts/LanguageContext'
 import { ThemeProvider } from '../src/contexts/ThemeContext'
 import type {
   DesktopSettings,
+  AppUpdateStatus,
   ServerKeysConfig,
   ServerKeysConfigUpdate,
 } from '../src/types/ipc'
@@ -126,6 +129,102 @@ async function render() {
     )
   })
 }
+
+async function renderHeader(onChangeAuth = () => {}) {
+  const initial: AppUpdateStatus = {
+    phase: 'idle',
+    currentVersion: '2.6.31',
+    manualInstall: false,
+    releaseUrl: 'https://github.com/caozhiyuan/copilot-api/releases',
+  }
+  Object.assign(window.electronAPI, {
+    windowIsMaximized: () => Promise.resolve(false),
+    onWindowMaximizeChange: () => () => {},
+    getAppUpdateStatus: () => Promise.resolve(initial),
+    onAppUpdateStatus: () => () => {},
+  })
+  await act(async () => {
+    root.render(
+      createElement(LanguageProvider, {
+        children: createElement(ThemeProvider, {
+          children: createElement(Header, { onChangeAuth }),
+        }),
+      }),
+    )
+  })
+}
+
+describe('desktop menu shortcuts', () => {
+  test('opens updates from Help, checks immediately, and shows the result', async () => {
+    const check = mock(() =>
+      Promise.resolve({
+        phase: 'not-available' as const,
+        currentVersion: '2.6.31',
+        manualInstall: false,
+        releaseUrl: 'https://github.com/caozhiyuan/copilot-api/releases',
+      }),
+    )
+    Object.assign(window.electronAPI, { checkAppUpdate: check })
+    await renderHeader()
+    await click('Help')
+    await click('Check for updates')
+    expect(check).toHaveBeenCalledTimes(1)
+    expect(container.textContent).toContain(
+      'No newer release is available for this platform',
+    )
+    expect(container.querySelector('input')).toBeNull()
+    expect(saveSettings).not.toHaveBeenCalled()
+    expect(saveServerKeys).not.toHaveBeenCalled()
+    await click('Cancel')
+    await click('File')
+    await click('Settings')
+    expect(container.querySelector('select')).not.toBeNull()
+    expect(check).toHaveBeenCalledTimes(1)
+  })
+
+  test('shows an update check failure and allows a retry', async () => {
+    const check = mock(() => Promise.reject(new Error('offline')))
+    Object.assign(window.electronAPI, { checkAppUpdate: check })
+    await renderHeader()
+    await click('Help')
+    await click('Check for updates')
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+      'Could not complete the update action',
+    )
+    await click('Check for updates')
+    expect(check).toHaveBeenCalledTimes(2)
+  })
+
+  test('opens existing authorization configuration from File', async () => {
+    const changeAuth = mock(() => {})
+    await renderHeader(changeAuth)
+    await click('File')
+    await click('Auth config')
+    expect(changeAuth).toHaveBeenCalledTimes(1)
+    expect(container.textContent).not.toContain('Auth config')
+    expect(saveSettings).not.toHaveBeenCalled()
+    expect(saveServerKeys).not.toHaveBeenCalled()
+  })
+
+  test('returns to authorization choices when already on the authorization page', async () => {
+    await renderHeader()
+    await act(async () => {
+      root.render(
+        createElement(LanguageProvider, {
+          children: createElement(ThemeProvider, {
+            children: createElement(AuthPage, { onSuccess: () => {} }),
+          }),
+        }),
+      )
+    })
+    await click('Enter Copilot token manually')
+    expect(container.querySelector('textarea')).not.toBeNull()
+    await click('File')
+    await click('Auth config')
+    expect(container.querySelector('textarea')).toBeNull()
+    expect(container.textContent).toContain('Enter Copilot token manually')
+  })
+})
 
 async function click(label: string) {
   const button = [...container.querySelectorAll('button')].find(

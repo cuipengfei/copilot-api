@@ -5,8 +5,10 @@ import type { AppUpdateStatus } from '../types/ipc'
 
 export default function AppUpdatePanel({
   compact = false,
+  checkOnMount = false,
 }: {
   compact?: boolean
+  checkOnMount?: boolean
 }) {
   const { t } = useLanguage()
   const [status, setStatus] = useState<AppUpdateStatus | null>(null)
@@ -14,15 +16,20 @@ export default function AppUpdatePanel({
 
   useEffect(() => {
     let active = true
-    let receivedEvent = false
+    let statusRevision = 0
     const unsubscribe = window.electronAPI.onAppUpdateStatus((next) => {
-      receivedEvent = true
+      statusRevision += 1
       if (active) setStatus(next)
     })
     void window.electronAPI
       .getAppUpdateStatus()
-      .then((initial) => {
-        if (active && !receivedEvent) setStatus(initial)
+      .then(async (initial) => {
+        if (active && statusRevision === 0) setStatus(initial)
+        if (active && checkOnMount) {
+          const checkRevision = statusRevision
+          const checked = await window.electronAPI.checkAppUpdate()
+          if (active && statusRevision === checkRevision) setStatus(checked)
+        }
       })
       .catch(() => {
         if (active) setActionError(t('updates.actionFailed'))
@@ -31,7 +38,7 @@ export default function AppUpdatePanel({
       active = false
       unsubscribe()
     }
-  }, [])
+  }, [checkOnMount])
 
   const runAction = async (action: () => Promise<unknown>) => {
     setActionError('')

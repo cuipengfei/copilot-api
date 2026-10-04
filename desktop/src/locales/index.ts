@@ -139,6 +139,7 @@ export interface Locale {
     tokenUsageCache: string
     tokenUsageCacheRead: string
     tokenUsageCacheWrite: string
+    tokenUsageCacheHitRate: string
     tokenUsageCost: string
     tokenUsageEndpoint: string
     tokenUsageEvents: string
@@ -194,6 +195,7 @@ export interface Locale {
   menu: {
     file: string
     fileSettings: string
+    fileAuthConfig: string
     fileQuit: string
     view: string
     viewReload: string

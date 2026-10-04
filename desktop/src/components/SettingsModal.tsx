@@ -14,6 +14,8 @@ import AppUpdatePanel from './AppUpdatePanel'
 
 interface SettingsModalProps {
   onClose: () => void
+  initialSection?: Section
+  checkForUpdatesOnOpen?: boolean
 }
 
 type Section = 'general' | 'security' | 'network' | 'startup' | 'updates'
@@ -232,10 +234,14 @@ const IconSecurity = () => (
   </svg>
 )
 
-export default function SettingsModal({ onClose }: SettingsModalProps) {
+export default function SettingsModal({
+  onClose,
+  initialSection = 'general',
+  checkForUpdatesOnOpen = false,
+}: SettingsModalProps) {
   const { t, setLangPref } = useLanguage()
   const { setThemePref } = useTheme()
-  const [section, setSection] = useState<Section>('general')
+  const [section, setSection] = useState<Section>(initialSection)
   const [settings, setSettings] = useState<DesktopSettings>({
     apiHome: '',
     sqliteDbPath: '',
@@ -492,7 +498,9 @@ export default function SettingsModal({ onClose }: SettingsModalProps) {
 
           {/* Right panel */}
           <div className="flex-1 overflow-y-auto px-6 py-5 dark:bg-[#141419]">
-            {section === 'updates' && <AppUpdatePanel />}
+            {section === 'updates' && (
+              <AppUpdatePanel checkOnMount={checkForUpdatesOnOpen} />
+            )}
             {section === 'general' && (
               <div>
                 <div className="mb-1">
