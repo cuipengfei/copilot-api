@@ -446,6 +446,40 @@ describe("running server config reload", () => {
     expect(dependenciesA.refreshCodexCredentials).toHaveBeenCalledTimes(1)
   })
 
+  test("discards failed refresh persistence for a new sign-in without losing another account's retry", async () => {
+    const accountA = createCodexCredentials("pending-signin-a")
+    const accountB = createCodexCredentials("pending-signin-b")
+    const createDependencies = (snapshot: CodexCredentials) => ({
+      getCurrentCredentials: () => null,
+      persistCodexCredentials: mock(() =>
+        Promise.resolve(),
+      ).mockRejectedValueOnce(new Error("disk unavailable")),
+      refreshCodexCredentials: mock(() =>
+        Promise.resolve({ ...snapshot, accessToken: "rotated-access" }),
+      ),
+    })
+    const dependenciesA = createDependencies(accountA)
+    const dependenciesB = createDependencies(accountB)
+    for (const [snapshot, dependencies] of [
+      [accountA, dependenciesA],
+      [accountB, dependenciesB],
+    ] as const) {
+      const failure = await tokens
+        .refreshCodexCredentialsOnce(snapshot, dependencies)
+        .catch((error: unknown) => error)
+      expect(failure).toHaveProperty("message", "disk unavailable")
+    }
+    spyOn(credentials, "writeCodexCredentials").mockResolvedValue(undefined)
+    await tokens.persistCodexCredentials({
+      ...accountA,
+      accessToken: "new-signin-access",
+    })
+    await tokens.refreshCodexCredentialsOnce(accountA, dependenciesA)
+    await tokens.refreshCodexCredentialsOnce(accountB, dependenciesB)
+    expect(dependenciesA.refreshCodexCredentials).toHaveBeenCalledTimes(2)
+    expect(dependenciesB.refreshCodexCredentials).toHaveBeenCalledTimes(1)
+  })
+
   test("does not replace the active account when an old Codex refresh persists", async () => {
     saveConfig({
       providers: {

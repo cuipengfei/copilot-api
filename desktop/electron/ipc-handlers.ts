@@ -255,7 +255,11 @@ export function registerIpcHandlers(
       getGitHubUser,
       getCopilotAccountType,
       readSettings,
-      saveToken: (token) => saveCredentialsAndRefresh(() => saveToken(token)),
+      saveToken: (token, signal) =>
+        saveCredentialsAndRefresh(() => {
+          signal.throwIfAborted()
+          return saveToken(token)
+        }),
       writeSettings,
       onSuccess: () => {
         if (!mainWindow.isDestroyed()) {

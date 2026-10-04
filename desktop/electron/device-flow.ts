@@ -17,7 +17,7 @@ export interface DeviceFlowTokenDependencies {
     token: string,
   ) => Promise<DesktopSettings['accountType']>
   readSettings: () => Promise<DesktopSettings>
-  saveToken: (token: string) => Promise<void>
+  saveToken: (token: string, signal: AbortSignal) => Promise<void>
   writeSettings: (settings: DesktopSettings) => Promise<void>
   onSuccess: () => void
 }
@@ -46,7 +46,7 @@ export function createDeviceFlowTokenHandler(
       signal.throwIfAborted()
       const settings = await dependencies.readSettings()
       signal.throwIfAborted()
-      await dependencies.saveToken(token)
+      await dependencies.saveToken(token, signal)
       signal.throwIfAborted()
       await dependencies.writeSettings({ ...settings, accountType })
       signal.throwIfAborted()

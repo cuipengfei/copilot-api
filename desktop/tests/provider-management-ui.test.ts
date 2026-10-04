@@ -10,6 +10,7 @@ import type {
   ProviderManagementConfig,
   ProviderManagementUpdate,
   ProviderModelOptions,
+  ServerStatus,
 } from '../src/types/ipc'
 
 const fixture: ProviderManagementConfig = {
@@ -147,6 +148,51 @@ async function changeText(
   })
 }
 describe('provider management UI', () => {
+  test('restores the running dashboard and address after an automatic restart', async () => {
+    let notify: ((status: ServerStatus) => void) | undefined
+    Object.assign(window.electronAPI, {
+      getServerStatus: () =>
+        Promise.resolve({ running: true, port: 4141, host: '127.0.0.1' }),
+      getServerAuthInfo: () => Promise.resolve({ enabled: false }),
+      onServerStatus: (callback: (status: ServerStatus) => void) => {
+        notify = callback
+        return () => {
+          notify = undefined
+        }
+      },
+    })
+    await act(async () => {
+      root.render(
+        createElement(LanguageProvider, {
+          children: createElement(DashboardPage, {
+            authMode: 'provider',
+            defaultPort: 4141,
+            defaultHost: '127.0.0.1',
+            onChangeAuth: () => {},
+          }),
+        }),
+      )
+    })
+    expect(button('Restart')).toBeDefined()
+    await act(async () => {
+      notify?.({ running: false, error: 'server stopped' })
+    })
+    expect(container.textContent).toContain('server stopped')
+    expect(button('Start server')).toBeDefined()
+    await act(async () => {
+      notify?.({ running: true, port: 4242, host: '0.0.0.0' })
+    })
+    expect(container.textContent).not.toContain('server stopped')
+    expect(button('Restart')).toBeDefined()
+    expect(button('Stop')).toBeDefined()
+    expect(container.textContent).toContain('http://localhost:4242/v1')
+    expect(
+      [...container.querySelectorAll('button')].some(
+        (node) => node.textContent === 'Start server',
+      ),
+    ).toBe(false)
+  })
+
   test('uses current Copilot authorization when starting, restarting, and refreshing', async () => {
     const getAuthStatus = mock(() =>
       Promise.resolve({ success: true, mode: 'copilot' }),
