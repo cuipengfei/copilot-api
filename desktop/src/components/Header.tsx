@@ -132,14 +132,15 @@ export default function Header({
           {isRunning && onStop && (
             <button
               onClick={onStop}
-              className="inline-flex items-center gap-1.5 px-2.5 py-1 text-[13px] border border-red-200 text-red-500 rounded-md hover:bg-red-50 dark:border-red-500/30 dark:hover:bg-red-500/15 transition-colors"
+              disabled={isRestarting}
+              className="inline-flex items-center gap-1.5 px-2.5 py-1 text-[13px] border border-red-200 text-red-500 rounded-md hover:bg-red-50 dark:border-red-500/30 dark:hover:bg-red-500/15 disabled:opacity-50 transition-colors"
             >
               <IconStop />
               {t('header.stop')}
             </button>
           )}
 
-          {isRunning ?
+          {isRunning && !isRestarting ?
             <div className="flex items-center gap-1.5 bg-green-50 border border-green-200 rounded-full px-2.5 py-1 dark:bg-green-500/15 dark:border-green-500/25">
               <div className="w-1.5 h-1.5 rounded-full bg-green-500" />
               <span className="text-[13px] font-semibold text-green-700 dark:text-green-400">
@@ -150,7 +151,7 @@ export default function Header({
             <div className="flex items-center gap-1.5 bg-yellow-50 border border-yellow-200 rounded-full px-2.5 py-1 dark:bg-yellow-500/15 dark:border-yellow-500/25">
               <div className="w-1.5 h-1.5 rounded-full bg-yellow-500" />
               <span className="text-[13px] font-semibold text-yellow-700 dark:text-yellow-400">
-                {t('header.notStarted')}
+                {isRestarting ? t('header.restarting') : t('header.notStarted')}
               </span>
             </div>
           : null}

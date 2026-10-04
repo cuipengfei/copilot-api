@@ -355,7 +355,14 @@ export default function DashboardPage({
   // Watch server status changes and only surface unexpected stops.
   useEffect(() => {
     const unsubscribe = window.electronAPI.onServerStatus((status) => {
+      if (status.restarting) {
+        setRestarting(true)
+        setStartError('')
+        setServerError('')
+        return
+      }
       if (status.running) {
+        setRestarting(false)
         if (status.port) setPort(String(status.port))
         if (status.host !== undefined) setHost(status.host)
         setStarted(true)
@@ -365,6 +372,7 @@ export default function DashboardPage({
       }
       if (!status.running) {
         if (!intentionalStop.current) {
+          setRestarting(false)
           setServerError(status.error ?? t('dashboard.serverUnexpectedStop'))
           setStarted(false)
           void window.electronAPI
@@ -402,17 +410,18 @@ export default function DashboardPage({
 
   // Fetch dashboard and token usage data after the server starts.
   useEffect(() => {
-    if (started) {
+    if (started && !restarting) {
       void fetchData()
       void fetchTokenUsageData(tokenUsagePeriod, tokenUsageEventsPage)
     }
-  }, [started])
+  }, [started, restarting])
 
   useEffect(() => {
     if (!started) {
       setServerAuthInfo({ enabled: false })
       return
     }
+    if (restarting) return
 
     window.electronAPI
       .getServerAuthInfo()
@@ -420,7 +429,7 @@ export default function DashboardPage({
       .catch(() => {
         setServerAuthInfo({ enabled: false })
       })
-  }, [started])
+  }, [started, restarting])
 
   const refreshAuthMode = async () => {
     const status = await window.electronAPI.getAuthStatus()
@@ -653,12 +662,13 @@ export default function DashboardPage({
   const handleTokenUsagePeriodChange = (nextPeriod: TokenUsagePeriod) => {
     setTokenUsagePeriod(nextPeriod)
     setTokenUsageEventsPage(1)
-    if (started) void fetchTokenUsageData(nextPeriod, 1)
+    if (started && !restarting) void fetchTokenUsageData(nextPeriod, 1)
   }
 
   const handleTokenUsageEventsPageChange = (nextPage: number) => {
     setTokenUsageEventsPage(nextPage)
-    if (started) void fetchTokenUsageEvents(tokenUsagePeriod, nextPage)
+    if (started && !restarting)
+      void fetchTokenUsageEvents(tokenUsagePeriod, nextPage)
   }
 
   const handleRefreshActiveTab = () => {
@@ -726,7 +736,8 @@ export default function DashboardPage({
     {
       label: t('dashboard.overviewStatus'),
       tone: 'green',
-      value: t('dashboard.overviewRunning'),
+      value:
+        restarting ? t('header.restarting') : t('dashboard.overviewRunning'),
     },
     {
       label: t('dashboard.overviewPort'),
@@ -826,7 +837,7 @@ export default function DashboardPage({
         {showRefreshButton && (
           <button
             onClick={handleRefreshActiveTab}
-            disabled={isActiveTabRefreshing}
+            disabled={isActiveTabRefreshing || restarting}
             className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md border border-line bg-surface px-2.5 text-[13px] text-ink-soft transition-colors hover:bg-sunken hover:text-ink disabled:opacity-40"
           >
             <IconRefresh spinning={isActiveTabRefreshing} />

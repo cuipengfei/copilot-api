@@ -150,7 +150,74 @@ async function changeText(
   })
 }
 describe('provider management UI', () => {
-  test('restores the running dashboard and address after an automatic restart', async () => {
+  test.each(['Logs', 'Token usage', 'Model mappings'])(
+    'keeps the %s tab during an automatic restart',
+    async (tabLabel) => {
+      let notify: ((status: ServerStatus) => void) | undefined
+      Object.assign(window.electronAPI, {
+        getServerStatus: () =>
+          Promise.resolve({ running: true, port: 4141, host: '127.0.0.1' }),
+        getServerAuthInfo: () => Promise.resolve({ enabled: false }),
+        getModelMappingsConfig: () =>
+          Promise.resolve({ configPath: 'config.json', modelMappings: {} }),
+        onServerStatus: (callback: (status: ServerStatus) => void) => {
+          notify = callback
+          return () => {
+            notify = undefined
+          }
+        },
+      })
+      await act(async () => {
+        root.render(
+          createElement(LanguageProvider, {
+            children: createElement(DashboardPage, {
+              authMode: 'provider',
+              defaultPort: 4141,
+              defaultHost: '127.0.0.1',
+              onChangeAuth: () => {},
+            }),
+          }),
+        )
+      })
+      await act(async () => button(tabLabel).click())
+      if (tabLabel === 'Model mappings') {
+        await act(async () => button('Add mapping').click())
+        await changeText(
+          container.querySelector<HTMLInputElement>('input')!,
+          'draft-model',
+        )
+      }
+      const activeTab = () =>
+        container.querySelector('[role="tab"][aria-selected="true"]')
+      expect(activeTab()?.textContent).toBe(tabLabel)
+      const modelFetchCount = fetchModels.mock.calls.length
+
+      await act(async () => {
+        notify?.({ running: false, restarting: true })
+      })
+      expect(activeTab()?.textContent).toBe(tabLabel)
+      expect(container.textContent).not.toContain('Server stopped unexpectedly')
+      expect(container.textContent).not.toContain('Start server')
+      expect(button('Restarting…').disabled).toBe(true)
+      expect(button('Stop').disabled).toBe(true)
+      expect(fetchModels).toHaveBeenCalledTimes(modelFetchCount)
+
+      await act(async () => {
+        notify?.({ running: true, port: 4141, host: '127.0.0.1' })
+      })
+      expect(activeTab()?.textContent).toBe(tabLabel)
+      expect(button('Restart').disabled).toBe(false)
+      expect(button('Stop').disabled).toBe(false)
+      expect(fetchModels).toHaveBeenCalledTimes(modelFetchCount + 1)
+      if (tabLabel === 'Model mappings') {
+        expect(container.querySelector<HTMLInputElement>('input')?.value).toBe(
+          'draft-model',
+        )
+      }
+    },
+  )
+
+  test('reports a failed restart and recovers when the server starts again', async () => {
     let notify: ((status: ServerStatus) => void) | undefined
     Object.assign(window.electronAPI, {
       getServerStatus: () =>
@@ -177,10 +244,14 @@ describe('provider management UI', () => {
     })
     expect(button('Restart')).toBeDefined()
     await act(async () => {
+      notify?.({ running: false, restarting: true })
+    })
+    await act(async () => {
       notify?.({ running: false, error: 'server stopped' })
     })
     expect(container.textContent).toContain('server stopped')
     expect(button('Start server')).toBeDefined()
+    expect(container.textContent).not.toContain('Restarting…')
     await act(async () => {
       notify?.({ running: true, port: 4242, host: '0.0.0.0' })
     })
@@ -193,7 +264,72 @@ describe('provider management UI', () => {
         (node) => node.textContent === 'Start server',
       ),
     ).toBe(false)
+    await act(async () => {
+      notify?.({ running: false })
+    })
+    expect(container.textContent).toContain('Server stopped unexpectedly')
+    expect(button('Start server')).toBeDefined()
   })
+
+  test.each([true, false])(
+    'keeps manual restart controls disabled until startup finishes (running=%s)',
+    async (running) => {
+      let notify: ((status: ServerStatus) => void) | undefined
+      const pendingStart = Promise.withResolvers<ServerStatus>()
+      Object.assign(window.electronAPI, {
+        getServerStatus: () =>
+          Promise.resolve({ running: true, port: 4141, host: '127.0.0.1' }),
+        getServerAuthInfo: () => Promise.resolve({ enabled: false }),
+        onServerStatus: (callback: (status: ServerStatus) => void) => {
+          notify = callback
+          return () => {
+            notify = undefined
+          }
+        },
+        stopServer: () => {
+          notify?.({ running: false })
+          return Promise.resolve()
+        },
+        startServer: () => pendingStart.promise,
+      })
+      await act(async () => {
+        root.render(
+          createElement(LanguageProvider, {
+            children: createElement(DashboardPage, {
+              authMode: 'provider',
+              defaultPort: 4141,
+              defaultHost: '127.0.0.1',
+              onChangeAuth: () => {},
+            }),
+          }),
+        )
+      })
+      await act(async () => button('Logs').click())
+      await act(async () => button('Restart').click())
+      expect(button('Restarting…').disabled).toBe(true)
+      expect(button('Stop').disabled).toBe(true)
+      expect(container.textContent).not.toContain('Server stopped unexpectedly')
+      expect(
+        container.querySelector('[role="tab"][aria-selected="true"]')
+          ?.textContent,
+      ).toBe('Logs')
+
+      await act(async () => {
+        pendingStart.resolve(
+          running ?
+            { running: true, port: 4141, host: '127.0.0.1' }
+          : { running: false, error: 'startup failed' },
+        )
+      })
+      if (running) {
+        expect(button('Restart').disabled).toBe(false)
+        expect(button('Stop').disabled).toBe(false)
+      } else {
+        expect(container.textContent).toContain('startup failed')
+        expect(button('Start server')).toBeDefined()
+      }
+    },
+  )
 
   test('uses current Copilot authorization when starting, restarting, and refreshing', async () => {
     const getAuthStatus = mock(() =>

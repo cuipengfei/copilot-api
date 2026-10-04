@@ -181,14 +181,16 @@ function getServerPath(): string {
   return path.join(app.getAppPath(), '..', 'dist', 'main.js')
 }
 
+interface ServerStartOptions {
+  verbose?: boolean
+  showToken?: boolean
+  host?: string
+  proxy?: DesktopProxySettings
+}
+
 export async function startServer(
   port: number,
-  serverOptions?: {
-    verbose?: boolean
-    showToken?: boolean
-    host?: string
-    proxy?: DesktopProxySettings
-  },
+  serverOptions?: ServerStartOptions,
 ): Promise<ServerStatus> {
   const host = serverOptions?.host?.trim() ?? ''
   let bindHostname: string
@@ -223,12 +225,34 @@ export async function startServer(
     }
   }
 
-  // Stop the previous instance first, so its own listener is never reported as
-  // a conflicting process holding the port.
-  if (serverProcess) {
-    await stopServer()
+  const restarting = serverProcess !== null
+  if (restarting) {
+    statusCallback?.({ running: false, restarting: true })
   }
 
+  try {
+    // A planned restart must not emit an unexpected-stop event.
+    await stopServerProcess(false)
+    const status = await launchServer(port, host, bindHostname, serverOptions)
+    if (status.running || restarting) statusCallback?.(status)
+    return status
+  } catch (error) {
+    if (restarting) {
+      statusCallback?.({
+        running: false,
+        error: error instanceof Error ? error.message : String(error),
+      })
+    }
+    throw error
+  }
+}
+
+async function launchServer(
+  port: number,
+  host: string,
+  bindHostname: string,
+  serverOptions?: ServerStartOptions,
+): Promise<ServerStatus> {
   const probe = await checkPortAvailable(port, bindHostname)
   if (!probe.available) {
     if (isInvalidBindErrorCode(probe.code)) {
@@ -319,7 +343,6 @@ export async function startServer(
   currentHost = host
 
   const status: ServerStatus = { running: true, port, host }
-  statusCallback?.(status)
   return status
 }
 
@@ -385,15 +408,21 @@ function waitForProcessExit(proc: UtilityProcess): Promise<void> {
   })
 }
 
-export async function stopServer(): Promise<void> {
+async function stopServerProcess(notifyStatus: boolean): Promise<void> {
   if (!serverProcess) return
   const proc = serverProcess
+  // Ignore the runtime exit handler for a process we deliberately stop,
+  // including nonzero exit codes produced by termination on Windows.
+  serverProcess = null
   await waitForProcessExit(proc)
 
-  if (serverProcess === proc) {
-    serverProcess = null
+  if (notifyStatus && !serverProcess) {
     statusCallback?.({ running: false })
   }
+}
+
+export async function stopServer(): Promise<void> {
+  await stopServerProcess(true)
 }
 
 export function isRunning(): boolean {
