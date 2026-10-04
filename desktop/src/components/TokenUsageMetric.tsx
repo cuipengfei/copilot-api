@@ -49,7 +49,7 @@ export function TokenUsageMetric({
   const title = getTokenUsageValueLines(value).join('\n')
 
   return (
-    <div className={`rounded-lg border px-2.5 py-2 ${toneClasses}`}>
+    <div className={`min-w-0 rounded-lg border px-2.5 py-2 ${toneClasses}`}>
       <div
         className={`text-[13px] font-bold leading-4 ${
           loading ? 'animate-pulse opacity-40' : ''
@@ -58,7 +58,9 @@ export function TokenUsageMetric({
       >
         {loading ? '…' : <TokenUsageValueLines value={value} />}
       </div>
-      <div className="mt-1 text-[13px] leading-4 opacity-70">{label}</div>
+      <div className="mt-1 whitespace-nowrap text-[13px] leading-4 opacity-70">
+        {label}
+      </div>
     </div>
   )
 }
@@ -72,19 +74,12 @@ export function TokenUsageCostMetric({
   loading: boolean
   value: TokenUsageMetricValue
 }) {
-  const title = getTokenUsageValueLines(value).join('\n')
-
   return (
-    <div className="min-h-[72px] rounded-lg border border-amber-200 bg-amber-50 px-2.5 py-2 text-amber-700 dark:border-amber-500/30 dark:bg-amber-500/15 dark:text-amber-400">
-      <div className="text-[13px] leading-4 opacity-70">{label}</div>
-      <div
-        className={`mt-1 min-h-[2rem] text-[13px] font-bold leading-4 ${
-          loading ? 'animate-pulse opacity-40' : ''
-        }`}
-        title={title}
-      >
-        {loading ? '…' : <TokenUsageValueLines value={value} />}
-      </div>
-    </div>
+    <TokenUsageMetric
+      label={label}
+      loading={loading}
+      tone="amber"
+      value={value}
+    />
   )
 }

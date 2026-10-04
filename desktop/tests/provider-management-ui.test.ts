@@ -151,6 +151,65 @@ async function changeText(
     node.dispatchEvent(new Event('input', { bubbles: true }))
   })
 }
+
+async function renderTokenUsageDashboard(summary: TokenUsageSummary) {
+  Object.assign(window.electronAPI, {
+    getServerStatus: () => Promise.resolve({ running: true }),
+    getServerAuthInfo: () => Promise.resolve({ enabled: false }),
+    fetchTokenUsage: () => Promise.resolve(summary),
+    fetchTokenUsageDaily: () => Promise.resolve({ ...summary, days: [] }),
+    fetchTokenUsageEvents: () =>
+      Promise.resolve({
+        period: summary.period,
+        range: summary.range,
+        items: [],
+        page: 1,
+        page_size: 10,
+        total: 0,
+        total_pages: 1,
+      }),
+  })
+  await act(async () => {
+    root.render(
+      createElement(LanguageProvider, {
+        children: createElement(DashboardPage, {
+          authMode: 'provider',
+          defaultPort: 4141,
+          defaultHost: '127.0.0.1',
+          onChangeAuth: () => {},
+        }),
+      }),
+    )
+  })
+  await act(async () => button('Token usage').click())
+}
+
+function createTokenUsageSummary(
+  costs: TokenUsageSummary['totals']['costs'],
+): TokenUsageSummary {
+  const totals = {
+    request_count: 10,
+    input_tokens: 200,
+    output_tokens: 9000,
+    cache_read_input_tokens: 600,
+    cache_creation_input_tokens: 200,
+    costs,
+    total_tokens: 10000,
+  }
+  return {
+    period: 'today',
+    range: { start_ms: 0, end_ms: 1, start_utc: '', end_utc: '' },
+    totals,
+    byModel: [{ ...totals, model: 'cached-model' }],
+  }
+}
+
+function leafDivTexts(): Array<string | null> {
+  return [...container.querySelectorAll('div')]
+    .filter((node) => node.childElementCount === 0)
+    .map((node) => node.textContent)
+}
+
 describe('provider management UI', () => {
   test('shows token-weighted cache hit rates in the model breakdown', async () => {
     const totals = {
@@ -159,7 +218,10 @@ describe('provider management UI', () => {
       output_tokens: 9000,
       cache_read_input_tokens: 600,
       cache_creation_input_tokens: 200,
-      costs: [],
+      costs: [
+        { currency: 'USD', amount: 1.25, total_cost_nanos: 1_250_000_000 },
+        { currency: 'CNY', amount: 9.5, total_cost_nanos: 9_500_000_000 },
+      ],
       total_tokens: 10000,
     }
     const summary: TokenUsageSummary = {
@@ -212,6 +274,19 @@ describe('provider management UI', () => {
         node.childElementCount === 0 && node.textContent === 'Cache hit rate',
     )
     expect(metricLabel?.parentElement?.textContent).toBe('60.0%Cache hit rate')
+    for (const [label, amount] of [
+      ['Cost (USD)', '$1.250000'],
+      ['Cost (CNY)', '¥9.500000'],
+    ]) {
+      const costLabel = [...container.querySelectorAll('div')].find(
+        (node) => node.childElementCount === 0 && node.textContent === label,
+      )
+      expect(
+        [...costLabel!.parentElement!.querySelectorAll('span')].map(
+          (node) => node.textContent,
+        ),
+      ).toEqual([amount])
+    }
     const table = container.querySelector('table')
     expect(
       [...table!.querySelectorAll('th')].map((node) => node.textContent),
@@ -233,6 +308,77 @@ describe('provider management UI', () => {
     expect(rows.every((row) => row.querySelectorAll('td').length === 9)).toBe(
       true,
     )
+  })
+
+  test('only shows cost metrics for currencies recorded in the summary', async () => {
+    await renderTokenUsageDashboard(
+      createTokenUsageSummary([
+        { currency: 'USD', amount: 1.25, total_cost_nanos: 1_250_000_000 },
+      ]),
+    )
+
+    const labels = leafDivTexts()
+    expect(labels).toContain('Cost (USD)')
+    expect(labels).not.toContain('Cost (CNY)')
+  })
+
+  test('falls back to a single cost metric when no costs are recorded', async () => {
+    await renderTokenUsageDashboard(createTokenUsageSummary([]))
+
+    const labels = leafDivTexts()
+    expect(labels).toContain('Cost')
+    expect(labels).not.toContain('Cost (USD)')
+    expect(labels).not.toContain('Cost (CNY)')
+    const costLabel = [...container.querySelectorAll('div')].find(
+      (node) => node.childElementCount === 0 && node.textContent === 'Cost',
+    )
+    expect(costLabel?.parentElement?.textContent).toBe('—Cost')
+  })
+
+  test('shows Copilot percentages without rounding 99.9 percent to a full bar', async () => {
+    const quota = {
+      entitlement: 1500,
+      remaining: 1499,
+      quota_remaining: 0,
+      percent_remaining: 99.9,
+      unlimited: false,
+    }
+    Object.assign(window.electronAPI, {
+      getAuthStatus: () => Promise.resolve({ success: true, mode: 'copilot' }),
+      getServerStatus: () => Promise.resolve({ running: true }),
+      getServerAuthInfo: () => Promise.resolve({ enabled: false }),
+      fetchUsage: () =>
+        Promise.resolve({
+          quota_snapshots: {
+            premium_interactions: quota,
+            chat: quota,
+            completions: { ...quota, unlimited: true },
+          },
+        }),
+    })
+    await act(async () => {
+      root.render(
+        createElement(LanguageProvider, {
+          children: createElement(DashboardPage, {
+            authMode: 'copilot',
+            defaultPort: 4141,
+            defaultHost: '127.0.0.1',
+            onChangeAuth: () => {},
+          }),
+        }),
+      )
+    })
+    expect(container.textContent).toContain('1 / 1500 · 0.1% used')
+    expect(container.textContent).toContain('1499 / 1500 · 99.9% remaining')
+    const quotaBar = (label: string) =>
+      [...container.querySelectorAll('span')]
+        .find((node) => node.textContent === label)
+        ?.parentElement?.parentElement?.querySelector<HTMLDivElement>(
+          'div[style]',
+        )
+    expect(parseFloat(quotaBar('Premium')!.style.width)).toBeCloseTo(0.1)
+    expect(parseFloat(quotaBar('Chat')!.style.width)).toBe(99.9)
+    expect(quotaBar('Completions')!.style.width).toBe('100%')
   })
 
   test('does not report the update installer stopping the server as a crash', async () => {

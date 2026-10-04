@@ -141,6 +141,8 @@ const en: Locale = {
     authHeader: 'Auth header',
     copy: 'Copy',
     quotaUsage: 'Quota usage',
+    quotaUsedPercent: '{{percent}}% used',
+    quotaRemainingPercent: '{{percent}}% remaining',
     refreshing: 'Refreshing…',
     refresh: 'Refresh',
     tokenUsage: 'Token usage',

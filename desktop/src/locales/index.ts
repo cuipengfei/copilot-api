@@ -132,6 +132,8 @@ export interface Locale {
     authHeader: string
     copy: string
     quotaUsage: string
+    quotaUsedPercent: string
+    quotaRemainingPercent: string
     refreshing: string
     refresh: string
     tokenUsage: string

@@ -8,11 +8,14 @@ import {
 } from '../components/TokenUsageMetric'
 import { useLanguage } from '../contexts/LanguageContext'
 import {
+  getCopilotQuotaPercentRemaining,
+  getCopilotQuotaRemaining,
   getNonEmptyUsageText,
   getPremiumUsedText,
   hasCopilotQuotaValue,
   shouldShowCopilotQuotaUsage,
   shouldShowCopilotUsageSummary,
+  type CopilotQuotaDetailLike,
 } from '../lib/copilot-usage-display'
 import {
   formatCacheHitRate,
@@ -43,11 +46,7 @@ interface DashboardPageProps {
   onChangeAuth: () => void
 }
 
-interface QuotaDetail {
-  entitlement: number
-  quota_remaining: number
-  unlimited: boolean
-}
+type QuotaDetail = CopilotQuotaDetailLike
 
 interface UsageInfo {
   copilot_plan?: string
@@ -214,17 +213,6 @@ const IconLogs = () => (
     <path d="M13 15h4" />
   </svg>
 )
-
-function calcUsedPct(q: QuotaDetail): number {
-  if (q.unlimited || q.entitlement === 0) return 0
-  const used = q.entitlement - q.quota_remaining
-  return Math.min(100, Math.round((used / q.entitlement) * 100))
-}
-
-function calcRemainingPct(q: QuotaDetail): number {
-  if (q.unlimited || q.entitlement === 0) return 100
-  return Math.min(100, Math.round((q.quota_remaining / q.entitlement) * 100))
-}
 
 function getQuotaBarColor(pct: number, isUsed: boolean): string {
   if (isUsed) {
@@ -1231,23 +1219,30 @@ function QuotaBar({
   loading: boolean
   mode: 'used' | 'remaining'
 }) {
-  const pct =
-    quota ?
-      mode === 'used' ?
-        calcUsedPct(quota)
-      : calcRemainingPct(quota)
-    : 0
+  const { t } = useLanguage()
+  const remainingPct = quota ? getCopilotQuotaPercentRemaining(quota) : 0
+  const pct = quota && mode === 'used' ? 100 - remainingPct : remainingPct
   const colorClass = getQuotaBarColor(pct, mode === 'used')
 
   let displayText = '—'
   if (quota) {
+    const entitlement = quota.entitlement ?? 0
+    const remaining = getCopilotQuotaRemaining(quota) ?? 0
     if (quota.unlimited) {
       displayText = '∞'
     } else if (mode === 'used') {
-      const used = Math.floor(quota.entitlement - quota.quota_remaining)
-      displayText = `${used} / ${Math.floor(quota.entitlement)}`
+      const used = Math.floor(entitlement - remaining)
+      displayText = `${used} / ${Math.floor(entitlement)}`
     } else {
-      displayText = `${Math.floor(quota.quota_remaining)} / ${Math.floor(quota.entitlement)}`
+      displayText = `${Math.floor(remaining)} / ${Math.floor(entitlement)}`
+    }
+    if (!quota.unlimited) {
+      displayText += ` · ${t(
+        mode === 'used' ?
+          'dashboard.quotaUsedPercent'
+        : 'dashboard.quotaRemainingPercent',
+        { percent: pct.toFixed(1) },
+      )}`
     }
   }
 
@@ -1299,6 +1294,7 @@ function TokenUsagePanel({
 }) {
   const [trendModel, setTrendModel] = useState(ALL_MODELS_VALUE)
   const totals = tokenUsage?.totals ?? EMPTY_TOKEN_USAGE_TOTALS
+  const costCurrencies = [...new Set(totals.costs.map((cost) => cost.currency))]
   const periods: Array<{ key: TokenUsagePeriod; label: string }> = [
     { key: 'today', label: t('dashboard.tokenUsagePeriodToday') },
     { key: 'this_week', label: t('dashboard.tokenUsagePeriodThisWeek') },
@@ -1338,7 +1334,7 @@ function TokenUsagePanel({
         </div>
       </div>
 
-      <div className="grid grid-cols-2 gap-2 lg:grid-cols-4">
+      <div className="grid grid-cols-6 gap-2">
         <TokenUsageMetric
           label={t('dashboard.tokenUsageTotal')}
           value={formatTokenCount(calcTokenTotal(totals))}
@@ -1381,11 +1377,23 @@ function TokenUsagePanel({
           loading={loading}
           tone="violet"
         />
-        <TokenUsageCostMetric
-          label={t('dashboard.tokenUsageCost')}
-          value={formatTokenCosts(totals.costs)}
-          loading={loading}
-        />
+        {costCurrencies.length > 0 ?
+          costCurrencies.map((currency) => (
+            <TokenUsageCostMetric
+              key={currency}
+              label={`${t('dashboard.tokenUsageCost')} (${currency})`}
+              value={formatTokenCost(
+                totals.costs.find((cost) => cost.currency === currency),
+              )}
+              loading={loading}
+            />
+          ))
+        : <TokenUsageCostMetric
+            label={t('dashboard.tokenUsageCost')}
+            value={formatTokenCosts(totals.costs)}
+            loading={loading}
+          />
+        }
       </div>
 
       {period !== 'today' && (

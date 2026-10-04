@@ -150,7 +150,10 @@ describe("usage viewer model cache hit rate", () => {
       output_tokens: 9000,
       cache_read_input_tokens: 600,
       cache_creation_input_tokens: 200,
-      costs: [],
+      costs: [
+        { currency: "USD", amount: 1.25, total_cost_nanos: 1_250_000_000 },
+        { currency: "CNY", amount: 9.5, total_cost_nanos: 9_500_000_000 },
+      ],
       total_tokens: 10000,
     }
     const examples = [
@@ -227,6 +230,22 @@ describe("usage viewer model cache hit rate", () => {
       ).toContain("No token usage recorded")
       state.tokenUsageSummary = summary
       win.document.body.innerHTML = viewer.renderTokenUsageSection()
+      for (const [label, amount] of [
+        ["Cost (USD)", "$1.250000"],
+        ["Cost (CNY)", "¥9.500000"],
+      ]) {
+        const costMetric = [
+          ...win.document.querySelectorAll(".metric-card"),
+        ].find(
+          (node) =>
+            node.querySelector(".metric-label")?.textContent?.trim() === label,
+        )
+        expect(
+          [...costMetric!.querySelectorAll(".metric-value span")].map(
+            (node) => node.textContent,
+          ),
+        ).toEqual([amount])
+      }
       const cacheMetric = [
         ...win.document.querySelectorAll(".metric-card"),
       ].find(
@@ -256,6 +275,195 @@ describe("usage viewer model cache hit rate", () => {
           )
           ?.querySelector(".metric-value")?.textContent,
       ).toBe("—")
+    } finally {
+      await win.happyDOM.close()
+    }
+  })
+})
+
+describe("usage viewer cost metrics", () => {
+  test("only renders cost metrics for currencies recorded in the summary", async () => {
+    const html = await readUsageViewerPage()
+    const source = [
+      extractInlineFunctionRange(
+        html,
+        "        function escapeHtml(value) {",
+        "        function getErrorMessage(error) {",
+      ),
+      extractInlineFunctionRange(
+        html,
+        "        function formatNumber(value) {",
+        "        function formatDateTime(value) {",
+      ),
+      extractInlineFunctionRange(
+        html,
+        "        function renderTokenUsageValueLines(value) {",
+        "        function renderTokenUsageEventsTable(eventsPage) {",
+      ),
+      extractInlineFunctionRange(
+        html,
+        "        function renderEmptyState(message) {",
+        "        function renderSpinner() {",
+      ),
+      extractInlineFunctionRange(
+        html,
+        "        function renderTokenUsageSection() {",
+        "        function getTokenUsageTrendMetrics() {",
+      ),
+      "({ renderTokenUsageSection })",
+    ].join("\n")
+    const state: {
+      isTokenUsageLoading: boolean
+      tokenUsageSummary?: TokenUsageSummary
+    } = { isTokenUsageLoading: false }
+    const viewer = runInNewContext(source, {
+      state,
+      renderTokenUsageRangeText: () => "Today",
+      renderTokenUsageDailyTrend: () => "",
+      renderPaginationButton: () => "",
+      renderTokenUsageEventsTable: () => "",
+    }) as { renderTokenUsageSection: () => string }
+    const summaryFor = (
+      costs: TokenUsageSummary["totals"]["costs"],
+    ): TokenUsageSummary => ({
+      period: "today",
+      range: { start_ms: 0, end_ms: 1, start_utc: "", end_utc: "" },
+      totals: {
+        request_count: 10,
+        input_tokens: 200,
+        output_tokens: 9000,
+        cache_read_input_tokens: 600,
+        cache_creation_input_tokens: 200,
+        costs,
+        total_tokens: 10000,
+      },
+      byModel: [],
+    })
+    const win = new Window()
+    try {
+      state.tokenUsageSummary = summaryFor([
+        { currency: "USD", amount: 1.25, total_cost_nanos: 1_250_000_000 },
+      ])
+      win.document.body.innerHTML = viewer.renderTokenUsageSection()
+      const labels = [...win.document.querySelectorAll(".metric-label")].map(
+        (node) => node.textContent?.trim(),
+      )
+      expect(labels).toContain("Cost (USD)")
+      expect(labels).not.toContain("Cost (CNY)")
+
+      state.tokenUsageSummary = summaryFor([])
+      win.document.body.innerHTML = viewer.renderTokenUsageSection()
+      const cards = [...win.document.querySelectorAll(".metric-card")]
+      const cardLabels = cards.map((node) =>
+        node.querySelector(".metric-label")?.textContent?.trim(),
+      )
+      expect(cardLabels).toContain("Cost")
+      expect(cardLabels).not.toContain("Cost (USD)")
+      expect(cardLabels).not.toContain("Cost (CNY)")
+      const costCard = cards.find(
+        (node) =>
+          node.querySelector(".metric-label")?.textContent?.trim() === "Cost",
+      )
+      expect(costCard?.querySelector(".metric-value")?.textContent).toBe("—")
+    } finally {
+      await win.happyDOM.close()
+    }
+  })
+})
+
+describe("usage viewer Copilot quota", () => {
+  test("uses upstream percentages and supports legacy remaining fields", async () => {
+    const html = await readUsageViewerPage()
+    const source = [
+      extractInlineFunctionRange(
+        html,
+        "        function escapeHtml(value) {",
+        "        function getErrorMessage(error) {",
+      ),
+      extractInlineFunctionRange(
+        html,
+        "        function getCopilotQuotaRemaining(details) {",
+        "        function formatObject(obj) {",
+      ),
+      "({ renderQuotaCard, getCopilotQuotaRemaining, getCopilotQuotaPercentRemaining })",
+    ].join("\n")
+    const viewer = runInNewContext(source) as {
+      renderQuotaCard: (
+        title: string,
+        details: import("../desktop/src/lib/copilot-usage-display").CopilotQuotaDetailLike,
+      ) => string
+      getCopilotQuotaPercentRemaining: (
+        details: import("../desktop/src/lib/copilot-usage-display").CopilotQuotaDetailLike,
+      ) => number
+      getCopilotQuotaRemaining: (
+        details: import("../desktop/src/lib/copilot-usage-display").CopilotQuotaDetailLike,
+      ) => number | null
+    }
+    const quota = {
+      entitlement: 1500,
+      remaining: 1499,
+      quota_remaining: 0,
+      percent_remaining: 99.9,
+      unlimited: false,
+    }
+    const win = new Window()
+    try {
+      win.document.body.innerHTML = viewer.renderQuotaCard(
+        "premium_interactions",
+        quota,
+      )
+      expect(win.document.body.textContent).toContain("0.1% used")
+      expect(win.document.body.textContent).toContain("1 / 1,500")
+      expect(win.document.body.textContent).toContain("1,499 remaining")
+      const bar = win.document.querySelector(".progress-bar-fg")
+      const width = bar?.getAttribute("style")?.match(/width:\s*([\d.]+)%/)?.[1]
+      expect(parseFloat(width ?? "")).toBeCloseTo(0.1)
+      expect(
+        viewer.getCopilotQuotaPercentRemaining({ ...quota, remaining: 1200 }),
+      ).toBe(99.9)
+      expect(
+        viewer.getCopilotQuotaRemaining({
+          remaining: 0,
+          quota_remaining: 1499,
+        }),
+      ).toBe(0)
+      expect(viewer.getCopilotQuotaRemaining({ quota_remaining: 1499 })).toBe(
+        1499,
+      )
+      expect(
+        viewer.getCopilotQuotaPercentRemaining({
+          entitlement: 1500,
+          quota_remaining: 1499,
+        }),
+      ).toBeCloseTo(99.933333)
+      expect(
+        viewer.getCopilotQuotaPercentRemaining({
+          entitlement: 0,
+          remaining: 0,
+        }),
+      ).toBe(100)
+      expect(
+        viewer.getCopilotQuotaRemaining({ remaining: Infinity }),
+      ).toBeNull()
+      expect(
+        viewer.getCopilotQuotaPercentRemaining({ percent_remaining: -10 }),
+      ).toBe(0)
+      expect(
+        viewer.getCopilotQuotaPercentRemaining({ percent_remaining: 110 }),
+      ).toBe(100)
+      expect(
+        viewer.getCopilotQuotaPercentRemaining({
+          unlimited: true,
+          percent_remaining: 0,
+        }),
+      ).toBe(100)
+      win.document.body.innerHTML = viewer.renderQuotaCard("chat", {
+        unlimited: true,
+      })
+      expect(win.document.body.textContent).toContain("Unlimited")
+      expect(
+        win.document.querySelector(".progress-bar-fg")?.getAttribute("style"),
+      ).toContain("width: 100%")
     } finally {
       await win.happyDOM.close()
     }

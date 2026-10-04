@@ -1,6 +1,8 @@
 export interface CopilotQuotaDetailLike {
   entitlement?: number
+  remaining?: number
   quota_remaining?: number
+  percent_remaining?: number
   unlimited?: boolean
 }
 
@@ -22,6 +24,28 @@ function isFiniteNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value)
 }
 
+export function getCopilotQuotaRemaining(
+  quota: CopilotQuotaDetailLike | null | undefined,
+): number | null {
+  if (isFiniteNumber(quota?.remaining)) return quota.remaining
+  if (isFiniteNumber(quota?.quota_remaining)) return quota.quota_remaining
+  return null
+}
+
+export function getCopilotQuotaPercentRemaining(
+  quota: CopilotQuotaDetailLike,
+): number {
+  if (quota.unlimited) return 100
+  const percent =
+    isFiniteNumber(quota.percent_remaining) ? quota.percent_remaining
+    : isFiniteNumber(quota.entitlement) && quota.entitlement > 0 ?
+      ((getCopilotQuotaRemaining(quota) ?? quota.entitlement)
+        / quota.entitlement)
+      * 100
+    : 100
+  return Math.max(0, Math.min(100, percent))
+}
+
 export function getNonEmptyUsageText(
   value: string | null | undefined,
 ): string | null {
@@ -36,7 +60,7 @@ export function hasCopilotQuotaValue(
     quota
     && (quota.unlimited === true
       || (isFiniteNumber(quota.entitlement)
-        && isFiniteNumber(quota.quota_remaining))),
+        && getCopilotQuotaRemaining(quota) !== null)),
   )
 }
 
@@ -47,7 +71,7 @@ export function getPremiumUsedText(
   if (quota.unlimited) return UNLIMITED_QUOTA_TEXT
 
   const entitlement = quota.entitlement ?? 0
-  const quotaRemaining = quota.quota_remaining ?? 0
+  const quotaRemaining = getCopilotQuotaRemaining(quota) ?? 0
 
   return `${Math.floor(entitlement - quotaRemaining)} / ${Math.floor(entitlement)}`
 }

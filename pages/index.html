@@ -349,7 +349,11 @@
       }
 
       .metric-grid-tight {
-        grid-template-columns: repeat(8, minmax(0, 1fr));
+        grid-template-columns: repeat(6, minmax(0, 1fr));
+      }
+
+      .metric-grid-tight .metric-label {
+        white-space: nowrap;
       }
 
       .metric-card {
@@ -468,9 +472,9 @@
         gap: 10px;
       }
 
-      @media (max-width: 1280px) {
+      @media (max-width: 899px) {
         .metric-grid-tight {
-          grid-template-columns: repeat(4, minmax(0, 1fr));
+          grid-template-columns: repeat(3, minmax(0, 1fr));
         }
       }
 
@@ -488,7 +492,7 @@
         }
       }
 
-      @media (max-width: 640px) {
+      @media (max-width: 639px) {
         .main-shell {
           padding: 12px 14px 18px;
         }
@@ -1478,11 +1482,30 @@
          * @param {object} details - The details object for the quota.
          * @returns {string} HTML string for a single card.
          */
-        function renderQuotaCard(title, details) {
-          const { entitlement, remaining, percent_remaining, unlimited } =
-            details;
+        function getCopilotQuotaRemaining(details) {
+          if (Number.isFinite(details.remaining)) return details.remaining;
+          if (Number.isFinite(details.quota_remaining)) {
+            return details.quota_remaining;
+          }
+          return null;
+        }
 
-          const percentUsed = unlimited ? 0 : 100 - percent_remaining;
+        function getCopilotQuotaPercentRemaining(details) {
+          if (details.unlimited) return 100;
+          const percent = Number.isFinite(details.percent_remaining)
+            ? details.percent_remaining
+            : Number.isFinite(details.entitlement) && details.entitlement > 0
+              ? ((getCopilotQuotaRemaining(details) ?? details.entitlement) /
+                  details.entitlement) * 100
+              : 100;
+          return Math.max(0, Math.min(100, percent));
+        }
+
+        function renderQuotaCard(title, details) {
+          const { entitlement, unlimited } = details;
+          const remaining = getCopilotQuotaRemaining(details) ?? 0;
+
+          const percentUsed = 100 - getCopilotQuotaPercentRemaining(details);
           const used = unlimited
             ? "N/A"
             : (entitlement - remaining).toLocaleString();
@@ -1672,6 +1695,9 @@
                       getMetricDisplayText(totals.request_count),
                       formatTokenUsageCosts(totals.costs),
                     ]);
+                    const costCurrencies = [
+                      ...new Set(totals.costs.map((cost) => cost.currency)),
+                    ];
                     return [
                       renderTokenUsageMetric(
                         "Total",
@@ -1715,12 +1741,27 @@
                         "var(--color-purple-accent)",
                         metricFontSize
                       ),
-                      renderTokenUsageCostMetric(
-                        "Cost",
-                        formatTokenUsageCosts(totals.costs),
-                        "var(--color-yellow-accent)",
-                        metricFontSize
-                      ),
+                      ...(costCurrencies.length > 0
+                        ? costCurrencies.map((currency) =>
+                            renderTokenUsageCostMetric(
+                              `Cost (${currency})`,
+                              formatTokenUsageCost(
+                                totals.costs.find(
+                                  (cost) => cost.currency === currency
+                                )
+                              ),
+                              "var(--color-yellow-accent)",
+                              metricFontSize
+                            )
+                          )
+                        : [
+                            renderTokenUsageCostMetric(
+                              "Cost",
+                              formatTokenUsageCosts(totals.costs),
+                              "var(--color-yellow-accent)",
+                              metricFontSize
+                            ),
+                          ]),
                     ].join("");
                   })()
                 }

@@ -132,6 +132,8 @@ const zh: Locale = {
     authHeader: '认证 Header',
     copy: '复制',
     quotaUsage: '配额使用',
+    quotaUsedPercent: '已用 {{percent}}%',
+    quotaRemainingPercent: '剩余 {{percent}}%',
     refreshing: '刷新中…',
     refresh: '刷新',
     tokenUsage: 'Token 使用',
