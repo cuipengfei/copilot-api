@@ -10,12 +10,13 @@ import { useLanguage } from '../contexts/LanguageContext'
 import { useTheme } from '../contexts/ThemeContext'
 import { translate, type LangPreference } from '../locales'
 import { isValidServerHost } from '../lib/server-url'
+import AppUpdatePanel from './AppUpdatePanel'
 
 interface SettingsModalProps {
   onClose: () => void
 }
 
-type Section = 'general' | 'security' | 'network' | 'startup'
+type Section = 'general' | 'security' | 'network' | 'startup' | 'updates'
 
 // Matches the normalization applied by the main process before persisting,
 // so cosmetic edits (e.g. a trailing newline) do not count as changes.
@@ -408,6 +409,11 @@ export default function SettingsModal({ onClose }: SettingsModalProps) {
       label: t('settings.sectionStartup'),
       icon: <IconStartup />,
     },
+    {
+      key: 'updates',
+      label: t('updates.title'),
+      icon: <IconMonitor />,
+    },
   ]
 
   const proxyModeOptions: { value: DesktopProxyMode; label: string }[] = [
@@ -486,6 +492,7 @@ export default function SettingsModal({ onClose }: SettingsModalProps) {
 
           {/* Right panel */}
           <div className="flex-1 overflow-y-auto px-6 py-5 dark:bg-[#141419]">
+            {section === 'updates' && <AppUpdatePanel />}
             {section === 'general' && (
               <div>
                 <div className="mb-1">

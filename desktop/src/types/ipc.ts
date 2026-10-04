@@ -203,6 +203,25 @@ export interface TokenUsageEventsPage {
 
 export type ThemePreference = 'light' | 'dark' | 'auto'
 
+export interface AppUpdateStatus {
+  phase:
+    | 'idle'
+    | 'checking'
+    | 'not-available'
+    | 'available'
+    | 'downloading'
+    | 'downloaded'
+    | 'installing'
+    | 'error'
+    | 'disabled'
+  currentVersion: string
+  manualInstall: boolean
+  releaseUrl: string
+  version?: string
+  percent?: number
+  error?: string
+}
+
 export type DesktopProxyMode = 'system' | 'custom' | 'direct'
 
 export interface DesktopProxySettings {
@@ -253,6 +272,12 @@ declare global {
       stopServer: () => Promise<void>
       getServerStatus: () => Promise<ServerStatus>
       getSettings: () => Promise<DesktopSettings>
+      getAppUpdateStatus: () => Promise<AppUpdateStatus>
+      checkAppUpdate: () => Promise<AppUpdateStatus>
+      installAppUpdate: () => Promise<AppUpdateStatus>
+      onAppUpdateStatus: (
+        callback: (status: AppUpdateStatus) => void,
+      ) => () => void
       saveSettings: (settings: DesktopSettings) => Promise<void>
       getModelMappingsConfig: () => Promise<ModelMappingsConfig>
       getProviderManagementConfig: () => Promise<ProviderManagementConfig>

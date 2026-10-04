@@ -1,6 +1,28 @@
 import type { Locale } from './index'
 
 const zh: Locale = {
+  updates: {
+    title: '应用更新',
+    description:
+      '启动时及每 6 小时检查更新。Windows 和 Linux AppImage 自动下载更新；未签名的 macOS 版本需手动安装 DMG。',
+    currentVersion: '当前版本：{{version}}',
+    idle: '可以检查更新',
+    checking: '正在检查更新…',
+    'not-available': '暂无适用于当前平台的新版本',
+    available: '发现新版本 {{version}}',
+    downloading: '正在下载 {{version}} — {{percent}}%',
+    downloaded: '{{version}} 已下载，可以安装',
+    installing: '正在停止服务并安装更新…',
+    error: '更新失败，请检查网络后重试。',
+    disabled: '仅打包后的应用支持更新',
+    check: '检查更新',
+    restartInstall: '重启并安装',
+    openRelease: '下载安装包',
+    manualInstall: '请从 GitHub Releases 下载并安装对应安装包。',
+    restartNote: '重启会停止本地 API 服务，并中断进行中的请求。',
+    progress: '更新下载进度',
+    actionFailed: '更新操作失败，请重试。',
+  },
   providers: {
     title: 'Provider 管理',
     close: '关闭',

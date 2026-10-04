@@ -48,6 +48,13 @@ export async function applyElectronProxy(
     await session.defaultSession.setProxy(proxyConfig)
     await session.defaultSession.closeAllConnections()
     await session.defaultSession.forceReloadProxyConfig()
+    // electron-updater uses its own non-persistent Chromium session.
+    const updateSession = session.fromPartition('electron-updater', {
+      cache: false,
+    })
+    await updateSession.setProxy(proxyConfig)
+    await updateSession.closeAllConnections()
+    await updateSession.forceReloadProxyConfig()
     const source =
       isFixedProxyConfig(proxyConfig) ?
         `desktop settings: ${proxyConfig.proxyRules}`

@@ -86,6 +86,8 @@ beforeEach(async () => {
       onServerLog: () => () => {},
       windowIsMaximized: () => Promise.resolve(false),
       onWindowMaximizeChange: () => () => {},
+      getAppUpdateStatus: () => Promise.resolve({ phase: 'disabled' }),
+      onAppUpdateStatus: () => () => {},
     },
   })
   container = document.createElement('div')

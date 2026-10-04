@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'bun:test'
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
@@ -238,6 +238,100 @@ Terminal=false
       }),
     ).toBe(false)
     expect(await initializeLaunchAtLogin(unpackaged)).toBe(false)
+  })
+
+  describe('Linux AppImage updates', () => {
+    let configHome: string
+    let autostartPath: string
+    const controller = createController()
+    const oldAppImage = '/home/jay/Copilot-API-2.6.29-linux-x86_64.AppImage'
+    const newAppImage = '/home/jay/Copilot-API-2.6.30-linux-x86_64.AppImage'
+    const runtime = (appImagePath: string) => ({
+      platform: 'linux' as const,
+      execPath: '/tmp/.mount-copilot/copilot-api',
+      configHome,
+      argv: [],
+      appImagePath,
+    })
+
+    beforeEach(async () => {
+      configHome = await fs.mkdtemp(
+        path.join(os.tmpdir(), 'copilot-api-login-update-'),
+      )
+      autostartPath = path.join(configHome, 'autostart', 'copilot-api.desktop')
+    })
+
+    afterEach(async () => {
+      const cleanupPath = path.resolve(configHome)
+      if (
+        path.dirname(cleanupPath) !== path.resolve(os.tmpdir())
+        || !path.basename(cleanupPath).startsWith('copilot-api-login-update-')
+      )
+        throw new Error('Unexpected test cleanup path')
+      await fs.rm(cleanupPath, { recursive: true, force: true })
+    })
+
+    test('refreshes an enabled startup entry after a versioned update', async () => {
+      await applyLaunchAtLogin(
+        controller,
+        { launchAtLogin: true, minimizeToTray: false },
+        runtime(oldAppImage),
+      )
+      const extraFields =
+        'Comment=Keep this preference\nX-GNOME-Autostart-Delay=10\n'
+      await fs.appendFile(autostartPath, extraFields)
+
+      expect(
+        await initializeLaunchAtLogin(controller, runtime(newAppImage)),
+      ).toBe(true)
+      const entry = await fs.readFile(autostartPath, 'utf8')
+      expect(entry).toContain(`Exec="${newAppImage}" ${LOGIN_ITEM_ARG}\n`)
+      expect(entry).not.toContain(oldAppImage)
+      expect(entry).toContain(extraFields)
+    })
+
+    test('preserves literal dollar signs when refreshing the executable', async () => {
+      await applyLaunchAtLogin(
+        controller,
+        { launchAtLogin: true, minimizeToTray: false },
+        runtime(oldAppImage),
+      )
+
+      expect(
+        await initializeLaunchAtLogin(
+          controller,
+          runtime('/home/jay/Copilot $&.AppImage'),
+        ),
+      ).toBe(true)
+      expect(await fs.readFile(autostartPath, 'utf8')).toContain(
+        'Exec="/home/jay/Copilot \\\\$&.AppImage" --launch-at-login\n',
+      )
+    })
+
+    test.each(['Hidden=true', 'X-GNOME-Autostart-enabled=false'])(
+      'preserves an externally disabled entry with %s',
+      async (disabledFlag) => {
+        await applyLaunchAtLogin(
+          controller,
+          { launchAtLogin: true, minimizeToTray: false },
+          runtime(oldAppImage),
+        )
+        await fs.appendFile(autostartPath, `${disabledFlag}\n`)
+        const entry = await fs.readFile(autostartPath, 'utf8')
+
+        expect(
+          await initializeLaunchAtLogin(controller, runtime(newAppImage)),
+        ).toBe(false)
+        expect(await fs.readFile(autostartPath, 'utf8')).toBe(entry)
+      },
+    )
+
+    test('keeps startup disabled when no entry exists', async () => {
+      expect(
+        await initializeLaunchAtLogin(controller, runtime(newAppImage)),
+      ).toBe(false)
+      expect(await Bun.file(autostartPath).exists()).toBe(false)
+    })
   })
 
   test('detects login launches by platform', () => {

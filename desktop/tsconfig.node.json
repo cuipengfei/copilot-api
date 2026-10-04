@@ -40,6 +40,7 @@
     "src/pages/DashboardPage.tsx",
     "src/pages/ModelMappingsPage.tsx",
     "src/components/Header.tsx",
+    "src/components/AppUpdatePanel.tsx",
     "src/components/SettingsModal.tsx",
     "src/components/TitleBarMenu.tsx",
     "src/components/WindowControls.tsx",

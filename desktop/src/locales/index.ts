@@ -2,6 +2,27 @@ import en from './en'
 import zh from './zh'
 
 export interface Locale {
+  updates: {
+    title: string
+    description: string
+    currentVersion: string
+    idle: string
+    checking: string
+    'not-available': string
+    available: string
+    downloading: string
+    downloaded: string
+    installing: string
+    error: string
+    disabled: string
+    check: string
+    restartInstall: string
+    openRelease: string
+    manualInstall: string
+    restartNote: string
+    progress: string
+    actionFailed: string
+  }
   providers: {
     title: string
     close: string

@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, type CSSProperties } from 'react'
 import SettingsModal from './SettingsModal'
+import AppUpdatePanel from './AppUpdatePanel'
 import ProviderManagementModal from './ProviderManagementModal'
 import TitleBarMenu from './TitleBarMenu'
 import WindowControls from './WindowControls'
@@ -214,6 +215,8 @@ export default function Header({
 
         {isMac ? null : <WindowControls />}
       </div>
+
+      <AppUpdatePanel compact />
 
       {showSettings && (
         <SettingsModal

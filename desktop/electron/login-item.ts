@@ -118,10 +118,22 @@ export async function initializeLaunchAtLogin(
 
   if (runtime.platform === 'linux') {
     try {
-      const entry = await fs.readFile(getLinuxAutostartPath(runtime), 'utf8')
-      return !/^\s*(?:Hidden\s*=\s*true|X-GNOME-Autostart-enabled\s*=\s*false)\s*$/im.test(
-        entry,
-      )
+      const autostartPath = getLinuxAutostartPath(runtime)
+      const entry = await fs.readFile(autostartPath, 'utf8')
+      const enabled =
+        !/^\s*(?:Hidden\s*=\s*true|X-GNOME-Autostart-enabled\s*=\s*false)\s*$/im.test(
+          entry,
+        )
+      if (enabled && runtime.appImagePath) {
+        // Updates rename versioned AppImages. Refresh the path on relaunch
+        // while retaining other desktop entry fields and disabled preferences.
+        const execLine = `Exec=${quoteDesktopExecArg(runtime.appImagePath)} ${LOGIN_ITEM_ARG}`
+        const updatedEntry = entry.replace(/^Exec=.*$/m, () => execLine)
+        if (updatedEntry !== entry) {
+          await fs.writeFile(autostartPath, updatedEntry, 'utf8')
+        }
+      }
+      return enabled
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false
       throw error
