@@ -144,6 +144,7 @@ const allowedAnthropicBetas: Record<string, true> = {
   [INTERLEAVED_THINKING_BETA]: true,
   "context-management-2025-06-27": true,
   [ADVANCED_TOOL_USE_BETA]: true,
+  "extended-cache-ttl-2025-04-11": true,
 }
 
 /**

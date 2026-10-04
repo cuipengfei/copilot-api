@@ -1,6 +1,69 @@
 import type { Locale } from './index'
 
 const en: Locale = {
+  updates: {
+    title: 'Updates',
+    description:
+      'Check for updates on launch and every 6 hours. Windows and Linux AppImage updates download automatically. Unsigned macOS builds use manual DMG installation.',
+    currentVersion: 'Current version: {{version}}',
+    idle: 'Ready to check for updates',
+    checking: 'Checking for updates…',
+    'not-available': 'No newer release is available for this platform',
+    available: 'Version {{version}} is available',
+    downloading: 'Downloading {{version}} — {{percent}}%',
+    downloaded: 'Version {{version}} is ready to install',
+    installing: 'Stopping the server and installing…',
+    error: 'Update failed. Check your connection and try again.',
+    disabled: 'Updates are available in packaged builds only',
+    check: 'Check for updates',
+    restartInstall: 'Restart and install',
+    openRelease: 'Download installer',
+    manualInstall: 'Download and install the package from GitHub Releases.',
+    restartNote:
+      'Restarting stops the local API server and interrupts active requests.',
+    progress: 'Update download progress',
+    actionFailed: 'Could not complete the update action. Please try again.',
+  },
+  providers: {
+    title: 'Providers',
+    close: 'Close',
+    description:
+      'Enable providers for all clients and choose which models appear in Codex.',
+    configured: 'Your providers',
+    catalogBudget: '1 MiB catalog',
+    unsaved: 'Unsaved changes',
+    autoDescription: 'Use discovered models',
+    selectedDescription: 'Choose your models',
+    noneDescription: 'Hide from Codex',
+    hiddenTitle: 'No models shown in Codex',
+    hiddenDescription: 'This visibility setting applies only to Codex.',
+    availableCount: '{count} discovered',
+    loading: 'Loading providers…',
+    empty: 'No providers configured. Add one from the authorization page.',
+    enabled: 'Enabled',
+    disabled: 'Disabled',
+    selection: 'Models shown in Codex',
+    auto: 'Automatic',
+    selected: 'Selected models',
+    none: 'Hide all models',
+    modelIds:
+      'One upstream model ID per line, without the gateway provider prefix.',
+    searchModels: 'Search models',
+    selectedCount: '{count} selected',
+    selectVisible: 'Select search results',
+    clearSelection: 'Clear selection',
+    loadingModels: 'Loading models…',
+    noModels: 'No matching models.',
+    manualModels: 'Edit model IDs manually',
+    modelSourceHint:
+      'The list combines the local catalog and the running server. You can add other model IDs manually.',
+    modelsError:
+      'Could not load the model list. You can still enter model IDs manually.',
+    saved: 'Configuration saved.',
+    savedRefreshed: 'Saved. The running server refreshed its configuration.',
+    save: 'Save',
+    saving: 'Saving…',
+  },
   auth: {
     subtitle: 'Choose a provider to authorize or configure',
     githubAuth: 'Sign in with GitHub',
@@ -14,9 +77,10 @@ const en: Locale = {
     codexAddAccount: 'Add or sign in again',
     codexNoAccounts: 'No Codex accounts added yet',
     codexRemoveAccount: 'Remove',
-    codexRemoveRestartRequired:
-      'Account removed. Restart the running server so it stops using it.',
-    codexRestartRequired: 'Account selected. Restart the server to apply it.',
+    codexAccountRemovedRefreshed:
+      'Account removed. The running server refreshed its configuration.',
+    codexAccountRefreshed:
+      'Account selected. Configuration refreshed; new requests use this account.',
     codexUseAccount: 'Use',
     customProvider: 'Custom provider',
     modelsDevProvider: 'models.dev provider',
@@ -77,6 +141,8 @@ const en: Locale = {
     authHeader: 'Auth header',
     copy: 'Copy',
     quotaUsage: 'Quota usage',
+    quotaUsedPercent: '{{percent}}% used',
+    quotaRemainingPercent: '{{percent}}% remaining',
     refreshing: 'Refreshing…',
     refresh: 'Refresh',
     tokenUsage: 'Token usage',
@@ -84,6 +150,7 @@ const en: Locale = {
     tokenUsageCache: 'Cache',
     tokenUsageCacheRead: 'Cache read',
     tokenUsageCacheWrite: 'Cache write',
+    tokenUsageCacheHitRate: 'Cache hit rate',
     tokenUsageCost: 'Cost',
     tokenUsageEndpoint: 'Endpoint',
     tokenUsageEvents: 'Event details',
@@ -139,6 +206,7 @@ const en: Locale = {
   menu: {
     file: 'File',
     fileSettings: 'Settings',
+    fileAuthConfig: 'Auth config',
     fileQuit: 'Quit',
     view: 'View',
     viewReload: 'Reload',
@@ -163,6 +231,8 @@ const en: Locale = {
     processExit: 'Process exited with code {{code}}',
     invalidHost:
       'Invalid listening host; use an address such as 127.0.0.1 or 0.0.0.0',
+    restartFailed:
+      'Failed to restart the running service after saving these settings',
   },
   settings: {
     title: 'Settings',
@@ -181,21 +251,24 @@ const en: Locale = {
     minimizeToTrayDesc: "Hide to system tray when closing, don't quit",
     sectionSecurity: 'Security',
     serverKeysNote:
-      'API Keys and Admin Key are stored in config.json. Restart the running service to apply changes.',
+      'API Keys and Admin Key are stored in config.json. Saving automatically refreshes the running service.',
+    serverKeysSaveFailed: 'Server key saving or refresh failed',
+    desktopSettingsSaveFailed:
+      'Desktop settings saving or service refresh failed',
     apiKeysLabel: 'API Keys',
     apiKeysDesc:
       'One API key per line. Clients authenticate with one of these keys via x-api-key or Authorization: Bearer.',
     adminKeyLabel: 'Admin Key',
     adminKeyPlaceholder: 'Enter a new Admin Key (optional)',
     adminKeyDesc:
-      'Used for /admin/* endpoints. Leave empty to remove it; the next server start generates a new one automatically.',
+      'Used for /admin/* endpoints. Leave empty to remove it; refreshing or starting the service generates a new one automatically.',
     sectionNetwork: 'Network',
     host: 'Listening host',
     hostDesc:
-      'Address the API server binds to; leave empty for 127.0.0.1. Takes effect the next time the server starts',
+      'Address the API server binds to; leave empty for 127.0.0.1. Saving automatically restarts the running service',
     hostInvalid: 'Invalid listening host, for example 127.0.0.1 or 0.0.0.0',
     proxySystemNote:
-      'System proxy is used by default. When custom proxy is selected, Electron and newly started local services use the settings below; when no proxy is selected, network requests connect directly. Restart any running service to apply changes.',
+      'System proxy is used by default. With a custom proxy, Electron and local services use the settings below; with no proxy, requests connect directly. Saving automatically restarts the running service.',
     proxyMode: 'Proxy mode',
     proxyModeSystem: 'System proxy',
     proxyModeCustom: 'Custom proxy',

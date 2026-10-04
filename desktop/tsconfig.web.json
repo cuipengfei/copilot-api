@@ -1,6 +1,6 @@
 {
   "extends": "./tsconfig.base.json",
-  "include": ["src/**/*", "../src/lib/server-host-shared.ts"],
+  "include": ["src/**/*", "../src/lib/server-host-shared.ts", "../src/lib/types/provider-management.ts"],
   "compilerOptions": {
     "composite": true,
     "lib": ["ESNext", "DOM", "DOM.Iterable"]

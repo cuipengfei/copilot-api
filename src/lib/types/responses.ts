@@ -8,6 +8,7 @@ export interface ResponsesPayload {
   model: string
   instructions?: string | null
   input?: string | Array<ResponseInputItem>
+  text?: ResponsesTextConfig | null
   tools?: Array<Tool> | null
   tool_choice?: ToolChoiceOptions | ToolChoiceFunction | ToolChoiceCustom
   temperature?: number | null
@@ -25,6 +26,24 @@ export interface ResponsesPayload {
   context_management?: Array<ResponseContextManagementItem> | null
   include?: Array<ResponseIncludable>
   service_tier?: string | null // NOTE: Unsupported by GitHub Copilot
+  [key: string]: unknown
+}
+
+export interface ResponsesTextConfig {
+  format?: ResponsesTextFormat | null
+  verbosity?: "low" | "medium" | "high" | null
+  [key: string]: unknown
+}
+
+export type ResponsesTextFormat =
+  { type: "text" } | { type: "json_object" } | ResponsesTextFormatJSONSchema
+
+export interface ResponsesTextFormatJSONSchema {
+  type: "json_schema"
+  name: string
+  description?: string | null
+  schema: { [key: string]: unknown }
+  strict?: boolean | null
   [key: string]: unknown
 }
 

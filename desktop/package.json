@@ -1,6 +1,6 @@
 {
   "name": "copilot-api-desktop",
-  "version": "2.6.20",
+  "version": "2.6.33",
   "description": "Copilot API Desktop App",
   "author": "jeffreycao",
   "desktopName": "copilot-api.desktop",
@@ -18,16 +18,22 @@
     "gen-icons": "rsvg-convert -w 1024 -h 1024 assets/tray-icon-colored.svg -o assets/icon.png",
     "lint": "eslint --cache .",
     "lint:fix": "eslint --cache --fix .",
-    "package": "bun run build:server && electron-vite build && electron-builder",
-    "package:mac": "bun run build:server && electron-vite build && electron-builder --mac",
-    "package:win": "bun run build:server && electron-vite build && electron-builder --win",
-    "package:linux": "bun run build:server && electron-vite build && electron-builder --linux"
+    "package": "bun run build:server && electron-vite build && electron-builder --publish never",
+    "package:mac": "bun run build:server && electron-vite build && electron-builder --mac --publish never",
+    "package:win": "bun run build:server && electron-vite build && electron-builder --win --publish never",
+    "package:linux": "bun run build:server && electron-vite build && electron-builder --linux --publish never"
   },
   "dependencies": {
     "electron-updater": "^6.3.4"
   },
   "build": {
     "appId": "com.copilot-api.desktop",
+    "publish": {
+      "provider": "github",
+      "owner": "caozhiyuan",
+      "repo": "copilot-api",
+      "releaseType": "release"
+    },
     "productName": "Copilot API",
     "directories": {
       "buildResources": "build",
@@ -74,6 +80,7 @@
     ],
     "mac": {
       "target": "dmg",
+      "artifactName": "Copilot.API-${version}-${arch}.${ext}",
       "category": "public.app-category.developer-tools",
       "icon": "assets/icon.png"
     },
@@ -82,6 +89,7 @@
     },
     "win": {
       "target": "nsis",
+      "artifactName": "Copilot.API.Setup.${version}.${ext}",
       "icon": "build/icon.ico"
     },
     "nsis": {

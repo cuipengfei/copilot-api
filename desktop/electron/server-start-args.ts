@@ -1,7 +1,11 @@
-// The GitHub token is deliberately not passed here: process arguments are
-// visible to every local user through the process list. server-manager hands
-// it to the server process through COPILOT_API_GITHUB_TOKEN instead, and the
-// server otherwise reads the token file written by `auth login`.
+export function buildServerStartEnv(
+  parentEnv: NodeJS.ProcessEnv,
+): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...parentEnv, NODE_ENV: 'production' }
+  delete env.COPILOT_API_GITHUB_TOKEN
+  return env
+}
+
 export function buildServerStartArgs(
   port: number,
   host?: string | null,

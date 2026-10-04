@@ -258,6 +258,7 @@ const createProviderResponsesUsageRecorder = (
     pricing: modelConfig?.pricing,
     pricingCurrency,
     providerName: provider,
+    serviceTier: payload.service_tier,
     sessionId: sessionAffinity ?? "",
   })
 }

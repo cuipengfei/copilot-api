@@ -482,6 +482,20 @@ export function getModelsDevProviderOptions(): Array<ModelsDevProviderOption> {
   return snapshot?.selectableProviders ?? []
 }
 
+export function getModelsDevProviderModelIds(
+  providerId: string,
+): Array<string> {
+  return Object.keys(snapshot?.selectableProviderModelTypes[providerId] ?? {})
+}
+
+export async function loadCachedModelsDevCatalog(): Promise<void> {
+  if (!snapshot) {
+    await loadDiskCache(
+      activeCachePath ?? path.join(PATHS.APP_DIR, "models-dev-api.json"),
+    )
+  }
+}
+
 export function getModelsDevProviderApi(
   providerId: string,
 ): string | undefined {

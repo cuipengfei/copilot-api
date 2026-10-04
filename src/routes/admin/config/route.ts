@@ -3,12 +3,22 @@ import { z } from "zod"
 
 import { forwardError } from "~/lib/error"
 import { getModelMappings, setModelMappings } from "~/lib/config"
+import { reloadServerConfig } from "~/lib/config-reload"
 import { PATHS } from "~/lib/paths"
 
 export const configRoutes = new Hono()
 
 const modelMappingsRequestSchema = z.object({
   modelMappings: z.record(z.string(), z.string()),
+})
+
+configRoutes.post("/reload", async (c) => {
+  try {
+    await reloadServerConfig()
+    return c.json({ configPath: PATHS.CONFIG_PATH, reloaded: true })
+  } catch (error) {
+    return await forwardError(c, error)
+  }
 })
 
 configRoutes.get("/model-mappings", (c) => {

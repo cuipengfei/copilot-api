@@ -13,6 +13,25 @@ import {
 import type { ProviderConfig } from '../../src/lib/config'
 
 describe('desktop provider auth', () => {
+  test.each([{ codexModels: [] }, { codexModels: ['deepseek-v4-pro'] }])(
+    'preserves quick provider Codex selection %j during reauthorization',
+    ({ codexModels }) => {
+      let written: ProviderConfig | undefined
+      configureDesktopProvider(
+        { provider: 'deepseek', apiKey: 'new-key' },
+        {
+          getEnabledProviders: () => ['deepseek'],
+          getRawProviderConfig: () => ({ codexModels: [...codexModels] }),
+          setProviderConfig(_name, provider) {
+            written = provider
+            return provider
+          },
+        },
+      )
+      expect(written?.codexModels).toEqual([...codexModels])
+      expect(written?.apiKey).toBe('new-key')
+    },
+  )
   test('configures deepseek from the quick provider template with defaults', () => {
     let writtenProviderName = ''
     let writtenProviderConfig: ProviderConfig | undefined
@@ -64,6 +83,7 @@ describe('desktop provider auth', () => {
       {
         getEnabledProviders: () => ['custom_deepseek'],
         getRawProviderConfig: () => ({
+          codexModels: ['deepseek-v4-pro'],
           models: {
             'deepseek-v4-pro': {
               temperature: 0.2,
@@ -88,6 +108,7 @@ describe('desktop provider auth', () => {
     expect(writtenProviderConfig).toEqual({
       apiKey: 'custom-key',
       baseUrl: 'https://custom.example/api',
+      codexModels: ['deepseek-v4-pro'],
       enabled: true,
       models: {
         'deepseek-v4-pro': {
@@ -297,6 +318,30 @@ describe('desktop provider auth', () => {
     expect(writes).toBe(0)
   })
 
+  test('skips GitHub verification when builtin Copilot is disabled and falls back to other enabled providers', async () => {
+    let verifications = 0
+    const dependencies = {
+      isGitHubCopilotEnabled: () => false,
+      readToken: () => Promise.resolve('saved-token'),
+      verifyGitHubToken: () => {
+        verifications++
+        return Promise.resolve()
+      },
+    }
+    expect(
+      await getDesktopAuthStatus({
+        ...dependencies,
+        listEnabledProviders: () => ['deepseek'],
+      }),
+    ).toEqual({ success: true, mode: 'provider', providers: ['deepseek'] })
+    expect(
+      await getDesktopAuthStatus({
+        ...dependencies,
+        listEnabledProviders: () => [],
+      }),
+    ).toEqual({ success: false, mode: 'none', providers: [] })
+    expect(verifications).toBe(0)
+  })
   test('reports desktop auth status from token and provider dependencies', () => {
     expect(
       getDesktopAuthStatus({

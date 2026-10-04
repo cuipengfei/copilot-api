@@ -1,4 +1,15 @@
 import type { LangPreference } from '../locales'
+import type {
+  ProviderManagementConfig,
+  ProviderManagementUpdate,
+  ProviderModelOptions,
+} from '../../../src/lib/types/provider-management'
+
+export type {
+  ProviderManagementConfig,
+  ProviderManagementUpdate,
+  ProviderModelOptions,
+}
 
 export interface DeviceCodeInfo {
   user_code: string
@@ -64,6 +75,8 @@ export type ProviderAuthInput =
 
 export interface ServerStatus {
   running: boolean
+  restarting?: boolean
+  intentional?: boolean
   port?: number
   host?: string
   error?: string
@@ -192,6 +205,25 @@ export interface TokenUsageEventsPage {
 
 export type ThemePreference = 'light' | 'dark' | 'auto'
 
+export interface AppUpdateStatus {
+  phase:
+    | 'idle'
+    | 'checking'
+    | 'not-available'
+    | 'available'
+    | 'downloading'
+    | 'downloaded'
+    | 'installing'
+    | 'error'
+    | 'disabled'
+  currentVersion: string
+  manualInstall: boolean
+  releaseUrl: string
+  version?: string
+  percent?: number
+  error?: string
+}
+
 export type DesktopProxyMode = 'system' | 'custom' | 'direct'
 
 export interface DesktopProxySettings {
@@ -242,14 +274,25 @@ declare global {
       stopServer: () => Promise<void>
       getServerStatus: () => Promise<ServerStatus>
       getSettings: () => Promise<DesktopSettings>
+      getAppUpdateStatus: () => Promise<AppUpdateStatus>
+      checkAppUpdate: () => Promise<AppUpdateStatus>
+      installAppUpdate: () => Promise<AppUpdateStatus>
+      onAppUpdateStatus: (
+        callback: (status: AppUpdateStatus) => void,
+      ) => () => void
       saveSettings: (settings: DesktopSettings) => Promise<void>
       getModelMappingsConfig: () => Promise<ModelMappingsConfig>
+      getProviderManagementConfig: () => Promise<ProviderManagementConfig>
+      saveProviderManagementConfig: (
+        input: ProviderManagementUpdate,
+      ) => Promise<ProviderManagementConfig>
       saveModelMappings: (
         modelMappings: Record<string, string>,
       ) => Promise<void>
       openUrl: (url: string) => Promise<void>
       fetchUsage: () => Promise<unknown>
       fetchModels: () => Promise<unknown>
+      getProviderModelOptions: () => Promise<ProviderModelOptions>
       fetchTokenUsage: (period: TokenUsagePeriod) => Promise<unknown>
       fetchTokenUsageDaily: (period: TokenUsagePeriod) => Promise<unknown>
       fetchTokenUsageEvents: (

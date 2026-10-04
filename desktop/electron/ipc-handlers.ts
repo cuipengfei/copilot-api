@@ -5,6 +5,12 @@ import { ipcMain, shell, BrowserWindow } from 'electron'
 import { normalizeApiKeys } from '../../src/lib/request-auth'
 import { loadModelsDevProviderOptions } from '../../src/lib/models-dev-cache'
 import { PATHS } from '../../src/lib/paths'
+import { invalidateConfigCache } from '../../src/lib/config-store'
+import { loadProviderModelOptions } from './provider-model-options'
+import {
+  getProviderManagementConfig,
+  saveProviderManagementConfig,
+} from '../../src/lib/provider-management'
 import {
   isValidServerHost,
   resolveEffectiveServerHost,
@@ -18,6 +24,10 @@ import {
   clearToken,
   getCopilotAccountType,
 } from './auth'
+import {
+  createDeviceFlowStarter,
+  createDeviceFlowTokenHandler,
+} from './device-flow'
 import { tMain } from './i18n'
 import {
   configureProviderWithAuthStatus,
@@ -40,6 +50,8 @@ import {
 } from './server-manager'
 import { readSettings, writeSettings } from './settings-store'
 import { runSettingsTransaction } from './settings-transaction'
+import { createConfigRefresher } from './config-refresh'
+import { shouldRestartServerForSettings } from './settings-runtime'
 import {
   readServerKeysConfig,
   writeServerKeysConfig,
@@ -180,43 +192,94 @@ async function saveModelMappingsViaApi(
   }
 }
 
+const { saveAndRefresh: saveAndRefreshConfig, setActiveAdminApiKey } =
+  createConfigRefresher({
+    isRunning,
+    readAdminApiKey: async () => (await readServerKeysConfig()).adminApiKey,
+    invalidateConfigCache,
+    reloadConfig: async (adminApiKeys) => {
+      try {
+        let response: Response | undefined
+        for (const adminApiKey of adminApiKeys) {
+          response = await fetch(`${getServerBaseUrl()}/admin/config/reload`, {
+            method: 'POST',
+            headers: { 'x-api-key': adminApiKey },
+            signal: AbortSignal.timeout(60_000),
+          })
+          if (response.status !== 401) break
+        }
+        if (!response?.ok) {
+          throw new Error(
+            response ?
+              await readConfigApiError(response)
+            : 'Admin API key is missing',
+          )
+        }
+      } catch (error) {
+        throw new Error(
+          `Configuration saved, but refresh failed: ${(error as Error).message}`,
+        )
+      }
+    },
+  })
+
+// A failed refresh leaves the running service on the previous configuration,
+// but the credentials are already persisted. Sign-in must still finish, so the
+// stale server is reported as a warning instead of failing the whole call.
+function saveCredentialsAndRefresh(save: () => Promise<void>): Promise<void> {
+  return saveAndRefreshConfig(save, {
+    ignoreRefreshFailure: true,
+    onRefreshError: (error) => {
+      console.warn(
+        'Credentials saved, but the running server did not refresh:',
+        error,
+      )
+    },
+  })
+}
+
 export function registerIpcHandlers(
   mainWindow: BrowserWindow,
   options: IpcHandlersOptions = {},
 ): void {
   ipcMain.handle('auth:get-status', async () => getDesktopAuthStatus())
 
-  // Auth: Start the OAuth device flow
-  ipcMain.handle('auth:get-device-code', async () => {
-    const deviceCode = await getDeviceCode()
-    // Poll in the background and notify the renderer when the token arrives
-    pollAccessToken(deviceCode)
-      .then(async (token) => {
-        await saveToken(token)
-        const [, accountType] = await Promise.all([
-          getGitHubUser(token),
-          getCopilotAccountType(token),
-        ])
-        // Detect and persist the account type automatically after sign-in
-        const settings = await readSettings()
-        await writeSettings({ ...settings, accountType })
+  // Auth: Start the OAuth device flow. The token is polled in the background
+  // and the renderer is notified when it arrives; starting a new flow aborts
+  // polling and finalization so a superseded flow cannot report a late result.
+  const startDeviceFlow = createDeviceFlowStarter({
+    getDeviceCode,
+    pollAccessToken: (deviceCode, signal) =>
+      pollAccessToken(deviceCode, undefined, { signal }),
+    onToken: createDeviceFlowTokenHandler({
+      getGitHubUser,
+      getCopilotAccountType,
+      readSettings,
+      saveToken: (token, signal) =>
+        saveCredentialsAndRefresh(() => {
+          signal.throwIfAborted()
+          return saveToken(token)
+        }),
+      writeSettings,
+      onSuccess: () => {
         if (!mainWindow.isDestroyed()) {
           mainWindow.webContents.send('auth:success', {
             success: true,
             mode: 'copilot',
           })
         }
-      })
-      .catch((err: Error) => {
-        if (!mainWindow.isDestroyed()) {
-          mainWindow.webContents.send('auth:success', {
-            success: false,
-            error: err.message,
-          })
-        }
-      })
-    return deviceCode
+      },
+    }),
+    onError: (err) => {
+      if (!mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('auth:success', {
+          success: false,
+          error: err.message,
+        })
+      }
+    },
   })
+  ipcMain.handle('auth:get-device-code', () => startDeviceFlow())
 
   // Auth: Save token directly
   ipcMain.handle('auth:save-token', async (_event, token: string) => {
@@ -225,7 +288,7 @@ export function registerIpcHandlers(
         getGitHubUser(token),
         getCopilotAccountType(token),
       ])
-      await saveToken(token)
+      await saveCredentialsAndRefresh(() => saveToken(token))
       // Detect and persist the account type automatically
       const settings = await readSettings()
       await writeSettings({ ...settings, accountType })
@@ -242,7 +305,9 @@ export function registerIpcHandlers(
     'auth:configure-provider',
     async (_event, input: ProviderAuthInput) => {
       try {
-        return await configureProviderWithAuthStatus(input)
+        return await saveAndRefreshConfig(() =>
+          configureProviderWithAuthStatus(input),
+        )
       } catch (err) {
         return { success: false, mode: 'none', error: (err as Error).message }
       }
@@ -263,7 +328,9 @@ export function registerIpcHandlers(
     'auth:switch-codex-account',
     async (_event, accountId: string) => {
       try {
-        return await selectCodexAccountForDesktop(accountId)
+        return await saveAndRefreshConfig(() =>
+          selectCodexAccountForDesktop(accountId),
+        )
       } catch (err) {
         return { success: false, mode: 'none', error: (err as Error).message }
       }
@@ -274,7 +341,9 @@ export function registerIpcHandlers(
     'auth:remove-codex-account',
     async (_event, accountId: string) => {
       try {
-        return await removeCodexAccountForDesktop(accountId)
+        return await saveAndRefreshConfig(() =>
+          removeCodexAccountForDesktop(accountId),
+        )
       } catch (err) {
         return { success: false, mode: 'none', error: (err as Error).message }
       }
@@ -285,11 +354,13 @@ export function registerIpcHandlers(
     'auth:start-codex-login',
     async (_event, input: CodexLoginInput = {}) => {
       try {
-        return await loginCodexForDesktop({
-          alias: input.alias,
-          callbackUrlOrCode: input.callbackUrlOrCode,
-          openUrl: (url) => shell.openExternal(url),
-        })
+        return await saveAndRefreshConfig(() =>
+          loginCodexForDesktop({
+            alias: input.alias,
+            callbackUrlOrCode: input.callbackUrlOrCode,
+            openUrl: (url) => shell.openExternal(url),
+          }),
+        )
       } catch (err) {
         return { success: false, mode: 'none', error: (err as Error).message }
       }
@@ -298,13 +369,15 @@ export function registerIpcHandlers(
 
   // Auth: Log out
   ipcMain.handle('auth:logout', async () => {
-    await clearToken()
+    await saveAndRefreshConfig(() => clearToken())
   })
 
   // Server: Start
   ipcMain.handle(
     'server:start',
     async (_event, port: number, authMode?: DesktopAuthMode, host?: string) => {
+      // CLI changes must be visible when the user starts or restarts the server.
+      invalidateConfigCache()
       const token = await readToken()
       const providerMode = shouldStartInProviderMode(authMode)
       const enabledProviders = getEnabledDesktopProviders()
@@ -334,8 +407,9 @@ export function registerIpcHandlers(
       }
 
       try {
-        const status = await startServer(port, tokenForStart, serverOptions)
+        const status = await startServer(port, serverOptions)
         if (status.running) {
+          setActiveAdminApiKey((await readServerKeysConfig()).adminApiKey)
           // Persist only after a successful start so failed attempts never
           // clobber the last known good configuration.
           await writeSettings({
@@ -363,6 +437,7 @@ export function registerIpcHandlers(
   // Server: Stop
   ipcMain.handle('server:stop', async () => {
     await stopServer()
+    setActiveAdminApiKey(undefined)
   })
 
   ipcMain.handle('server:get-status', () => ({
@@ -377,30 +452,58 @@ export function registerIpcHandlers(
     if (!isValidServerHost(settings?.host ?? '')) {
       throw new Error(await tMain('server.invalidHost'))
     }
-    const prev = await readSettings()
-    await runSettingsTransaction(
-      () => options.onBeforeSettingsSave?.(settings, prev),
-      () => writeSettings(settings),
-      () => options.onBeforeSettingsSave?.(prev, settings),
-    )
-    if (options.onSettingsChange) {
-      await options.onSettingsChange(settings, prev)
-    }
+    await saveAndRefreshConfig(async () => {
+      const prev = await readSettings()
+      await runSettingsTransaction(
+        () => options.onBeforeSettingsSave?.(settings, prev),
+        () => writeSettings(settings),
+        () => options.onBeforeSettingsSave?.(prev, settings),
+      )
+      if (options.onSettingsChange) {
+        await options.onSettingsChange(settings, prev)
+      }
+      if (isRunning() && shouldRestartServerForSettings(prev, settings)) {
+        const status = await startServer(getPort(), {
+          host: settings.host,
+          verbose: settings.verbose,
+          showToken: settings.showToken,
+          proxy:
+            options.getEffectiveProxySettings?.(settings) ?? settings.proxy,
+        })
+        if (!status.running) {
+          throw new Error(status.error ?? (await tMain('server.restartFailed')))
+        }
+        setActiveAdminApiKey((await readServerKeysConfig()).adminApiKey)
+      }
+    })
   })
   ipcMain.handle('config:get-model-mappings', async () =>
     fetchModelMappingsConfig(),
   )
+  ipcMain.handle('config:get-provider-management', () => {
+    invalidateConfigCache()
+    return getProviderManagementConfig()
+  })
+  ipcMain.handle('config:save-provider-management', (_event, input: unknown) =>
+    saveAndRefreshConfig(() => saveProviderManagementConfig(input)),
+  )
+  ipcMain.handle('config:get-provider-model-options', () =>
+    loadProviderModelOptions(),
+  )
   ipcMain.handle(
     'config:save-model-mappings',
     async (_event, modelMappings: Record<string, string>) => {
-      await saveModelMappingsViaApi(modelMappings)
+      await saveAndRefreshConfig(() => saveModelMappingsViaApi(modelMappings))
     },
   )
 
   ipcMain.handle('auth:get-server-keys', () => readServerKeysConfig())
   ipcMain.handle(
     'auth:save-server-keys',
-    (_event, keys: ServerKeysConfigUpdate) => writeServerKeysConfig(keys),
+    async (_event, keys: ServerKeysConfigUpdate) => {
+      await saveAndRefreshConfig(() => writeServerKeysConfig(keys))
+      return await readServerKeysConfig()
+    },
   )
 
   // Shell: Open the system browser

@@ -7,6 +7,7 @@ import type {
 } from "~/lib/types/responses"
 import { requestContext } from "~/lib/request-context"
 import {
+  buildOutputFormatInstruction,
   createMessagesBackedResponsesResult,
   decodeMessagesCompaction,
   encodeMessagesCompaction,
@@ -32,6 +33,19 @@ const translate = (
 
 const translateWithTips = (payload: Omit<ResponsesPayload, "model">) =>
   translate(payload, { toolCallTips: true })
+
+const trailingUserMessageText = (
+  translation: ReturnType<typeof translate>,
+): string => {
+  const lastMessage = translation.messagesPayload.messages.at(-1)
+  expect(lastMessage?.role).toBe("user")
+  if (!lastMessage || !Array.isArray(lastMessage.content)) {
+    throw new Error("Expected the trailing message to carry block content")
+  }
+  return lastMessage.content
+    .map((block) => ("text" in block ? block.text : ""))
+    .join("")
+}
 
 const expectCanonicalBase64 = (value: string | undefined) => {
   expect(value).toBeTruthy()
@@ -1001,6 +1015,143 @@ describe("Responses Lite to Messages translation", () => {
       translate({ input: "hello", reasoning: { effort: "max" } })
         .messagesPayload.output_config,
     ).toEqual({ effort: "max" })
+  })
+
+  test("appends a JSON schema instruction as the trailing user message", () => {
+    const translation = translate({
+      input: [{ role: "user", content: "Give me a title", type: "message" }],
+      text: {
+        format: {
+          type: "json_schema",
+          name: "codex_output_schema",
+          strict: true,
+          schema: {
+            type: "object",
+            properties: {
+              title: { type: "string", minLength: 1, maxLength: 36 },
+            },
+            required: ["title"],
+            additionalProperties: false,
+          },
+        },
+      },
+    })
+
+    const text = trailingUserMessageText(translation)
+    expect(text).toContain('"codex_output_schema"')
+    expect(text).toContain('"minLength": 1')
+    expect(text).toContain("Do not wrap the JSON")
+    expect(text).not.toContain("Do not call any tools")
+  })
+
+  test("preserves tool_choice for schema output with registered tools", () => {
+    for (const toolChoice of ["auto", "required"] as const) {
+      const translation = translate({
+        input: [{ role: "user", content: "Give me a title", type: "message" }],
+        tools: [{ type: "function", name: "getWeather", parameters: null }],
+        tool_choice: toolChoice,
+        text: {
+          format: {
+            type: "json_schema",
+            name: "codex_output_schema",
+            strict: true,
+            schema: {
+              type: "object",
+              properties: { title: { type: "string" } },
+              required: ["title"],
+              additionalProperties: false,
+            },
+          },
+        },
+      })
+
+      expect(translation.messagesPayload.tools).toHaveLength(1)
+      expect(translation.messagesPayload.tool_choice).toEqual({
+        type: toolChoice === "required" ? "any" : toolChoice,
+      })
+      const text = trailingUserMessageText(translation)
+      expect(text).toContain('"codex_output_schema"')
+      expect(text).not.toContain("Do not call any tools")
+    }
+  })
+
+  test("appends a JSON object instruction for json_object formats", () => {
+    const translation = translate({
+      input: "Give me a title",
+      text: { format: { type: "json_object" } },
+    })
+
+    const text = trailingUserMessageText(translation)
+    expect(text).toContain("Respond with a single JSON object.")
+    expect(text).not.toContain("Do not call any tools")
+    expect(text).not.toContain("JSON schema:")
+  })
+
+  test("keeps tool call tips when a text format is specified", () => {
+    for (const format of [
+      {
+        type: "json_schema",
+        name: "codex_output_schema",
+        schema: { type: "object" },
+      },
+      { type: "json_object" },
+      { type: "text" },
+    ] as const) {
+      const withFormat = translateWithTips({
+        input: "Give me a title",
+        tools: [{ type: "function", name: "getWeather", parameters: null }],
+        text: { format },
+      })
+
+      expect(JSON.stringify(withFormat.messagesPayload.system ?? "")).toContain(
+        "# Tool Call Tips",
+      )
+    }
+
+    const withoutFormat = translateWithTips({ input: "Give me a title" })
+    expect(
+      JSON.stringify(withoutFormat.messagesPayload.system ?? ""),
+    ).toContain("# Tool Call Tips")
+  })
+
+  test("builds instructions for JSON formats and ignores text formats", () => {
+    expect(
+      buildOutputFormatInstruction({
+        type: "json_schema",
+        name: "codex_output_schema",
+        schema: { type: "object" },
+      }),
+    ).toContain('"codex_output_schema"')
+    expect(
+      buildOutputFormatInstruction({
+        type: "json_object",
+      }),
+    ).toContain("Respond with a single JSON object.")
+    expect(buildOutputFormatInstruction({ type: "text" })).toBeNull()
+    expect(buildOutputFormatInstruction(null)).toBeNull()
+    expect(buildOutputFormatInstruction(undefined)).toBeNull()
+  })
+
+  test("keeps tools available for text formats without instructions", () => {
+    const plainText = translate({
+      input: "hello",
+      tools: [{ type: "function", name: "getWeather", parameters: null }],
+      tool_choice: "auto",
+      text: { format: { type: "text" } },
+    })
+    expect(plainText.messagesPayload.tools).toHaveLength(1)
+    expect(plainText.messagesPayload.tool_choice).toEqual({ type: "auto" })
+    expect(trailingUserMessageText(plainText)).toBe("hello")
+
+    const emptyFormat = translate({
+      input: "hello",
+      text: { format: null },
+    })
+    expect(emptyFormat.messagesPayload.messages).toHaveLength(1)
+    expect(emptyFormat.messagesPayload.tool_choice).toBeUndefined()
+
+    const noTextConfig = translate({ input: "hello" })
+    expect(noTextConfig.messagesPayload.messages).toHaveLength(1)
   })
 
   test("marks reasoning translated from a Messages response", () => {

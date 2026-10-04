@@ -11,6 +11,8 @@ import {
   getModelsDevModelPricing,
   getModelsDevModelProviderType,
   getModelsDevProviderOptions,
+  getModelsDevProviderModelIds,
+  loadCachedModelsDevCatalog,
   getOpencodeGoModelIds,
   getOpencodeGoModelProviderType,
   getOpencodeGoModelRecords,
@@ -113,6 +115,11 @@ test("lists usable Chat, Responses, and Anthropic providers without the built-in
   expect(await loadModelsDevProviderOptions()).toEqual(
     getModelsDevProviderOptions(),
   )
+  await loadCachedModelsDevCatalog()
+  expect(getModelsDevProviderModelIds("responses-provider")).toEqual([
+    "completion",
+  ])
+  expect(getModelsDevProviderModelIds("unknown-provider")).toEqual([])
   expect(getModelsDevProviderOptions()).toEqual([
     {
       id: "anthropic-provider",

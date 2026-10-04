@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
+import type { AppUpdateStatus } from '../src/types/ipc'
 
 contextBridge.exposeInMainWorld('electronAPI', {
   getAuthStatus: () => ipcRenderer.invoke('auth:get-status'),
@@ -24,9 +25,26 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getServerStatus: () => ipcRenderer.invoke('server:get-status'),
 
   getSettings: () => ipcRenderer.invoke('settings:get'),
+  getAppUpdateStatus: () => ipcRenderer.invoke('update:get-status'),
+  checkAppUpdate: () => ipcRenderer.invoke('update:check'),
+  installAppUpdate: () => ipcRenderer.invoke('update:install'),
+  onAppUpdateStatus: (callback: (status: AppUpdateStatus) => void) => {
+    const handler = (
+      _event: Electron.IpcRendererEvent,
+      status: AppUpdateStatus,
+    ) => callback(status)
+    ipcRenderer.on('update:status', handler)
+    return () => ipcRenderer.off('update:status', handler)
+  },
   saveSettings: (settings: unknown) =>
     ipcRenderer.invoke('settings:save', settings),
   getModelMappingsConfig: () => ipcRenderer.invoke('config:get-model-mappings'),
+  getProviderManagementConfig: () =>
+    ipcRenderer.invoke('config:get-provider-management'),
+  getProviderModelOptions: () =>
+    ipcRenderer.invoke('config:get-provider-model-options'),
+  saveProviderManagementConfig: (input: unknown) =>
+    ipcRenderer.invoke('config:save-provider-management', input),
   saveModelMappings: (modelMappings: Record<string, string>) =>
     ipcRenderer.invoke('config:save-model-mappings', modelMappings),
 

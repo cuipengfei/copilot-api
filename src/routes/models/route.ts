@@ -10,7 +10,9 @@ import {
 } from "~/lib/config"
 import { builtinProviderModelRegistry } from "~/lib/builtin-provider-models"
 import { forwardError } from "~/lib/error"
+import { isGitHubCopilotEnabled } from "~/lib/github-copilot-provider"
 import { createHandlerLogger } from "~/lib/logger"
+import { stripInternalRequestHeaders } from "~/lib/internal-headers"
 import { getOpencodeGoModelRecords } from "~/lib/models-dev-cache"
 import { toClientModelId } from "~/lib/models"
 import { resolveProviderConfig } from "~/lib/provider-resolver"
@@ -286,10 +288,17 @@ async function getAggregatedModels(
   requestHeaders: Headers,
 ): Promise<Array<ClientModel>> {
   const enabledProviders = listEnabledProviders()
-  if (!state.models && enabledProviders.length === 0) {
+  if (
+    isGitHubCopilotEnabled()
+    && !state.models
+    && enabledProviders.length === 0
+  ) {
     await cacheModels()
   }
-  const copilotModels = state.models?.data.map(normalizeCopilotModel) ?? []
+  const copilotModels =
+    isGitHubCopilotEnabled() ?
+      (state.models?.data.map(normalizeCopilotModel) ?? [])
+    : []
   const providerModelsByProvider = await Promise.all(
     enabledProviders.map((provider) =>
       getProviderModels(provider, requestHeaders),
@@ -344,6 +353,7 @@ async function getSyntheticCodexModels(
 
 function getCopilotCodexCandidates(): Array<SyntheticCodexModelCandidate> {
   const candidates: Array<SyntheticCodexModelCandidate> = []
+  if (!isGitHubCopilotEnabled()) return candidates
   for (const model of state.models?.data ?? []) {
     try {
       if (isCopilotCodexCandidate(model)) {
@@ -400,6 +410,7 @@ function createCopilotCodexCandidate(
   )
   return {
     slug: toClientModelId(model.id),
+    catalogSlug: model.id,
     displayName: model.name,
     description: describeCopilotAdapter(model),
     contextWindow: positiveNumber(
@@ -677,7 +688,10 @@ modelRoutes.get("/", async (c) => {
       )
       return await handleMergedCodexModels(
         c,
-        getSyntheticCodexModels(c.req.raw.headers, enabledProviders),
+        getSyntheticCodexModels(
+          stripInternalRequestHeaders(c.req.raw.headers),
+          enabledProviders,
+        ),
         {
           includeCodexProviderAliases: codexProviderName !== undefined,
           codexProviderName,
@@ -685,7 +699,9 @@ modelRoutes.get("/", async (c) => {
       )
     }
 
-    const models = await getAggregatedModels(c.req.raw.headers)
+    const models = await getAggregatedModels(
+      stripInternalRequestHeaders(c.req.raw.headers),
+    )
     const sortedModels = sortModels(models)
 
     return c.json({

@@ -18,6 +18,7 @@ import {
   isResponsesApiWebSocketEnabled as isConfiguredResponsesApiWebSocketEnabled,
 } from "~/lib/config"
 import { HTTPError } from "~/lib/error"
+import { FULL_MODEL_CATALOG_HEADER } from "~/lib/internal-headers"
 import { state } from "~/lib/state"
 import {
   createPooledWebSocketStream,
@@ -62,6 +63,7 @@ interface CodexResponsesHeaderOptions {
 }
 
 const STRIPPED_CODEX_REQUEST_HEADERS = new Set([
+  FULL_MODEL_CATALOG_HEADER,
   "accept-encoding",
   "authorization",
   "cdn-loop",
@@ -211,12 +213,19 @@ export function buildCodexRequestHeaders(requestHeaders: Headers): Headers {
   return headers
 }
 
+export const codexResponsesDependencies = {
+  isResponsesApiWebSocketEnabled: () =>
+    isConfiguredResponsesApiWebSocketEnabled(),
+}
+
 export function resolveCodexResponsesTransport(
   transport?: ResponsesTransport,
 ): ResponsesTransport {
   return (
     transport
-    ?? (isConfiguredResponsesApiWebSocketEnabled() ? "websocket" : "http")
+    ?? (codexResponsesDependencies.isResponsesApiWebSocketEnabled() ?
+      "websocket"
+    : "http")
   )
 }
 

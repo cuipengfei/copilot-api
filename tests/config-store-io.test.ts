@@ -188,7 +188,11 @@ test("setConfiguredApiKeys normalizes keys and preserves other config fields", (
       baseUrl: "https://provider.example",
     },
   })
-  expect(config.modelMappings).toEqual({ "claude-opus-4-7": "gpt-5-mini" })
+  expect(config.modelMappings).toEqual({
+    "codex-auto-review": "codex/codex-auto-review",
+    "gpt-reserve": "codex/gpt-reserve",
+    "claude-opus-4-7": "gpt-5-mini",
+  })
 })
 
 test("setConfiguredApiKeys can clear all keys", () => {

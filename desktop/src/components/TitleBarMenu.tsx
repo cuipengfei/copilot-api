@@ -28,9 +28,15 @@ interface MenuConfig {
 
 interface TitleBarMenuProps {
   onOpenSettings?: () => void
+  onOpenAuthConfig?: () => void
+  onCheckUpdates?: () => void
 }
 
-export default function TitleBarMenu({ onOpenSettings }: TitleBarMenuProps) {
+export default function TitleBarMenu({
+  onOpenSettings,
+  onOpenAuthConfig,
+  onCheckUpdates,
+}: TitleBarMenuProps) {
   const { t } = useLanguage()
   const [openMenu, setOpenMenu] = useState<string | null>(null)
   const [showAbout, setShowAbout] = useState(false)
@@ -50,6 +56,15 @@ export default function TitleBarMenu({ onOpenSettings }: TitleBarMenuProps) {
           label: t('menu.fileSettings'),
           onClick: () => onOpenSettings?.(),
         },
+        ...(onOpenAuthConfig ?
+          [
+            {
+              type: 'item' as const,
+              label: t('menu.fileAuthConfig'),
+              onClick: onOpenAuthConfig,
+            },
+          ]
+        : []),
         { type: 'separator' },
         {
           type: 'item',
@@ -73,6 +88,11 @@ export default function TitleBarMenu({ onOpenSettings }: TitleBarMenuProps) {
       key: 'help',
       label: t('menu.help'),
       entries: [
+        {
+          type: 'item',
+          label: t('updates.check'),
+          onClick: () => onCheckUpdates?.(),
+        },
         { type: 'item', label: t('menu.helpAbout'), onClick: openAbout },
         {
           type: 'item',

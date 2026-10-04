@@ -11,6 +11,7 @@ import type {
 } from '../types/ipc'
 import { useLanguage } from '../contexts/LanguageContext'
 import Header from '../components/Header'
+import { refreshProviderAuthStatus } from '../lib/provider-management-auth'
 
 interface AuthPageProps {
   onBack?: () => void
@@ -300,7 +301,7 @@ export default function AuthPage({ onBack, onSuccess }: AuthPageProps) {
 
       await loadCodexAccounts()
       setCodexAlias('')
-      setCodexNotice(t('auth.codexRestartRequired'))
+      setCodexNotice(t('auth.codexAccountRefreshed'))
       setView('codex-accounts')
     } catch (err) {
       setError((err as Error).message)
@@ -327,7 +328,7 @@ export default function AuthPage({ onBack, onSuccess }: AuthPageProps) {
       }
 
       await loadCodexAccounts()
-      setCodexNotice(t('auth.codexRestartRequired'))
+      setCodexNotice(t('auth.codexAccountRefreshed'))
     } catch (err) {
       setError((err as Error).message)
     } finally {
@@ -357,7 +358,7 @@ export default function AuthPage({ onBack, onSuccess }: AuthPageProps) {
       await loadCodexAccounts()
       setCodexNotice(
         (await isServerRunning()) ?
-          t('auth.codexRemoveRestartRequired')
+          t('auth.codexAccountRemovedRefreshed')
         : t('auth.codexAccountRemoved'),
       )
     } catch (err) {
@@ -401,7 +402,16 @@ export default function AuthPage({ onBack, onSuccess }: AuthPageProps) {
 
   return (
     <div className="flex flex-col h-screen bg-canvas">
-      <Header />
+      <Header
+        onOpenAuthConfig={handleBack}
+        onProvidersClose={() => {
+          void refreshProviderAuthStatus(
+            window.electronAPI.getAuthStatus,
+            onSuccess,
+            !onBack,
+          ).catch((reason: unknown) => setError(String(reason)))
+        }}
+      />
 
       <div className="flex-1 overflow-y-auto min-h-0 flex flex-col">
         {onBack && (

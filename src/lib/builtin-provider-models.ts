@@ -30,50 +30,29 @@ type BuiltinProviderModelCatalog = Record<
   Record<string, BuiltinProviderModelConfig>
 >
 
+const CODEX_LUNA_PRICING: TokenUsagePricingConfig = {
+  tiers: [
+    {
+      cacheCreationInput: 0.125,
+      cachedInput: 0.01,
+      input: 0.1,
+      maxInputTokens: 272_000,
+      output: 0.5,
+    },
+    {
+      cacheCreationInput: 0.25,
+      cachedInput: 0.02,
+      input: 0.2,
+      output: 0.75,
+    },
+  ],
+}
+
 export class BuiltinProviderModelRegistry {
   private static readonly catalog: BuiltinProviderModelCatalog = {
     codex: {
-      "gpt-5.3-codex": {
-        pricing: {
-          cachedInput: 0.175,
-          input: 1.75,
-          output: 14,
-        },
-      },
-      "gpt-5.4": {
-        pricing: {
-          tiers: [
-            {
-              cachedInput: 0.25,
-              input: 2.5,
-              maxInputTokens: 272_000,
-              output: 15,
-            },
-            {
-              cachedInput: 0.5,
-              input: 5,
-              output: 22.5,
-            },
-          ],
-        },
-      },
-      "gpt-5.4-mini": {
-        pricing: {
-          tiers: [
-            {
-              cachedInput: 0.075,
-              input: 0.75,
-              maxInputTokens: 272_000,
-              output: 4.5,
-            },
-            {
-              cachedInput: 0.15,
-              input: 1.5,
-              output: 6.75,
-            },
-          ],
-        },
-      },
+      "codex-auto-review": { pricing: CODEX_LUNA_PRICING },
+      "gpt-reserve": { pricing: CODEX_LUNA_PRICING },
       "gpt-5.5": {
         pricing: {
           tiers: [
@@ -168,23 +147,7 @@ export class BuiltinProviderModelRegistry {
         },
       },
       "gpt-6-luna": {
-        pricing: {
-          tiers: [
-            {
-              cacheCreationInput: 0.125,
-              cachedInput: 0.01,
-              input: 0.1,
-              maxInputTokens: 272_000,
-              output: 0.5,
-            },
-            {
-              cacheCreationInput: 0.25,
-              cachedInput: 0.02,
-              input: 0.2,
-              output: 0.75,
-            },
-          ],
-        },
+        pricing: CODEX_LUNA_PRICING,
       },
       "gpt-6-sol": {
         pricing: {
@@ -199,6 +162,25 @@ export class BuiltinProviderModelRegistry {
             {
               cacheCreationInput: 5,
               cachedInput: 0.4,
+              input: 4,
+              output: 15,
+            },
+          ],
+        },
+      },
+      "gpt-6.1-sol": {
+        pricing: {
+          tiers: [
+            {
+              cacheCreationInput: 2.5,
+              cachedInput: 0.1,
+              input: 2,
+              maxInputTokens: 272_000,
+              output: 10,
+            },
+            {
+              cacheCreationInput: 5,
+              cachedInput: 0.2,
               input: 4,
               output: 15,
             },

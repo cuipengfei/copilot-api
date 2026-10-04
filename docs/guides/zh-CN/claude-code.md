@@ -73,6 +73,9 @@ npx @jeffreycao/copilot-api@latest start --claude-code
 - 如果使用的不是 Claude 模型，请不要启用 `ENABLE_TOOL_SEARCH`。如果使用的是 Claude 模型，则可以启用 `ENABLE_TOOL_SEARCH`。当前 Claude Code 使用的是客户端 tool search 模式，在该模式下每次加载 defer tools 都需要额外请求一次。
 - `CLAUDE_CODE_AUTO_COMPACT_WINDOW`：设置用于自动压缩计算的上下文容量（以 token 为单位）。默认使用模型自身的上下文窗口：标准模型为 200K，扩展上下文模型为 1M。使用 1M 上下文模型（如 `claude-opus-4-6[1m]`）时，可设置一个较低的值（如 `500000`）将窗口视为 500K 用于压缩计算。该值受限于模型的实际上下文窗口上限。`CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` 会基于此值的百分比生效。设置此变量可将压缩阈值与状态栏的 `used_percentage` 解耦（后者始终使用模型的完整上下文窗口）。
 
+- `CLAUDE_CODE_PROMPT_CACHE_TTL`：Claude Code v2.1.242+ 可设为 `1h`，为 Claude 模型请求 1 小时 prompt cache；API key 场景默认使用 5 分钟缓存。网关会将客户端请求的 `extended-cache-ttl-2025-04-11` beta 和内容块上的 `cache_control.ttl` 透传到 Copilot Messages 上游，不会主动添加 1h 配置。GPT 模型不适用此设置。子代理等其他请求可单独设置 `subagentPromptCacheTtl` 或 `CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL`。完整优先级见 [Claude Code prompt caching 文档](https://code.claude.com/docs/en/prompt-caching#choose-the-ttl-yourself)。
+  - **风险提示：** [GitHub Copilot 官方价格文档](https://docs.github.com/en/copilot/reference/copilot-billing/models-and-pricing)目前未单独列出 cache 1h 的价格。虽然 Copilot models 接口返回了 `cache_write_1h_price`，但该字段不等于官方已公开确认 1h 缓存的计费规则；使用有风险，请谨慎使用，并以上游实际支持情况和计费为准。
+
 更多选项见：[Claude Code settings](https://docs.anthropic.com/en/docs/claude-code/settings#environment-variables)
 
 也可以参考 IDE 集成说明：[Add Claude Code to your IDE](https://docs.anthropic.com/en/docs/claude-code/ide-integrations)

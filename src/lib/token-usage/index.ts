@@ -48,6 +48,7 @@ export type {
 
 export interface TokenUsageEventInput extends UsageTokens {
   copilotUsage?: CopilotUsageTokens | null
+  serviceTier?: string | null
   endpoint: TokenUsageEndpoint
   fallbackSessionId?: string | null
   model: string
@@ -60,6 +61,7 @@ export interface TokenUsageEventInput extends UsageTokens {
 }
 
 interface TokenUsageRecorderOptions {
+  serviceTier?: string | null
   endpoint: TokenUsageEndpoint
   fallbackSessionId?: string | null
   model: string

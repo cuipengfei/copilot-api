@@ -1,5 +1,7 @@
 import { useState, useRef, useEffect, type CSSProperties } from 'react'
 import SettingsModal from './SettingsModal'
+import AppUpdatePanel from './AppUpdatePanel'
+import ProviderManagementModal from './ProviderManagementModal'
 import TitleBarMenu from './TitleBarMenu'
 import WindowControls from './WindowControls'
 import { useLanguage } from '../contexts/LanguageContext'
@@ -48,23 +50,31 @@ const IconStop = () => (
 
 interface HeaderProps {
   onChangeAuth?: () => void
+  onOpenAuthConfig?: () => void
   onRestart?: () => void
   onStop?: () => void
   onSettingsClose?: () => void
+  onProvidersClose?: () => void
   isRunning?: boolean
   isRestarting?: boolean
 }
 
 export default function Header({
   onChangeAuth,
+  onOpenAuthConfig,
   onRestart,
   onStop,
   onSettingsClose,
+  onProvidersClose,
   isRunning,
   isRestarting,
 }: HeaderProps) {
   const { t } = useLanguage()
   const [showSettings, setShowSettings] = useState(false)
+  const [settingsSection, setSettingsSection] = useState<'general' | 'updates'>(
+    'general',
+  )
+  const [showProviders, setShowProviders] = useState(false)
   const [showSettingsMenu, setShowSettingsMenu] = useState(false)
   const settingsMenuRef = useRef<HTMLDivElement>(null)
   const showServerStatus = Boolean(onStop)
@@ -89,6 +99,11 @@ export default function Header({
       return
     }
 
+    openSettings()
+  }
+
+  const openSettings = () => {
+    setSettingsSection('general')
     setShowSettings(true)
   }
 
@@ -106,7 +121,14 @@ export default function Header({
             <span className="text-sm font-bold text-ink">Copilot API</span>
           </div>
           <div className="w-px h-4 bg-line" />
-          <TitleBarMenu onOpenSettings={() => setShowSettings(true)} />
+          <TitleBarMenu
+            onOpenSettings={openSettings}
+            onOpenAuthConfig={onOpenAuthConfig ?? onChangeAuth}
+            onCheckUpdates={() => {
+              setSettingsSection('updates')
+              setShowSettings(true)
+            }}
+          />
         </div>
 
         <div
@@ -127,14 +149,15 @@ export default function Header({
           {isRunning && onStop && (
             <button
               onClick={onStop}
-              className="inline-flex items-center gap-1.5 px-2.5 py-1 text-[13px] border border-red-200 text-red-500 rounded-md hover:bg-red-50 dark:border-red-500/30 dark:hover:bg-red-500/15 transition-colors"
+              disabled={isRestarting}
+              className="inline-flex items-center gap-1.5 px-2.5 py-1 text-[13px] border border-red-200 text-red-500 rounded-md hover:bg-red-50 dark:border-red-500/30 dark:hover:bg-red-500/15 disabled:opacity-50 transition-colors"
             >
               <IconStop />
               {t('header.stop')}
             </button>
           )}
 
-          {isRunning ?
+          {isRunning && !isRestarting ?
             <div className="flex items-center gap-1.5 bg-green-50 border border-green-200 rounded-full px-2.5 py-1 dark:bg-green-500/15 dark:border-green-500/25">
               <div className="w-1.5 h-1.5 rounded-full bg-green-500" />
               <span className="text-[13px] font-semibold text-green-700 dark:text-green-400">
@@ -145,11 +168,20 @@ export default function Header({
             <div className="flex items-center gap-1.5 bg-yellow-50 border border-yellow-200 rounded-full px-2.5 py-1 dark:bg-yellow-500/15 dark:border-yellow-500/25">
               <div className="w-1.5 h-1.5 rounded-full bg-yellow-500" />
               <span className="text-[13px] font-semibold text-yellow-700 dark:text-yellow-400">
-                {t('header.notStarted')}
+                {isRestarting ? t('header.restarting') : t('header.notStarted')}
               </span>
             </div>
           : null}
 
+          {onProvidersClose && (
+            <button
+              type="button"
+              onClick={() => setShowProviders(true)}
+              className="rounded-lg px-2 py-1.5 text-xs text-ink-soft hover:bg-sunken"
+            >
+              {t('providers.title')}
+            </button>
+          )}
           <div className="relative" ref={settingsMenuRef}>
             <button
               onClick={handleSettingsAction}
@@ -177,7 +209,7 @@ export default function Header({
                 <button
                   onClick={() => {
                     setShowSettingsMenu(false)
-                    setShowSettings(true)
+                    openSettings()
                   }}
                   className="flex items-center gap-2 w-full px-3 py-2.5 text-[13px] text-ink-soft hover:bg-sunken transition-colors text-left"
                 >
@@ -202,12 +234,25 @@ export default function Header({
         {isMac ? null : <WindowControls />}
       </div>
 
+      <AppUpdatePanel compact />
+
       {showSettings && (
         <SettingsModal
+          initialSection={settingsSection}
+          checkForUpdatesOnOpen={settingsSection === 'updates'}
           onClose={() => {
             setShowSettings(false)
             onSettingsClose?.()
           }}
+        />
+      )}
+      {showProviders && (
+        <ProviderManagementModal
+          onClose={() => {
+            setShowProviders(false)
+            onProvidersClose?.()
+          }}
+          serverRunning={isRunning}
         />
       )}
     </>

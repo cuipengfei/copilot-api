@@ -557,6 +557,39 @@ describe("token usage storage", () => {
     }
   })
 
+  test("prices GPT-6.1 Sol cache usage at the 272K input tier boundary", () => {
+    const expectedCosts = [
+      {
+        cache_creation_input_tokens: 1_000,
+        cache_read_input_tokens: 2_000,
+        input_tokens: 269_000,
+        totalCostNanos: 570_700_000,
+      },
+      {
+        cache_creation_input_tokens: 1_000,
+        cache_read_input_tokens: 2_000,
+        input_tokens: 269_001,
+        totalCostNanos: 1_126_404_000,
+      },
+    ]
+
+    for (const { totalCostNanos, ...usage } of expectedCosts) {
+      expect(
+        resolveTokenUsageCost({
+          ...usage,
+          model: "gpt-6.1-sol",
+          output_tokens: 3_000,
+          providerName: "codex",
+          source: "provider",
+        }),
+      ).toEqual({
+        currency: "USD",
+        source: "builtin",
+        total_cost_nanos: totalCostNanos,
+      })
+    }
+  })
+
   test("prices DashScope Qwen3.8 Max with explicit cache prices", () => {
     expect(
       resolveTokenUsageCost({
@@ -887,6 +920,42 @@ describe("token usage storage", () => {
     )
     const events = (await eventsResponse.json()) as TokenUsageEventsPage
     expect(events.total).toBe(4)
+  })
+
+  test("buckets daily usage by runtime local days when SQLite uses another timezone", async () => {
+    // Changing TZ at runtime moves the JavaScript timezone but not SQLite's
+    // 'localtime', reproducing hosts where the two disagree.
+    const originalTz = process.env.TZ
+    const originalZone = Intl.DateTimeFormat().resolvedOptions().timeZone
+    process.env.TZ = "Pacific/Kiritimati"
+    try {
+      setSystemTime(localDate(2026, 4, 1, 0))
+      recordTokenUsageEvent({
+        endpoint: "responses",
+        input_tokens: 3,
+        model: "day-start",
+        source: "copilot",
+      })
+      setSystemTime(localDate(2026, 4, 2))
+
+      const response = await createTokenUsageApp().request(
+        "/token-usage/daily?period=this_month",
+      )
+      const daily = (await response.json()) as TokenUsageDailySummary
+
+      expect(daily.days.map((day) => day.date)).toEqual([
+        "2026-05-01",
+        "2026-05-02",
+      ])
+      expect(daily.days[0]?.totals.input_tokens).toBe(3)
+      expect(daily.days[0]?.byModel.map((model) => model.model)).toEqual([
+        "day-start",
+      ])
+    } finally {
+      // Deleting TZ alone keeps the current zone, so restore it explicitly.
+      process.env.TZ = originalTz ?? originalZone
+      if (originalTz === undefined) Reflect.deleteProperty(process.env, "TZ")
+    }
   })
 
   test("returns an empty lifetime range when there are no events", async () => {

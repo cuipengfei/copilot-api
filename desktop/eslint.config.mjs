@@ -79,7 +79,7 @@ export default defineConfig(
     ...tseslint.configs.disableTypeChecked,
   },
   {
-    files: ['tests/**/*'],
+    files: ['tests/**/*', 'desktop/tests/**/*'],
     rules: {
       '@typescript-eslint/await-thenable': 'off',
       '@typescript-eslint/require-await': 'off',

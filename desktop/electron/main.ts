@@ -5,8 +5,11 @@ import {
   Menu,
   nativeImage,
   nativeTheme,
+  ipcMain,
+  net,
 } from 'electron'
 import path from 'node:path'
+import electronUpdater from 'electron-updater'
 
 import { bindElectronFetch } from '../../src/lib/electron-fetch'
 import type {
@@ -35,6 +38,8 @@ import {
   setLaunchAtLoginFallback,
 } from './settings-store'
 import { applySettingsEnvOverrides } from './settings-env'
+import { createUpdateManager } from './update-manager'
+import { checkReleaseUpdate } from './release-update'
 
 const CLI_ENV_FLAGS = {
   '--api-home': 'COPILOT_API_HOME',
@@ -326,6 +331,50 @@ async function initializeApplication(): Promise<void> {
     await getRuntimeDependencies()
   const settings = await readSettings()
   await applyElectronProxy(getEffectiveProxySettings(settings))
+
+  const { autoUpdater } = electronUpdater
+  const updateManager = createUpdateManager(autoUpdater, {
+    currentVersion: app.getVersion(),
+    enabled: app.isPackaged,
+    // Unsigned macOS builds need manual DMG installation. Squirrel.Mac
+    // requires a signed app and a ZIP target for automatic installation.
+    nativeUpdates:
+      process.platform === 'win32'
+      || (process.platform === 'linux' && Boolean(process.env.APPIMAGE)),
+    checkRelease: () =>
+      checkReleaseUpdate(
+        (url, options) => net.fetch(url, options),
+        app.getVersion(),
+        process.platform,
+        process.arch,
+      ),
+    beforeInstall: async () => {
+      const { stopServer } = await getRuntimeDependencies()
+      await stopServer()
+      isQuitting = true
+    },
+    onStatus: (status) => {
+      if (status.phase === 'downloaded' && status.error) isQuitting = false
+      for (const window of BrowserWindow.getAllWindows()) {
+        if (!window.isDestroyed())
+          window.webContents.send('update:status', status)
+      }
+    },
+  })
+  ipcMain.handle('update:get-status', () => updateManager.getStatus())
+  ipcMain.handle('update:check', () => updateManager.check())
+  ipcMain.handle('update:install', () => updateManager.install())
+  if (app.isPackaged) {
+    const startupCheck = setTimeout(() => void updateManager.check(), 15_000)
+    const periodicCheck = setInterval(
+      () => void updateManager.check(),
+      6 * 60 * 60 * 1000,
+    )
+    app.once('before-quit', () => {
+      clearTimeout(startupCheck)
+      clearInterval(periodicCheck)
+    })
+  }
 
   const launchedAtLogin = wasLaunchedAtLogin(app)
 

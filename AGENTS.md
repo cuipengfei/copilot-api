@@ -23,9 +23,10 @@ bun run test           # 全量测试（bun test --isolate，每文件全新 glo
 bun test tests/foo.test.ts  # 跑单个测试文件
 bun run lint:all --fix # Lint 并修复
 bun run typecheck      # 类型检查
+bun run typecheck:all # 网关与桌面端类型检查
+bun run --cwd desktop test  # 桌面端测试
+bun run --cwd desktop build # 桌面端 Electron 构建
 ```
-
-Run `bun run lint --fix <files>` to format changed files with the repository's ESLint/Prettier configuration. Do not run standalone `prettier` or `bunx prettier`; they may ignore the inline repository options (including `semi: false`) and rewrite entire files with the wrong style.
 
 ## 代码改动最终检查（MUST）
 
