@@ -235,6 +235,61 @@ describe('desktop saves automatically refresh the running gateway', () => {
     expect(activeAdminApiKey).toBe('old-admin')
   })
 
+  test('does not save a cancelled device token waiting behind another credential update', async () => {
+    const login =
+      Promise.withResolvers<
+        Awaited<ReturnType<typeof providerAuth.loginCodexForDesktop>>
+      >()
+    const loginStarted = Promise.withResolvers<void>()
+    const settingsRead = Promise.withResolvers<void>()
+    const nextToken = Promise.withResolvers<string>()
+    const notifications: string[] = []
+    spyOn(providerAuth, 'loginCodexForDesktop').mockImplementation(() => {
+      loginStarted.resolve()
+      return login.promise
+    })
+    spyOn(settingsStore, 'readSettings').mockImplementation(() => {
+      settingsRead.resolve()
+      return Promise.resolve(structuredClone(settings))
+    })
+    spyOn(auth, 'getDeviceCode').mockResolvedValue({
+      device_code: 'device-code',
+      user_code: 'CODE',
+      verification_uri: 'https://github.com/login/device',
+      interval: 5,
+      expires_in: 900,
+    })
+    let polls = 0
+    spyOn(auth, 'pollAccessToken').mockImplementation(() =>
+      ++polls === 1 ? Promise.resolve('cancelled-token') : nextToken.promise,
+    )
+    registerIpcHandlers({
+      isDestroyed: () => false,
+      webContents: { send: (channel: string) => notifications.push(channel) },
+    } as unknown as BrowserWindow)
+    const pendingLogin = invoke('auth:start-codex-login', {})
+    await loginStarted.promise
+    await invoke('auth:get-device-code')
+    await settingsRead.promise
+    await new Promise<void>((resolve) => setTimeout(resolve, 0))
+    expect(auth.saveToken).not.toHaveBeenCalled()
+    await invoke('auth:get-device-code')
+    login.resolve({ success: true, mode: 'provider', providers: ['codex'] })
+    await pendingLogin
+    await invoke('config:save-provider-management', {})
+    expect(auth.saveToken).not.toHaveBeenCalled()
+    expect(settingsStore.writeSettings).not.toHaveBeenCalled()
+    expect(notifications).toEqual([])
+    expect(fetch).toHaveBeenCalledTimes(2)
+
+    nextToken.resolve('current-token')
+    await new Promise<void>((resolve) => setTimeout(resolve, 0))
+    await invoke('config:save-provider-management', {})
+    expect(auth.saveToken).toHaveBeenCalledTimes(1)
+    expect(auth.saveToken).toHaveBeenCalledWith('current-token')
+    expect(notifications).toEqual(['auth:success'])
+  })
+
   test('rotates keys using the active old admin key', async () => {
     const saved = await invoke('auth:save-server-keys', {
       apiKeys: ['new-api'],

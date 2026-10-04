@@ -5,7 +5,7 @@ import { setupCopilotRuntime } from "~/lib/copilot-runtime"
 import { readGitHubToken, readGitHubTokenFromEnv } from "~/lib/credential-store"
 import { isGitHubCopilotEnabled } from "~/lib/github-copilot-provider"
 import { state } from "~/lib/state"
-import { stopCodexRefreshLoop, stopCopilotRefreshLoop } from "~/lib/token"
+import { invalidateCodexRuntime, stopCopilotRefreshLoop } from "~/lib/token"
 import { stopModelsRefreshLoop } from "~/services/copilot/models-cache"
 
 let pendingReload: Promise<void> = Promise.resolve()
@@ -15,16 +15,9 @@ async function applyConfigReload(): Promise<void> {
   const wasCopilotEnabled = isGitHubCopilotEnabled(previousConfig)
   const config = reloadConfig()
 
-  if (
-    config.providers?.codex?.enabled === false
-    || config.providers?.codex?.accountId
-      !== previousConfig.providers?.codex?.accountId
-  ) {
-    consola.debug(
-      "Config reload: stopping Codex refresh because its provider is disabled or the selected account changed",
-    )
-    stopCodexRefreshLoop()
-  }
+  // Credentials can change without changing accountId (signing in again).
+  // The next Codex request reads the saved credentials and starts a fresh loop.
+  invalidateCodexRuntime()
   if (!isGitHubCopilotEnabled(config)) {
     consola.debug(
       "Config reload: Copilot is disabled; stopping its refresh loop",

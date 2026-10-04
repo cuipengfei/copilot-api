@@ -355,6 +355,14 @@ export default function DashboardPage({
   // Watch server status changes and only surface unexpected stops.
   useEffect(() => {
     const unsubscribe = window.electronAPI.onServerStatus((status) => {
+      if (status.running) {
+        if (status.port) setPort(String(status.port))
+        if (status.host !== undefined) setHost(status.host)
+        setStarted(true)
+        setServerError('')
+        intentionalStop.current = false
+        return
+      }
       if (!status.running) {
         if (!intentionalStop.current) {
           setServerError(status.error ?? t('dashboard.serverUnexpectedStop'))

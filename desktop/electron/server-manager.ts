@@ -318,7 +318,9 @@ export async function startServer(
   currentPort = port
   currentHost = host
 
-  return { running: true, port, host }
+  const status: ServerStatus = { running: true, port, host }
+  statusCallback?.(status)
+  return status
 }
 
 // Wait for server readiness or process exit, whichever happens first.

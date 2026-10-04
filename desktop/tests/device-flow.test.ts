@@ -557,8 +557,10 @@ describe('createDeviceFlowTokenHandler', () => {
     const { dependencies, onToken, state } = createTokenHandlerHarness()
     const saveToken = dependencies.saveToken
     const failure = new Error('token write failed')
-    dependencies.saveToken = (token) =>
-      token === 'failed-token' ? Promise.reject(failure) : saveToken(token)
+    dependencies.saveToken = (token, signal) =>
+      token === 'failed-token' ?
+        Promise.reject(failure)
+      : saveToken(token, signal)
     const failed = onToken('failed-token', new AbortController().signal).catch(
       (error: unknown) => error,
     )

@@ -37,6 +37,7 @@ import { state } from "./state"
 
 let copilotRefreshLoopController: AbortController | null = null
 let codexRefreshLoopController: AbortController | null = null
+let codexRuntimeGeneration = 0
 const codexRefreshInFlight = new Map<string, Promise<CodexCredentials>>()
 const codexCredentialsPendingPersistence = new Map<string, CodexCredentials>()
 
@@ -52,6 +53,8 @@ export interface PersistCodexCredentialsOptions {
   enableProvider?: boolean
   insertIfMissing?: boolean
   syncProvider?: boolean
+  expectedRefreshToken?: string
+  runtimeGeneration?: number
 }
 
 interface CopilotUserIdentity {
@@ -86,6 +89,15 @@ export const stopCodexRefreshLoop = () => {
 
   codexRefreshLoopController.abort()
   codexRefreshLoopController = null
+}
+
+export const invalidateCodexRuntime = () => {
+  codexRuntimeGeneration++
+  stopCodexRefreshLoop()
+  state.codexAccessToken = undefined
+  state.codexRefreshToken = undefined
+  state.codexExpiresAt = undefined
+  state.codexAccountId = undefined
 }
 
 function applyCodexCredentials(credentials: CodexCredentials): void {
@@ -247,10 +259,12 @@ export async function persistCodexCredentials(
   credentials: CodexCredentials,
   options: PersistCodexCredentialsOptions = {},
 ): Promise<void> {
+  const generation = options.runtimeGeneration ?? codexRuntimeGeneration
   const persist = async (): Promise<void> => {
     await writeCodexCredentials(credentials, {
       alias: options.alias,
       insertIfMissing: options.insertIfMissing,
+      expectedRefreshToken: options.expectedRefreshToken,
     })
     if (options.syncProvider !== false) {
       syncCodexProviderConfig({
@@ -259,12 +273,19 @@ export async function persistCodexCredentials(
       })
     }
     if (
-      options.syncProvider !== false
-      || getConfiguredCodexAccountId() === credentials.accountId
+      generation === codexRuntimeGeneration
+      && (options.syncProvider !== false
+        || getConfiguredCodexAccountId() === credentials.accountId)
     ) {
       applyCodexCredentials(credentials)
     }
-    codexCredentialsPendingPersistence.delete(credentials.accountId)
+    if (options.syncProvider !== false) {
+      for (const [key, pending] of codexCredentialsPendingPersistence) {
+        if (pending.accountId === credentials.accountId) {
+          codexCredentialsPendingPersistence.delete(key)
+        }
+      }
+    }
   }
 
   if (options.syncProvider === false) {
@@ -283,17 +304,23 @@ export interface CodexRefreshDependencies {
   ) => Promise<CodexCredentials>
 }
 
-const defaultCodexRefreshDependencies: CodexRefreshDependencies = {
-  getCurrentCredentials: getLoadedCodexCredentials,
-  // Refreshes may never re-create an account row. A server that was not
-  // restarted after switching accounts keeps refreshing its previous account,
-  // and inserting it again would undo a removal that already happened.
-  persistCodexCredentials: (credentials) =>
-    persistCodexCredentials(credentials, {
-      insertIfMissing: false,
-      syncProvider: false,
-    }),
-  refreshCodexCredentials,
+function createCodexRefreshDependencies(
+  credentials: CodexCredentials,
+): CodexRefreshDependencies {
+  const generation = codexRuntimeGeneration
+  return {
+    getCurrentCredentials: getLoadedCodexCredentials,
+    // Persist a rotated token for the old account, but never revive its
+    // runtime or overwrite a token family saved by a newer sign-in.
+    persistCodexCredentials: (refreshed) =>
+      persistCodexCredentials(refreshed, {
+        insertIfMissing: false,
+        syncProvider: false,
+        expectedRefreshToken: credentials.refreshToken,
+        runtimeGeneration: generation,
+      }),
+    refreshCodexCredentials,
+  }
 }
 
 /**
@@ -308,9 +335,30 @@ const defaultCodexRefreshDependencies: CodexRefreshDependencies = {
  */
 export function refreshCodexCredentialsOnce(
   credentials: CodexCredentials,
-  dependencies: CodexRefreshDependencies = defaultCodexRefreshDependencies,
+  dependencies?: CodexRefreshDependencies,
 ): Promise<CodexCredentials> {
-  const inFlight = codexRefreshInFlight.get(credentials.accountId)
+  // Prefer a newer snapshot before choosing the single-flight key so callers
+  // with old snapshots still share a refresh of the same rotated token.
+  const current =
+    dependencies ?
+      dependencies.getCurrentCredentials()
+    : getLoadedCodexCredentials()
+  const rotated =
+    (
+      current
+      && current.accountId === credentials.accountId
+      && current.refreshToken !== credentials.refreshToken
+    ) ?
+      current
+    : null
+  const base = rotated ?? credentials
+  const refreshDependencies =
+    dependencies ?? createCodexRefreshDependencies(base)
+
+  // A new sign-in for the same account has a different refresh token and must
+  // not join a refresh or persistence retry from the previous sign-in.
+  const refreshKey = JSON.stringify([base.accountId, base.refreshToken])
+  const inFlight = codexRefreshInFlight.get(refreshKey)
   if (inFlight) {
     return inFlight
   }
@@ -319,55 +367,37 @@ export function refreshCodexCredentialsOnce(
     // A successful refresh may have rotated the upstream token before local
     // persistence failed. Retry writing that exact result instead of calling
     // the refresh endpoint again with the consumed token.
-    const pendingPersistence = codexCredentialsPendingPersistence.get(
-      credentials.accountId,
-    )
+    const pendingPersistence =
+      codexCredentialsPendingPersistence.get(refreshKey)
     if (pendingPersistence) {
-      await dependencies.persistCodexCredentials(pendingPersistence)
+      await refreshDependencies.persistCodexCredentials(pendingPersistence)
       if (
-        codexCredentialsPendingPersistence.get(credentials.accountId)
+        codexCredentialsPendingPersistence.get(refreshKey)
         === pendingPersistence
       ) {
-        codexCredentialsPendingPersistence.delete(credentials.accountId)
+        codexCredentialsPendingPersistence.delete(refreshKey)
       }
       return pendingPersistence
     }
-
-    // The caller's snapshot may predate a refresh triggered by someone else.
-    // Reusing that snapshot's token would fail and consume it, so prefer the
-    // rotated credentials in state and skip the call when they are still valid.
-    const current = dependencies.getCurrentCredentials()
-    const rotated =
-      (
-        current
-        && current.accountId === credentials.accountId
-        && current.refreshToken !== credentials.refreshToken
-      ) ?
-        current
-      : null
 
     if (rotated && !isCodexCredentialsExpired(rotated)) {
       return rotated
     }
 
-    const base = rotated ?? credentials
-    const refreshed = await dependencies.refreshCodexCredentials(base)
-    codexCredentialsPendingPersistence.set(credentials.accountId, refreshed)
-    await dependencies.persistCodexCredentials(refreshed)
-    if (
-      codexCredentialsPendingPersistence.get(credentials.accountId)
-      === refreshed
-    ) {
-      codexCredentialsPendingPersistence.delete(credentials.accountId)
+    const refreshed = await refreshDependencies.refreshCodexCredentials(base)
+    codexCredentialsPendingPersistence.set(refreshKey, refreshed)
+    await refreshDependencies.persistCodexCredentials(refreshed)
+    if (codexCredentialsPendingPersistence.get(refreshKey) === refreshed) {
+      codexCredentialsPendingPersistence.delete(refreshKey)
     }
     return refreshed
   })()
 
-  codexRefreshInFlight.set(credentials.accountId, attempt)
+  codexRefreshInFlight.set(refreshKey, attempt)
 
   const clearAttempt = () => {
-    if (codexRefreshInFlight.get(credentials.accountId) === attempt) {
-      codexRefreshInFlight.delete(credentials.accountId)
+    if (codexRefreshInFlight.get(refreshKey) === attempt) {
+      codexRefreshInFlight.delete(refreshKey)
     }
   }
 
@@ -436,6 +466,22 @@ export const setupCopilotToken = async (
 }
 
 export const setupCodexToken = async (): Promise<void> => {
+  // A config reload can supersede an initialization awaiting disk or OAuth.
+  // Re-resolve the current selection rather than returning stale credentials.
+  while (getRawProviderConfig("codex")?.enabled !== false) {
+    const generation = codexRuntimeGeneration
+    try {
+      await setupCodexTokenForGeneration(generation)
+    } catch (error) {
+      if (generation === codexRuntimeGeneration) throw error
+    }
+    if (generation === codexRuntimeGeneration) return
+  }
+}
+
+const setupCodexTokenForGeneration = async (
+  generation: number,
+): Promise<void> => {
   const configuredAccountId = getConfiguredCodexAccountId()
   const loadedCredentials = getLoadedCodexCredentials()
   if (
@@ -451,6 +497,7 @@ export const setupCodexToken = async (): Promise<void> => {
   let selectedAccountId = configuredAccountId
   if (!selectedAccountId) {
     store = await readCodexCredentialStore()
+    if (generation !== codexRuntimeGeneration) return
     if (!store || store.accounts.length === 0) {
       throw new Error(
         `Codex credentials not found. Run \`copilot-api auth login --provider codex\` first.`,
@@ -487,6 +534,7 @@ export const setupCodexToken = async (): Promise<void> => {
 
   if (!selectedLoadedCredentials) {
     store ??= await readCodexCredentialStore()
+    if (generation !== codexRuntimeGeneration) return
     if (!store || store.accounts.length === 0) {
       throw new Error(
         `Codex credentials not found. Run \`copilot-api auth login --provider codex\` first.`,
@@ -510,6 +558,8 @@ export const setupCodexToken = async (): Promise<void> => {
     consola.debug("Refreshing expired Codex credentials")
     nextCredentials = await refreshCodexCredentialsOnce(credentials)
   }
+
+  if (generation !== codexRuntimeGeneration) return
 
   applyCodexCredentials(nextCredentials)
   stopCodexRefreshLoop()
