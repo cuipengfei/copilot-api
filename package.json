@@ -76,7 +76,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
-    "@opencode-ai/models": "0.0.84",
+    "@opencode-ai/models": "0.0.87",
     "@typescript/native": "npm:typescript@^7.0.2",
     "@types/bun": "^1.4.2",
     "@types/proxy-from-env": "^1.0.4",
@@ -90,7 +90,7 @@
     "globals": "^17.12.0",
     "happy-dom": "20.14.5",
     "knip": "^6.38.0",
-    "lint-staged": "^17.5.1",
+    "lint-staged": "^17.6.0",
     "prettier": "^3.9.9",
     "prettier-plugin-packagejson": "^3.0.2",
     "simple-git-hooks": "^2.14.0",
