@@ -35,7 +35,7 @@ description: "Use when testing GitHub Copilot upstream APIs directly, listing Au
    使用脚本：
 
    ```bash
-   bash .agents/skills/copilot-backend-tester/scripts/test-auto-route.sh \
+   bun .agents/skills/copilot-backend-tester/scripts/test-auto-route.mjs \
      --proxy-url http://localhost:<PORT> \
      --list-models
    ```
@@ -104,9 +104,29 @@ description: "Use when testing GitHub Copilot upstream APIs directly, listing Au
 4. 记录 `chosen_model`、候选集和最终请求 HTTP 状态。
 5. 按当前模型元数据的 `supported_endpoints` 选择 `/v1/messages`、`/responses` 或 `/chat/completions`；不能只凭模型名猜端点。
 
-`test-auto-route.sh --list-models` 只做 session 列表；`--skip-final` 可做 session + intent；默认最终请求仍使用同一 session token。
+`test-auto-route.mjs --list-models` 只做 session 列表；`--skip-final` 可做 session + intent；默认最终请求仍使用同一 session token。
 
 完成条件：若运行 intent，`chosen_model` 与最终 HTTP 状态来自同一 session，且没有跨实例复用 token。
+
+## Auto V2（`/auto` 选模与折扣）
+
+`test-auto-select.mjs` 探测 VS Code GUI Auto 使用的 `POST /auto`：一次请求直接返回 `selected_model`、`session_token`、`expires_at`、`discounted_costs` 和 `hydra_scores`。它与旧 `/models/session` 探针互为补充，不替代：`/models/session` 是候选池列表，`/auto` 是本次选模结果；`/models` 响应里的 `billing.auto_discount` 字段不等于 Auto 候选池。
+
+```bash
+# 单档选模（默认 balance）
+bun .agents/skills/copilot-backend-tester/scripts/test-auto-select.mjs \
+  --proxy-url http://localhost:<PORT> \
+  --tier efficiency
+
+# 四档全部探测
+bun .agents/skills/copilot-backend-tester/scripts/test-auto-select.mjs \
+  --proxy-url http://localhost:<PORT> \
+  --tier all
+```
+
+可用 `--business`、`--prompt` 和 `--show-headers`。`--with-inference` 会用同一次 `/auto` 的 `session_token` 向 `selected_model.supported_endpoints` 的第一个非 WebSocket 端点发送最小请求，产生真实计费，仅在需要验证生成链路时使用。
+
+版本要求：2026-10-07 实测 `/auto` 只接受 `X-GitHub-Api-Version: 2026-08-01`，旧版本返回 404 `bad request: error: invalid apiVersion?`。版本值由 `copilot-auth.mjs` 从 `src/lib/api-config.ts` 运行时读取。请求还带 CAPI 0.5.x 客户端身份头（`VScode-SessionId`、`VScode-MachineId`，每次运行生成合成 UUID）。
 
 ## 认证分层
 
@@ -115,10 +135,9 @@ description: "Use when testing GitHub Copilot upstream APIs directly, listing Au
 用于 `/models/session`、`/v1/messages`、`/responses`、`/chat/completions`：
 
 ```text
-GitHub token
-  → GET /copilot_internal/v2/token
-  → Copilot token + endpoints.api
-  → Copilot upstream
+GET https://api.github.com/copilot_internal/v2/token (GitHub token)
+→ Copilot token → Authorization: Bearer <Copilot token>
+→ endpoints.api 决定后续 host（business 或 individual）
 ```
 
 ### GitHub usage API
@@ -126,21 +145,14 @@ GitHub token
 用于 `https://api.github.com/copilot_internal/user`：
 
 - 直接使用 GitHub token；
-- 不使用 Copilot token；
-- token 来源仍遵循仓库的 CLI、`COPILOT_API_GITHUB_TOKEN`、credential file 优先级；
-- 记录响应状态、关键 body 字段和必要的 GitHub REST headers，但不记录 token 原值。
+- 不得使用 Copilot token。
 
 手动探针：
 
 ```bash
-curl -sS -D /tmp/copilot-usage.headers \
-  -o /tmp/copilot-usage.json \
-  https://api.github.com/copilot_internal/user \
-  -H "authorization: token $GITHUB_TOKEN" \
-  -H "accept: application/vnd.github+json" \
+curl -sS https://api.github.com/copilot_internal/user \
+  -H "authorization: token <GitHub token>" \
   -H "x-github-api-version: 2025-04-01"
-jq '{login, access_type_sku, copilot_plan, endpoints, quota_snapshots}' \
-  /tmp/copilot-usage.json
 ```
 
 `401 Bad credentials` 通常表示把 Copilot token 误用于 usage API；先检查 token 层次，再检查账户权限。
@@ -149,12 +161,12 @@ jq '{login, access_type_sku, copilot_plan, endpoints, quota_snapshots}' \
 
 脚本目录为 `.agents/skills/copilot-backend-tester/scripts/`；`.claude/skills/copilot-backend-tester` 只是兼容指针。
 
-脚本共享 `copilot-auth.sh`，因此不要为单次探针重新实现 `/token` 或硬编码旧版本。
+所有脚本均为 `.mjs`，由 Bun 直接运行（`bun <script>.mjs`）。脚本共享 `copilot-auth.mjs`（token exchange、版本常量运行时读取、凭证优先级），输出辅助共享 `probe-common.mjs`（脱敏、响应头过滤、SSE 透传）。不要为单次探针重新实现 `/token` 或硬编码旧版本。
 
 ### Messages
 
 ```bash
-bash .agents/skills/copilot-backend-tester/scripts/test-messages.sh \
+bun .agents/skills/copilot-backend-tester/scripts/test-messages.mjs \
   <LIVE_MODEL_ID> \
   --proxy-url http://localhost:<PORT> \
   --prompt "Reply with exactly: hi"
@@ -165,28 +177,28 @@ bash .agents/skills/copilot-backend-tester/scripts/test-messages.sh \
 ### Chat Completions
 
 ```bash
-bash .agents/skills/copilot-backend-tester/scripts/test-chat-completions.sh \
+bun .agents/skills/copilot-backend-tester/scripts/test-chat-completions.mjs \
   <LIVE_MODEL_ID> \
   --proxy-url http://localhost:<PORT> \
   --prompt "Reply with exactly: hi"
 ```
 
-### Auto
+### Auto（旧 session 链路）
 
 ```bash
 # 只列出 Auto session 的 available_models
-bash .agents/skills/copilot-backend-tester/scripts/test-auto-route.sh \
+bun .agents/skills/copilot-backend-tester/scripts/test-auto-route.mjs \
   --proxy-url http://localhost:<PORT> \
   --list-models
 
 # 解析 chosen_model，但不发送最终 prompt
-bash .agents/skills/copilot-backend-tester/scripts/test-auto-route.sh \
+bun .agents/skills/copilot-backend-tester/scripts/test-auto-route.mjs \
   --proxy-url http://localhost:<PORT> \
   --skip-final \
   --prompt "Reply with exactly: hi"
 
 # 解析并发送最终请求
-bash .agents/skills/copilot-backend-tester/scripts/test-auto-route.sh \
+bun .agents/skills/copilot-backend-tester/scripts/test-auto-route.mjs \
   --proxy-url http://localhost:<PORT> \
   --prompt "Reply with exactly: hi"
 ```

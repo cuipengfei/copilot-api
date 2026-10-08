@@ -12,7 +12,6 @@ import {
 
 import type { ResponsesPayload } from "~/lib/types/responses"
 
-import * as autoSession from "../src/lib/auto-session"
 import { getAttachedPremiumInfo } from "../src/lib/logger"
 import { getAttachedResponseHeaders } from "../src/lib/response-headers"
 import {
@@ -131,10 +130,6 @@ beforeEach(() => {
   fetchMock = createFetchMock()
   // @ts-expect-error - Mock fetch doesn't implement all fetch properties
   ;(globalThis as unknown as { fetch: typeof fetch }).fetch = fetchMock
-
-  spyOn(autoSession, "getAutoSessionTokenForModel").mockResolvedValue(
-    "test-session-token",
-  )
 
   // Capture modelCallId using spyOn (can be restored by mock.restore())
   spyOn(telemetryModule, "trackRequestSent").mockImplementation(

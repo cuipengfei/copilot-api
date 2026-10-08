@@ -1,6 +1,6 @@
 import type { UpstreamTransportConfig } from "~/lib/config-store"
 
-import { retryAfterInvalidAutoModeSelector } from "~/services/copilot/auto-session-retry"
+import { retryAfterAutoSessionTokenRejection } from "~/services/copilot/auto-session-retry"
 import { retryAfterTlsCertificateVerificationFailure } from "~/services/tls-retry"
 import { fetchUpstreamWithLifecycle } from "~/services/upstream-http"
 
@@ -42,10 +42,12 @@ export const sendCopilotRequest = async (
   options: CopilotHttpRequestOptions,
 ): Promise<Response> => {
   const sendRequest = () => sendCopilotHttpRequest(url, options)
-  return retryAfterInvalidAutoModeSelector(
+  const endpoint = new URL(url).pathname
+  return retryAfterAutoSessionTokenRejection(
     await sendRequest(),
     options.headers,
     options.payload.model,
+    endpoint,
     sendRequest,
   )
 }

@@ -16,15 +16,18 @@
 - 发送前已经取消的请求不访问上游；请求发出后继续读取上游响应并记录用量。headers 超时和流读取超时仍可终止上游请求。
 - 每次实际发送时序列化当前 payload，保留同一 headers 对象与调用方的 `AbortSignal`。
 - TLS 重试继续由既有 `retryAfterTlsCertificateVerificationFailure` 判定，最多重试一次。
-- 仅在 `401` 响应正文包含 `Invalid auto-mode selector` 时，清除旧会话、刷新覆盖模型信息并重试一次。
-- 仅模型命中当前 Auto 覆盖集合时附加 `Copilot-Session-Token`。
-- Auto-selector 重试属于首次请求链；后续协议兼容重试只调用 HTTP/TLS 发送层。
+- [auto-session-retry.test.ts](../tests/auto-session-retry.test.ts)：附带 token 的 `400`/`401` 单次重试、迟到 `401` 与失效后裸重试语义；系统实际调用 `/auto` 重新取得且重取失败时传出刷新错误并停止本次请求（不发第二次推理），旧 401 迟到且配对已被并发清除时仍为原模型无 token 重试一次。
+- 仅当模型命中 `/auto` 配对且该配对支持请求端点时附加 `Copilot-Session-Token`；Responses WebSocket 分支不附加。
+- Auto 会话令牌失效后的重试属于首次请求链；后续协议兼容重试只调用 HTTP/TLS 发送层。
+- 启动 `/auto` 八个探测点（四档×简单题 `hello` 与随机连续 100 行真实 TS 难题），互不阻断、同点单飞；启动等待上限 30 秒，未完成点在服务运行期后台补采。
+- 探测失败按类别处理：429 优先 `Retry-After`，网络失败与 5xx 按 1 秒起步 30 秒封顶随机退避，401/403 暂停相同凭据探测待凭据变化恢复，持续请求格式类 400 记为待处理。
+- 每条配对按上游 `expires_at` 在到期前 5 分钟刷新（同点共享在途）；Copilot 凭据变化立即使旧配对失效，并在 token 与账号元数据全部落位后重新补采；Auto 查表与 `state.forceAgent` 内部标志无关。
 
 **本地实现**：
 
-- [request.ts](../src/services/copilot/request.ts)：HTTP/TLS 发送与首次 Auto-selector 重试的公共入口。
+- [request.ts](../src/services/copilot/request.ts)：HTTP/TLS 发送与 Auto 会话令牌失效后的首次重试的公共入口。
 - [auto-session-retry.ts](../src/services/copilot/auto-session-retry.ts)：会话 header 附加、失效判定与刷新。
-- [auto-session.ts](../src/lib/auto-session.ts)、[get-models-session.ts](../src/services/copilot/get-models-session.ts)：会话缓存与覆盖模型集合。
+- [auto-session.ts](../src/lib/auto-session.ts)：会话配对表、启动探测、到期刷新与凭据轮换失效；[get-auto-selection.ts](../src/services/copilot/get-auto-selection.ts)：`/auto` 选模请求。
 - [tls-retry.ts](../src/services/tls-retry.ts)：既有 TLS 错误判定、等待与单次重试。
 
 **必要的上游接入**：三个 `create-*` service 的发送位置；启动和 token 更新位置保留会话预热、失效处理。上游 [upstream-http.ts](../src/services/upstream-http.ts) 的实现保持不变。
@@ -33,8 +36,12 @@
 
 - [copilot-request.test.ts](../tests/copilot-request.test.ts)：本地真实 HTTP 请求、headers、原始错误和预取消行为。
 - [responses-local-http.test.ts](../tests/responses-local-http.test.ts)：默认 handler 与 service 使用本地真实 HTTP 验证 JSON/SSE、413、发送前取消，以及发送后取消信号时的完整读取和用量记录。
-- [auto-session-chains.test.ts](../tests/auto-session-chains.test.ts)：三个公开 service 的 Auto-session 链路。
-- [auto-session.test.ts](../tests/auto-session.test.ts)、[get-models-session.test.ts](../tests/get-models-session.test.ts)、[tls-retry.test.ts](../tests/tls-retry.test.ts)。
+- [auto-session-chains.test.ts](../tests/auto-session-chains.test.ts)：三个公开 service 的 Auto-session 注入链路。
+- [auto-session-retry.test.ts](../tests/auto-session-retry.test.ts)：附带 token 的 `400`/`401` 单次重试、迟到 `401` 与失效后裸重试语义。
+- [auto-session-discovery.test.ts](../tests/auto-session-discovery.test.ts)、[auto-session.test.ts](../tests/auto-session.test.ts)：启动探测、退避分类、到期刷新、凭据轮换与 `forceAgent` 无关性。
+- [auto-session-logs.test.ts](../tests/auto-session-logs.test.ts)：日志隐私。
+- [auto-session-websocket-local.test.ts](../tests/auto-session-websocket-local.test.ts)：本机真实 WebSocket 握手头验证不附 Auto token；[create-responses-websocket-pool.test.ts](../tests/create-responses-websocket-pool.test.ts)：Responses WebSocket 池化行为。
+- [tls-retry.test.ts](../tests/tls-retry.test.ts)。
 - [start-auto-session-prewarm.test.ts](../tests/start-auto-session-prewarm.test.ts)、[token-metadata.test.ts](../tests/token-metadata.test.ts)、[token-metadata-apply.test.ts](../tests/token-metadata-apply.test.ts)。
 
 ## 2. Native Messages 兼容
@@ -247,7 +254,9 @@
 
 ## 18. CLI 参数接口与当前限制
 
-- `-F` / `--force-agent` 与 `-M` / `--native-messages` 会被 CLI 接受并传入 `runServer`。当前 `runServer` 未使用这两个参数，也未通过该启动路径将它们赋给 `state`。
-- `state.forceAgent` 与 `state.nativeMessages` 的初始值均为 `false`。Messages API 的启用条件通过 `isMessagesApiEnabled()` 读取 `useMessagesApi` 配置。
+- `-F` / `--force-agent` 会被 CLI 接受并传入 `runServer`；`runServer` 初始化时将 `-F` 赋给 `state.forceAgent`。`-M` / `--native-messages` 旧限制仍在：仅被接受与传入，尚未经该启动路径赋给 `state`。
+- `state.forceAgent` 与 `state.nativeMessages` 的初始值均为 `false`（以 [state.ts](../src/lib/state.ts) 默认值为准）。Messages API 的启用条件通过 `isMessagesApiEnabled()` 读取 `useMessagesApi` 配置。
 
-**源码与接入**：[start.ts](../src/start.ts)、[state.ts](../src/lib/state.ts)、[config-store.ts](../src/lib/config-store.ts) 与 [Messages handler](../src/routes/messages/handler.ts)。本次改造前的基准与当前 `start.ts`、`state.ts` 内容一致；上述启动行为已存在，本次保留相关运行时代码。
+**源码与接入**：[start.ts](../src/start.ts)、[state.ts](../src/lib/state.ts)、[config-store.ts](../src/lib/config-store.ts) 与 [Messages handler](../src/routes/messages/handler.ts)。`runServer` 将 CLI 的 `-F` 参数写入共享 `state.forceAgent`；Messages API 启用条件继续由现有配置控制。
+
+**验证入口**：[start-auto-session-prewarm.test.ts](../tests/start-auto-session-prewarm.test.ts)（`runServer` 启动参数与 `state.forceAgent` 映射）。

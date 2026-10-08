@@ -100,7 +100,6 @@ export const createResponses = async (
   const requestId = headers["x-request-id"]
 
   prepareForCompact(headers, compactType)
-  await attachAutoSessionToken(headers, payload.model)
 
   const start = Date.now()
   trackRequestSent(payload.model, state.accountType, requestId, modelCallId)
@@ -150,6 +149,8 @@ const createHttpResponses = async (
   headers: Record<string, string>,
   { requestId, modelCallId, start, clientSignal }: ResponsesHttpContext,
 ): Promise<CreateResponsesReturn> => {
+  // Auto 会话令牌仅用于 HTTP 分支；WebSocket 请求不附带
+  await attachAutoSessionToken(headers, payload.model, "/responses")
   const url = `${copilotBaseUrl(state)}/responses`
   const transportConfig = getUpstreamTransportConfig()
   const response = await sendResponsesRequestWithReasoningReplay(url, {

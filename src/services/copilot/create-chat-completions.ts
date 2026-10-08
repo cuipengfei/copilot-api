@@ -85,7 +85,7 @@ export const createChatCompletions = async (
   const requestId = headers["x-request-id"]
 
   prepareForCompact(headers, options?.compactType)
-  await attachAutoSessionToken(headers, payload.model)
+  await attachAutoSessionToken(headers, payload.model, "/chat/completions")
   const start = Date.now()
   trackRequestSent(payload.model, state.accountType, requestId, modelCallId)
 

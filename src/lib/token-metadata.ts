@@ -1,4 +1,7 @@
-import { invalidateAutoSession } from "~/lib/auto-session"
+import {
+  invalidateAutoSession,
+  resumeAutoSessionDiscoveryAfterRotation,
+} from "~/lib/auto-session"
 import type { GetCopilotTokenResponse } from "~/services/github/get-copilot-token"
 import { parseSku } from "~/services/telemetry/types"
 import {
@@ -45,7 +48,8 @@ export function applyCopilotTokenMetadata(
     telemetry,
   } = metadata
 
-  if (previousToken !== token) {
+  const tokenChanged = previousToken !== token
+  if (tokenChanged) {
     invalidateAutoSession()
   }
 
@@ -58,6 +62,11 @@ export function applyCopilotTokenMetadata(
   const inferredAccountType = inferAccountTypeFromApiUrl(endpoints?.api)
   if (inferredAccountType) {
     state.accountType = inferredAccountType
+  }
+
+  // 补采在 metadata 全部落位后发起：/auto 请求必须读到最新 sku/accountType 等
+  if (tokenChanged) {
+    resumeAutoSessionDiscoveryAfterRotation()
   }
 }
 

@@ -26,8 +26,8 @@
 - 三个 `create-*` service 各自生成 `modelCallId`（UUID）传入 telemetry，用于单次调用追踪
 - `create-chat-completions.ts`、`create-messages.ts`、`create-responses.ts` 现在都必须附着 upstream response headers，供 route 层最终转发；不要只返回 body / stream 而丢掉原始 headers
 - premium info 与 upstream response headers 是两条并行元数据链：前者走 `attachPremiumInfo()`，后者走 `attachResponseHeaders()`；不要用一个字段偷带另一个概念
-- 排查 Auto 模型问题时，不要只看本地 wrapper 日志。`Invalid auto-mode selector` 需要按后端链路验证：`/models/session` → `/models/session/intent` → final `responses/messages/chat` request；对比不带、带新、带旧/跨 auth 的 `Copilot-Session-Token`，并脱敏所有 token 原值。
-- 三条 `create-*` service 只应在模型命中当前 `available_models` 时附着 `Copilot-Session-Token`；如果未来接入 `/models/session/intent` 的 `chosen_model`，要把 selector/session-token 绑定语义收口在 service/lib 边界，不要在 route handler 分散实现。
+- 排查 Auto 模型问题时，核对真实请求模型 ID、该模型配对的 `supported_endpoints` 与脱敏后的 `Copilot-Session-Token`（不带、新、旧/跨 auth 三种对比），不要只看本地 wrapper 日志；selector 重试逻辑在 `auto-session-retry.ts`。
+- 三条 `create-*` service 统一经 `attachAutoSessionToken(headers, model, endpoint)` 附着 `Copilot-Session-Token`：仅当模型命中配对且该配对 `supported_endpoints` 含请求端点时才附加，Responses WebSocket 分支不附加；不要在 route handler 分散实现附着逻辑。
 
 ## Native Messages Gotchas
 

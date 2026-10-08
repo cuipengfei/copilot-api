@@ -96,18 +96,6 @@ describe("copilot messages drain", () => {
         typeof input === "string" ? input
         : input instanceof URL ? input.href
         : input.url
-      if (url.includes("/models/session")) {
-        return Promise.resolve(
-          new Response(
-            JSON.stringify({
-              available_models: [],
-              expires_at: 0,
-              session_token: "auto-session-token",
-            }),
-            { status: 200, headers: { "content-type": "application/json" } },
-          ),
-        )
-      }
       if (!url.includes("/v1/messages")) {
         // Telemetry and other fire-and-forget fetches must not share the
         // gated Response: sharing one Response object lets res.text() lock

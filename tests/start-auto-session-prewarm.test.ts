@@ -88,4 +88,34 @@ describe("runServer auto-session prewarm order", () => {
 
     expect(callOrder).toEqual(["cacheModels", "prewarmAutoSession"])
   })
+
+  test.each([{ flag: false }, { flag: true }])(
+    "applies CLI -F to state.forceAgent (flag=$flag)",
+    async ({ flag }) => {
+      const startModule = (await import(
+        `../src/start?test=${Date.now()}-${Math.random()}`
+      )) as typeof import("../src/start")
+      const { state } = await import("../src/lib/state")
+
+      const originalForceAgent = state.forceAgent
+      // 预置为与本次 flag 相反：只有 runServer 真正赋值才会得到 flag
+      state.forceAgent = !flag
+      try {
+        await startModule.runServer({
+          port: 4141,
+          host: "127.0.0.1",
+          verbose: false,
+          githubToken: "provided-token",
+          claudeCode: false,
+          showToken: false,
+          proxyEnv: false,
+          forceAgent: flag,
+          nativeMessages: false,
+        })
+        expect(state.forceAgent).toBe(flag)
+      } finally {
+        state.forceAgent = originalForceAgent
+      }
+    },
+  )
 })

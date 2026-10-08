@@ -42,19 +42,6 @@ const fetchUsageEvents = async (): Promise<TokenUsageEventsPage> => {
   return (await response.json()) as TokenUsageEventsPage
 }
 
-const requestUrl = (url: string | URL | Request): string =>
-  url instanceof Request ? url.url : url.toString()
-
-const createModelsSessionResponse = () =>
-  new Response(
-    JSON.stringify({
-      available_models: [],
-      expires_at: Math.floor(Date.now() / 1000) + 3600,
-      session_token: "test-session-token",
-    }),
-    { status: 200, headers: { "content-type": "application/json" } },
-  )
-
 const createChatCompletionJson = () => ({
   id: "chatcmpl-test",
   object: "chat.completion" as const,
@@ -93,11 +80,7 @@ const createChatCompletionJson = () => ({
   },
 })
 
-const fetchMock = mock((url: string | URL | Request) => {
-  if (requestUrl(url).includes("/models/session")) {
-    return Promise.resolve(createModelsSessionResponse())
-  }
-
+const fetchMock = mock(() => {
   return Promise.resolve(
     new Response(JSON.stringify(createChatCompletionJson()), {
       status: 200,
@@ -111,11 +94,7 @@ const fetchMock = mock((url: string | URL | Request) => {
 })
 
 const createStreamingFetchMock = () =>
-  mock((url: string | URL | Request) => {
-    if (requestUrl(url).includes("/models/session")) {
-      return Promise.resolve(createModelsSessionResponse())
-    }
-
+  mock(() => {
     return Promise.resolve(
       new Response(
         new ReadableStream({
@@ -344,10 +323,7 @@ describe("chat completions handler", () => {
       usage: { prompt_tokens: 12, completion_tokens: 5, total_tokens: 17 },
       copilot_usage: { total_nano_aiu: 1_612_500 },
     }
-    const streamingFetchMock = mock((url: string | URL | Request) => {
-      if (requestUrl(url).includes("/models/session")) {
-        return Promise.resolve(createModelsSessionResponse())
-      }
+    const streamingFetchMock = mock(() => {
       return Promise.resolve(
         new Response(
           new ReadableStream({

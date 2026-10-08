@@ -2,9 +2,10 @@ import type { Server } from "bun"
 import { afterEach, beforeEach, expect, test } from "bun:test"
 
 import {
-  getAutoSessionTokenForModel,
   invalidateAutoSession,
   isModelAutoCovered,
+  prewarmAutoSession,
+  whenProbeSchedulerIdle,
 } from "~/lib/auto-session"
 import { state } from "~/lib/state"
 import {
@@ -37,6 +38,11 @@ const originalState = {
 let server: Server<undefined>
 let serverUrl: string
 let originalOauthApp: string | undefined
+// 本地 /auto 请求计数；补采请求必须全部落在 127.0.0.1 本地服务
+let autoRequestCount = 0
+let originalFetch: typeof fetch
+// 文件级网络边界：被拦截的非本地 /auto 请求数（afterEach 断言为零）
+let blockedRequestCount = 0
 
 const responseDefaults = {
   refresh_in: 3600,
@@ -47,18 +53,48 @@ beforeEach(() => {
   originalOauthApp = process.env.COPILOT_API_OAUTH_APP
   delete process.env.COPILOT_API_OAUTH_APP
 
+  autoRequestCount = 0
   server = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
-    fetch: () =>
-      Response.json({
+    fetch: (req) => {
+      const url = new URL(req.url)
+      if (url.pathname !== "/auto") {
+        // 未知路径即时失败：本地替身必须暴露意外请求
+        return new Response(`unexpected path: ${url.pathname}`, { status: 404 })
+      }
+      autoRequestCount += 1
+      return Response.json({
         session_token: "session-1",
-        available_models: ["auto-model-1", "auto-model-2"],
+        selected_model: {
+          id: "auto-model-1",
+          supported_endpoints: ["/responses"],
+        },
         expires_at: Math.floor(Date.now() / 1000) + 3600,
-      }),
+      })
+    },
   })
   serverUrl = `http://127.0.0.1:${server.port}`
 
+  // 包裹全局 fetch：仅允许以本次本地 server 为 origin 且路径 /auto 的请求，
+  // 其他 URL 同步抛明确的本地测试错误——静态模块残留的补采意图
+  // 不可能触达真实 Copilot（含 BUSINESS/ENTERPRISE 元数据测试场景）
+  originalFetch = globalThis.fetch
+  blockedRequestCount = 0
+  globalThis.fetch = ((
+    input: string | URL | Request,
+    init?: RequestInit,
+  ): Promise<Response> => {
+    const raw = input instanceof Request ? input.url : String(input)
+    const url = new URL(raw)
+    if (url.origin !== serverUrl || url.pathname !== "/auto") {
+      blockedRequestCount += 1
+      throw new Error(
+        `[token-metadata-apply] blocked non-local request: ${url.origin}${url.pathname} (only ${serverUrl}/auto is allowed in this test file)`,
+      )
+    }
+    return originalFetch(input, init)
+  }) as typeof fetch
   state.githubToken = "github-token"
   state.copilotToken = undefined
   state.copilotApiUrl = undefined
@@ -74,6 +110,12 @@ beforeEach(() => {
 })
 
 afterEach(async () => {
+  // 先等在途补采/探测全部结算，再恢复 state、关闭本地 server：
+  // 否则在途 /auto 会失去本地服务并可能泄漏到真实上游
+  await whenProbeSchedulerIdle()
+  globalThis.fetch = originalFetch
+  // 越界请求必须为零：任何非本地 /auto 请求都说明补采门检失效
+  expect(blockedRequestCount).toBe(0)
   Object.assign(state, originalState)
   stopCopilotRefreshLoop()
   await server.stop(true)
@@ -84,6 +126,14 @@ afterEach(async () => {
     process.env.COPILOT_API_OAUTH_APP = originalOauthApp
   }
 })
+
+const assertLocalEndpoint = (): void => {
+  if (state.copilotApiUrl !== serverUrl) {
+    throw new Error(
+      `test requires the local 127.0.0.1 endpoint, got: ${state.copilotApiUrl}`,
+    )
+  }
+}
 
 test("上游设置 token 和 endpoint 后补充本地元数据", () => {
   state.copilotToken = "previous-token"
@@ -152,6 +202,7 @@ test("Telemetry 开关和账户类型使用 token 响应中的数据", () => {
     {
       ...responseDefaults,
       token: "t-individual",
+      telemetry: "disabled",
       endpoints: { api: INDIVIDUAL_API_URL },
     },
     "t-enterprise",
@@ -167,12 +218,14 @@ test("Telemetry 开关和账户类型使用 token 响应中的数据", () => {
   expect(state.accountType).toBe("business")
 })
 
-test("仅 token 发生变化时使 Auto-session 失效", async () => {
+test("仅 token 发生变化时使 Auto-session 失效并按新凭据后台补采", async () => {
   state.copilotApiUrl = serverUrl
   state.copilotToken = "same-token"
+  assertLocalEndpoint()
 
-  await getAutoSessionTokenForModel("auto-model-1")
+  await prewarmAutoSession()
   expect(isModelAutoCovered("auto-model-1")).toBe(true)
+  const callsAfterPrewarm = autoRequestCount
 
   const previousToken = state.copilotToken
   const sameResponse = {
@@ -182,6 +235,9 @@ test("仅 token 发生变化时使 Auto-session 失效", async () => {
   }
   applyCopilotTokenResponse(sameResponse)
   applyCopilotTokenMetadata(sameResponse, previousToken)
+  // 同 token：无新增 /auto，配对保持
+  await whenProbeSchedulerIdle()
+  expect(autoRequestCount).toBe(callsAfterPrewarm)
   expect(isModelAutoCovered("auto-model-1")).toBe(true)
 
   const changedPreviousToken = state.copilotToken
@@ -192,7 +248,13 @@ test("仅 token 发生变化时使 Auto-session 失效", async () => {
   }
   applyCopilotTokenResponse(changedResponse)
   applyCopilotTokenMetadata(changedResponse, changedPreviousToken)
+  // 旧配对立即失效（不等补采完成）
   expect(isModelAutoCovered("auto-model-1")).toBe(false)
+
+  // 后台补采全部指向本地 127.0.0.1：await idle 后新凭据配对可用
+  await whenProbeSchedulerIdle()
+  expect(autoRequestCount).toBeGreaterThan(callsAfterPrewarm)
+  expect(isModelAutoCovered("auto-model-1")).toBe(true)
 })
 
 test("OpenCode 直接使用 token 时保留未提供的元数据", async () => {
@@ -200,6 +262,7 @@ test("OpenCode 直接使用 token 时保留未提供的元数据", async () => {
 
   state.copilotToken = "previous-token"
   state.copilotApiUrl = serverUrl
+  assertLocalEndpoint()
   state.copilotTrackingId = "keep-me"
   state.copilotTelemetryEnabled = true
   state.sku = "keep-sku"
@@ -207,8 +270,9 @@ test("OpenCode 直接使用 token 时保留未提供的元数据", async () => {
   state.enterpriseList = [7]
   state.accountType = "business"
 
-  await getAutoSessionTokenForModel("auto-model-1")
+  await prewarmAutoSession()
   expect(isModelAutoCovered("auto-model-1")).toBe(true)
+  const callsAfterPrewarm = autoRequestCount
 
   state.githubToken = "gho-direct-token"
   await setupCopilotToken()
@@ -222,5 +286,9 @@ test("OpenCode 直接使用 token 时保留未提供的元数据", async () => {
   expect(state.enterpriseList).toEqual([7])
   expect(state.accountType).toBe("business")
 
+  // 旧配对立即失效；后台补采经本地 127.0.0.1 完成后新凭据配对可用
   expect(isModelAutoCovered("auto-model-1")).toBe(false)
+  await whenProbeSchedulerIdle()
+  expect(autoRequestCount).toBeGreaterThan(callsAfterPrewarm)
+  expect(isModelAutoCovered("auto-model-1")).toBe(true)
 })

@@ -14,19 +14,23 @@ import {
   invalidateAutoSession,
   prewarmAutoSession,
 } from "../src/lib/auto-session"
+import type { AutoSelectionResponse } from "../src/services/copilot/get-auto-selection"
 
-type ModelsSessionResponse = {
-  available_models: Array<string>
-  expires_at: number
-  session_token: string
-}
+const selection = (
+  modelId: string,
+  sessionToken: string,
+): AutoSelectionResponse => ({
+  selected_model: { id: modelId },
+  session_token: sessionToken,
+  expires_at: Math.floor(Date.now() / 1000) + 3600,
+})
 
-const createResponse = (payload: ModelsSessionResponse) =>
+const createResponse = (payload: AutoSelectionResponse) =>
   new Response(JSON.stringify(payload), { status: 200 })
 
 beforeEach(() => {
   invalidateAutoSession()
-  const queue: Array<ModelsSessionResponse> = []
+  const queue: Array<AutoSelectionResponse> = []
   ;(
     globalThis as unknown as { __AUTO_SESSION_QUEUE__?: typeof queue }
   ).__AUTO_SESSION_QUEUE__ = queue
@@ -34,17 +38,17 @@ beforeEach(() => {
   const fetchMock = mock(() => {
     const currentQueue = (
       globalThis as unknown as {
-        __AUTO_SESSION_QUEUE__?: Array<ModelsSessionResponse>
+        __AUTO_SESSION_QUEUE__?: Array<AutoSelectionResponse>
       }
     ).__AUTO_SESSION_QUEUE__
 
     if (!currentQueue || currentQueue.length === 0) {
-      throw new Error("missing queued /models/session response")
+      throw new Error("missing queued /auto response")
     }
 
     const nextPayload = currentQueue.shift()
     if (!nextPayload) {
-      throw new Error("missing queued /models/session response")
+      throw new Error("missing queued /auto response")
     }
 
     return Promise.resolve(createResponse(nextPayload))
@@ -60,37 +64,29 @@ afterEach(() => {
 })
 
 describe("auto-session logging", () => {
-  test("logs refreshed event via consola.info with existing style", async () => {
+  test("logs discovery summary with deduped model ids and incomplete count", async () => {
     ;(
       globalThis as unknown as {
-        __AUTO_SESSION_QUEUE__: Array<ModelsSessionResponse>
+        __AUTO_SESSION_QUEUE__: Array<AutoSelectionResponse>
       }
-    ).__AUTO_SESSION_QUEUE__.push({
-      available_models: ["gpt-5.3-codex", "gpt-5.4"],
-      expires_at: Math.floor(Date.now() / 1000) + 3600,
-      session_token: "token-initial",
-    })
+    ).__AUTO_SESSION_QUEUE__.push(selection("gpt-5.3-codex", "token-initial"))
 
     const infoSpy = spyOn(consola, "info")
 
     await prewarmAutoSession()
 
-    expect(infoSpy).toHaveBeenCalled()
+    // 仅 1 个探测点成功，其余 7 个未完成；日志只含去重模型 ID 与数量
     expect(infoSpy).toHaveBeenCalledWith(
-      "[auto-session] refreshed token, models=2",
+      "[auto-session] discovery complete models=gpt-5.3-codex incomplete=7",
     )
   })
 
   test("logs hit event via consola.info when model is covered", async () => {
     ;(
       globalThis as unknown as {
-        __AUTO_SESSION_QUEUE__: Array<ModelsSessionResponse>
+        __AUTO_SESSION_QUEUE__: Array<AutoSelectionResponse>
       }
-    ).__AUTO_SESSION_QUEUE__.push({
-      available_models: ["gpt-5.3-codex"],
-      expires_at: Math.floor(Date.now() / 1000) + 3600,
-      session_token: "token-initial",
-    })
+    ).__AUTO_SESSION_QUEUE__.push(selection("gpt-5.3-codex", "token-initial"))
 
     const infoSpy = spyOn(consola, "info")
 
@@ -105,13 +101,9 @@ describe("auto-session logging", () => {
   test("logs miss event via consola.info when model is not covered", async () => {
     ;(
       globalThis as unknown as {
-        __AUTO_SESSION_QUEUE__: Array<ModelsSessionResponse>
+        __AUTO_SESSION_QUEUE__: Array<AutoSelectionResponse>
       }
-    ).__AUTO_SESSION_QUEUE__.push({
-      available_models: ["gpt-5.3-codex"],
-      expires_at: Math.floor(Date.now() / 1000) + 3600,
-      session_token: "token-initial",
-    })
+    ).__AUTO_SESSION_QUEUE__.push(selection("gpt-5.3-codex", "token-initial"))
 
     const infoSpy = spyOn(consola, "info")
 

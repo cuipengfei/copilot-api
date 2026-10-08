@@ -279,8 +279,8 @@ export const buildMessagesHeaders = async (
   )
   prepareForCompact(headers, options.compactType)
 
-  // 模型命中 Auto 覆盖集合时附加 Copilot-Session-Token
-  await attachAutoSessionToken(headers, payload.model)
+  // 模型命中 Auto 配对且端点适用时附加 Copilot-Session-Token
+  await attachAutoSessionToken(headers, payload.model, "/v1/messages")
 
   return headers
 }
@@ -344,7 +344,7 @@ export const sendWithSignatureRetry = async (
     },
   }
 
-  // 首次请求链：TLS 单次重试 + Auto-selector 单次重试
+  // 首次请求链：TLS 单次重试 + Auto 会话令牌失效后单次重试
   const response = await sendCopilotRequest(url, requestOptions)
 
   if (response.ok) return response

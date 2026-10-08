@@ -1,85 +1,90 @@
 # auto-session-manager Specification
 
 ## Purpose
-TBD - created by archiving change auto-session-manager. Update Purpose after archive.
+在保持请求模型 ID 不变的前提下，服务启动时通过上游 `/auto` 端点发现模型与会话令牌配对，并在运行时请求模型命中有效配对且端点适用时附加该模型专用的 `Copilot-Session-Token`。未命中的请求保持原有行为。CLI `-F` 在 `runServer` 初始化时赋值 `state.forceAgent`；Auto 查表与该标志无关。
+
 ## Requirements
-### Requirement: 运行时必须维护 Auto session 的共享缓存
-系统 MUST 提供一个共享的 Auto Session Manager，用于维护 `/models/session` 返回的当前 `session_token` 与 `available_models` 快照，并向运行时调用方暴露统一读取接口。
 
-#### Scenario: 服务启动时预热 Auto session 缓存
-- **WHEN** 服务启动并初始化共享运行时状态
-- **THEN** 系统尝试调用 `/models/session` 获取初始 `session_token` 与 `available_models`
-- **AND** 成功结果被写入共享缓存供后续请求复用
+### Requirement: 启动时通过 /auto 探测模型与会话配对
+系统 MUST 在启动阶段向 `/auto` 发送四个档位（efficiency、balance、intelligence、fast）各两种题目共 8 个探测点：简单题为 `hello`；难题 MUST 为从当前仓库运行时代码中随机选取的连续 100 行 TypeScript 片段附加固定问题。任一探测点的失败 MUST 不阻断其他探测点；同一 (tier, kind) 探测点任意时刻只有一个在途请求；全部探测点的启动等待上限为 30 秒（`STARTUP_PROBE_BUDGET_MS`），预算到期后未完成的探测点在服务接收请求期间于后台继续补采。
 
-#### Scenario: 启动预热失败不阻断原有主链路
-- **WHEN** 服务启动阶段的 `/models/session` 预热请求失败
-- **THEN** 系统不会因为 Auto Session Manager 初始化失败而阻止服务继续启动
-- **AND** 运行时仍可按既有路径处理未依赖 Auto session 的请求
+#### Scenario: 八个探测点互不阻断地完成尝试
+- **WHEN** 服务启动发起全部 8 个探测点
+- **THEN** 每个点独立完成尝试，某点失败不阻止其余点继续
+- **AND** 同一 (tier, kind) 点已有在途请求时复用该请求，不另起并发
 
-### Requirement: Auto Session Manager 必须按需刷新过期状态
-系统 MUST 在调用方请求当前 Auto session token 时检查缓存状态，并在 token 缺失、已过期或不可用时刷新 `/models/session` 缓存；刷新时 MUST 同步更新 `available_models`。
+#### Scenario: 启动等待有上限且成功的配对立即可用
+- **WHEN** 上游持续故障导致探测未在预算内全部完成
+- **THEN** 30 秒预算到期后服务正常启动，日志快照报告剩余未完成数量
+- **AND** 已成功的配对立即可被后续请求命中，未完成点在后台继续补采
 
-#### Scenario: 调用方读取有效 token 时复用缓存
-- **WHEN** 调用方请求当前 Auto session token 且缓存中的 token 仍然有效
-- **THEN** 系统直接返回当前缓存 token
-- **AND** 不额外发起新的 `/models/session` 请求
+#### Scenario: 同档难题与简单题选中同一模型时重采一次
+- **WHEN** 同一档位的难题与简单题返回相同模型 ID
+- **THEN** 系统重新取样一次并再探测一次，随后接受上游实际返回
+- **AND** 系统不保证难题必得不同或更强模型，仅按实际结果登记
 
-#### Scenario: 调用方读取过期 token 时触发刷新
-- **WHEN** 调用方请求当前 Auto session token 且缓存中的 token 已过期或不可用
-- **THEN** 系统重新调用 `/models/session` 获取新的 `session_token`
-- **AND** 系统使用同一次刷新结果同步更新 `available_models`
+### Requirement: 配对按上游实际选中模型 ID 维护
+系统 MUST 以每次 `/auto` 响应的 `selected_model.id` 为键保存配对，记录 `session_token`、上游 `expires_at`、`supported_endpoints` 与取得配对时的 Copilot 凭据标识；同一模型存在多个有效令牌时保留一条即可。模型 ID、token 或到期时间非法的响应 MUST NOT 进入配对表。运行时匹配 MUST 只按最终上游模型 ID 与端点适用性查表，档位与探测题目不参与运行时匹配。
 
-#### Scenario: 首次按需读取时补齐缺失缓存
-- **WHEN** 调用方请求当前 Auto session token 且缓存尚未建立
-- **THEN** 系统调用 `/models/session` 建立新的缓存快照
-- **AND** 在成功后返回新的 token 给调用方
+#### Scenario: 有效配对按模型 ID 与端点适用命中
+- **WHEN** 请求的上游模型 ID 命中配对且配对支持该请求端点
+- **THEN** 系统返回该配对保存的 `Copilot-Session-Token`
+- **AND** 已到期或凭据标识不匹配的配对 MUST NOT 被返回
 
-### Requirement: 只有命中 Auto 可用模型的请求才能附带 Auto session token
-系统 MUST 仅在传入模型命中当前缓存的 `available_models` 时，才向实际上游请求附加 `Copilot-Session-Token`；未命中模型 MUST 保持原有请求行为不变。
+### Requirement: 探测失败按状态类别处理
+系统 MUST 按类别处理 `/auto` 探测失败：429 优先遵守 `Retry-After`（缺失、空串或非法时回退随机退避）；网络失败与上游 5xx 按 1 秒起步、30 秒封顶的随机退避重试；401/403 暂停该实例相同凭据下的重复探测，凭据变化后恢复；持续的请求格式类 400 记为待处理并报告状态，不反复发送相同请求。
 
-#### Scenario: 受覆盖模型请求附带 Auto session token
-- **WHEN** 某条 LLM API 调用链收到的传入模型存在于当前 `available_models` 缓存中
-- **THEN** 系统向 Auto Session Manager 请求当前有效 token
-- **AND** 将该 token 作为 `Copilot-Session-Token` 附加到对应的上游请求
+#### Scenario: 429 遵守 Retry-After 而 5xx 与网络失败退避重试
+- **WHEN** 探测收到 429 且带合法 `Retry-After`
+- **THEN** 系统按该头指定时长等待后重试
+- **WHEN** 探测收到网络错误或 5xx
+- **THEN** 系统按随机退避间隔重试，间隔 1 秒起步、30 秒封顶
 
-#### Scenario: 未覆盖模型请求不触发 Auto session 注入
-- **WHEN** 某条 LLM API 调用链收到的传入模型不存在于当前 `available_models` 缓存中
-- **THEN** 系统不会因为该请求去附加 `Copilot-Session-Token`
-- **AND** 该请求继续按现有路径执行而不改变既有行为
+#### Scenario: 鉴权失败暂停相同凭据的探测
+- **WHEN** 探测收到 401/403 且凭据未变化
+- **THEN** 系统暂停相同凭据下的重复探测，待凭据变化后自动恢复
 
-### Requirement: 三条现有 LLM API 调用链必须以一致方式接入 Auto Session Manager
-系统 MUST 使三条现有 LLM API 调用链遵循同一套 Auto session 注入规则：命中模型则取 token 并附加，未命中则不改变现有行为。
+### Requirement: 配对在到期前刷新并支持凭据轮换恢复
+系统 MUST 按每条配对自己的 `expires_at` 在到期前 5 分钟安排刷新；同一探测点的并发刷新共享在途任务。刷新定时器超过 `2^31-1ms` 上限时 MUST 在触发时重算重排，不得提前请求。定时器发起的刷新若仍返回已进入 5 分钟窗口的到期时间，MUST NOT 以 0 毫秒间隔连续重排，配对保持到自然过期。Copilot 凭据变化时旧配对 MUST 立即失效并清除刷新定时器；重新补采 MUST 在 token 与账号元数据全部落位后发起；旧凭据下在途的探测响应 MUST NOT 写入新凭据映射。重新探测选出不同模型时 MUST 按新模型 ID 登记，不把新 token 写到原模型名下。
 
-#### Scenario: messages 链路遵循统一注入规则
-- **WHEN** messages 调用链处理上游请求
-- **THEN** 它对 Auto session 的使用规则与其他两条调用链一致
-- **AND** 不得出现只在 messages 链路额外刷新或额外注入的偏差行为
+#### Scenario: 到期前五分钟刷新并共享在途
+- **WHEN** 某配对到达到期前 5 分钟
+- **THEN** 系统按记录的来源点重新探测并用新 `expires_at` 续排
+- **AND** 同一探测点已有在途请求时复用该请求
 
-#### Scenario: chat completions 链路遵循统一注入规则
-- **WHEN** chat completions 调用链处理上游请求
-- **THEN** 它对 Auto session 的使用规则与其他两条调用链一致
-- **AND** 不得出现只在该链路忽略模型覆盖判断的偏差行为
+#### Scenario: 凭据轮换后旧配对失效并按新结果补采
+- **WHEN** Copilot 凭据发生变化
+- **THEN** 旧凭据配对立即失效、刷新定时器清除，补采仅在元数据更新完成后发起
+- **AND** 迟到返回的旧凭据响应被丢弃；补采返回不同模型时按新模型 ID 登记
 
-#### Scenario: responses 链路遵循统一注入规则
-- **WHEN** responses 调用链处理上游请求
-- **THEN** 它对 Auto session 的使用规则与其他两条调用链一致
-- **AND** 不得出现只在该链路绕过 Auto Session Manager 的偏差行为
+### Requirement: HTTP 推理仅在附带 Auto token 且收到 400/401 时重试一次
+- **THEN** 系统 MUST 仅在本次请求已附加该模型的 `Copilot-Session-Token` 且上游响应 `400`/`401` 时使对应配对失效，保持原请求模型 ID 重试一次。系统 MUST NOT 根据错误正文决定是否重试。当系统实际调用 `/auto` 重新取得且重取失败时，MUST 将刷新错误传出并停止本次请求，不发第二次推理。第二次失败 MUST 按原有错误处理路径返回。
 
-### Requirement: Auto Session Manager 必须输出简洁且一致的运行时日志
-系统 MUST 为 Auto Session Manager 的关键事件输出简洁短日志，并使用仓库现有的 `consola` 模式以 `info` 级记录模型命中、模型未命中与 token 刷新事件。
+#### Scenario: 附带 token 的请求收到 400/401 后定向失效并重试
+- **WHEN** 已附加 Auto token 的 HTTP 推理请求收到 400 或 401
+- **THEN** 仅当仍持有本次请求 token 的配对时定向删除，重新取得成功后按当前有效配对重挂并对原模型重试一次
+- **AND** 重试保持原模型 ID；第二次失败按原有错误处理返回；重取失败传出刷新错误且不发二次推理；第二次推理失败走原有错误路径
 
-#### Scenario: 命中可用模型时记录 hit 日志
-- **WHEN** 某条调用链收到的模型命中当前 `available_models`
-- **THEN** 系统输出一条简洁的 `info` 级 `consola` 日志表明该模型命中 Auto 可用集合
-- **AND** 该日志样式与仓库现有日志模式保持一致
+#### Scenario: 未附 token 或 WebSocket 请求不改变行为
+- **WHEN** 请求未附加 Auto token，或走 Responses WebSocket 分支
+- **THEN** 400/401 等响应按既有错误路径处理，不触发 Auto 失效与重试
 
-#### Scenario: 未命中可用模型时记录 miss 日志
-- **WHEN** 某条调用链收到的模型未命中当前 `available_models`
-- **THEN** 系统输出一条简洁的 `info` 级 `consola` 日志表明该模型未命中 Auto 可用集合
-- **AND** 日志不会扩展成冗长调试输出
+#### Scenario: 迟到 401 不删除新映射
+- **WHEN** 携带旧 token 的请求收到 401，而该模型配对已被并发请求更新或清空
+- **THEN** 系统不删除现存配对、不消耗重新取得次数，仍按当前有效配对重挂并重试一次（无配对时不带 token 重试一次）
 
-#### Scenario: 刷新 token 时记录 refreshed 日志
-- **WHEN** Auto Session Manager 因过期、缺失或不可用状态而刷新 `/models/session`
-- **THEN** 系统输出一条简洁的 `info` 级 `consola` 日志表明 token 已刷新
-- **AND** 日志风格与仓库现有颜色和展示模式保持一致
+#### Scenario: 重新取得失败时传出刷新错误
 
+- **WHEN** 附带 token 的请求收到 `400`/`401`，系统使配对失效并实际调用 `/auto` 重新取得，且重取失败
+- **THEN** 系统将刷新错误传出并停止本次请求，不发第二次推理
+
+### Requirement: Auto 相关日志与成本数据约束
+系统 MUST 保证 Auto 相关日志只包含可排查的最小状态：模型 ID、HTTP 状态码或错误类别、未完成数量；MUST NOT 输出 session token、Copilot token、抽样源码、档位或题目类型。请求计费 MUST 沿用上游返回的折后成本数据，不重复应用折扣。
+
+#### Scenario: 日志只含最小可排查状态
+- **WHEN** 系统记录探测、命中、未命中、过期补采或 token 拒绝事件
+- **THEN** 日志仅包含模型 ID 与状态类别，不包含任何令牌或请求内容
+
+#### Scenario: 成本沿用上游折后数据
+- **WHEN** 请求经 Auto 配对路径完成
+- **THEN** 成本与用量展示沿用上游响应实际返回的折后字段，不做二次折扣计算

@@ -78,14 +78,6 @@ const server = Bun.serve({
     }
     upstreamRequests.push(recorded)
 
-    if (recorded.path === "/models/session") {
-      return Response.json({
-        available_models: ["unrelated-model"],
-        expires_at: Math.floor(Date.now() / 1000) + 3600,
-        session_token: "unused-session-token",
-      })
-    }
-
     if (recorded.path === "/responses") {
       if (!respondToResponses) {
         return new Response("upstream responder not installed", { status: 500 })
@@ -561,9 +553,8 @@ describe("取消信号", () => {
 
     expect(response.status).toBe(499)
     expect(responsesCount()).toBe(0)
-    expect(
-      upstreamRequests.filter((request) => request.path === "/models/session"),
-    ).toHaveLength(0)
+    // 预取消不得产生任何上游请求（含 /responses 与任何探测端点）
+    expect(upstreamRequests).toHaveLength(0)
   })
 
   test("发送后取消客户端信号仍完整读取上游并记录用量", async () => {

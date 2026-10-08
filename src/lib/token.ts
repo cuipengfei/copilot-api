@@ -4,7 +4,10 @@ import { assertGitHubCopilotEnabled } from "./github-copilot-provider"
 import { setTimeout as delay } from "node:timers/promises"
 
 import { isOpencodeOauthApp } from "~/lib/api-config"
-import { invalidateAutoSession } from "~/lib/auto-session"
+import {
+  invalidateAutoSession,
+  resumeAutoSessionDiscoveryAfterRotation,
+} from "~/lib/auto-session"
 import {
   getRawProviderConfig,
   readEditableConfigFromDisk,
@@ -422,6 +425,7 @@ export const setupCopilotToken = async (
     state.copilotToken = state.githubToken
     if (previousToken !== state.copilotToken) {
       invalidateAutoSession()
+      resumeAutoSessionDiscoveryAfterRotation()
     }
 
     consola.debug("GitHub Copilot token set from opencode auth token")

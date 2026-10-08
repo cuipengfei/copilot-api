@@ -32,7 +32,7 @@ import {
 } from "./lib/server-host"
 import { generateEnvScript } from "./lib/shell"
 import { state } from "./lib/state"
-import { prewarmAutoSession } from "./lib/auto-session"
+import { prewarmAutoSession, STARTUP_PROBE_BUDGET_MS } from "./lib/auto-session"
 
 interface RunServerOptions {
   host: string
@@ -80,7 +80,7 @@ async function setupCopilotMode(
   )
 
   await setupCopilotRuntime(githubToken)
-  await prewarmAutoSession()
+  await prewarmAutoSession({ startupBudgetMs: STARTUP_PROBE_BUDGET_MS })
 
   const availableModels = state.models?.data ?? []
   consola.info(formatModelsLog(availableModels))
@@ -210,6 +210,7 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   }
 
   state.showToken = options.showToken
+  state.forceAgent = options.forceAgent
 
   await ensurePaths()
   await startModelsDevCache()

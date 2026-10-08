@@ -32,7 +32,7 @@
 - `config.ts` 同时承载 provider 配置：`providers.<name>.baseUrl/apiKey/models.<model>.{temperature,topP,topK}`；取用时统一走 `getProviderConfig()`，不要在路由里手动 trim/校验
 - `paths.ts` 支持 `COPILOT_API_HOME` 覆盖默认目录；改路径逻辑时要兼顾 Windows/WSL 使用方式
 - `token.ts` 的刷新循环和 telemetry 初始化耦合，改认证链路时别漏 `trackAuthNewToken()` / `initTelemetry()`
-- `auto-session.ts` 当前只管理 `/models/session` 返回的 `session_token` / `available_models` 缓存；不要把它误当完整 Auto Router。若要处理 `Invalid auto-mode selector` 或模型选择异常，必须把 `/models/session/intent` 与最终 upstream request 一起验证。
+- `auto-session.ts` 现管理 `/auto` 选模配对：按 `selected_model.id` 保存 `session_token`、`expires_at` 与 `supported_endpoints`，表键是上游实际选中的模型 ID；它只做按模型 ID 查表，不替客户端改请求模型 ID。
 - `Copilot-Session-Token` 可能与生成它时的 Copilot auth/account context 绑定；改 `token.ts`、认证刷新或账户切换逻辑时，要检查 auto-session cache 是否需要失效，避免旧 session token 搭配新 auth token。
 - `smart-agent.ts` 只缓存 `forceAgent=true` 之决断；“尚在预算之内”不作缓存之项
 - `api-config.ts` 组装请求头后被三个 `create-*` service 共享调用，不要在 service 内重复构造 header

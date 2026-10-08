@@ -190,19 +190,6 @@ const fetchMock = mock((url: string | URL | Request) => {
     )
   }
 
-  if (target.endsWith("/models/session")) {
-    return Promise.resolve(
-      new Response(
-        JSON.stringify({
-          available_models: [],
-          expires_at: Math.floor(Date.now() / 1000) + 3600,
-          session_token: "test-session-token",
-        }),
-        { status: 200 },
-      ),
-    )
-  }
-
   return Promise.reject(new Error(`Unexpected fetch: ${target}`))
 })
 const actualUndici = await import("undici")
@@ -217,6 +204,11 @@ await mock.module("undici", () => ({
 }))
 
 const { state } = await import("~/lib/state")
+const {
+  getAutoSessionTokenForModel,
+  invalidateAutoSession,
+  registerAutoSelection,
+} = await import("~/lib/auto-session")
 const { createResponses } = await import("~/services/copilot/create-responses")
 const {
   createPooledWebSocketStream,
@@ -309,6 +301,45 @@ test("Responses websocket pool reuses the same connection for matching pool keys
 
   expect(MockWebSocket.instances).toHaveLength(1)
   expect(MockWebSocket.instances[0]?.sent).toHaveLength(2)
+})
+
+test("Responses websocket handshake omits Copilot-Session-Token even with a valid auto pairing", async () => {
+  registerAutoSelection({
+    selected_model: {
+      id: "gpt-test",
+      supported_endpoints: ["/responses", "ws:/responses"],
+    },
+    session_token: "ws-should-not-attach",
+    expires_at: Math.floor(Date.now() / 1000) + 3600,
+  })
+  try {
+    // 配对确实可用（HTTP /responses 维度）——负例针对的是 WS 分支不附加
+    expect(await getAutoSessionTokenForModel("gpt-test", "/responses")).toBe(
+      "ws-should-not-attach",
+    )
+
+    await collectResponsesStream("auto-ws-no-session")
+
+    expect(MockWebSocket.instances).toHaveLength(1)
+    const websocket = MockWebSocket.instances[0]
+    // 发送帧仍带原模型：业务流不受"不附加 token"影响
+    expect((JSON.parse(websocket.sent[0]) as { model: string }).model).toBe(
+      "gpt-test",
+    )
+    // 握手 init.headers 不得含任何大小写形式的 Copilot-Session-Token
+    const handshakeHeaders = websocket.init.headers ?? {}
+    for (const key of Object.keys(handshakeHeaders)) {
+      expect(key.toLowerCase()).not.toBe("copilot-session-token")
+    }
+    // 负路径全程零 HTTP /responses、零 /auto 刷新（fetchMock 未知 URL 已 fail-fast）
+    const fetchTargets = fetchMock.mock.calls.map((call) => call[0] as string)
+    expect(
+      fetchTargets.filter((url) => url.includes("/responses")),
+    ).toHaveLength(0)
+    expect(fetchTargets.filter((url) => url.includes("/auto"))).toHaveLength(0)
+  } finally {
+    invalidateAutoSession()
+  }
 })
 
 test("Responses websocket discards a connection after a server error event", async () => {
