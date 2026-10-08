@@ -107,15 +107,10 @@ describe("Interaction headers", () => {
   })
 
   test("emits panel and ghost telemetry after signature-retry success", async () => {
-    const signatureError = {
-      ok: false,
-      status: 400,
-      json: () =>
-        Promise.resolve({ error: { message: "signature cannot be modified" } }),
-      clone() {
-        return this
-      },
-    }
+    const signatureError = new Response(
+      JSON.stringify({ error: { message: "signature cannot be modified" } }),
+      { status: 400 },
+    )
     const successResponse = {
       ok: true,
       headers: new Headers({
@@ -360,17 +355,14 @@ describe("modelCallId telemetry alignment", () => {
         }
         chatCallCount++
         if (chatCallCount === 1) {
-          return Promise.resolve({
-            ok: false,
-            status: 400,
-            json: () =>
-              Promise.resolve({
+          return Promise.resolve(
+            new Response(
+              JSON.stringify({
                 error: { message: "signature cannot be modified" },
               }),
-            clone() {
-              return this
-            },
-          })
+              { status: 400 },
+            ),
+          )
         }
         return Promise.resolve({
           ok: false,

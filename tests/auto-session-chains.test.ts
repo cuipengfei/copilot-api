@@ -528,6 +528,68 @@ describe("auto-session token injection across chains", () => {
     expect(headers["x-interaction-type"]).toBe("model-access")
   })
 
+  test("responses belong error keeps session token and replays without encrypted content", async () => {
+    queuePrewarmPlusRefresh("/responses")
+    let attempts = 0
+    const fetchMock = wireFetchMock(() => {
+      attempts += 1
+      return attempts === 1 ?
+          Response.json(
+            {
+              error: {
+                message: "input item does not BeLoNg to this connection",
+              },
+            },
+            { status: 401 },
+          )
+        : createResponsesSuccess("resp-replayed")
+    })
+    await prewarmAutoSession()
+    const autoBefore = countAutoCalls(fetchMock)
+    const payload: ResponsesPayload = {
+      ...createResponsesPayload,
+      input: [
+        { role: "user", content: "hello" },
+        {
+          type: "reasoning",
+          id: "r-1",
+          summary: [],
+          encrypted_content: "enc-abc",
+        },
+      ],
+    }
+
+    const result: unknown = await createResponses(payload, {
+      vision: false,
+      initiator: "user",
+    })
+    if (!result || typeof result !== "object" || !("id" in result)) {
+      throw new Error("expected Responses result with id")
+    }
+
+    const calls = getFinalCallSnapshots("/responses")
+    expect(result.id).toBe("resp-replayed")
+    expect(calls).toHaveLength(2)
+    expect(countAutoCalls(fetchMock)).toBe(autoBefore)
+    expect(getSessionHeader(calls[0][1])).toBe("session-stale")
+    expect(getSessionHeader(calls[1][1])).toBe("session-stale")
+    const replayedBody: unknown = JSON.parse(requestBodyText(calls[1][1]))
+    if (
+      typeof replayedBody !== "object"
+      || replayedBody === null
+      || !("input" in replayedBody)
+      || !Array.isArray(replayedBody.input)
+    ) {
+      throw new Error("expected response input array")
+    }
+    expect(replayedBody.input).toContainEqual({
+      id: "r-1",
+      type: "reasoning",
+      summary: [],
+    })
+    expect(requestBodyText(calls[1][1])).not.toContain("encrypted_content")
+  })
+
   test("responses chain retries opaque 401 once via re-acquired session", async () => {
     ;(
       globalThis as unknown as {

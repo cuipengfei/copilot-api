@@ -114,4 +114,48 @@ describe("auto-session logging", () => {
       "[auto-session] miss model=not-covered",
     )
   })
+
+  test("colors hit and miss only in interactive terminals", async () => {
+    const queue: unknown = Reflect.get(globalThis, "__AUTO_SESSION_QUEUE__")
+    if (!Array.isArray(queue)) throw new Error("expected auto-session queue")
+    queue.push(selection("gpt-5.3-codex", "token-initial"))
+
+    const ttyDescriptor = Object.getOwnPropertyDescriptor(
+      process.stdout,
+      "isTTY",
+    )
+    const noColor = process.env.NO_COLOR
+    Object.defineProperty(process.stdout, "isTTY", {
+      configurable: true,
+      value: true,
+    })
+    delete process.env.NO_COLOR
+
+    try {
+      const infoSpy = spyOn(consola, "info")
+      await prewarmAutoSession()
+      await getAutoSessionTokenForModel("gpt-5.3-codex")
+      await getAutoSessionTokenForModel("not-covered")
+      expect(infoSpy).toHaveBeenCalledWith(
+        "[auto-session] \x1b[1;92mhit\x1b[0m model=gpt-5.3-codex",
+      )
+      expect(infoSpy).toHaveBeenCalledWith(
+        "[auto-session] \x1b[1;93mmiss\x1b[0m model=not-covered",
+      )
+
+      process.env.NO_COLOR = "1"
+      await getAutoSessionTokenForModel("gpt-5.3-codex")
+      expect(infoSpy).toHaveBeenCalledWith(
+        "[auto-session] hit model=gpt-5.3-codex",
+      )
+    } finally {
+      if (ttyDescriptor) {
+        Object.defineProperty(process.stdout, "isTTY", ttyDescriptor)
+      } else {
+        Reflect.deleteProperty(process.stdout, "isTTY")
+      }
+      if (noColor === undefined) delete process.env.NO_COLOR
+      else process.env.NO_COLOR = noColor
+    }
+  })
 })

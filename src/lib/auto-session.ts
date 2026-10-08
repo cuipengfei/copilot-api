@@ -10,6 +10,7 @@ import {
 } from "~/services/copilot/get-auto-selection"
 
 import { HTTPError } from "./error"
+import { shouldUseColor } from "./logger"
 import { state } from "./state"
 
 interface AutoSessionPairing {
@@ -650,6 +651,12 @@ export const isModelAutoCovered = (model: string): boolean => {
   )
 }
 
+const colorAutoSessionEvent = (event: "hit" | "miss"): string => {
+  if (!shouldUseColor()) return event
+  const colorCode = event === "hit" ? 92 : 93
+  return `\x1b[1;${colorCode}m${event}\x1b[0m`
+}
+
 /* eslint-disable @typescript-eslint/require-await -- 保留 async 签名（既有 API 契约）；过期补采为 fire-and-forget（void runProbePoint），本函数不等待它 */
 export const getAutoSessionTokenForModel = async (
   model: string,
@@ -659,7 +666,9 @@ export const getAutoSessionTokenForModel = async (
 
   if (!pairing) {
     // 未知模型/无来源：保持原有无 token 行为，不为每次 miss 创造请求
-    consola.info(`[auto-session] miss model=${model}`)
+    consola.info(
+      `[auto-session] ${colorAutoSessionEvent("miss")} model=${model}`,
+    )
     return undefined
   }
 
@@ -667,7 +676,9 @@ export const getAutoSessionTokenForModel = async (
     // 凭据失配必须早于过期补采判定：metadata 更新尚未完成时普通请求
     // 不得以新 token+旧 metadata 发 /auto。认证补采只归
     // resumeAutoSessionDiscoveryAfterRotation（完整更新后）；此处零请求
-    consola.info(`[auto-session] miss model=${model}`)
+    consola.info(
+      `[auto-session] ${colorAutoSessionEvent("miss")} model=${model}`,
+    )
     return undefined
   }
 
@@ -682,17 +693,21 @@ export const getAutoSessionTokenForModel = async (
       consola.info(`[auto-session] expired model=${model} re-probe`)
       void runProbePoint(source.tier, source.kind, source.prompt)
     } else {
-      consola.info(`[auto-session] miss model=${model}`)
+      consola.info(
+        `[auto-session] ${colorAutoSessionEvent("miss")} model=${model}`,
+      )
     }
     return undefined
   }
 
   if (endpoint !== undefined && !pairingSupportsEndpoint(pairing, endpoint)) {
-    consola.info(`[auto-session] miss model=${model} endpoint=${endpoint}`)
+    consola.info(
+      `[auto-session] ${colorAutoSessionEvent("miss")} model=${model} endpoint=${endpoint}`,
+    )
     return undefined
   }
 
-  consola.info(`[auto-session] hit model=${model}`)
+  consola.info(`[auto-session] ${colorAutoSessionEvent("hit")} model=${model}`)
   return pairing.sessionToken
 }
 /* eslint-enable @typescript-eslint/require-await */

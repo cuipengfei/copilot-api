@@ -9,6 +9,24 @@ import {
 const isTokenRejectionStatus = (status: number): boolean =>
   status === 400 || status === 401
 
+export const getResponseErrorMessage = async (
+  response: Response,
+): Promise<string | undefined> => {
+  try {
+    const parsed: unknown = JSON.parse(await response.clone().text())
+    if (typeof parsed !== "object" || parsed === null || !("error" in parsed)) {
+      return undefined
+    }
+    const error = parsed.error
+    if (typeof error !== "object" || error === null || !("message" in error)) {
+      return undefined
+    }
+    return typeof error.message === "string" ? error.message : undefined
+  } catch {
+    return undefined
+  }
+}
+
 export const attachAutoSessionToken = async (
   headers: Record<string, string>,
   model: string,
@@ -20,11 +38,10 @@ export const attachAutoSessionToken = async (
   }
 }
 
-// 共享 HTTP 规则：仅当本次请求已附 Auto 会话令牌且上游返回 400/401 时，
-// 使该模型当前相同 session token 配对失效并重新取得一次后重试。
-// 不看响应正文（正文可能不含任何已知错误串）；不附令牌、429/500、
-// WebSocket 请求一律走原路径；重新取得失败传出错误并停止本次请求；
-// 第二次失败由调用方按既有错误路径处理。
+// 共享 HTTP 规则：携带 Auto 会话令牌的 400/401 若含 belong 错误，
+// 说明问题在连接/内容绑定而非令牌失效：交回调用方处理并保留配对。
+// 其余 400/401 按令牌失效处理一次；不附令牌、429/500、WebSocket 请求
+// 一律走原路径；重新取得失败传出错误并停止本次请求。
 export const retryAfterAutoSessionTokenRejection = async (
   response: Response,
   headers: Record<string, string>,
@@ -37,6 +54,12 @@ export const retryAfterAutoSessionTokenRejection = async (
     return response
   }
 
+  const errorMessage = await getResponseErrorMessage(response)
+  if (errorMessage) {
+    consola.warn(`[auto-session] upstream error: ${errorMessage}`)
+  }
+  if (errorMessage?.toLowerCase().includes("belong")) return response
+
   // 快照定向失效结果：仅当该模型当前配对仍持有本请求携带的 token
   // （确认首次请求命中原 token）才删除并需要重新取得；迟到响应/并发
   // 清空不删任何现存映射、不消耗 /auto。
@@ -48,10 +71,6 @@ export const retryAfterAutoSessionTokenRejection = async (
     await refreshAutoSession()
   }
   await attachAutoSessionToken(headers, model, endpoint)
-
-  consola.info(
-    "[auto-session] upstream rejected auto session token, retrying once",
-  )
 
   return retry()
 }

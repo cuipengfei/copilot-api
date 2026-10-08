@@ -2,8 +2,8 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test"
 import type { Server } from "bun"
 
 import type { ResponsesPayload } from "../src/lib/types/responses"
+import { getResponseErrorMessage } from "../src/services/copilot/auto-session-retry"
 import {
-  getResponseErrorMessage,
   hasStrippableReasoningItem,
   sendResponsesRequestWithReasoningReplay,
 } from "../src/services/copilot/responses-compat"
@@ -74,14 +74,17 @@ beforeAll(() => {
         )
       }
       if (url.pathname === "/belong-uppercase") {
-        return Response.json(
-          {
-            error: {
-              message: "input item ID does not BELONG to this connection",
+        if (countFor(url.pathname) === 1) {
+          return Response.json(
+            {
+              error: {
+                message: "input item ID does not BELONG to this connection",
+              },
             },
-          },
-          { status: 401 },
-        )
+            { status: 401 },
+          )
+        }
+        return Response.json({ id: "resp-ok" })
       }
       if (url.pathname === "/server-error") {
         return Response.json(
@@ -220,14 +223,19 @@ describe("sendResponsesRequestWithReasoningReplay", () => {
     expect(countFor("/belong-in-detail")).toBe(1)
   })
 
-  test("belong match is case-sensitive", async () => {
+  test("belong match ignores case", async () => {
     const response = await sendResponsesRequestWithReasoningReplay(
       urlFor("/belong-uppercase"),
       { payload: strippablePayload(), headers: {}, transportConfig },
     )
 
-    expect(response.status).toBe(401)
-    expect(countFor("/belong-uppercase")).toBe(1)
+    expect(response.status).toBe(200)
+    expect(countFor("/belong-uppercase")).toBe(2)
+    expect(
+      lastBodyFor("/belong-uppercase").input.find(
+        (item) => item.type === "reasoning",
+      ),
+    ).toEqual({ id: "r-1", type: "reasoning", summary: [] })
   })
 
   test("non-4xx does not retry even with belong marker", async () => {

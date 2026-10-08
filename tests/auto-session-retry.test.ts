@@ -1,4 +1,14 @@
-import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test"
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  mock,
+  spyOn,
+  test,
+} from "bun:test"
+
+import consola from "consola"
 
 import {
   getAutoSessionTokenForModel,
@@ -70,8 +80,20 @@ describe("shared auto-session token rejection retry", () => {
     await attachAutoSessionToken(headers, "model-a", "/responses")
     expect(headers["Copilot-Session-Token"]).toBe("session-old")
 
-    // 正文不含旧 "Invalid auto-mode selector" 字符串：仍须触发重试
-    const rejected = new Response("some opaque upstream error", { status: 401 })
+    const warnSpy = spyOn(consola, "warn")
+    const rejectionBody = JSON.stringify({
+      error: { message: "session rejected", detail: "BELONG" },
+    })
+    const rejected = new Response(rejectionBody, {
+      status: 401,
+      statusText: "Unauthorized",
+      headers: {
+        "content-type": "application/json",
+        "copilot-edits-session": "private-session-id",
+        "set-cookie": "session=secret",
+        "x-github-request-id": "request-123",
+      },
+    })
     const ok = new Response("{}", { status: 200 })
     const retry = mock(() => Promise.resolve(ok))
 
@@ -89,7 +111,10 @@ describe("shared auto-session token rejection retry", () => {
     expect(headers["Copilot-Session-Token"]).toBe("session-new")
     expect(await getAutoSessionTokenForModel("model-a")).toBe("session-new")
     // 初始登记 1 次 + 重新取得 1 次
-    expect(autoCalls).toBe(2)
+    expect(warnSpy.mock.calls).toEqual([
+      ["[auto-session] upstream error: session rejected"],
+    ])
+    expect(await rejected.text()).toBe(rejectionBody)
   })
 
   test("400 with attached token triggers the same single retry", async () => {
@@ -257,6 +282,40 @@ describe("shared auto-session token rejection retry", () => {
     expect(headers["Copilot-Session-Token"]).toBeUndefined()
     expect(autoCalls).toBe(1)
   })
+
+  test.each([
+    "input item does not belong to this connection",
+    "INPUT ITEM DOES NOT BELONG TO THIS CONNECTION",
+    "BeLoNg to another connection",
+  ])(
+    "keeps the paired token for connection-bound errors: %s",
+    async (message) => {
+      queue.push(sel("model-a", "session-old"))
+      await refreshAutoSession()
+      const headers: Record<string, string> = {}
+      await attachAutoSessionToken(headers, "model-a", "/responses")
+      const rejected = new Response(JSON.stringify({ error: { message } }), {
+        status: 401,
+      })
+      const retry = mock(() => Promise.resolve(new Response("{}")))
+
+      const result = await retryAfterAutoSessionTokenRejection(
+        rejected,
+        headers,
+        "model-a",
+        "/responses",
+        retry,
+      )
+
+      expect(result).toBe(rejected)
+      expect(retry).not.toHaveBeenCalled()
+      expect(autoCalls).toBe(1)
+      expect(headers["Copilot-Session-Token"]).toBe("session-old")
+      expect(await getAutoSessionTokenForModel("model-a")).toBe("session-old")
+      const errorBody: unknown = await result.json()
+      expect(errorBody).toEqual({ error: { message } })
+    },
+  )
 
   test("second failure response is returned as-is to the existing error path", async () => {
     queue.push(sel("model-a", "session-old"))

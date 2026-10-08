@@ -8,6 +8,7 @@ import {
   normalizeResponsesInputForReplay,
 } from "~/routes/responses/utils"
 
+import { getResponseErrorMessage } from "~/services/copilot/auto-session-retry"
 import {
   sendCopilotHttpRequest,
   sendCopilotRequest,
@@ -29,21 +30,6 @@ export const hasStrippableReasoningItem = (
   )
 }
 
-export const getResponseErrorMessage = async (
-  response: Response,
-): Promise<string | undefined> => {
-  try {
-    const parsed = JSON.parse(await response.clone().text()) as {
-      error?: { message?: unknown }
-    }
-    return typeof parsed.error?.message === "string" ?
-        parsed.error.message
-      : undefined
-  } catch {
-    return undefined
-  }
-}
-
 export const sendResponsesRequestWithReasoningReplay = async (
   url: string,
   { payload, headers, clientSignal, transportConfig }: ResponsesHttpSendOptions,
@@ -62,7 +48,7 @@ export const sendResponsesRequestWithReasoningReplay = async (
     const shouldStripReasoningAndRetry =
       response.status >= 400
       && response.status < 500
-      && errorMessage?.includes("belong") === true
+      && errorMessage?.toLowerCase().includes("belong") === true
       && hasStrippableReasoningItem(payload)
 
     if (shouldStripReasoningAndRetry) {
