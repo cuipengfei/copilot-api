@@ -9,6 +9,7 @@ import {
   type AutoSelectionTier,
 } from "~/services/copilot/get-auto-selection"
 
+import { getConfig } from "./config-store"
 import { HTTPError } from "./error"
 import { shouldUseColor } from "./logger"
 import { state } from "./state"
@@ -33,6 +34,10 @@ const STARTUP_TIERS: Array<AutoSelectionTier> = [
 ]
 const HARD_QUESTION =
   "请指出这段代码中最可能的正确性问题，以及确认该问题所需的信息。"
+const TARGET_CODE_PROMPT =
+  "Write a TypeScript function that normalizes URL paths, with tests for root, duplicate slashes, and trailing slashes."
+const TARGET_PROBE_INTERVAL_MS = 3_000
+const TARGET_ATTEMPTS_PER_TIER = 10
 const DEFAULT_SOURCE_ROOT = join(process.cwd(), "src")
 // 启动等待预算：上游持续故障时服务启动的最长等待；在途探测到期后转后台继续
 export const STARTUP_PROBE_BUDGET_MS = 30_000
@@ -147,8 +152,9 @@ export const resumeAutoSessionDiscoveryAfterRotation = (): void => {
   }
   discoveryToken = state.copilotToken
   for (const { tier, kind, prompt } of lastSuccessPrompts.values()) {
-    void runProbePoint(tier, kind, prompt)
+    if (kind !== "target") void runProbePoint(tier, kind, prompt)
   }
+  startTargetDiscovery(getConfiguredTargetModels())
 }
 
 export interface HardSnippet {
@@ -218,7 +224,7 @@ const probeFailureKind = (error: unknown): string => {
       return error.name
     }
     if (error.name === "TypeError") return "network"
-    return error.name
+    return "error"
   }
   return "unknown"
 }
@@ -273,15 +279,16 @@ let discoveryRan = false
 let discoveryToken: string | undefined
 // 每个模型最近成功登记的来源 (tier,kind,prompt)：配对过期后的 miss
 // 按它补采；成功登记时覆盖，模型目录有界
+type ProbeKind = "easy" | "hard" | "target"
 const pairingSources = new Map<
   string,
-  { tier: AutoSelectionTier; kind: "easy" | "hard"; prompt: string }
+  { tier: AutoSelectionTier; kind: ProbeKind; prompt: string }
 >()
 // 每 (tier,kind) 最近成功探测的 prompt 来源：凭据轮换后按它后台重探；
 // 失效清空配对时不得清掉；每点一条，有界
 const lastSuccessPrompts = new Map<
   string,
-  { tier: AutoSelectionTier; kind: "easy" | "hard"; prompt: string }
+  { tier: AutoSelectionTier; kind: ProbeKind; prompt: string }
 >()
 
 const wakeAll = (waiters: Set<() => void>): void => {
@@ -352,9 +359,11 @@ export const stopProbeScheduler = (): void => {
 // 最近一轮探测的结算 Promise：测试清理与进程关闭（第三切片）先 stop 再 await 它，
 // 保证全部已启动探测结束后再释放资源
 let latestProbeRound: Promise<unknown> = Promise.resolve()
+let targetProbeRound: Promise<void> | undefined
 export const whenProbeSchedulerIdle = async (): Promise<void> => {
   await latestProbeRound
   // 定时器发起的到期刷新等任意在途点请求也必须结算：stop 后先等它们，
+  if (targetProbeRound !== undefined) await targetProbeRound
   // 测试/关闭方才不会过早恢复 fetch 替身或释放资源。
   // 只取当前快照，不向 latestProbeRound 链式累积（长寿命进程防无限增长）
   await Promise.all([...inflightProbePoints.values()])
@@ -402,7 +411,7 @@ const clearAllRefreshTimers = (): void => {
 const scheduleRefresh = (
   modelId: string,
   tier: AutoSelectionTier,
-  kind: "easy" | "hard",
+  kind: ProbeKind,
   prompt: string,
   expiresAt: number,
   fromRefreshTimer = false,
@@ -439,15 +448,18 @@ const scheduleRefresh = (
 const probePointLoop = async (
   prompt: string,
   tier: AutoSelectionTier,
-  kind: "easy" | "hard",
+  kind: ProbeKind,
   fromRefreshTimer = false,
+  maxRequests = Number.POSITIVE_INFINITY,
 ): Promise<string | undefined> => {
+  let requests = 0
   let failures = 0
   // 首试不受暂停影响：每个点都完成第一次尝试，暂停只作用于重试
   let attempted = false
   for (;;) {
     if (probeSchedulerStopped) return undefined
     if (attempted) await waitOutHalt()
+    if (requests >= maxRequests) return undefined
     if (probeSchedulerStopped) return undefined
     // 请求发出时快照凭据：响应到达时凭据可能已轮换，
     // 401/403 只归责于发起请求的凭据。须在 try 外声明：
@@ -455,6 +467,7 @@ const probePointLoop = async (
     const requestToken = state.copilotToken
     try {
       attempted = true
+      requests += 1
       const selection = await getAutoSelection(prompt, tier)
       // 注册前校验：响应属于请求发出时的凭据。轮换后到达的旧凭据响应
       // 不得写入新凭据配对，转为新凭据重新探测（非失败，不累计退避）
@@ -526,20 +539,100 @@ const probePointLoop = async (
 const inflightProbePoints = new Map<string, Promise<string | undefined>>()
 export const runProbePoint = (
   tier: AutoSelectionTier,
-  kind: "easy" | "hard",
+  kind: ProbeKind,
   prompt: string,
   fromRefreshTimer = false,
+  maxRequests = kind === "target" ? 1 : Number.POSITIVE_INFINITY,
 ): Promise<string | undefined> => {
   const key = `${tier}:${kind}`
   const existing = inflightProbePoints.get(key)
   if (existing !== undefined) return existing
-  const attempt = probePointLoop(prompt, tier, kind, fromRefreshTimer).finally(
-    () => {
-      inflightProbePoints.delete(key)
-    },
-  )
+  const attempt = probePointLoop(
+    prompt,
+    tier,
+    kind,
+    fromRefreshTimer,
+    maxRequests,
+  ).finally(() => {
+    inflightProbePoints.delete(key)
+  })
   inflightProbePoints.set(key, attempt)
   return attempt
+}
+
+// 同一轮请求服务所有缺失模型，避免为每个目标重复发送相同的 /auto 请求。
+const discoverTargets = async (models: Array<string>): Promise<void> => {
+  let lastMissingCount = -1
+  for (let attempt = 0; attempt < TARGET_ATTEMPTS_PER_TIER; attempt++) {
+    for (const tier of STARTUP_TIERS) {
+      if (probeSchedulerStopped) return
+      const missing = getMissingAutoDiscoveryModels(models)
+      if (missing.length !== lastMissingCount) {
+        consola.info(`[auto-session] target models missing=${missing.length}`)
+        lastMissingCount = missing.length
+      }
+      if (missing.length === 0) return
+
+      await waitOutHalt()
+      if (probeSchedulerStopped) return
+      if (getMissingAutoDiscoveryModels(models).length === 0) return
+      const existing = inflightProbePoints.get(`${tier}:target`)
+      if (existing !== undefined) {
+        await existing
+        await probeSleep(TARGET_PROBE_INTERVAL_MS)
+        continue
+      }
+      const prompt = attempt % 2 === 0 ? PREWARM_PROMPT : TARGET_CODE_PROMPT
+      await runProbePoint(tier, "target", prompt, false, 1)
+      const remaining = getMissingAutoDiscoveryModels(models).length
+      if (remaining === 0) {
+        consola.info("[auto-session] target models missing=0")
+        return
+      }
+      await probeSleep(TARGET_PROBE_INTERVAL_MS)
+    }
+  }
+  const remaining = getMissingAutoDiscoveryModels(models).length
+  if (remaining !== lastMissingCount) {
+    consola.info(`[auto-session] target models missing=${remaining}`)
+  }
+}
+
+export const parseAutoDiscoveryModels = (value: unknown): Array<string> => {
+  if (value === undefined) return []
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new TypeError("autoDiscovery must be an object")
+  }
+  const models = "models" in value ? value.models : undefined
+  if (models === undefined) return []
+  if (
+    !Array.isArray(models)
+    || models.some(
+      (model: unknown) => typeof model !== "string" || !model.trim(),
+    )
+  ) {
+    throw new TypeError("autoDiscovery.models must contain nonempty model IDs")
+  }
+  return [...new Set<string>(models)]
+}
+
+const getConfiguredTargetModels = (): Array<string> =>
+  parseAutoDiscoveryModels(getConfig().autoDiscovery)
+
+const startTargetDiscovery = (
+  models: Array<string>,
+  after: Promise<unknown> = Promise.resolve(),
+): void => {
+  if (models.length === 0 || probeSchedulerStopped || targetProbeRound) return
+  const startedToken = state.copilotToken
+  targetProbeRound = after
+    .then(() => discoverTargets(models))
+    .finally(() => {
+      targetProbeRound = undefined
+      if (!probeSchedulerStopped && state.copilotToken !== startedToken) {
+        startTargetDiscovery(getConfiguredTargetModels())
+      }
+    })
 }
 
 interface PrewarmOptions {
@@ -553,6 +646,7 @@ export const prewarmAutoSession = async ({
   sourceRoot,
   startupBudgetMs,
 }: PrewarmOptions = {}): Promise<void> => {
+  const targetModels = getConfiguredTargetModels()
   // 未完成点按"待处理"口径统计：四档×两点全部先计入，
   // 每个点成功登记时即时扣减，预算到期打快照即为剩余未完成点数；
   // 终止失败/无法取样的点自然维持待处理
@@ -603,15 +697,14 @@ export const prewarmAutoSession = async ({
   }
 
   const logDiscovery = (label: "complete" | "snapshot"): void => {
-    consola.info(
-      `[auto-session] discovery ${label} models=${[...pairings.keys()].sort().join(",")} incomplete=${incomplete}`,
-    )
+    consola.info(`[auto-session] discovery ${label} incomplete=${incomplete}`)
   }
 
   discoveryRan = true
   discoveryToken = state.copilotToken
   latestProbeRound = Promise.all(STARTUP_TIERS.map(probeTierPair))
   const probes = latestProbeRound
+  startTargetDiscovery(targetModels, probes)
   if (startupBudgetMs === undefined) {
     await probes
     logDiscovery("complete")
@@ -651,6 +744,10 @@ export const isModelAutoCovered = (model: string): boolean => {
   )
 }
 
+export const getMissingAutoDiscoveryModels = (
+  models: ReadonlyArray<string>,
+): Array<string> => models.filter((model) => !isModelAutoCovered(model))
+
 const colorAutoSessionEvent = (event: "hit" | "miss"): string => {
   if (!shouldUseColor()) return event
   const colorCode = event === "hit" ? 92 : 93
@@ -683,13 +780,15 @@ export const getAutoSessionTokenForModel = async (
   }
 
   if (!isUsable(pairing)) {
-    // 曾有来源的过期配对：第一次 miss 删掉该模型的失效配对与旧刷新
-    // 定时器（不动其它模型），按记录来源异步补采；runProbePoint 单飞
-    // 保证并发 lookup 只发一次 /auto，此时正常请求仍无 token 继续
+    // 过期配对按配置目标的共享循环或原有来源补采；正常请求继续无 token。
     const source = pairingSources.get(model)
     pairings.delete(model)
     clearRefreshTimer(model)
-    if (source !== undefined && !probeSchedulerStopped) {
+    const targets = getConfiguredTargetModels()
+    if (targets.includes(model) && !probeSchedulerStopped) {
+      consola.info(`[auto-session] expired model=${model} re-probe`)
+      startTargetDiscovery(targets)
+    } else if (source !== undefined && !probeSchedulerStopped) {
       consola.info(`[auto-session] expired model=${model} re-probe`)
       void runProbePoint(source.tier, source.kind, source.prompt)
     } else {

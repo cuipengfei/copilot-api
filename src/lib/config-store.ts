@@ -48,6 +48,7 @@ export interface AppConfig {
   // their current provider. Leave empty to disable (default).
   claudeAutoModel?: string
   claudeTokenMultiplier?: number
+  autoDiscovery?: { models?: Array<string> }
 }
 
 export interface SmallModelsConfig {

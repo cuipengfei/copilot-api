@@ -64,7 +64,7 @@ afterEach(() => {
 })
 
 describe("auto-session logging", () => {
-  test("logs discovery summary with deduped model ids and incomplete count", async () => {
+  test("logs discovery incomplete probe count", async () => {
     ;(
       globalThis as unknown as {
         __AUTO_SESSION_QUEUE__: Array<AutoSelectionResponse>
@@ -75,9 +75,9 @@ describe("auto-session logging", () => {
 
     await prewarmAutoSession()
 
-    // 仅 1 个探测点成功，其余 7 个未完成；日志只含去重模型 ID 与数量
+    // 仅 1 个探测点成功，其余 7 个未完成；日志只报告数量
     expect(infoSpy).toHaveBeenCalledWith(
-      "[auto-session] discovery complete models=gpt-5.3-codex incomplete=7",
+      "[auto-session] discovery complete incomplete=7",
     )
   })
 

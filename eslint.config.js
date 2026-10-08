@@ -12,7 +12,14 @@ const configDir = dirname(fileURLToPath(import.meta.url))
 
 export default defineConfig(
   {
-    ignores: ["plugin/**", "desktop/**", ".claude/**", ".omx/**", ".agents/**"],
+    ignores: [
+      "plugin/**",
+      "desktop/**",
+      ".claude/**",
+      ".omx/**",
+      ".agents/**",
+      ".scratch/**",
+    ],
   },
   { linterOptions: { reportUnusedDisableDirectives: "off" } },
   gitignore(),

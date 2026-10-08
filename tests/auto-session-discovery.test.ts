@@ -481,7 +481,7 @@ test("terminal probe failures log minimal diagnosable status without prompt, sou
       .map((call) => String(call[0]))
       .filter((line) => line.includes("probe failed"))
     expect(pendingLines.some((line) => line.includes("http 400"))).toBe(true)
-    expect(failedLines.some((line) => line.includes("Error"))).toBe(true)
+    expect(failedLines).toHaveLength(1)
     for (const line of [...pendingLines, ...failedLines]) {
       expect(line).not.toContain("hello")
       expect(line).not.toContain("export const")
@@ -527,7 +527,6 @@ test("insufficient source reports incomplete and normal request path stays usabl
     expect(mod.isModelAutoCovered("only-easy")).toBe(true)
     expect(mod.isModelAutoCovered("only-hard")).toBe(false)
     const line = discoveryLogLine(infoSpy)
-    expect(line).toContain("models=only-easy")
     expect(line).toContain("incomplete=4")
     // 请求路径仍可用（命中已注册配对）
     expect(
@@ -538,16 +537,17 @@ test("insufficient source reports incomplete and normal request path stays usabl
   }
 })
 
-test("discovery log lists deduped model ids without tiers, prompts, source or tokens", async () => {
+test("discovery log reports only incomplete probe count without model IDs, tiers, prompts, source or tokens", async () => {
   const mod = await loadAutoSessionModule()
   const infoSpy = spyOn(consola, "info")
   installRouter(() => okSelection("shared-model", "secret-session-token"))
 
   await mod.prewarmAutoSession()
+  expect(mod.isModelAutoCovered("shared-model")).toBe(true)
 
   const line = discoveryLogLine(infoSpy)
-  expect(line).toContain("models=shared-model")
-  expect(line).toContain("incomplete=0")
+  expect(line).toBe("[auto-session] discovery complete incomplete=0")
+  expect(line).not.toContain("shared-model")
   expect(line).not.toContain("secret-session-token")
   expect(line).not.toContain("hello")
   for (const tier of TIERS) {
