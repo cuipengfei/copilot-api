@@ -106,6 +106,6 @@
 
 已新增 10 项补采回归测试，覆盖缺凭据、非法配置、并发共享等待、超时后台继续、凭据轮换与迟到结果、重复停止、不同模型配对隔离、过期目标、endpoint 与 metadata 就绪检查。测试沿用正常上游 mock，实际会话模块代码未替换。
 
-用户已接受当前 Bun 1.4.2 的已知覆盖统计限制：不同 query URL 重复加载同一模块时，覆盖记录只保留最后实例（官方 issue https://github.com/oven-sh/bun/issues/35345，修复 PR https://github.com/oven-sh/bun/pull/43158）。本次保留现有 Bun 和测试隔离方式，不安装其他版本、不改造测试组织、不拼接覆盖报告。73.08% Funcs / 49.01% Lines 保留为受该缺陷影响的原始输出；真实覆盖率及 85% 达标情况尚未验证，覆盖率验收处于受阻状态。诊断已完成，测试隔离未修改，已有行为测试与真实 smoke 证据保持有效。
+覆盖率验收已通过：Bun 1.4.3 修复了不同 query URL 重复加载同一模块时仅统计最后实例的问题（官方 issue https://github.com/oven-sh/bun/issues/35345，修复 PR https://github.com/oven-sh/bun/pull/43158）。保持原有测试隔离方式运行完整 `bun test --isolate --coverage`，退出码 0，2006 项测试通过、零失败；`auto-session.ts` 为 98.51% Funcs / 96.11% Lines，`auto-probe-prompts.ts` 为 100% / 100%，均超过 85%。完整日志与退出码保存在 `/tmp/copilot-bun143-coverage-jokUXP/`。
 
 五个新输入条件及 Mai Code 1.1 Flash 的额外覆盖配置仍为未实施提案。成功来源继续保存在进程内存中，不新增持久化题库。

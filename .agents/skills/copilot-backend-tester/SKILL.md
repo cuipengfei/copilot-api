@@ -1,6 +1,6 @@
 ---
 name: copilot-backend-tester
-description: "Use when testing GitHub Copilot upstream APIs directly, listing Auto models, comparing proxy and upstream responses, or probing usage/account endpoints; trigger on requests mentioning Copilot backend, /models/session, Auto models, /copilot_internal/user, curl Copilot, or real backend usage."
+description: "Use when testing GitHub Copilot upstream APIs directly, probing Auto model variety via POST /auto, comparing proxy and upstream responses, or checking usage/account endpoints; trigger on requests mentioning Copilot backend, /auto, Auto 选模, Auto 模型多样性, /v1/messages, /chat/completions, /copilot_internal/user, curl Copilot, or real backend usage."
 ---
 
 # Copilot 后端测试
@@ -10,135 +10,119 @@ description: "Use when testing GitHub Copilot upstream APIs directly, listing Au
 ## 目标边界
 
 - 区分本地代理、Copilot 上游和 GitHub usage API 三个层次。
-- Auto 模型列表以同一实例的上游 `POST /models/session` 响应为准。
-- 不把 `/v1/models`、本地模型缓存或模型命名规则当作 Auto 列表。
+- Auto 本次可选模型以同一实例的上游 `POST /auto` 响应为准。
+- 不把 `/v1/models`、本地模型缓存或模型命名规则当作 Auto 结果。
 - 不猜模型名、账户类型、版本号、端点或响应字段；从运行进程、仓库源码和本次响应读取。
 - 所有报告脱敏：不得打印 GitHub token、Copilot token、session token 或完整 Authorization header。
 
-## 同类任务的最快路径：列出 Auto 模型
+## 同类任务的最快路径：Auto 多样性探测
 
-用户要求“现在有哪些 Auto 模型”时，按以下顺序执行：
+用户问“现在有哪些 Auto 模型”“Auto 这次能选到什么”时，主流程就是一次 `--variety` 探测。
 
 1. **盘点运行实例**
 
    ```bash
    ss -tlnp
-   ps -eo pid=,args=
+   ps -eo pid,args
    ```
 
-   选择两个或三个当前运行的 `src/main.ts start` 实例，记录端口、账户参数和进程 PID。不要假定端口一定是 `4141`、`4142` 或 `4146`。
+   默认选一个当前运行的 `src/main.ts start` 实例；只有用户明确要求多实例时才逐一探测。记录端口、账户参数和 PID。展示进程参数时不得输出 `-g/--github-token` 的值，也不要假定端口一定是 `4141`、`4142` 或 `4146`。
 
-   完成条件：候选实例、PID、端口和账户参数已记录，且所有 token 字段已脱敏。
+   完成条件：选中实例的 PID、端口和账户参数已记录，token 字段已脱敏。
 
-2. **按仓库认证链路获取 token**
-
-   使用脚本：
+2. **运行 variety 探测**
 
    ```bash
-   bun .agents/skills/copilot-backend-tester/scripts/test-auto-route.mjs \
+   bun .agents/skills/copilot-backend-tester/scripts/test-auto-select.mjs \
      --proxy-url http://localhost:<PORT> \
-     --list-models
+     --variety
    ```
 
-   脚本遵循仓库 `start.ts` 的凭据优先级：选定进程的 `-g/--github-token`、`COPILOT_API_GITHUB_TOKEN` 环境变量、仓库 credential store 文件。然后复现 `getCopilotToken()`：
+   账户明确为 business 时加 `--business`；不假定端口、账户或固定模型。
 
-   ```text
-   GET https://api.github.com/copilot_internal/v2/token
-   → response.token
-   → response.endpoints.api
-   ```
+   完成条件：脚本输出纯 JSON 结果。
 
-   `response.endpoints.api` 是该 token 的路由权威来源。不要调用不存在的本地 `/token` 端点，也不要把 GitHub token 直接当作 Copilot token。
+`--variety` 的约定：
 
-   完成条件：同一实例已得到可用的 Copilot token 和上游 endpoint，且 token 原值未进入输出。
+- 12 个题目一次顺序请求 `/auto`，无重试，全程 AbortSignal，总预算最多 60 秒（含一次 token exchange 认证）。12 是请求预算上限，不是发现成功的标准：12 条全部成功也不等于发现了全部可选模型，只报告本次观测到的并集。
+- 题目来自脚本内置的固定探测题（`src/lib/auto-probe-prompts.ts`）和运行仓库源码的真实 100 行片段（`sampleHardSnippet()`，源码 root、窗口行数等常量与 `src/lib/auto-session.ts` 运行时一致）：仅内存组合，无 SQLite/题库文件/多轮生成。
+- 12 题顺序：`task-correctness`（intelligence）第 1，随后 hello（efficiency）、极短 hi（fast）、URL 任务（balance、fast 各一）、真实 100 行源码 + HARD_QUESTION 四档每档独立取样，最后行为说明（intelligence）、功能修改（balance）、并发调查（intelligence）。优先探测 Astra 的历史有效条件：P6 完整跨文件上下文、端到端正确性分析任务与 `intelligence`。该条件曾选中 Astra，另一个时间窗口未选中；实际选模随时间变化。
+- 四个 task 题共用同一完整跨文件上下文：`src/lib/request-auth.ts`、`src/server.ts`、`src/lib/config.ts`、`tests/request-auth.test.ts`（前三个相对探测用 `sourceRoot` 读取，tests 从 `sourceRoot` 的兄弟目录 `tests` 读取；完整读入并保留末尾换行）。任务措辞与文件集保持稳定以便跨轮比较；每轮从当前文件重新构造，内容随源码变化；保留历史任务与文件集，不声明精确重放旧字节。
+- 出处与追溯：hard 题只记录 `source`（`file`/`startLine`/`lineCount`，`lineCount` 恒为 100）；跨文件 task 题记录 `sources` 数组（每文件 `file`/`startLine: 0`/`lineCount` 为文件实际行数，路径统一相对 `REPO_ROOT`，repo 外 fixture 呈 `../` 前缀）。所有题带 `prompt_sha256`（题目正文的 SHA-256 hex）供跨轮比对；不打印题目正文与源码内容。
+- 不预设选中模型；目标是尽可能发现本次可选模型。不声称观察到的是完整 available 名单；某模型本次未出现不等于已下架或不可用。
 
-3. **调用仓库使用的 Auto session**
+结果 JSON 形状：
 
-   对上一步得到的 Copilot endpoint 发送：
-
-   ```http
-   POST /models/session
-   Content-Type: application/json
-   Authorization: Bearer <Copilot token>
-   ```
-
-   请求体必须是：
-
-   ```json
-   {"auto_mode":{"model_hints":["auto"]}}
-   ```
-
-   请求头应跟随 `src/lib/api-config.ts` 的 `copilotModelsHeaders()`：当前 `COPILOT_VERSION`、VS Code fallback、`x-github-api-version`、`editor-device-id`、`x-vscode-user-agent-library-version` 等值从源码或 helper 动态取得，不复制旧常量。
-
-   完成条件：请求返回可解析 JSON，且 HTTP 状态、响应 headers 和实例归属已记录。
-
-4. **只从 `available_models` 得出列表**
-
-   记录每个实例的：
-
-   - 观测时间（UTC）
-   - 代理端口、PID、账户类型和上游 host
-   - HTTP 状态
-   - `available_models` 原始顺序和排序后的去重集合
-   - `selected_model`、`expires_at` 是否存在
-
-   不把顺序当作规则，不把 `selected_model` 当作永久默认值，不把一次探针结果写成静态配置。
-
-   完成条件：每个实例都有原始顺序、排序去重集合和字段存在性记录。
-
-5. **交叉检查**
-
-   对多个实例重复同一请求。只有在实例之间集合相同，才能报告“本次探测集合一致”；若不同，按实例分别报告。将 `/v1/models` 结果单独标为兼容层模型列表。
-
-   完成条件：已明确报告集合是否一致，并把 `/v1/models` 与 Auto 结果分开。
-
-## Auto intent 与最终请求
-
-`/models/session/intent` 是“本次 prompt 最终选择哪个模型”的额外后端探针，不是列出 Auto 可用模型的必要步骤。
-
-只有用户明确询问 `chosen_model`、Auto 是否能完成一条 prompt 或需要复现后端路由时才继续：
-
-1. 使用同一次 `/models/session` 返回的 `session_token`。
-2. 将同一次响应的 `available_models` 原样放入 intent 请求。
-3. 带 `Copilot-Session-Token`，不得跨实例或跨 token 复用。
-4. 记录 `chosen_model`、候选集和最终请求 HTTP 状态。
-5. 按当前模型元数据的 `supported_endpoints` 选择 `/v1/messages`、`/responses` 或 `/chat/completions`；不能只凭模型名猜端点。
-
-`test-auto-route.mjs --list-models` 只做 session 列表；`--skip-final` 可做 session + intent；默认最终请求仍使用同一 session token。
-
-完成条件：若运行 intent，`chosen_model` 与最终 HTTP 状态来自同一 session，且没有跨实例复用 token。
-
-## Auto V2（`/auto` 选模与折扣）
-
-`test-auto-select.mjs` 探测 VS Code GUI Auto 使用的 `POST /auto`：一次请求直接返回 `selected_model`、`session_token`、`expires_at`、`discounted_costs` 和 `hydra_scores`。它与旧 `/models/session` 探针互为补充，不替代：`/models/session` 是候选池列表，`/auto` 是本次选模结果；`/models` 响应里的 `billing.auto_discount` 字段不等于 Auto 候选池。
-
-```bash
-# 单档选模（默认 balance）
-bun .agents/skills/copilot-backend-tester/scripts/test-auto-select.mjs \
-  --proxy-url http://localhost:<PORT> \
-  --tier efficiency
-
-# 四档全部探测
-bun .agents/skills/copilot-backend-tester/scripts/test-auto-select.mjs \
-  --proxy-url http://localhost:<PORT> \
-  --tier all
+```json
+{
+  "observed_at": "<UTC 时间>",
+  "proxy_url": "http://localhost:<PORT>",
+  "upstream": "<token exchange 返回的 endpoints.api>",
+  "account": "business",
+  "account_source": "expectation",
+  "complete": true,
+  "stop_reason": null,
+  "auto_requests": 12,
+  "results": [
+    {
+      "prompt_id": "task-correctness",
+      "tier": "intelligence",
+      "status": 200,
+      "selected_model": "<模型 ID>",
+      "supported_endpoints": ["<端点>"],
+      "sources": [
+        { "file": "src/lib/request-auth.ts", "startLine": 0, "lineCount": "<文件实际行数>" },
+        { "file": "src/server.ts", "startLine": 0, "lineCount": "<文件实际行数>" },
+        { "file": "src/lib/config.ts", "startLine": 0, "lineCount": "<文件实际行数>" },
+        { "file": "tests/request-auth.test.ts", "startLine": 0, "lineCount": "<文件实际行数>" }
+      ],
+      "prompt_sha256": "<题目正文的 SHA-256 hex>"
+    },
+    {
+      "prompt_id": "hard-efficiency",
+      "tier": "efficiency",
+      "status": 200,
+      "selected_model": "<模型 ID>",
+      "supported_endpoints": ["<端点>"],
+      "source": { "file": "<仓库内路径>", "startLine": 0, "lineCount": 100 },
+      "prompt_sha256": "<题目正文的 SHA-256 hex>"
+    }
+  ],
+  "observed_models": ["<排序去重后的模型 ID>"],
+  "expected_cases": 12
+}
 ```
+- 跨文件 task 题的 `sources` 恒为上述 4 项；hard 题用单数 `source`。
+- `account` 按 CLI 取 `business`（`--business`）或 `individual`；`account_source` 固定 `expectation`，只是预期值，不能称已验证。账户归属仍以核实的选定实例启动参数为准。
+- `status` 为 HTTP 状态码，失败无响应时为 `null`。`source.startLine`/`sources[].startLine` 为零起点；hard 的 `lineCount` 固定 100，跨文件 task 的 `lineCount` 为文件实际行数；`prompt_sha256` 供跨轮比对追溯。给用户指出阅读位置时可转为一基显示。
+- `supported_endpoints` 缺失时该字段按 `null` 记录并继续后续题目，不视为该题失败。
 
-可用 `--business`、`--prompt` 和 `--show-headers`。`--with-inference` 会用同一次 `/auto` 的 `session_token` 向 `selected_model.supported_endpoints` 的第一个非 WebSocket 端点发送最小请求，产生真实计费，仅在需要验证生成链路时使用。
+- 无 `selected_model` 的条件不算成功。`stop_reason` 非空时是部分结果（`complete: false`、`stop_reason` 为停止原因），已拿到的结果与停止原因必须原样可见；token exchange 失败时记录其实际 HTTP 状态。
+- `auto_requests` 是实际 `/auto` 请求数；token exchange 认证请求数另列，不计入。
 
-版本要求：2026-10-07 实测 `/auto` 只接受 `X-GitHub-Api-Version: 2026-08-01`，旧版本返回 404 `bad request: error: invalid apiVersion?`。版本值由 `copilot-auth.mjs` 从 `src/lib/api-config.ts` 运行时读取。请求还带 CAPI 0.5.x 客户端身份头（`VScode-SessionId`、`VScode-MachineId`，每次运行生成合成 UUID）。
+单次选模能力保留：`--tier <efficiency|balance|intelligence|fast|all>` 与 `--prompt <任意题目>` 仍可单独使用。`--variety` 与 `--prompt`、`--tier`、`--with-inference`、`--show-headers` 互斥。
+
+`--with-inference` 会用同一次 `/auto` 的 `session_token` 向 `selected_model.supported_endpoints` 的第一个非 WebSocket 端点发送最小请求，产生真实计费；只在用户明确要求验证生成链路时使用，不得与 `--variety` 同开。
+
+认证失败或上游返回 401/403/429 时立即停止：不换账号、不重试，报告已拿到的部分结果与实际状态码。
 
 ## 认证分层
 
 ### Copilot 后端
 
-用于 `/models/session`、`/v1/messages`、`/responses`、`/chat/completions`：
+用于 `/auto`、`/v1/messages`、`/responses`、`/chat/completions`：
 
 ```text
 GET https://api.github.com/copilot_internal/v2/token (GitHub token)
 → Copilot token → Authorization: Bearer <Copilot token>
 → endpoints.api 决定后续 host（business 或 individual）
 ```
+
+token exchange 返回的 `endpoints.api` 是该 token 的路由权威来源；账户以核实的选定实例启动参数为准，脚本只知道预期值（如 `--business`）时明确标注为 expectation，不由 hostname 推断。不要调用不存在的本地 `/token` 端点，也不要把 GitHub token 直接当作 Copilot token。
+
+脚本的 GitHub token 来源优先级：选定运行进程的 `-g/--github-token` → 执行脚本自身的 `COPILOT_API_GITHUB_TOKEN` 环境变量 → 仓库 credential 文件。脚本读取的是自身进程环境，不是运行实例的 `/proc/<pid>/environ`；其次为脚本自身 env，最后为 credential 文件。
+
+session 计费未经核实，不得声称 `/auto` 会话免费。
 
 ### GitHub usage API
 
@@ -183,61 +167,34 @@ bun .agents/skills/copilot-backend-tester/scripts/test-chat-completions.mjs \
   --prompt "Reply with exactly: hi"
 ```
 
-### Auto（旧 session 链路）
-
-```bash
-# 只列出 Auto session 的 available_models
-bun .agents/skills/copilot-backend-tester/scripts/test-auto-route.mjs \
-  --proxy-url http://localhost:<PORT> \
-  --list-models
-
-# 解析 chosen_model，但不发送最终 prompt
-bun .agents/skills/copilot-backend-tester/scripts/test-auto-route.mjs \
-  --proxy-url http://localhost:<PORT> \
-  --skip-final \
-  --prompt "Reply with exactly: hi"
-
-# 解析并发送最终请求
-bun .agents/skills/copilot-backend-tester/scripts/test-auto-route.mjs \
-  --proxy-url http://localhost:<PORT> \
-  --prompt "Reply with exactly: hi"
-```
-
-可用 `--business`、`--show-headers` 和 `--max-output`。`--business` 只用于选择/校验账户分支；token exchange 返回的 `endpoints.api` 优先。
-
 ## 版本和 headers
 
-版本不是 skill 的静态事实。修改或排查 header 时先读：
+版本不是 skill 的静态事实。请求头与身份常量（`COPILOT_VERSION`、`API_VERSION`、`x-github-api-version`、VS Code fallback、编辑器身份头）由 `copilot-auth.mjs` 运行时从仓库源码读取，每次探针取当前值；不要把某次读取结果复制为永久默认值。
 
-- `src/lib/api-config.ts`
-  - `COPILOT_VERSION`
-  - Copilot `API_VERSION`
-  - `copilotModelsHeaders()`
-  - `githubHeaders()`
-- `src/services/get-vscode-version.ts`
-  - VS Code fallback
-- `src/services/github/get-copilot-token.ts`
-  - `/copilot_internal/v2/token`
-- `src/services/copilot/get-models-session.ts`
-  - `/models/session` body 和错误处理
-- `src/lib/auto-session.ts`
-  - `available_models` 缓存、过期和 token 绑定
+修改或排查选模与 header 行为时先读：
 
-如需说明“仓库当前值”，引用读取时的源码值和观测结果；不要把本次值复制为永久默认值。
+- `src/services/copilot/get-auto-selection.ts` — `POST /auto` 请求体、tier 参数和响应解析
+- `src/lib/auto-probe-prompts.ts` — 固定探测题目（hello、HARD_QUESTION、URL 任务）
+- `src/lib/auto-session.ts` — 进程内存 session 配对、预热/刷新/过期、`sampleHardSnippet()` 真实片段采样
+- `src/services/get-vscode-version.ts` — VS Code fallback
+- `src/services/github/get-copilot-token.ts` — `/copilot_internal/v2/token`
+
+如需说明“仓库当前值”，引用读取时的源码值和观测结果。
 
 ## 结果报告契约
 
-先给结论，再给证据。至少包含：
+先给结论，再给证据。Auto 多样性探测的报告至少包含：
 
 ```text
-结论：<本次探针得到的 Auto 模型集合/实例差异>
-观测：<UTC 时间、端口、PID、账户类型、上游 host>
-session：HTTP <状态>，available_models=<...>，selected_model=<...>
-交叉检查：<各实例集合是否一致>
-限制：<未探测的实例、失败请求或未验证字段>
+结论：<本次观测到的可选模型集合>
+观测：<UTC 时间、端口、PID、账户、上游 host>
+matrix：<12 个条件逐一列出 prompt_id、tier、status、selected_model、source 或 sources(file:startLine)、prompt_sha256>
+请求数：auto=<实际 /auto 请求数>，token exchange=<认证请求数，另列>
+限制：<失败条件、未确认可选的模型、stop_reason>
 ```
 
-报告中禁止出现 token、session token、完整 Authorization header、完整私密响应。失败时报告实际状态码和脱敏错误类别，不用“应该”“大概”“可能支持”替代探针。
+- `observed_models` 只报告为“本次观测到的可选模型”，是本次观测到的并集；未出现在并集中的模型不能断定不可用。`/v1/models` 结果单独标为静态兼容层模型列表，不与 Auto 观测混同。
+- 报告中禁止出现 token、session token、完整 Authorization header、完整私密响应。失败时报告实际状态码和脱敏错误类别，不用“应该”“大概”“可能支持”替代探针。
 
 ## 代理与上游差异调查
 
@@ -255,8 +212,8 @@ session：HTTP <状态>，available_models=<...>，selected_model=<...>
 ## 常见失败与处理
 
 - `/token` 为 `404`：这是旧入口，不是后端模型不可用；改走 token exchange。
-- `available_models` 为空或字段缺失：保存 HTTP 状态和脱敏 body，先确认 token、endpoint 与实例没有混用。
-- `Missing/Invalid Copilot-Session-Token`：重新获取同实例的 session，不复用旧 token。
+- `/auto` 返回 `401`/`403`/`429`：立即停止，不换账号、不重试，报告部分结果与实际状态码。
+- `selected_model` 为空或字段缺失：记录实际 HTTP 状态与脱敏错误类别，先确认 token、endpoint 与实例没有混用。
 - `421 Misdirected Request`：token 的 `endpoints.api` 与手工指定 host 不一致；以 token exchange 路由为准。
 - usage API `401`：检查是否误用了 Copilot token。
-- Auto 列表与 `/v1/models` 不一致：这是两个不同事实层，分别报告。
+- Auto 结果与 `/v1/models` 不一致：这是两个不同事实层，分别报告。

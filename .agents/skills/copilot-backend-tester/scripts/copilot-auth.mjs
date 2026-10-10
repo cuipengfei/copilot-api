@@ -90,7 +90,10 @@ function resolveGithubToken(proxyUrl) {
   return token
 }
 
-export async function copilotAuthInit(proxyUrl, expectedAccount) {
+export async function copilotAuthInit(proxyUrl, options) {
+  // options: legacy expectedAccount string, or { expectedAccount, signal }.
+  const expectedAccount = typeof options === "string" ? options : options?.expectedAccount
+  const signal = typeof options === "string" ? undefined : options?.signal
   const copilotVersion = readSourceConst("COPILOT_VERSION", "src/lib/api-config.ts")
   const vscodeVersion = readSourceConst("FALLBACK", "src/services/get-vscode-version.ts")
   const apiVersion = readSourceConst("API_VERSION", "src/lib/api-config.ts")
@@ -105,10 +108,13 @@ export async function copilotAuthInit(proxyUrl, expectedAccount) {
       "x-github-api-version": githubApiVersion,
       "x-vscode-user-agent-library-version": "electron-fetch",
     },
+    signal,
   })
 
   if (!exchange.ok) {
-    throw new Error(`Copilot token exchange failed (HTTP ${exchange.status})`)
+    const error = new Error(`Copilot token exchange failed (HTTP ${exchange.status})`)
+    error.status = exchange.status
+    throw error
   }
 
   const exchangeBody = await exchange.json()
