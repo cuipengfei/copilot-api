@@ -1,6 +1,11 @@
 import type { Server } from "bun"
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { afterEach, beforeEach, expect, test } from "bun:test"
 
+import { invalidateConfigCache, reloadConfig } from "~/lib/config-store"
+import { PATHS } from "~/lib/paths"
 import {
   invalidateAutoSession,
   isModelAutoCovered,
@@ -38,6 +43,9 @@ const originalState = {
 let server: Server<undefined>
 let serverUrl: string
 let originalOauthApp: string | undefined
+const originalConfigPath = PATHS.CONFIG_PATH
+let tempConfigDir: string
+
 // 本地 /auto 请求计数；补采请求必须全部落在 127.0.0.1 本地服务
 let autoRequestCount = 0
 let originalFetch: typeof fetch
@@ -50,6 +58,11 @@ const responseDefaults = {
 }
 
 beforeEach(() => {
+  // 使用临时配置隔离用户目标清单，清理时恢复路径与配置缓存。
+  tempConfigDir = mkdtempSync(join(tmpdir(), "token-metadata-apply-"))
+  PATHS.CONFIG_PATH = join(tempConfigDir, "config.json")
+  writeFileSync(PATHS.CONFIG_PATH, "{}")
+  reloadConfig()
   originalOauthApp = process.env.COPILOT_API_OAUTH_APP
   delete process.env.COPILOT_API_OAUTH_APP
 
@@ -112,18 +125,27 @@ beforeEach(() => {
 afterEach(async () => {
   // 先等在途补采/探测全部结算，再恢复 state、关闭本地 server：
   // 否则在途 /auto 会失去本地服务并可能泄漏到真实上游
-  await whenProbeSchedulerIdle()
-  globalThis.fetch = originalFetch
-  // 越界请求必须为零：任何非本地 /auto 请求都说明补采门检失效
-  expect(blockedRequestCount).toBe(0)
-  Object.assign(state, originalState)
-  stopCopilotRefreshLoop()
-  await server.stop(true)
-  invalidateAutoSession()
-  if (originalOauthApp === undefined) {
-    delete process.env.COPILOT_API_OAUTH_APP
-  } else {
-    process.env.COPILOT_API_OAUTH_APP = originalOauthApp
+  try {
+    await whenProbeSchedulerIdle()
+    // 越界请求必须为零：任何非本地 /auto 请求都说明测试隔离失效。
+    expect(blockedRequestCount).toBe(0)
+  } finally {
+    globalThis.fetch = originalFetch
+    Object.assign(state, originalState)
+    stopCopilotRefreshLoop()
+    try {
+      await server.stop(true)
+    } finally {
+      invalidateAutoSession()
+      if (originalOauthApp === undefined) {
+        delete process.env.COPILOT_API_OAUTH_APP
+      } else {
+        process.env.COPILOT_API_OAUTH_APP = originalOauthApp
+      }
+      PATHS.CONFIG_PATH = originalConfigPath
+      invalidateConfigCache()
+      rmSync(tempConfigDir, { recursive: true, force: true })
+    }
   }
 })
 

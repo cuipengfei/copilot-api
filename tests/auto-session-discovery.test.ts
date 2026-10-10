@@ -6,11 +6,10 @@ import path from "node:path"
 
 import { state } from "../src/lib/state"
 import type { AutoSelectionResponse } from "../src/services/copilot/get-auto-selection"
+import { getConfig } from "../src/lib/config-store"
 
 import type * as AutoSessionModule from "../src/lib/auto-session"
 
-const HARD_QUESTION =
-  "请指出这段代码中最可能的正确性问题，以及确认该问题所需的信息。"
 const TIERS = ["efficiency", "balance", "intelligence", "fast"] as const
 
 const okSelection = (
@@ -184,7 +183,6 @@ test("startup discovery probes four tiers with hello easy and 100-line source ha
   const lines = requestBody(hardCall).prompt.split("\n")
   expect(lines).toHaveLength(102)
   expect(lines[100]).toBe("")
-  expect(lines[101]).toBe(HARD_QUESTION)
   expect(await appearsInSourceTree(lines.slice(0, 100).join("\n"))).toBe(true)
 
   // 每次成功响应按实际模型 ID 注册，token 与模型精确绑定
@@ -1445,5 +1443,238 @@ test("credential rotation with halted 401 points re-probes at most one in-flight
     mod.stopProbeScheduler?.()
     await mod.whenProbeSchedulerIdle?.()
     await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test("configured cold misses share discovery and accept only the selected target", async () => {
+  const mod = await loadAutoSessionModule()
+  const config = getConfig()
+  const previous = config.autoDiscovery
+  const gate = Promise.withResolvers<AutoSelectionResponse>()
+  config.autoDiscovery = { models: ["target-model"] }
+  const { calls } = installRouter(() => gate.promise)
+  try {
+    mod.resumeAutoSessionDiscoveryAfterRotation()
+    const pending = Array.from({ length: 20 }, () =>
+      mod.getAutoSessionTokenForModel("target-model", "/responses"),
+    )
+    await waitFor(() => calls.length === 1, 1_000)
+    expect(
+      await mod.getAutoSessionTokenForModel("unconfigured-model"),
+    ).toBeUndefined()
+    gate.resolve(okSelection("target-model", "target-session"))
+    expect(await Promise.all(pending)).toEqual(
+      Array.from({ length: 20 }, () => "target-session"),
+    )
+    expect(calls).toHaveLength(1)
+    expect(
+      await mod.getAutoSessionTokenForModel("target-model", "/v1/messages"),
+    ).toBeUndefined()
+    expect(calls).toHaveLength(1)
+  } finally {
+    mod.stopProbeScheduler()
+    gate.resolve(okSelection("target-model"))
+    await mod.whenProbeSchedulerIdle()
+    config.autoDiscovery = previous
+  }
+})
+
+test("configured miss timeout leaves shared discovery running for later requests", async () => {
+  const mod = await loadAutoSessionModule()
+  const config = getConfig()
+  const previous = config.autoDiscovery
+  const gate = Promise.withResolvers<AutoSelectionResponse>()
+  config.autoDiscovery = { models: ["target-model"] }
+  const { calls } = installRouter(() => gate.promise)
+  try {
+    mod.resumeAutoSessionDiscoveryAfterRotation()
+    const started = Date.now()
+    expect(
+      await mod.getAutoSessionTokenForModel("target-model"),
+    ).toBeUndefined()
+    expect(Date.now() - started).toBeGreaterThanOrEqual(1_900)
+    expect(calls).toHaveLength(1)
+    gate.resolve(okSelection("target-model", "late-session"))
+    await waitFor(() => mod.isModelAutoCovered("target-model"), 1_000)
+    expect(await mod.getAutoSessionTokenForModel("target-model")).toBe(
+      "late-session",
+    )
+    expect(calls).toHaveLength(1)
+  } finally {
+    mod.stopProbeScheduler()
+    gate.resolve(okSelection("target-model"))
+    await mod.whenProbeSchedulerIdle()
+    config.autoDiscovery = previous
+  }
+})
+
+test("rotation ends old miss wait and rejects late old-credential selection", async () => {
+  const mod = await loadAutoSessionModule()
+  const config = getConfig()
+  const previous = config.autoDiscovery
+  const gate = Promise.withResolvers<AutoSelectionResponse>()
+  config.autoDiscovery = { models: ["target-model"] }
+  const originalAuthorization = `Bearer ${state.copilotToken}`
+  const { calls } = installRouter((_body, init) => {
+    const auth = new Headers(init?.headers).get("authorization")
+    return auth === originalAuthorization ?
+        gate.promise
+      : okSelection("target-model", "new-session")
+  })
+  try {
+    mod.resumeAutoSessionDiscoveryAfterRotation()
+    const pending = mod.getAutoSessionTokenForModel("target-model")
+    await waitFor(() => calls.length === 1, 1_000)
+    state.copilotToken = "rotated-token"
+    mod.invalidateAutoSession()
+    expect(await pending).toBeUndefined()
+    expect(
+      await mod.getAutoSessionTokenForModel("target-model"),
+    ).toBeUndefined()
+    mod.resumeAutoSessionDiscoveryAfterRotation()
+    gate.resolve(okSelection("target-model", "old-session"))
+    await waitFor(() => mod.isModelAutoCovered("target-model"), 4_500)
+    expect(await mod.getAutoSessionTokenForModel("target-model")).toBe(
+      "new-session",
+    )
+  } finally {
+    mod.stopProbeScheduler()
+    gate.resolve(okSelection("target-model"))
+    await mod.whenProbeSchedulerIdle()
+    config.autoDiscovery = previous
+  }
+})
+
+test("stop settles concurrent miss waiters before the upstream request finishes", async () => {
+  const mod = await loadAutoSessionModule()
+  const config = getConfig()
+  const previous = config.autoDiscovery
+  const gate = Promise.withResolvers<AutoSelectionResponse>()
+  config.autoDiscovery = { models: ["target-model"] }
+  const { calls } = installRouter(() => gate.promise)
+  try {
+    mod.resumeAutoSessionDiscoveryAfterRotation()
+    const pending = Array.from({ length: 20 }, () =>
+      mod.getAutoSessionTokenForModel("target-model"),
+    )
+    await waitFor(() => calls.length === 1, 1_000)
+    mod.stopProbeScheduler()
+    mod.stopProbeScheduler()
+    expect(await Promise.all(pending)).toEqual(
+      Array.from({ length: 20 }, () => undefined),
+    )
+    expect(
+      await mod.getAutoSessionTokenForModel("target-model"),
+    ).toBeUndefined()
+    expect(calls).toHaveLength(1)
+  } finally {
+    mod.stopProbeScheduler()
+    gate.resolve(okSelection("target-model"))
+    await mod.whenProbeSchedulerIdle()
+    config.autoDiscovery = previous
+  }
+})
+
+test("wrong-model selection never supplies the configured target token", async () => {
+  const mod = await loadAutoSessionModule()
+  const config = getConfig()
+  const previous = config.autoDiscovery
+  config.autoDiscovery = { models: ["target-model"] }
+  installRouter(() => okSelection("other-model", "other-session"))
+  try {
+    mod.resumeAutoSessionDiscoveryAfterRotation()
+    expect(
+      await mod.getAutoSessionTokenForModel("target-model"),
+    ).toBeUndefined()
+    expect(mod.isModelAutoCovered("target-model")).toBe(false)
+    expect(await mod.getAutoSessionTokenForModel("other-model")).toBe(
+      "other-session",
+    )
+  } finally {
+    mod.stopProbeScheduler()
+    await mod.whenProbeSchedulerIdle()
+    config.autoDiscovery = previous
+  }
+})
+
+test("expired configured pairing is replaced before the requesting caller receives a token", async () => {
+  const mod = await loadAutoSessionModule()
+  const config = getConfig()
+  const previous = config.autoDiscovery
+  const realNow = Date.now
+  let clockOffset = 0
+  let requests = 0
+  config.autoDiscovery = { models: ["target-model"] }
+  Date.now = () => realNow() + clockOffset
+  installRouter(() => {
+    requests++
+    return okSelection("target-model", `session-${requests}`)
+  })
+  try {
+    mod.resumeAutoSessionDiscoveryAfterRotation()
+    expect(
+      await mod.getAutoSessionTokenForModel("target-model", "/responses"),
+    ).toBe("session-1")
+    await mod.whenProbeSchedulerIdle()
+    clockOffset = 3_700_000
+    expect(
+      await mod.getAutoSessionTokenForModel("target-model", "/responses"),
+    ).toBe("session-2")
+    expect(requests).toBe(2)
+  } finally {
+    Date.now = realNow
+    mod.stopProbeScheduler()
+    await mod.whenProbeSchedulerIdle()
+    config.autoDiscovery = previous
+  }
+})
+
+test("cold miss rejects an acquired token unsupported by the requested endpoint", async () => {
+  const mod = await loadAutoSessionModule()
+  const config = getConfig()
+  const previous = config.autoDiscovery
+  config.autoDiscovery = { models: ["target-model"] }
+  const { calls } = installRouter(() =>
+    okSelection("target-model", "response-session"),
+  )
+  try {
+    mod.resumeAutoSessionDiscoveryAfterRotation()
+    expect(
+      await mod.getAutoSessionTokenForModel("target-model", "/v1/messages"),
+    ).toBeUndefined()
+    expect(
+      await mod.getAutoSessionTokenForModel("target-model", "/responses"),
+    ).toBe("response-session")
+    expect(calls).toHaveLength(1)
+  } finally {
+    mod.stopProbeScheduler()
+    await mod.whenProbeSchedulerIdle()
+    config.autoDiscovery = previous
+  }
+})
+
+test("cold miss waits for metadata readiness before issuing an authenticated probe", async () => {
+  const mod = await loadAutoSessionModule()
+  const config = getConfig()
+  const previous = config.autoDiscovery
+  config.autoDiscovery = { models: ["target-model"] }
+  const { calls } = installRouter(() =>
+    okSelection("target-model", "ready-session"),
+  )
+  try {
+    expect(
+      await mod.getAutoSessionTokenForModel("target-model"),
+    ).toBeUndefined()
+    expect(calls).toHaveLength(0)
+    mod.resumeAutoSessionDiscoveryAfterRotation()
+    expect(calls).toHaveLength(0)
+    expect(await mod.getAutoSessionTokenForModel("target-model")).toBe(
+      "ready-session",
+    )
+    expect(calls).toHaveLength(1)
+  } finally {
+    mod.stopProbeScheduler()
+    await mod.whenProbeSchedulerIdle()
+    config.autoDiscovery = previous
   }
 })

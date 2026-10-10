@@ -9,6 +9,11 @@ import {
   type AutoSelectionTier,
 } from "~/services/copilot/get-auto-selection"
 
+import {
+  HARD_QUESTION,
+  PREWARM_PROMPT,
+  TARGET_CODE_PROMPT,
+} from "~/lib/auto-probe-prompts"
 import { getConfig } from "./config-store"
 import { HTTPError } from "./error"
 import { shouldUseColor } from "./logger"
@@ -24,7 +29,6 @@ interface AutoSessionPairing {
 // 以 /auto 实际选中的模型 ID 为键；同一模型只保留一份有效配对
 const pairings = new Map<string, AutoSessionPairing>()
 
-const PREWARM_PROMPT = "hello"
 const PREWARM_TIER: AutoSelectionTier = "balance"
 const STARTUP_TIERS: Array<AutoSelectionTier> = [
   "efficiency",
@@ -32,12 +36,11 @@ const STARTUP_TIERS: Array<AutoSelectionTier> = [
   "intelligence",
   "fast",
 ]
-const HARD_QUESTION =
-  "请指出这段代码中最可能的正确性问题，以及确认该问题所需的信息。"
-const TARGET_CODE_PROMPT =
-  "Write a TypeScript function that normalizes URL paths, with tests for root, duplicate slashes, and trailing slashes."
 const TARGET_PROBE_INTERVAL_MS = 3_000
 const TARGET_ATTEMPTS_PER_TIER = 10
+// 配置目标 miss 补采：前台等待上限；一轮耗尽后防止连续 miss 重开扫描的短冷却
+const TARGET_MISS_WAIT_MS = 2_000
+const TARGET_DISCOVERY_COOLDOWN_MS = 600_000
 const DEFAULT_SOURCE_ROOT = join(process.cwd(), "src")
 // 启动等待预算：上游持续故障时服务启动的最长等待；在途探测到期后转后台继续
 export const STARTUP_PROBE_BUDGET_MS = 30_000
@@ -83,6 +86,9 @@ export const registerAutoSelection = (
     supportedEndpoints: supportedEndpoints ?? [],
     authToken: state.copilotToken,
   })
+  // 登记真实 selected_model 后唤醒该目标下同一凭据 epoch 的 miss 等待者；
+  // 等待者醒后仍按凭据/有效期/端点重检，旧 epoch 等待只由 invalidate/stop 终止
+  wakeTargetWaiters(modelId, state.copilotToken)
   return true
 }
 
@@ -114,11 +120,15 @@ export const refreshAutoSession = async (): Promise<void> => {
 export const invalidateAutoSession = (): void => {
   pairings.clear()
   clearAllRefreshTimers()
+  targetDiscoveryCooldownUntil = 0
   // 只唤醒鉴权暂停的探测：各点自行比较凭据是否真正变化；
   // 正在遵守退避的点不被动摇（它们与凭据无关）。
   // 本函数绝不发请求：测试清理与服务热路径都会调用它，
   // 轮换后的补采只属于显式的身份变化入口
   wakeAll(haltWaiters)
+  // 凭据轮换终止全部 miss 等待 epoch：等待者醒后发现凭据快照失配，
+  // 不得把新上下文配对返回给携带旧 Authorization 的原请求
+  wakeAllTargetWaiters()
 }
 
 // HTTP 热路径用：仅当该模型当前配对仍持有请求实际携带的 session token
@@ -138,21 +148,18 @@ export const invalidateAutoSessionPairing = (
 }
 
 // 真实身份轮换后的补采入口：仅 token-metadata/token.ts 的凭据变化分支调用。
-// 门检与 t41 相同（确实运行过 discovery + 凭据真正变化 + 调度未停止），
-// 先更新已处理标记再启动请求，并发/连续调用幂等；初次 setup 因
-// !discoveryRan 静默。复用 runProbePoint 单飞：与刚被唤醒的挂起点
-// 自我重试自动合并为每点一个在途
+// 先更新已处理标记再启动请求，并发/连续调用幂等。metadata 更新完成即记录
+// 凭据就绪标记（discoveryToken），即使首轮 discovery 尚未运行（如 provider-only
+// 启动后 reload 启用 Copilot，无 prewarm）：miss 补采以该标记判定身份就绪，
+// 此处不替 miss 发请求；首轮真正开始后 discoveryRan 置位，后续轮换正常补采
 export const resumeAutoSessionDiscoveryAfterRotation = (): void => {
-  if (
-    !discoveryRan
-    || probeSchedulerStopped
-    || state.copilotToken === discoveryToken
-  ) {
+  if (probeSchedulerStopped || state.copilotToken === discoveryToken) {
     return
   }
   discoveryToken = state.copilotToken
+  if (!discoveryRan) return
   for (const { tier, kind, prompt } of lastSuccessPrompts.values()) {
-    if (kind !== "target") void runProbePoint(tier, kind, prompt)
+    void runProbePoint(tier, kind, prompt)
   }
   startTargetDiscovery(getConfiguredTargetModels())
 }
@@ -273,10 +280,15 @@ const haltWaiters = new Set<() => void>()
 // 退避睡眠等待者：只被停止或 401/403 收敛事件唤醒；
 // 同凭据的缓存清空（invalidate）不得打断正在遵守的退避
 const sleepWaiters = new Set<() => void>()
-// discovery 是否曾运行及其发起时的凭据：invalidate 补采门检用，
-// 防初次 setup 前/同凭据 invalidate 触发自动补采
+// discoveryToken：凭据就绪标记，metadata 更新完成时由 resume 记录（含首轮
+// 未运行的 reload 启用路径）；miss/rotation 补采门检都用它防 metadata 未就绪
+// 时抢先发请求。discoveryRan：首轮探测是否已开始（prewarm 或首轮定向轮），
+// 首轮开始后 rotation 补采才重放成功点
 let discoveryRan = false
 let discoveryToken: string | undefined
+// 定向轮耗尽后的短冷却截止（epoch ms）：冷却内 miss 不再开新轮，
+// 防连续 miss 每请求重启 40 次扫描；invalidate/stop 时清零
+let targetDiscoveryCooldownUntil = 0
 // 每个模型最近成功登记的来源 (tier,kind,prompt)：配对过期后的 miss
 // 按它补采；成功登记时覆盖，模型目录有界
 type ProbeKind = "easy" | "hard" | "target"
@@ -304,6 +316,62 @@ const parkProbe = async (): Promise<void> => {
     await promise
   } finally {
     haltWaiters.delete(resolve)
+  }
+}
+// 配置目标就绪等待者：同一 model 的并发 miss 共享信号；每个等待者持有
+// 进入时的凭据快照，轮换后注册的新配对不得唤醒旧 epoch 的等待者，
+// 旧 epoch 等待只能由 invalidate/stop 统一终止
+interface TargetWaiter {
+  token: string | undefined
+  wake: () => void
+}
+const targetWaiters = new Map<string, Set<TargetWaiter>>()
+
+// 有界等待：超时只结束自身等待，不取消共享在途探测；计时器随唤醒清理。
+// finish 幂等：timer/登记/轮换/stop 可能同时唤醒，重复执行不得误删
+// 同 model 后来者的等待组（仅当 Map 中仍是本组且已空才移除）
+const waitForTarget = (
+  model: string,
+  token: string | undefined,
+): Promise<void> => {
+  const { promise, resolve } = Promise.withResolvers<void>()
+  let set = targetWaiters.get(model)
+  if (set === undefined) {
+    set = new Set()
+    targetWaiters.set(model, set)
+  }
+  let finished = false
+  const finish = (): void => {
+    if (finished) return
+    finished = true
+    clearTimeout(timer)
+    set.delete(entry)
+    if (set.size === 0 && targetWaiters.get(model) === set) {
+      targetWaiters.delete(model)
+    }
+    resolve()
+  }
+  const entry: TargetWaiter = { token, wake: finish }
+  // timer 在 finish 之后声明：finish 只会被异步唤醒路径调用，无 TDZ 风险
+  const timer = setTimeout(finish, TARGET_MISS_WAIT_MS)
+  set.add(entry)
+  return promise
+}
+
+// 登记真实 selected_model 后只唤醒同凭据快照的该目标等待者。
+// 直接迭代：finish 只删当前成员（Set 迭代允许）并 resolve nativePromise
+//（续体在微任务），迭代期间无同步新增/跨组删除，快照分配不必要
+const wakeTargetWaiters = (model: string, token: string | undefined): void => {
+  const set = targetWaiters.get(model)
+  if (set === undefined) return
+  for (const waiter of set) {
+    if (waiter.token === token) waiter.wake()
+  }
+}
+
+const wakeAllTargetWaiters = (): void => {
+  for (const set of targetWaiters.values()) {
+    for (const waiter of set) waiter.wake()
   }
 }
 
@@ -354,6 +422,7 @@ export const stopProbeScheduler = (): void => {
   clearAllRefreshTimers()
   wakeAll(haltWaiters)
   wakeAll(sleepWaiters)
+  wakeAllTargetWaiters()
 }
 
 // 最近一轮探测的结算 Promise：测试清理与进程关闭（第三切片）先 stop 再 await 它，
@@ -625,12 +694,21 @@ const startTargetDiscovery = (
 ): void => {
   if (models.length === 0 || probeSchedulerStopped || targetProbeRound) return
   const startedToken = state.copilotToken
+  // 首轮真正开始即置位：后续凭据轮换走 resume 正常补采
+  discoveryRan = true
   targetProbeRound = after
     .then(() => discoverTargets(models))
     .finally(() => {
       targetProbeRound = undefined
       if (!probeSchedulerStopped && state.copilotToken !== startedToken) {
         startTargetDiscovery(getConfiguredTargetModels())
+      } else if (
+        !probeSchedulerStopped
+        && getMissingAutoDiscoveryModels(models).length > 0
+      ) {
+        // 本轮耗尽仍有缺失：短冷却内 miss 不再开新轮，
+        // 防止连续 miss 每请求重启 40 次扫描
+        targetDiscoveryCooldownUntil = Date.now() + TARGET_DISCOVERY_COOLDOWN_MS
       }
     })
 }
@@ -753,8 +831,47 @@ const colorAutoSessionEvent = (event: "hit" | "miss"): string => {
   const colorCode = event === "hit" ? 92 : 93
   return `\x1b[1;${colorCode}m${event}\x1b[0m`
 }
+// 配置目标 miss 补采：身份就绪门检与 resumeAutoSessionDiscoveryAfterRotation 同
+// 语义（discoveryToken 已在 metadata 更新完成时记录，无论首轮是否已运行），
+// 防身份轮换处理完成前普通 miss 抢先请求；共享既有单飞定向轮（在途则直接
+// 等待），前台最多等 TARGET_MISS_WAIT_MS。唤醒/超时后按进入时的凭据快照与
+// 当前配对重检：轮换途中即使新配对已可用，也不得把它返回给携带旧
+// Authorization 的原请求
+const acquireConfiguredTarget = async (
+  model: string,
+  endpoint?: string,
+): Promise<string | undefined> => {
+  if (probeSchedulerStopped) return undefined
+  const requestToken = state.copilotToken
+  if (requestToken === undefined || discoveryToken !== requestToken) {
+    return undefined
+  }
+  const targets = getConfiguredTargetModels()
+  if (!targets.includes(model)) return undefined
+  if (
+    targetProbeRound === undefined
+    && Date.now() >= targetDiscoveryCooldownUntil
+  ) {
+    startTargetDiscovery(targets)
+  }
+  if (targetProbeRound === undefined) return undefined
+  consola.info(`[auto-session] target miss acquire model=${model}`)
+  await waitForTarget(model, requestToken)
+  if (state.copilotToken !== requestToken) return undefined
+  const acquired = pairings.get(model)
+  if (
+    acquired === undefined
+    || acquired.authToken !== requestToken
+    || !isUsable(acquired)
+  ) {
+    return undefined
+  }
+  if (endpoint !== undefined && !pairingSupportsEndpoint(acquired, endpoint)) {
+    return undefined
+  }
+  return acquired.sessionToken
+}
 
-/* eslint-disable @typescript-eslint/require-await -- 保留 async 签名（既有 API 契约）；过期补采为 fire-and-forget（void runProbePoint），本函数不等待它 */
 export const getAutoSessionTokenForModel = async (
   model: string,
   endpoint?: string,
@@ -762,7 +879,15 @@ export const getAutoSessionTokenForModel = async (
   const pairing = pairings.get(model)
 
   if (!pairing) {
-    // 未知模型/无来源：保持原有无 token 行为，不为每次 miss 创造请求
+    // 未知模型/无来源：保持原有无 token 行为，不为每次 miss 创造请求。
+    // 配置目标 miss 走共享定向补采，前台最多等待 TARGET_MISS_WAIT_MS
+    const acquired = await acquireConfiguredTarget(model, endpoint)
+    if (acquired !== undefined) {
+      consola.info(
+        `[auto-session] ${colorAutoSessionEvent("hit")} model=${model}`,
+      )
+      return acquired
+    }
     consola.info(
       `[auto-session] ${colorAutoSessionEvent("miss")} model=${model}`,
     )
@@ -781,13 +906,20 @@ export const getAutoSessionTokenForModel = async (
 
   if (!isUsable(pairing)) {
     // 过期配对按配置目标的共享循环或原有来源补采；正常请求继续无 token。
+    // 过期旧配对已删除，取得的新配对按当前凭据/有效期/端点重检后才返回
     const source = pairingSources.get(model)
     pairings.delete(model)
     clearRefreshTimer(model)
     const targets = getConfiguredTargetModels()
     if (targets.includes(model) && !probeSchedulerStopped) {
       consola.info(`[auto-session] expired model=${model} re-probe`)
-      startTargetDiscovery(targets)
+      const acquired = await acquireConfiguredTarget(model, endpoint)
+      if (acquired !== undefined) {
+        consola.info(
+          `[auto-session] ${colorAutoSessionEvent("hit")} model=${model}`,
+        )
+        return acquired
+      }
     } else if (source !== undefined && !probeSchedulerStopped) {
       consola.info(`[auto-session] expired model=${model} re-probe`)
       void runProbePoint(source.tier, source.kind, source.prompt)
@@ -809,4 +941,3 @@ export const getAutoSessionTokenForModel = async (
   consola.info(`[auto-session] ${colorAutoSessionEvent("hit")} model=${model}`)
   return pairing.sessionToken
 }
-/* eslint-enable @typescript-eslint/require-await */

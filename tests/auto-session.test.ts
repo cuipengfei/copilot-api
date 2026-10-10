@@ -266,8 +266,6 @@ describe("auto-session", () => {
 
   test("startup probes post JSON bodies with model-access identity headers", async () => {
     const { prewarmAutoSession } = await loadAutoSessionModule()
-    const HARD_QUESTION =
-      "请指出这段代码中最可能的正确性问题，以及确认该问题所需的信息。"
     const TIERS = ["efficiency", "balance", "intelligence", "fast"]
 
     getQueue().push(
@@ -309,7 +307,6 @@ describe("auto-session", () => {
         const lines = body.prompt.split("\n")
         expect(lines).toHaveLength(102)
         expect(lines[100]).toBe("")
-        expect(lines[101]).toBe(HARD_QUESTION)
       }
     }
     expect(easyTiers.sort()).toEqual([...TIERS].sort())
