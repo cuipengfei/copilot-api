@@ -56,6 +56,8 @@ default_mode_request_user_input = true
 standalone_web_search = true
 daemon_auto_start = false
 apps = false
+prevent_idle_sleep = true
+defer_mailbox_preemption = true
 
 [desktop]
 enabled-reasoning-efforts = ["low", "medium", "high", "xhigh", "ultra", "max"]
@@ -66,6 +68,10 @@ enabled = false
 
 > [!NOTE]
 > `name` must be set to `"OpenAI"`.
+>
+> **Mailbox Preemption:** Set `defer_mailbox_preemption = true` under `[features]` to defer sub-agent message preemption. By default, receiving a sub-agent message may cause the main agent to stop reading the SSE stream after a complete reasoning/commentary output item and start the next model request without waiting for `response.completed`.
+>
+> When enabled, receiving a sub-agent message no longer ends the current model response early. Messages are delivered at the next normal input-processing point, reducing brief overlaps where a new request starts before the previous one finishes. If you encounter `Encrypted function output content could not be decrypted or decoded` when using Codex with GitHub Copilot, try enabling this option.
 >
 > Sign in to Codex with ChatGPT or an API key before use. `requires_openai_auth = true` shows account information in the UI, plus quota usage and subscription details for ChatGPT sign-in; request authentication still prioritizes `env_key`. To bypass account restrictions in the Codex client, try setting it to `false`. Note that `false` also hides Remote (**Control this Mac** under **Settings → Connections**) in the desktop app ([openai/codex#36879](https://github.com/openai/codex/issues/36879)).
 >
