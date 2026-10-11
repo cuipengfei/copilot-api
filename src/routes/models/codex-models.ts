@@ -3,6 +3,7 @@ import type { Context } from "hono"
 import {
   getModelMappings,
   getRawProviderConfig,
+  listEnabledProviders,
   type ResolvedProviderConfig,
 } from "~/lib/config"
 import {
@@ -10,17 +11,20 @@ import {
   serializeCodexModelCatalog,
 } from "~/lib/codex-model-catalog"
 import {
-  getProviderCodexModels,
-  isProviderCodexModelVisible,
+  getProviderAgentModels,
+  isProviderAgentModelVisible,
 } from "~/lib/provider-management"
 import { createHandlerLogger } from "~/lib/logger"
+import { stripInternalRequestHeaders } from "~/lib/internal-headers"
 import { resolveProviderConfig } from "~/lib/provider-resolver"
+import { getSyntheticCodexModels } from "~/routes/models/codex-model-candidates"
 import type {
   CodexModel,
   CodexModelsResponse,
   CodexReasoningEffort,
   SyntheticCodexModelCandidate,
 } from "~/routes/models/codex-models-types"
+import { isRecord } from "~/routes/models/model-discovery"
 import fallbackCodexCatalogJson from "~/routes/models/models.json"
 import { forwardCodexModels } from "~/services/codex/get-models"
 import { createProviderProxyResponse } from "~/services/providers/provider-proxy"
@@ -130,11 +134,29 @@ export async function handleCodexModelsProxy(
     {
       ...catalog,
       models: catalog.models.filter((model) =>
-        isProviderCodexModelVisible(providerConfig, model.slug),
+        isProviderAgentModelVisible(providerConfig, model.slug),
       ),
     },
-    new Set(getProviderCodexModels(providerConfig)),
+    new Set(getProviderAgentModels(providerConfig)),
     FALLBACK_CODEX_MODELS[0].model_messages,
+  )
+}
+
+export async function handleCodexModels(c: Context): Promise<Response> {
+  const enabledProviders = listEnabledProviders()
+  const codexProviderName = enabledProviders.find(
+    (provider) => provider === "codex",
+  )
+  return await handleMergedCodexModels(
+    c,
+    getSyntheticCodexModels(
+      stripInternalRequestHeaders(c.req.raw.headers),
+      enabledProviders,
+    ),
+    {
+      includeCodexProviderAliases: codexProviderName !== undefined,
+      codexProviderName,
+    },
   )
 }
 
@@ -162,13 +184,13 @@ export async function handleMergedCodexModels(
   const copilotConfig = getRawProviderConfig("github-copilot")
   const visibleUpstreamModels = upstreamModels.filter(
     (model) =>
-      isProviderCodexModelVisible(codexConfig, model.slug)
+      isProviderAgentModelVisible(codexConfig, model.slug)
       && (upstreamCatalog !== undefined
         || codexConfig !== null
-        || isProviderCodexModelVisible(copilotConfig, model.slug)),
+        || isProviderAgentModelVisible(copilotConfig, model.slug)),
   )
   const explicitSlugs = new Set<string>()
-  const codexSelection = getProviderCodexModels(codexConfig)
+  const codexSelection = getProviderAgentModels(codexConfig)
   for (const model of visibleUpstreamModels) {
     if (codexSelection?.includes(model.slug)) {
       explicitSlugs.add(model.slug)
@@ -183,7 +205,7 @@ export async function handleMergedCodexModels(
         candidate.slug.slice(providerName.length + 1)
       : candidate.slug)
     const config = getRawProviderConfig(providerName)
-    const selectedModels = getProviderCodexModels(config)
+    const selectedModels = getProviderAgentModels(config)
     const selectionId =
       (
         providerName === "github-copilot"
@@ -191,7 +213,7 @@ export async function handleMergedCodexModels(
       ) ?
         candidate.slug
       : modelId
-    if (!isProviderCodexModelVisible(config, selectionId)) return false
+    if (!isProviderAgentModelVisible(config, selectionId)) return false
     if (selectedModels?.includes(selectionId)) {
       explicitSlugs.add(candidate.slug)
     }
@@ -439,8 +461,4 @@ function isCodexModelsResponse(value: unknown): value is CodexModelsResponse {
   return value.models.every(
     (model: unknown) => isRecord(model) && typeof model.slug === "string",
   )
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
 }

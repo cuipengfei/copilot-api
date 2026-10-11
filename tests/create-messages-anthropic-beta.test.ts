@@ -27,6 +27,19 @@ test("keeps only allowlisted betas and drops unknown ones", () => {
   expect(header).toBe("extended-cache-ttl-2025-04-11")
 })
 
+test("forwards per-turn control betas while filtering unknown and conflicting values", () => {
+  expect(
+    buildAnthropicBetaHeader({
+      anthropicBetaHeader:
+        "mid-conversation-output-config-2026-07-01,per-turn-control-2026-07-01,per-turn-control-2026-07-01,interleaved-thinking-2025-05-14,unknown-beta",
+      adaptiveThinkingEnabled: true,
+      thinking: { type: "adaptive" },
+    }),
+  ).toBe(
+    "mid-conversation-output-config-2026-07-01,per-turn-control-2026-07-01",
+  )
+})
+
 test("returns undefined when the client sends no allowlisted beta", () => {
   const header = buildAnthropicBetaHeader({
     anthropicBetaHeader: "some-unsupported-beta-2099-01-01",
@@ -87,6 +100,7 @@ test("keeps the existing thinking beta default without enabling extended caching
 describe("Copilot Messages prompt cache forwarding", () => {
   const originalFetch = globalThis.fetch
   const originalCopilotToken = state.copilotToken
+  const originalTelemetryEnabled = state.copilotTelemetryEnabled
 
   const fetchMock = mock((_input: string, _init?: RequestInit) =>
     Promise.resolve(
@@ -105,6 +119,7 @@ describe("Copilot Messages prompt cache forwarding", () => {
 
   beforeEach(() => {
     state.copilotToken = "test-copilot-token"
+    state.copilotTelemetryEnabled = false
     fetchMock.mockClear()
     globalThis.fetch = fetchMock as unknown as typeof fetch
   })
@@ -112,6 +127,7 @@ describe("Copilot Messages prompt cache forwarding", () => {
   afterEach(() => {
     globalThis.fetch = originalFetch
     state.copilotToken = originalCopilotToken
+    state.copilotTelemetryEnabled = originalTelemetryEnabled
   })
 
   test("forwards the cache beta and one-hour cache control blocks upstream", async () => {

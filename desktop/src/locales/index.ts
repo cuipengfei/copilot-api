@@ -28,7 +28,6 @@ export interface Locale {
     close: string
     description: string
     configured: string
-    catalogBudget: string
     unsaved: string
     autoDescription: string
     selectedDescription: string
@@ -63,6 +62,13 @@ export interface Locale {
     subtitle: string
     githubAuth: string
     codexAuth: string
+    xaiAuth: string
+    xaiAccounts: string
+    xaiNoAccounts: string
+    waitingXaiAuth: string
+    xaiLoginInProgress: string
+    xaiAuthExpired: string
+    xaiAuthDenied: string
     codexAccounts: string
     codexAccountAlias: string
     codexAccountAliasPlaceholder: string
@@ -96,7 +102,10 @@ export interface Locale {
     providerType: string
     deviceCode: string
     deviceCodeUrl: string
-    codexCallbackRequired: string
+    codexAuthTimeout: string
+    codexCallbackUnavailable: string
+    codexLoginInProgress: string
+    codexFinishingAuth: string
     copy: string
     copied: string
     openAuthPage: string
@@ -108,6 +117,8 @@ export interface Locale {
     authFailed: string
     tokenInvalid: string
     waitingCodexAuth: string
+    cancelCodexAuth: string
+    cancelling: string
     loginConsent: string
   }
   dashboard: {

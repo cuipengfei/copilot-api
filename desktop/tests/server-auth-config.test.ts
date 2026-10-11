@@ -114,135 +114,64 @@ process.stdout.write(JSON.stringify({ saved, raw }))`
     }
   })
 
-  test('partial apiKeys update preserves the admin key on disk', async () => {
-    const homeDir = await fs.mkdtemp(
-      path.join(os.tmpdir(), 'copilot-api-server-auth-'),
-    )
-    try {
-      const configPath = await writeConfig(homeDir, {
-        auth: {
-          apiKeys: ['old-key'],
-          adminApiKey: 'old-admin',
-        },
-      })
-      const script = `import fs from 'node:fs/promises'
+  test.each([
+    [
+      'partial API keys update',
+      { apiKeys: [' new-key '] },
+      { apiKeys: ['new-key'], adminApiKey: 'old-admin' },
+    ],
+    [
+      'partial admin key update',
+      { adminApiKey: ' new-admin ' },
+      { apiKeys: ['key-1'], adminApiKey: 'new-admin' },
+    ],
+    [
+      'partial admin key removal',
+      { adminApiKey: '' },
+      { apiKeys: ['key-1'], adminApiKey: '' },
+    ],
+    [
+      'full admin key removal',
+      { apiKeys: ['key-1'], adminApiKey: '' },
+      { apiKeys: ['key-1'], adminApiKey: '' },
+    ],
+  ] satisfies Array<
+    [
+      string,
+      ConfigFileShape['auth'],
+      { apiKeys: string[]; adminApiKey: string },
+    ]
+  >)(
+    '%s preserves unrelated auth fields on disk',
+    async (_scenario, update, expected) => {
+      const homeDir = await fs.mkdtemp(
+        path.join(os.tmpdir(), 'copilot-api-server-auth-'),
+      )
+      try {
+        const configPath = await writeConfig(homeDir, {
+          auth: { apiKeys: ['key-1'], adminApiKey: 'old-admin' },
+        })
+        const script = `import fs from 'node:fs/promises'
 import { writeServerKeysConfig } from ${JSON.stringify(moduleUrl)}
-const saved = writeServerKeysConfig({ apiKeys: [' new-key '] })
+const saved = writeServerKeysConfig(${JSON.stringify(update)})
 const raw = JSON.parse(await fs.readFile(${JSON.stringify(configPath)}, 'utf8'))
 process.stdout.write(JSON.stringify({ saved, raw }))`
-      const result = await runScript(homeDir, script)
-      expect(result.exitCode).toBe(0)
-      expect(result.stderr).toBe('')
-      const parsed = JSON.parse(result.stdout) as {
-        saved: { apiKeys: string[]; adminApiKey: string }
-        raw: ConfigFileShape
+        const result = await runScript(homeDir, script)
+        expect(result.exitCode).toBe(0)
+        expect(result.stderr).toBe('')
+        const parsed = JSON.parse(result.stdout) as {
+          saved: { apiKeys: string[]; adminApiKey: string }
+          raw: ConfigFileShape
+        }
+        expect(parsed.saved).toEqual(expected)
+        expect(parsed.raw.auth).toEqual(
+          expected.adminApiKey ? expected : { apiKeys: expected.apiKeys },
+        )
+      } finally {
+        await fs.rm(homeDir, { force: true, recursive: true })
       }
-      expect(parsed.saved).toEqual({
-        apiKeys: ['new-key'],
-        adminApiKey: 'old-admin',
-      })
-      expect(parsed.raw.auth?.apiKeys).toEqual(['new-key'])
-      expect(parsed.raw.auth?.adminApiKey).toBe('old-admin')
-    } finally {
-      await fs.rm(homeDir, { force: true, recursive: true })
-    }
-  })
-
-  test('partial admin key update preserves apiKeys on disk', async () => {
-    const homeDir = await fs.mkdtemp(
-      path.join(os.tmpdir(), 'copilot-api-server-auth-'),
-    )
-    try {
-      const configPath = await writeConfig(homeDir, {
-        auth: {
-          apiKeys: ['key-1'],
-          adminApiKey: 'old-admin',
-        },
-      })
-      const script = `import fs from 'node:fs/promises'
-import { writeServerKeysConfig } from ${JSON.stringify(moduleUrl)}
-const saved = writeServerKeysConfig({ adminApiKey: ' new-admin ' })
-const raw = JSON.parse(await fs.readFile(${JSON.stringify(configPath)}, 'utf8'))
-process.stdout.write(JSON.stringify({ saved, raw }))`
-      const result = await runScript(homeDir, script)
-      expect(result.exitCode).toBe(0)
-      expect(result.stderr).toBe('')
-      const parsed = JSON.parse(result.stdout) as {
-        saved: { apiKeys: string[]; adminApiKey: string }
-        raw: ConfigFileShape
-      }
-      expect(parsed.saved).toEqual({
-        apiKeys: ['key-1'],
-        adminApiKey: 'new-admin',
-      })
-      expect(parsed.raw.auth?.apiKeys).toEqual(['key-1'])
-      expect(parsed.raw.auth?.adminApiKey).toBe('new-admin')
-    } finally {
-      await fs.rm(homeDir, { force: true, recursive: true })
-    }
-  })
-
-  test('partial empty admin key update removes only the admin key', async () => {
-    const homeDir = await fs.mkdtemp(
-      path.join(os.tmpdir(), 'copilot-api-server-auth-'),
-    )
-    try {
-      const configPath = await writeConfig(homeDir, {
-        auth: {
-          apiKeys: ['key-1'],
-          adminApiKey: 'old-admin',
-        },
-      })
-      const script = `import fs from 'node:fs/promises'
-import { writeServerKeysConfig } from ${JSON.stringify(moduleUrl)}
-const saved = writeServerKeysConfig({ adminApiKey: '' })
-const raw = JSON.parse(await fs.readFile(${JSON.stringify(configPath)}, 'utf8'))
-process.stdout.write(JSON.stringify({ saved, raw }))`
-      const result = await runScript(homeDir, script)
-      expect(result.exitCode).toBe(0)
-      expect(result.stderr).toBe('')
-      const parsed = JSON.parse(result.stdout) as {
-        saved: { apiKeys: string[]; adminApiKey: string }
-        raw: ConfigFileShape
-      }
-      expect(parsed.saved).toEqual({ apiKeys: ['key-1'], adminApiKey: '' })
-      expect(parsed.raw.auth?.apiKeys).toEqual(['key-1'])
-      expect('adminApiKey' in (parsed.raw.auth ?? {})).toBe(false)
-    } finally {
-      await fs.rm(homeDir, { force: true, recursive: true })
-    }
-  })
-
-  test('removes the admin key field when emptied', async () => {
-    const homeDir = await fs.mkdtemp(
-      path.join(os.tmpdir(), 'copilot-api-server-auth-'),
-    )
-    try {
-      const configPath = await writeConfig(homeDir, {
-        auth: {
-          apiKeys: ['key-1'],
-          adminApiKey: 'old-admin',
-        },
-      })
-      const script = `import fs from 'node:fs/promises'
-import { writeServerKeysConfig } from ${JSON.stringify(moduleUrl)}
-      const saved = writeServerKeysConfig({ apiKeys: ['key-1'], adminApiKey: '' })
-const raw = JSON.parse(await fs.readFile(${JSON.stringify(configPath)}, 'utf8'))
-process.stdout.write(JSON.stringify({ saved, raw }))`
-      const result = await runScript(homeDir, script)
-      expect(result.exitCode).toBe(0)
-      expect(result.stderr).toBe('')
-      const parsed = JSON.parse(result.stdout) as {
-        saved: { apiKeys: string[]; adminApiKey: string }
-        raw: ConfigFileShape
-      }
-      expect(parsed.saved.adminApiKey).toBe('')
-      expect(parsed.raw.auth?.apiKeys).toEqual(['key-1'])
-      expect('adminApiKey' in (parsed.raw.auth ?? {})).toBe(false)
-    } finally {
-      await fs.rm(homeDir, { force: true, recursive: true })
-    }
-  })
+    },
+  )
 
   test('reads empty config when the file is missing and writes create it', async () => {
     const homeDir = await fs.mkdtemp(

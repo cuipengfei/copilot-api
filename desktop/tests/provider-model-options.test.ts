@@ -1,4 +1,9 @@
 import { describe, expect, test } from 'bun:test'
+import { installModelsDevCatalog } from '../../src/lib/models-dev-cache'
+import {
+  modelsDevReleaseModelsFixture,
+  modelsDevProviderCatalogFixture,
+} from '../../tests/fixtures/models-dev-catalog'
 import { buildProviderModelOptions } from '../electron/provider-model-options'
 import {
   mergeProviderModelOptions,
@@ -6,6 +11,86 @@ import {
 } from '../src/lib/provider-model-options'
 
 describe('provider model options', () => {
+  test('filters old releases from all cached, configured and selected models.dev options', () => {
+    const catalog = { models: modelsDevReleaseModelsFixture }
+    installModelsDevCatalog({
+      ...modelsDevProviderCatalogFixture,
+      'alibaba-cn': catalog,
+      xai: catalog,
+      'opencode-go': catalog,
+    })
+    const selection = {
+      models: { 'before-cutoff': {}, 'qwen-plus': {} },
+      agentsModels: Object.keys(modelsDevReleaseModelsFixture),
+    }
+    const options = buildProviderModelOptions({
+      providers: {
+        dashscope: selection,
+        xai: selection,
+        'opencode-go': selection,
+        custom: { ...selection, modelsDevProviderId: 'alibaba-cn' },
+      },
+    })
+    for (const name of ['dashscope', 'xai', 'opencode-go', 'custom']) {
+      expect(options[name]).toEqual([
+        'after-cutoff',
+        'invalid-date',
+        'on-cutoff',
+        'unknown-date',
+      ])
+    }
+  })
+
+  test('reads default catalogs and provider aliases without static model fallback', () => {
+    installModelsDevCatalog(modelsDevProviderCatalogFixture)
+    const options = buildProviderModelOptions({
+      providers: {
+        xai: {},
+        deepseek: {},
+        kimi: {},
+        dashscope: {},
+        custom: { modelsDevProviderId: 'openrouter' },
+      },
+    })
+    expect(options).toMatchObject({
+      xai: ['grok-4.7', 'grok-catalog-only'],
+      deepseek: ['deepseek-flash', 'deepseek-v4-pro'],
+      kimi: ['k3', 'k3-256k'],
+      dashscope: [
+        'deepseek-v4.1-flash',
+        'glm-5.3',
+        'kimi-k3',
+        'qwen3.7-plus',
+        'qwen3.8-flash',
+        'qwen3.8-max',
+      ],
+      custom: ['openai/gpt-5.1-codex'],
+    })
+    expect(options.dashscope).not.toContain('ZHIPU/GLM-5.3-FlashX')
+  })
+  test('combines cached xAI models with explicit selections for OAuth providers', () => {
+    const options = buildProviderModelOptions(
+      {
+        providers: {
+          xai: {
+            authType: 'oauth2',
+            enabled: false,
+            models: { 'unsupported-model': {} },
+            agentsModels: ['unsupported-model'],
+          },
+        },
+      },
+      {
+        builtin: (name) => (name === 'xai' ? ['grok-4.7'] : []),
+        catalog: () => ['unwanted-catalog-model'],
+      },
+    )
+    expect(options.xai).toEqual([
+      'grok-4.7',
+      'unsupported-model',
+      'unwanted-catalog-model',
+    ])
+  })
   test('combines configured, selected, builtin and catalog models for disabled providers without credentials', () => {
     const options = buildProviderModelOptions(
       {
@@ -15,7 +100,7 @@ describe('provider model options', () => {
             apiKey: 'secret-key',
             modelsDevProviderId: 'catalog',
             models: { configured: {} },
-            codexModels: ['selected', 'configured'],
+            agentsModels: ['selected', 'configured'],
           },
           copilot: { apiKey: 'another-secret' },
         },

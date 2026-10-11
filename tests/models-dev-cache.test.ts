@@ -8,6 +8,9 @@ import { builtinProviderModelRegistry } from "~/lib/builtin-provider-models"
 import { resolveTokenUsageCost } from "~/lib/token-usage/pricing"
 import {
   getModelsDevModelApi,
+  getModelsDevModel,
+  getModelsDevModelConfig,
+  getModelsDevModelMaxOutputTokens,
   getModelsDevModelPricing,
   getModelsDevModelProviderType,
   getModelsDevProviderOptions,
@@ -22,7 +25,10 @@ import {
   stopModelsDevRefreshLoop,
 } from "~/lib/models-dev-cache"
 
-import { modelsDevCatalogFixture } from "./fixtures/models-dev-catalog"
+import {
+  modelsDevCatalogFixture,
+  modelsDevReleaseModelsFixture,
+} from "./fixtures/models-dev-catalog"
 
 let tempDir: string | undefined
 
@@ -47,6 +53,76 @@ afterEach(async () => {
   await stopModelsDevRefreshLoop()
   if (tempDir) await fs.rm(tempDir, { recursive: true, force: true })
   tempDir = undefined
+})
+
+test("filters older releases consistently across models.dev lists, protocols, limits and pricing", () => {
+  const models = {
+    ...modelsDevReleaseModelsFixture,
+    "before-cutoff": {
+      ...modelsDevReleaseModelsFixture["before-cutoff"],
+      limit: { output: 32_000 },
+      cost: { input: 1, output: 2 },
+      provider: { api: "https://old.example/v1" },
+    },
+  }
+  const catalog = {
+    ...modelsDevCatalogFixture,
+    "opencode-go": { npm: "@ai-sdk/openai-compatible", models },
+    example: {
+      npm: "@ai-sdk/openai-compatible",
+      api: "https://example.com/v1",
+      models,
+    },
+  }
+  const original = structuredClone(catalog)
+  installModelsDevCatalog(catalog)
+  const visibleIds = [
+    "after-cutoff",
+    "invalid-date",
+    "on-cutoff",
+    "unknown-date",
+  ]
+  expect(getOpencodeGoModelIds()).toEqual(visibleIds)
+  expect(getModelsDevProviderModelIds("example")).toEqual(visibleIds)
+  expect(getModelsDevModelConfig("example", "before-cutoff")).toBeUndefined()
+  expect(getModelsDevModelPricing("example", "before-cutoff")).toBeUndefined()
+  expect(
+    getModelsDevModelMaxOutputTokens("example", "before-cutoff"),
+  ).toBeUndefined()
+  expect(
+    getModelsDevModelProviderType("example", "before-cutoff"),
+  ).toBeUndefined()
+  expect(getModelsDevModelApi("example", "before-cutoff")).toBeUndefined()
+  expect(getModelsDevModelProviderType("example", "on-cutoff")).toBe(
+    "openai-compatible",
+  )
+  expect(catalog).toEqual(original)
+})
+
+test("exposes raw models.dev metadata even for providers excluded from the provider picker", () => {
+  installModelsDevCatalog({
+    ...modelsDevCatalogFixture,
+    "github-copilot": {
+      models: {
+        invalid: null,
+        vision: {
+          id: "vision",
+          cost: { input: 1, output: 2 },
+          modalities: { input: ["text", "image"], output: ["text"] },
+        },
+      },
+    },
+  })
+  expect(getModelsDevModel("opencode-go", "hy3")?.cost).toEqual(
+    modelsDevCatalogFixture["opencode-go"].models.hy3.cost,
+  )
+  expect(getModelsDevModel("github-copilot", "vision")?.cost).toEqual({
+    input: 1,
+    output: 2,
+  })
+  expect(getModelsDevModel("github-copilot", "invalid")).toBeUndefined()
+  expect(getModelsDevModel("missing", "vision")).toBeUndefined()
+  expect(getModelsDevModel("opencode-go", "missing")).toBeUndefined()
 })
 
 test("lists usable Chat, Responses, and Anthropic providers without the built-in choices", async () => {
@@ -159,6 +235,58 @@ test("lists usable Chat, Responses, and Anthropic providers without the built-in
   })
 })
 
+test("resolves output limits for all cached providers and ignores unknown or deprecated models", () => {
+  installModelsDevCatalog({
+    ...modelsDevCatalogFixture,
+    openrouter: {
+      models: {
+        "org/model": { limit: { output: 131_072 } },
+        deprecated: { status: "deprecated", limit: { output: 65_536 } },
+        malformed: null,
+      },
+    },
+    "custom-provider": { models: { model: { limit: { output: 8_192 } } } },
+    "invalid-provider": null,
+    "missing-models": {},
+  })
+
+  expect(getModelsDevModelMaxOutputTokens("openrouter", "org/model")).toBe(
+    131_072,
+  )
+  expect(getModelsDevModelMaxOutputTokens("custom-provider", "model")).toBe(
+    8_192,
+  )
+  expect(getModelsDevModelMaxOutputTokens("opencode-go", "gpt-6-luna")).toBe(
+    128_000,
+  )
+  expect(
+    getModelsDevModelMaxOutputTokens("openrouter", "deprecated"),
+  ).toBeUndefined()
+  expect(
+    getModelsDevModelMaxOutputTokens("openrouter", "malformed"),
+  ).toBeUndefined()
+  expect(
+    getModelsDevModelMaxOutputTokens("openrouter", "unknown"),
+  ).toBeUndefined()
+  expect(
+    getModelsDevModelMaxOutputTokens("unknown", "org/model"),
+  ).toBeUndefined()
+})
+
+test.each([undefined, null, 0, -1, 1.5, NaN, Infinity, "65536"])(
+  "ignores invalid cached output limits %j",
+  (output) => {
+    installModelsDevCatalog({
+      ...modelsDevCatalogFixture,
+      "custom-provider": { models: { model: { limit: { output } } } },
+    })
+
+    expect(
+      getModelsDevModelMaxOutputTokens("custom-provider", "model"),
+    ).toBeUndefined()
+  },
+)
+
 test("persists the full models.dev response and filters deprecated models in memory", async () => {
   const cachePath = await getCachePath()
   const document = {
@@ -238,7 +366,11 @@ test("persists the full models.dev response and filters deprecated models in mem
 
 test("serves disk models before the background network refresh finishes", async () => {
   const cachePath = await getCachePath()
-  await fs.writeFile(cachePath, JSON.stringify(modelsDevCatalogFixture))
+  const document = {
+    ...modelsDevCatalogFixture,
+    "custom-provider": { models: { model: { limit: { output: 131_072 } } } },
+  }
+  await fs.writeFile(cachePath, JSON.stringify(document))
   let finishFetch: ((response: Response) => void) | undefined
   const response = new Promise<Response>((resolve) => {
     finishFetch = resolve
@@ -250,6 +382,9 @@ test("serves disk models before the background network refresh finishes", async 
   })
 
   expect(getOpencodeGoModelIds()).toContain("gpt-6-luna")
+  expect(getModelsDevModelMaxOutputTokens("custom-provider", "model")).toBe(
+    131_072,
+  )
   expect(finishFetch).toBeDefined()
   finishFetch?.(Response.json(modelsDevCatalogFixture))
   await waitFor(

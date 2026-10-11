@@ -36,7 +36,6 @@ Copilot API 现在使用子命令结构，主要命令包括：
 | --port | 监听端口 | 4141 | -p |
 | --verbose | 启用详细日志 | false | -v |
 | --github-token | 直接提供 GitHub token（必须通过 `auth` 子命令生成）；建议使用 `COPILOT_API_GITHUB_TOKEN`，命令行参数会出现在进程列表中 | 无 | -g |
-| --claude-code | 生成一个使用 Copilot API 配置启动 Claude Code 的命令 | false | -c |
 | --show-token | 在获取和刷新时显示 GitHub 与 Copilot token | false | 无 |
 | --proxy-env | 从环境变量初始化代理 | false | 无 |
 

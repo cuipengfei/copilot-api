@@ -124,7 +124,11 @@ async function removeStaleCodexCredentialLock(lockPath: string): Promise<void> {
     content = lockContent
     modifiedAt = stats.mtimeMs
   } catch (error) {
-    if (isNodeError(error) && error.code === "ENOENT") {
+    if (
+      (isNodeError(error) && error.code === "ENOENT")
+      || (await isCodexCredentialLockContention(error, lockPath))
+    ) {
+      // A Windows lock can become temporarily unreadable while it is removed.
       return
     }
     throw error
@@ -145,7 +149,10 @@ async function removeStaleCodexCredentialLock(lockPath: string): Promise<void> {
     }
     await fs.unlink(lockPath)
   } catch (error) {
-    if (isNodeError(error) && error.code === "ENOENT") {
+    if (
+      (isNodeError(error) && error.code === "ENOENT")
+      || (await isCodexCredentialLockContention(error, lockPath))
+    ) {
       return
     }
     throw error
@@ -241,6 +248,14 @@ export function withCodexAccountMutationLock<T>(
   )
 }
 
+// Use the same cross-process lock for OAuth refreshes and new sign-ins.
+export function withCredentialFileLock<T>(
+  credentialPath: string,
+  operation: () => Promise<T>,
+): Promise<T> {
+  return withCodexCredentialLock(operation, `${credentialPath}.lock`)
+}
+
 async function readOptionalFile(filePath: string): Promise<string | null> {
   try {
     return await fs.readFile(filePath, "utf8")
@@ -266,9 +281,13 @@ function normalizeCodexCredentials(
   const candidate = credentials as Partial<CodexCredentials>
   if (
     typeof candidate.accessToken !== "string"
+    || !candidate.accessToken.trim()
     || typeof candidate.refreshToken !== "string"
+    || !candidate.refreshToken.trim()
     || typeof candidate.expiresAt !== "number"
+    || !Number.isFinite(candidate.expiresAt)
     || typeof candidate.accountId !== "string"
+    || !candidate.accountId.trim()
   ) {
     return null
   }
@@ -376,9 +395,10 @@ function normalizeCodexCredentialStore(
 
 async function writeCodexCredentialStoreUnlocked(
   store: CodexCredentialStoreV1,
+  credentialPath: string = PATHS.CODEX_CREDENTIAL_PATH,
 ): Promise<void> {
   await writeProtectedFile(
-    PATHS.CODEX_CREDENTIAL_PATH,
+    credentialPath,
     `${JSON.stringify(store, null, 2)}\n`,
   )
 }
@@ -401,196 +421,229 @@ export async function writeGitHubToken(token: string): Promise<void> {
   await writeProtectedFile(PATHS.GITHUB_TOKEN_PATH, token.trim())
 }
 
-export async function readCodexCredentialStore(): Promise<CodexCredentialStoreV1 | null> {
-  const raw = await readOptionalFile(PATHS.CODEX_CREDENTIAL_PATH)
-  if (!raw?.trim()) {
-    return null
-  }
-
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(raw) as unknown
-  } catch (error) {
-    throw new Error(
-      `Codex credentials file is not valid JSON: ${PATHS.CODEX_CREDENTIAL_PATH}`,
-      {
-        cause: error,
-      },
-    )
-  }
-
-  const store = normalizeCodexCredentialStore(parsed)
-  if (!store) {
-    throw new Error(
-      `Codex credentials file is missing required fields: ${PATHS.CODEX_CREDENTIAL_PATH}`,
-    )
-  }
-
-  return store
-}
-
-export async function readCodexCredentials(
-  accountId?: string,
-): Promise<CodexCredentials | null> {
-  const store = await readCodexCredentialStore()
-  if (!store || store.accounts.length === 0) {
-    return null
-  }
-
-  const normalizedAccountId = accountId?.trim()
-  if (normalizedAccountId) {
-    return (
-      store.accounts.find(
-        (account) => account.accountId === normalizedAccountId,
-      ) ?? null
-    )
-  }
-
-  if (store.accounts.length > 1) {
-    throw new Error("Multiple Codex accounts found but no account is selected")
-  }
-
-  return store.accounts[0]
-}
-
-export async function writeCodexCredentials(
-  credentials: CodexCredentials,
-  options: WriteCodexCredentialsOptions = {},
-): Promise<void> {
-  const normalizedCredentials = normalizeCodexCredentials(credentials)
-  if (!normalizedCredentials) {
-    throw new Error("Codex credentials are missing required fields")
-  }
-
-  await withCodexCredentialLock(async () => {
-    const store = (await readCodexCredentialStore()) ?? {
-      version: 1 as const,
-      accounts: [],
-    }
-    const accountIdSelector = normalizeCodexAccountSelector(
-      normalizedCredentials.accountId,
-    )
-    const existingIndex = store.accounts.findIndex(
-      (account) => account.accountId === normalizedCredentials.accountId,
-    )
-    if (existingIndex < 0 && options.insertIfMissing === false) {
-      // Update-only writes come from credential refreshes. A missing row means
-      // the account was removed while this process still held its credentials
-      // in memory (for example a server that was not restarted after switching
-      // accounts), so inserting it again would silently undo the removal.
-      return
+export function createOAuthCredentialStore(
+  providerLabel: string,
+  credentialPath: () => string,
+) {
+  async function readStore(): Promise<CodexCredentialStoreV1 | null> {
+    const raw = await readOptionalFile(credentialPath())
+    if (!raw?.trim()) {
+      return null
     }
 
-    const existingRefreshToken = store.accounts[existingIndex]?.refreshToken
-    if (
-      options.expectedRefreshToken !== undefined
-      && existingRefreshToken !== options.expectedRefreshToken
-      && existingRefreshToken !== normalizedCredentials.refreshToken
-    ) {
-      return
-    }
-
-    if (
-      existingIndex < 0
-      && store.accounts.some(
-        (account) =>
-          normalizeCodexAccountSelector(account.accountId)
-          === accountIdSelector,
-      )
-    ) {
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(raw) as unknown
+    } catch (error) {
       throw new Error(
-        `Codex account id '${normalizedCredentials.accountId}' is already in use`,
-      )
-    }
-    if (existingIndex < 0 && store.accounts.length >= MAX_CODEX_ACCOUNTS) {
-      throw new Error(`Codex supports at most ${MAX_CODEX_ACCOUNTS} accounts`)
-    }
-    if (
-      store.accounts.some(
-        (account, index) =>
-          index !== existingIndex
-          && account.alias
-          && normalizeCodexAccountSelector(account.alias) === accountIdSelector,
-      )
-    ) {
-      throw new Error(
-        `Codex account id '${normalizedCredentials.accountId}' conflicts with another account alias`,
+        `${providerLabel} credentials file is not valid JSON: ${credentialPath()}`,
+        {
+          cause: error,
+        },
       )
     }
 
-    const alias = options.alias?.trim()
-    if (alias) {
-      const aliasSelector = normalizeCodexAccountSelector(alias)
+    const store = normalizeCodexCredentialStore(parsed)
+    if (!store) {
+      throw new Error(
+        `${providerLabel} credentials file is missing required fields: ${credentialPath()}`,
+      )
+    }
+
+    return store
+  }
+
+  async function readCredentials(
+    accountId?: string,
+  ): Promise<CodexCredentials | null> {
+    const store = await readStore()
+    if (!store || store.accounts.length === 0) {
+      return null
+    }
+
+    const normalizedAccountId = accountId?.trim()
+    if (normalizedAccountId) {
+      return (
+        store.accounts.find(
+          (account) => account.accountId === normalizedAccountId,
+        ) ?? null
+      )
+    }
+
+    if (store.accounts.length > 1) {
+      throw new Error(
+        `Multiple ${providerLabel} accounts found but no account is selected`,
+      )
+    }
+
+    return store.accounts[0]
+  }
+
+  async function writeCredentials(
+    credentials: CodexCredentials,
+    options: WriteCodexCredentialsOptions = {},
+  ): Promise<void> {
+    const normalizedCredentials = normalizeCodexCredentials(credentials)
+    if (!normalizedCredentials) {
+      throw new Error(
+        `${providerLabel} credentials are missing required fields`,
+      )
+    }
+
+    await withCredentialFileLock(credentialPath(), async () => {
+      const store = (await readStore()) ?? {
+        version: 1 as const,
+        accounts: [],
+      }
+      const accountIdSelector = normalizeCodexAccountSelector(
+        normalizedCredentials.accountId,
+      )
+      const existingIndex = store.accounts.findIndex(
+        (account) => account.accountId === normalizedCredentials.accountId,
+      )
+      if (existingIndex < 0 && options.insertIfMissing === false) {
+        // Update-only writes come from credential refreshes. A missing row means
+        // the account was removed while this process still held its credentials
+        // in memory (for example a server that was not restarted after switching
+        // accounts), so inserting it again would silently undo the removal.
+        return
+      }
+
+      const existingRefreshToken = store.accounts[existingIndex]?.refreshToken
+      if (
+        options.expectedRefreshToken !== undefined
+        && existingRefreshToken !== options.expectedRefreshToken
+        && existingRefreshToken !== normalizedCredentials.refreshToken
+      ) {
+        return
+      }
+
+      if (
+        existingIndex < 0
+        && store.accounts.some(
+          (account) =>
+            normalizeCodexAccountSelector(account.accountId)
+            === accountIdSelector,
+        )
+      ) {
+        throw new Error(
+          `${providerLabel} account id '${normalizedCredentials.accountId}' is already in use`,
+        )
+      }
+      if (existingIndex < 0 && store.accounts.length >= MAX_CODEX_ACCOUNTS) {
+        throw new Error(
+          `${providerLabel} supports at most ${MAX_CODEX_ACCOUNTS} accounts`,
+        )
+      }
       if (
         store.accounts.some(
           (account, index) =>
             index !== existingIndex
             && account.alias
-            && normalizeCodexAccountSelector(account.alias) === aliasSelector,
-        )
-      ) {
-        throw new Error(`Codex account alias '${alias}' is already in use`)
-      }
-      if (
-        store.accounts.some(
-          (account, index) =>
-            index !== existingIndex
-            && normalizeCodexAccountSelector(account.accountId)
-              === aliasSelector,
+            && normalizeCodexAccountSelector(account.alias)
+              === accountIdSelector,
         )
       ) {
         throw new Error(
-          `Codex account alias '${alias}' conflicts with another account id`,
+          `${providerLabel} account id '${normalizedCredentials.accountId}' conflicts with another account alias`,
         )
       }
-    }
 
-    const existingAccount =
-      existingIndex >= 0 ? store.accounts[existingIndex] : undefined
-    const nextAccount: CodexStoredAccount = {
-      ...normalizedCredentials,
-      ...(alias ? { alias }
-      : existingAccount?.alias ? { alias: existingAccount.alias }
-      : {}),
-    }
-    const accounts = [...store.accounts]
-    if (existingIndex >= 0) {
-      accounts[existingIndex] = nextAccount
-    } else {
-      accounts.push(nextAccount)
-    }
+      const alias = options.alias?.trim()
+      if (alias) {
+        const aliasSelector = normalizeCodexAccountSelector(alias)
+        if (
+          store.accounts.some(
+            (account, index) =>
+              index !== existingIndex
+              && account.alias
+              && normalizeCodexAccountSelector(account.alias) === aliasSelector,
+          )
+        ) {
+          throw new Error(
+            `${providerLabel} account alias '${alias}' is already in use`,
+          )
+        }
+        if (
+          store.accounts.some(
+            (account, index) =>
+              index !== existingIndex
+              && normalizeCodexAccountSelector(account.accountId)
+                === aliasSelector,
+          )
+        ) {
+          throw new Error(
+            `${providerLabel} account alias '${alias}' conflicts with another account id`,
+          )
+        }
+      }
 
-    await writeCodexCredentialStoreUnlocked({ version: 1, accounts })
-  })
-}
+      const existingAccount =
+        existingIndex >= 0 ? store.accounts[existingIndex] : undefined
+      const nextAccount: CodexStoredAccount = {
+        ...normalizedCredentials,
+        ...(alias ? { alias }
+        : existingAccount?.alias ? { alias: existingAccount.alias }
+        : {}),
+      }
+      const accounts = [...store.accounts]
+      if (existingIndex >= 0) {
+        accounts[existingIndex] = nextAccount
+      } else {
+        accounts.push(nextAccount)
+      }
 
-export async function removeCodexCredentials(
-  accountId: string,
-): Promise<CodexStoredAccount> {
-  const normalizedAccountId = accountId.trim()
-  if (!normalizedAccountId) {
-    throw new Error("Codex account id must be a non-empty string")
+      await writeCodexCredentialStoreUnlocked(
+        { version: 1, accounts },
+        credentialPath(),
+      )
+    })
   }
 
-  return await withCodexCredentialLock(async () => {
-    const store = await readCodexCredentialStore()
-    const index =
-      store?.accounts.findIndex(
-        (account) => account.accountId === normalizedAccountId,
-      ) ?? -1
-    if (!store || index < 0) {
-      throw new Error(`Codex account '${normalizedAccountId}' was not found`)
+  async function removeCredentials(
+    accountId: string,
+  ): Promise<CodexStoredAccount> {
+    const normalizedAccountId = accountId.trim()
+    if (!normalizedAccountId) {
+      throw new Error(`${providerLabel} account id must be a non-empty string`)
     }
 
-    const removedAccount = store.accounts[index]
-    const accounts = store.accounts.filter(
-      (_account, accountIndex) => accountIndex !== index,
-    )
-    await writeCodexCredentialStoreUnlocked({ version: 1, accounts })
+    return await withCredentialFileLock(credentialPath(), async () => {
+      const store = await readStore()
+      const index =
+        store?.accounts.findIndex(
+          (account) => account.accountId === normalizedAccountId,
+        ) ?? -1
+      if (!store || index < 0) {
+        throw new Error(
+          `${providerLabel} account '${normalizedAccountId}' was not found`,
+        )
+      }
 
-    return removedAccount
-  })
+      const removedAccount = store.accounts[index]
+      const accounts = store.accounts.filter(
+        (_account, accountIndex) => accountIndex !== index,
+      )
+      await writeCodexCredentialStoreUnlocked(
+        { version: 1, accounts },
+        credentialPath(),
+      )
+
+      return removedAccount
+    })
+  }
+
+  return { readStore, readCredentials, writeCredentials, removeCredentials }
 }
+
+const codexCredentialStore = createOAuthCredentialStore(
+  "Codex",
+  () => PATHS.CODEX_CREDENTIAL_PATH,
+)
+export const readCodexCredentialStore = codexCredentialStore.readStore
+export const readCodexCredentials = codexCredentialStore.readCredentials
+export const writeCodexCredentials = codexCredentialStore.writeCredentials
+export const removeCodexCredentials = codexCredentialStore.removeCredentials
 
 export async function clearCodexCredentials(): Promise<void> {
   await withCodexCredentialLock(() =>

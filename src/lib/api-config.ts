@@ -112,8 +112,13 @@ export const prepareForCompact = (
   if (compactType) {
     headers["x-initiator"] = "agent"
     if (!isOpencodeOauthApp() && compactType === COMPACT_REQUEST) {
-      headers["x-interaction-type"] = "conversation-compaction"
-      headers["openai-intent"] = "conversation-agent"
+      headers[
+        "X-Interaction-Type" in headers ? "X-Interaction-Type" : (
+          "x-interaction-type"
+        )
+      ] = "conversation-compaction"
+      headers["OpenAI-Intent" in headers ? "OpenAI-Intent" : "openai-intent"] =
+        "conversation-agent"
     }
   }
 }
@@ -128,7 +133,11 @@ export const prepareInteractionHeaders = (
   if (isSubagent) {
     headers["x-initiator"] = "agent"
     if (sendInteractionHeaders) {
-      headers["x-interaction-type"] = "conversation-subagent"
+      headers[
+        "X-Interaction-Type" in headers ? "X-Interaction-Type" : (
+          "x-interaction-type"
+        )
+      ] = "conversation-subagent"
     }
   }
 
@@ -154,11 +163,11 @@ const OPENCODE_VERSION = "opencode/1.14.29"
 const OPENCODE_LLM_USER_AGENT =
   "opencode/1.14.29 ai-sdk/provider-utils/4.0.23 runtime/bun/1.3.13, opencode/1.14.29"
 
-const COPILOT_VERSION = "0.67.0"
+const COPILOT_VERSION = "0.68.0"
 const EDITOR_PLUGIN_VERSION = `copilot-chat/${COPILOT_VERSION}`
 const USER_AGENT = `GitHubCopilotChat/${COPILOT_VERSION}`
 const CLAUDE_AGENT_USER_AGENT =
-  "vscode_claude_code/2.1.258 (external, sdk-ts, agent-sdk/0.3.258)"
+  "vscode_claude_code/2.1.281 (external, sdk-ts, agent-sdk/0.3.281)"
 const COPILOT_WEBSOCKET_VERSION = COPILOT_VERSION
 const EDITOR_WEBSOCKET_PLUGIN_VERSION = `copilot-chat/${COPILOT_WEBSOCKET_VERSION}`
 
@@ -188,23 +197,53 @@ export const copilotBaseUrl = (state: State) => {
     : `https://api.${state.accountType}.githubcopilot.com`
 }
 
-export const prepareMessageProxyHeaders = (headers: Record<string, string>) => {
+export const prepareMessageProxyHeaders = (
+  headers: Record<string, string>,
+  state: State,
+) => {
   if (isOpencodeOauthApp()) {
     return
   }
 
-  // vscode copilot claude agent regenerates request id for
-  // each request, keeping it consistent
+  if (!state.githubToken) throw new Error("GitHub token not found")
+
+  // Preserve the Claude agent's fresh request ID for every upstream request.
   const requestIdValue = randomUUID()
-  headers["x-agent-task-id"] = requestIdValue
-  headers["x-request-id"] = requestIdValue
+  const source = createHeaderResolver(headers)
+  const proxyHeaders: Record<string, string> = {
+    "anthropic-version": source("anthropic-version", "2023-06-01"),
+    "User-Agent": CLAUDE_AGENT_USER_AGENT,
+    "Content-Type": source("content-type", "application/json"),
+    Authorization: `Bearer ${state.githubToken}`,
+    "X-Request-Id": requestIdValue,
+    "X-GitHub-Api-Version": API_VERSION,
+    "OpenAI-Intent": "messages-proxy",
+    "X-Interaction-Type": "messages-proxy",
+  }
 
-  // Consistent with vscode copilot claude agent
-  headers["x-interaction-type"] = "messages-proxy"
-  headers["openai-intent"] = "messages-proxy"
-  headers["user-agent"] = CLAUDE_AGENT_USER_AGENT
+  setPreparedHeader(proxyHeaders, "anthropic-beta", headers, "anthropic-beta")
+  setPreparedHeader(
+    proxyHeaders,
+    "VScode-SessionId",
+    headers,
+    "vscode-sessionid",
+  )
+  setPreparedHeader(
+    proxyHeaders,
+    "VScode-MachineId",
+    headers,
+    "vscode-machineid",
+  )
+  Object.assign(proxyHeaders, {
+    "Editor-Device-Id": source("editor-device-id", state.vsCodeDeviceId),
+    "Editor-Plugin-Version": `copilot-chat/${state.vsCodeVersion}`,
+    "Editor-Version": source("editor-version", `vscode/${state.vsCodeVersion}`),
+  })
 
-  delete headers["copilot-integration-id"]
+  for (const headerName of Object.keys(headers)) {
+    delete headers[headerName]
+  }
+  Object.assign(headers, proxyHeaders)
 }
 
 export const githubUserHeaders = (state: State): Record<string, string> => {

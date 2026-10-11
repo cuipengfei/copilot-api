@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'bun:test'
+import { describe, expect, mock, test } from 'bun:test'
 
 import {
   configureDesktopProvider,
@@ -6,6 +6,7 @@ import {
   getDesktopCodexAccounts,
   getDesktopAuthStatus,
   loginCodexForDesktop,
+  loginXaiForDesktop,
   removeCodexAccountForDesktop,
   selectCodexAccountForDesktop,
   shouldStartInProviderMode,
@@ -13,22 +14,22 @@ import {
 import type { ProviderConfig } from '../../src/lib/config'
 
 describe('desktop provider auth', () => {
-  test.each([{ codexModels: [] }, { codexModels: ['deepseek-v4-pro'] }])(
+  test.each([{ agentsModels: [] }, { agentsModels: ['deepseek-v4-pro'] }])(
     'preserves quick provider Codex selection %j during reauthorization',
-    ({ codexModels }) => {
+    ({ agentsModels }) => {
       let written: ProviderConfig | undefined
       configureDesktopProvider(
         { provider: 'deepseek', apiKey: 'new-key' },
         {
           getEnabledProviders: () => ['deepseek'],
-          getRawProviderConfig: () => ({ codexModels: [...codexModels] }),
+          getRawProviderConfig: () => ({ agentsModels: [...agentsModels] }),
           setProviderConfig(_name, provider) {
             written = provider
             return provider
           },
         },
       )
-      expect(written?.codexModels).toEqual([...codexModels])
+      expect(written?.agentsModels).toEqual([...agentsModels])
       expect(written?.apiKey).toBe('new-key')
     },
   )
@@ -83,7 +84,7 @@ describe('desktop provider auth', () => {
       {
         getEnabledProviders: () => ['custom_deepseek'],
         getRawProviderConfig: () => ({
-          codexModels: ['deepseek-v4-pro'],
+          agentsModels: ['deepseek-v4-pro'],
           models: {
             'deepseek-v4-pro': {
               temperature: 0.2,
@@ -108,7 +109,7 @@ describe('desktop provider auth', () => {
     expect(writtenProviderConfig).toEqual({
       apiKey: 'custom-key',
       baseUrl: 'https://custom.example/api',
-      codexModels: ['deepseek-v4-pro'],
+      agentsModels: ['deepseek-v4-pro'],
       enabled: true,
       models: {
         'deepseek-v4-pro': {
@@ -388,13 +389,17 @@ describe('desktop provider auth', () => {
     let enableProvider: boolean | undefined
     let activateAccount: boolean | undefined
     let persistedAlias: string | undefined
+    let savingAnnounced = false
 
     const result = await loginCodexForDesktop(
       {
         alias: ' Work ',
         callbackUrlOrCode: ' callback-code ',
-        openUrl: (url) => {
+        onAuthUrl: (url) => {
           openedUrl = url
+        },
+        onSaving: () => {
+          savingAnnounced = true
         },
       },
       {
@@ -410,6 +415,7 @@ describe('desktop provider auth', () => {
           }
         },
         persistCodexCredentials: (credentials, options) => {
+          expect(savingAnnounced).toBe(true)
           persistedAccessToken = credentials.accessToken
           enableProvider = options?.enableProvider
           activateAccount = options?.activateAccount
@@ -430,6 +436,45 @@ describe('desktop provider auth', () => {
       providers: ['codex'],
       success: true,
     })
+  })
+
+  test('does not start an already cancelled Codex login', async () => {
+    const controller = new AbortController()
+    controller.abort(new Error('Cancelled'))
+    const login = mock(() => Promise.reject(new Error('Unexpected login')))
+    await expect(
+      loginCodexForDesktop(
+        { signal: controller.signal },
+        { loginCodex: login },
+      ),
+    ).rejects.toThrow('Cancelled')
+    expect(login).not.toHaveBeenCalled()
+  })
+
+  test('does not persist credentials when Codex login was cancelled', async () => {
+    const controller = new AbortController()
+    const persist = mock(() => Promise.resolve())
+    const onSaving = mock(() => {})
+    await expect(
+      loginCodexForDesktop(
+        { signal: controller.signal, onSaving },
+        {
+          loginCodex: (options) => {
+            expect(options.signal).toBe(controller.signal)
+            controller.abort(new Error('Cancelled'))
+            return Promise.resolve({
+              accessToken: 'test-access',
+              refreshToken: 'test-refresh',
+              accountId: 'acct_test',
+              expiresAt: 0,
+            })
+          },
+          persistCodexCredentials: persist,
+        },
+      ),
+    ).rejects.toThrow('Cancelled')
+    expect(persist).not.toHaveBeenCalled()
+    expect(onSaving).not.toHaveBeenCalled()
   })
 
   test('lists safe Codex account summaries through desktop auth', () => {
@@ -563,5 +608,65 @@ describe('desktop provider auth', () => {
 
     expect(error).toBeInstanceOf(Error)
     expect((error as Error).message).toBe('apiKey must be a non-empty string')
+  })
+})
+
+describe('desktop xAI login', () => {
+  test('saves credentials with an alias and returns provider mode', async () => {
+    const credentials = {
+      accessToken: 'a',
+      refreshToken: 'r',
+      expiresAt: 100,
+      accountId: 'xai-user',
+    }
+    const onAuth = mock(() => {})
+    const onSaving = mock(() => {})
+    const persist = mock(() => Promise.resolve())
+    const result = await loginXaiForDesktop(
+      { alias: ' Work ', onAuth, onSaving },
+      {
+        loginXai: (options) => {
+          options.onAuth({
+            url: 'https://auth.x.ai/device',
+            userCode: 'CODE',
+            verificationUri: 'https://auth.x.ai/device',
+            expiresAt: 100,
+          })
+          return Promise.resolve(credentials)
+        },
+        persistXaiCredentials: persist,
+        getEnabledProviders: () => ['xai'],
+      },
+    )
+    expect(result).toEqual({
+      success: true,
+      mode: 'provider',
+      providers: ['xai'],
+    })
+    expect(persist).toHaveBeenCalledWith(credentials, { alias: 'Work' })
+    expect(onAuth).toHaveBeenCalled()
+    expect(onSaving).toHaveBeenCalled()
+  })
+  test('does not save credentials after cancellation', async () => {
+    const controller = new AbortController()
+    const persist = mock(() => Promise.resolve())
+    const reason = new Error('cancelled')
+    const result: unknown = await loginXaiForDesktop(
+      { signal: controller.signal },
+      {
+        loginXai: () => {
+          controller.abort(reason)
+          return Promise.resolve({
+            accessToken: 'a',
+            refreshToken: 'r',
+            expiresAt: 100,
+            accountId: 'xai-user',
+          })
+        },
+        persistXaiCredentials: persist,
+      },
+    ).catch((error: unknown) => error)
+    expect(result).toBe(reason)
+    expect(persist).not.toHaveBeenCalled()
   })
 })

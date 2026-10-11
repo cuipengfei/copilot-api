@@ -10,7 +10,7 @@
 
 推荐使用 Codex `0.160.0` 或更高版本：这些客户端会从 `model_catalog_url` 加载模型目录，因此本地 `model_catalog_json` 文件是可选的。
 
-远程目录响应限制为 1 MiB JSON。合并后的目录超出该限制时，网关会优先保留通过 provider `codexModels` 选中的模型，其余模型会被丢弃。请在 Provider 管理页选择需要的模型；如果需要完整列表，则生成本地目录文件。
+远程目录响应限制为 1 MiB JSON。合并后的目录超出该限制时，网关会优先保留通过 provider `agentsModels` 选中的模型，其余模型会被丢弃。请在 Provider 管理页选择需要的模型；如果需要完整列表，则生成本地目录文件。
 
 当 `modelMappings` 已将裸名 `model` 映射到同一个 `codex/model` 时，Codex 目录会省略重复的 `codex/model` 条目并保留裸名的完整元数据。默认的 `codex-auto-review` 和 `gpt-reserve` 映射也适用。显式前缀调用继续可用；映射到其他模型或 provider 时保留前缀条目。
 
@@ -27,8 +27,7 @@ plan_mode_reasoning_effort = "max"
 # 上下文窗口和自动压缩阈值（单位：token）可自行调整。
 # 按 OpenAI API 定价，GPT 模型（如 gpt-6.1-sol）输入超过 272000 token 时，
 # 输入及缓存费用翻倍，输出费用为 1.5 倍。
-model_context_window = 272000
-model_auto_compact_token_limit = 244800
+model_context_window = 300000
 # 沙箱策略。可改用 "workspace-write" 以启用限制。
 sandbox_mode = "danger-full-access"
 approvals_reviewer = "auto_review"
@@ -59,6 +58,8 @@ default_mode_request_user_input = true
 standalone_web_search = true
 daemon_auto_start = false
 apps = false
+prevent_idle_sleep = true
+defer_mailbox_preemption = true
 
 [desktop]
 enabled-reasoning-efforts = ["low", "medium", "high", "xhigh", "ultra", "max"]
@@ -69,6 +70,10 @@ enabled = false
 
 > [!NOTE]
 > `name` 一定要配置为 `"OpenAI"`。
+>
+> **延迟子 Agent 消息抢占（Mailbox Preemption）：** 在 `[features]` 中设置 `defer_mailbox_preemption = true`。默认情况下，主 Agent 收到子 Agent 消息后，可能在当前模型输出 reasoning/commentary 等完整输出项时提前结束 SSE 读取，无需等待 `response.completed`，就发起下一次模型请求。
+>
+> 开启后，不再因收到子 Agent 消息而提前结束当前模型响应；消息将在正常的下一次输入处理时机交付，可减少旧请求尚未结束、新请求就已启动的短暂并发。通过 GitHub Copilot 使用 Codex 时，若遇到 `Encrypted function output content could not be decrypted or decoded` 异常，可尝试开启此项。
 >
 > 使用 Codex 需先通过 ChatGPT 或 API Key 登录。`requires_openai_auth = true` 用于在 UI 中显示登录账号信息，ChatGPT 登录时还可显示额度和订阅信息；请求鉴权仍优先使用 `env_key`。如需绕过 Codex 客户端的账号限制，可尝试设为 `false`。注意：设为 `false` 后，桌面应用会隐藏 Remote（**Settings → Connections** 中的 **Control this Mac**）（[openai/codex#36879](https://github.com/openai/codex/issues/36879)）。
 >
@@ -90,7 +95,7 @@ enabled = false
 
 ### 一键生成 `model_catalog.json`
 
-需要完整模型列表、使用 Codex `0.160.0` 之前的版本，或需要避开远程响应的 1 MiB 限制时，使用本地目录文件。生成脚本携带 `x-full-model-catalog: true`，绕过大小和默认模型排除限制，仍遵守 provider 启停状态及 `codexModels` 名单；该 header 不会转发给上游。Provider 名单设置详见[配置说明](configuration.md)。
+需要完整模型列表、使用 Codex `0.160.0` 之前的版本，或需要避开远程响应的 1 MiB 限制时，使用本地目录文件。生成脚本携带 `x-full-model-catalog: true`，绕过大小和默认模型排除限制，仍遵守 provider 启停状态及 `agentsModels` 名单；该 header 不会转发给上游。Provider 名单设置详见[配置说明](configuration.md)。
 
 启动网关，安装 `curl` 及 Bun 或 Node.js，然后在仓库根目录运行[生成脚本](../../generate-model-catalog.sh)：
 

@@ -13,6 +13,7 @@ import os from "node:os"
 import path from "node:path"
 
 import {
+  getClaudeAutoModel,
   getConfig,
   invalidateConfigCache,
   reloadConfig,
@@ -146,6 +147,7 @@ describe("running server config reload", () => {
 
   test("initializes tokens and models when Copilot is enabled while running", async () => {
     saveConfig({ providers: { "github-copilot": { enabled: true } } })
+    expect(getClaudeAutoModel(true)).toBeUndefined()
     await reloadServerConfig()
     expect(state.githubToken).toBe("saved-github-token")
     expect(state.githubTokenSource).toBe("file")
@@ -153,6 +155,7 @@ describe("running server config reload", () => {
     expect(state.models?.data).toEqual([])
     expect(tokens.logUser).toHaveBeenCalledTimes(1)
     expect(tokens.setupCopilotToken).toHaveBeenCalledTimes(1)
+    expect(getClaudeAutoModel(true)).toBe("gpt-6-luna")
   })
 
   test("keeps established Copilot credentials on an ordinary config reload", async () => {
@@ -194,12 +197,14 @@ describe("running server config reload", () => {
   test("clears Copilot credentials when the saved token is removed", async () => {
     saveConfig({ providers: { "github-copilot": { enabled: true } } })
     await reloadServerConfig()
+    expect(getClaudeAutoModel(true)).toBe("gpt-6-luna")
     spyOn(credentials, "readGitHubToken").mockResolvedValue(null)
     await reloadServerConfig()
     expect(state.githubToken).toBeUndefined()
     expect(state.copilotToken).toBeUndefined()
     expect(state.models).toBeUndefined()
     expect(state.userName).toBeUndefined()
+    expect(getClaudeAutoModel(true)).toBeUndefined()
     // Once for the reinitialized runtime, once for the removed token.
     expect(models.stopModelsRefreshLoop).toHaveBeenCalledTimes(2)
   })

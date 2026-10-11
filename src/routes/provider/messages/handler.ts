@@ -26,7 +26,8 @@ import {
   getClaudeAutoModel,
   resolveProviderConfigForModel,
 } from "~/lib/config"
-import { builtinProviderModelRegistry } from "~/lib/builtin-provider-models"
+import { getProviderModelConfig } from "~/lib/provider-model-catalog"
+import { fromClaudeDiscoveryModelId } from "~/lib/claude-models"
 import { logCodexRateLimitsEvent } from "~/lib/codex-rate-limit"
 import {
   applyDashScopePreserveThinkingDefault,
@@ -36,6 +37,7 @@ import {
 } from "~/lib/dashscope"
 import { HTTPError } from "~/lib/error"
 import { createHandlerLogger, debugJson, debugLazy } from "~/lib/logger"
+import { getProviderModelPdfSupport } from "~/lib/model-pdf-support"
 import { resolveProviderConfig } from "~/lib/provider-resolver"
 import { writeSSEIfConnected } from "~/lib/sse"
 import { resolveBridgeToolSearchName } from "~/lib/tool-search"
@@ -77,6 +79,8 @@ import {
   stripWebSearchServerTool,
 } from "~/routes/messages/web-search/fulfill"
 import {
+  appendClaudeContinuationMessage,
+  applyClaudeNoToolsEffort,
   isClaudeAutoModelRequest,
   normalizeSystemMessages,
 } from "~/routes/messages/preprocess"
@@ -120,6 +124,8 @@ export async function handleProviderMessages(
 ): Promise<Response> {
   const provider = c.req.param("provider")
   const payload = await c.req.json<AnthropicMessagesPayload>()
+  payload.model = fromClaudeDiscoveryModelId(payload.model)
+  applyClaudeNoToolsEffort(payload, c.req.header("user-agent"))
 
   const claudeAutoModel = getClaudeAutoModel()
   if (claudeAutoModel && isClaudeAutoModelRequest(payload)) {
@@ -170,6 +176,7 @@ export async function handleProviderMessagesForProvider(
     normalizeSystemMessages(payload)
 
     applyModelDefaults(payload, modelConfig)
+    appendClaudeContinuationMessage(payload)
 
     if (effectiveType === "openai-responses") {
       if (hasWebSearchServerTool(payload)) {
@@ -623,7 +630,7 @@ const createOpenAICompatiblePayload = (
   providerConfig: ResolvedProviderConfig,
 ): ChatCompletionsPayload => {
   const openAIPayload = translateToOpenAI(payload, {
-    supportPdf: modelConfig?.supportPdf,
+    supportPdf: getProviderModelPdfSupport(payload.model, providerConfig),
     toolContentSupportType: modelConfig?.toolContentSupportType ?? [],
   })
 
@@ -726,9 +733,10 @@ const normalizeOpenAICompatibleReasoningContent = (
   // history messages instead of the default "reasoning_content" field
   const reasoningField =
     options.modelConfig?.reasoningField
-    ?? builtinProviderModelRegistry.getModelConfig(
+    ?? getProviderModelConfig(
       options.providerConfig.name,
       payload.model,
+      options.providerConfig,
     )?.reasoningField
     ?? "reasoning_content"
 

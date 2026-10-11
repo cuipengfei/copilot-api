@@ -4,8 +4,10 @@ import type { AnthropicMessagesPayload } from "~/lib/types/anthropic"
 
 import {
   copilotHeaders,
+  isOpencodeOauthApp,
   prepareForCompact,
   prepareInteractionHeaders,
+  prepareMessageProxyHeaders,
 } from "~/lib/api-config"
 import {
   getReasoningEffortForModel,
@@ -14,6 +16,7 @@ import {
 import { HTTPError } from "~/lib/error"
 import { resolveInitiatorWithSmartAgent } from "~/lib/smart-agent"
 import { state } from "~/lib/state"
+import { parseUserIdMetadata } from "~/lib/utils"
 import { attachAutoSessionToken } from "~/services/copilot/auto-session-retry"
 import type { CreateMessagesOptions } from "~/services/copilot/create-messages"
 import {
@@ -145,6 +148,8 @@ const allowedAnthropicBetas: Record<string, true> = {
   "context-management-2025-06-27": true,
   [ADVANCED_TOOL_USE_BETA]: true,
   "extended-cache-ttl-2025-04-11": true,
+  "mid-conversation-output-config-2026-07-01": true,
+  "per-turn-control-2026-07-01": true,
 }
 
 /**
@@ -265,12 +270,26 @@ export const buildMessagesHeaders = async (
   options: CreateMessagesOptions,
 ): Promise<Record<string, string>> => {
   const enableVision = hasImageContent(payload)
-  const defaultInitiator = options.initiator ?? "user"
+  const lastMessage = payload.messages.at(-1)
+  const isInitiateRequest =
+    lastMessage?.role === "user"
+    && (typeof lastMessage.content === "string"
+      || lastMessage.content.some((block) => block.type !== "tool_result"))
+  const defaultInitiator =
+    options.initiator ?? (isInitiateRequest ? "user" : "agent")
   const { initiator } = await resolveInitiatorWithSmartAgent(defaultInitiator)
-  const headers: Record<string, string> = {
-    ...copilotHeaders(state, options.requestId, enableVision),
-    "x-initiator": initiator,
+  const headers = copilotHeaders(state, options.requestId, enableVision)
+  const { safetyIdentifier, sessionId } = parseUserIdMetadata(
+    payload.metadata?.user_id,
+  )
+  const useMessageProxy = safetyIdentifier && sessionId && !isOpencodeOauthApp()
+  if (useMessageProxy) {
+    headers["anthropic-version"] =
+      options.anthropicVersionHeader ?? "2023-06-01"
+    prepareMessageProxyHeaders(headers, state)
+    if (enableVision) headers["copilot-vision-request"] = "true"
   }
+  headers["x-initiator"] = initiator
 
   prepareInteractionHeaders(
     options.sessionId,

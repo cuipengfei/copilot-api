@@ -2,23 +2,23 @@
 
 ## Overview
 
-这里封装增强版 `/v1/models`：从 `state.models` 取已经过缓存层过滤的模型清单，补齐 limits / capability / billing 字段，并按本项目约定排序后返回。
+这里封装 `/v1/models`：共享模块提供 Copilot 与 provider 模型发现，普通客户端保留增强 limits / capability / billing 字段和排序；Claude Code、Codex 与 OpenCode 使用各自的展示格式。
 
 ## Where To Look
 
 | Task | Location | Notes |
 |------|----------|-------|
 | Route entry | `route.ts` | 仅有 `GET /`，失败统一走 `forwardError()` |
-| Limit shaping | `route.ts` | `buildLimits()` 负责 thinking_budget / vision 展开 |
-| Sort policy | `route.ts` | `sortModels()` 先类型，再 premium，再 token 容量 |
-| Fallback cache | `route.ts` | `state.models` 为空时补跑 `cacheModels()` |
+| Limit shaping | `model-discovery.ts` | `buildLimits()` 负责 thinking_budget / vision 展开 |
+| Sort policy | `default-models.ts`、`model-discovery.ts` | 普通客户端按类型、premium、token 容量排序 |
+| Fallback cache | `model-discovery.ts` | Copilot 是唯一来源且 `state.models` 为空时调用 `cacheModels()` |
 
 ## Critical Invariants
 
-- `state.models` 为空时，必须先 `await cacheModels()`；不要假定启动阶段永远已缓存好模型
-- `cacheModels()` 会在写入 `state.models` 前硬过滤 `model_picker_enabled === false` 的模型；路由层不要重复过滤，也不要把未启用模型重新混回客户端响应
+- Copilot 已启用、其他 provider 清单为空且 `state.models` 未加载时，先 `await cacheModels()`。
+- `cacheModels()` 保留 picker-enabled 与 embeddings 模型，并排除 policy-disabled 模型；路由复用该缓存结果。
 - `buildLimits()` 要对 `caps.limits ?? {}` 做防御性处理；某些模型（特别是 embeddings）在运行时可能没有完整 limits
-- 返回顺序由 `sortModels()` 固定：`chat` 优先于 `completion` / `embeddings`，同类型内 premium 优先，再按 `max_prompt` / `context_window` 降序
+- 普通客户端返回顺序由 `sortModels()` 决定：`chat` 优先于 `completion` / `embeddings`，同类型内 premium 优先，再按 `max_prompt` / `context_window` 降序；其他客户端保留各自展示顺序。
 
 ## Project-Specific Rules
 

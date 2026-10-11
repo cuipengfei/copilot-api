@@ -11,9 +11,9 @@ import {
 import { PATHS } from "~/lib/paths"
 import {
   applyProviderManagementUpdate,
-  getProviderCodexModels,
+  getProviderAgentModels,
   getProviderManagementConfig,
-  isProviderCodexModelVisible,
+  isProviderAgentModelVisible,
   saveProviderManagementConfig,
 } from "~/lib/provider-management"
 
@@ -41,7 +41,7 @@ function fixture(): AppConfig {
         authType: "oauth2",
         accountId: "account",
         apiKey: "codex-secret",
-        codexModels: ["gpt-6.1-sol"],
+        agentsModels: ["gpt-6.1-sol"],
       },
     },
   }
@@ -63,7 +63,7 @@ describe("provider management", () => {
         name: "github-copilot",
         type: "github-copilot",
         enabled: true,
-        codexModels: undefined,
+        agentsModels: undefined,
       },
     ])
     expect(getProviderManagementConfig({}).providers[0]?.name).toBe(
@@ -74,12 +74,12 @@ describe("provider management", () => {
     const config = fixture()
     const disabled = applyProviderManagementUpdate(config, {
       providers: {
-        "github-copilot": { enabled: false, codexModels: ["gpt-5.4"] },
+        "github-copilot": { enabled: false, agentsModels: ["gpt-5.4"] },
       },
     })
     expect(disabled.providers?.["github-copilot"]).toEqual({
       enabled: false,
-      codexModels: ["gpt-5.4"],
+      agentsModels: ["gpt-5.4"],
     })
     expect(disabled.providers?.dashscope).toEqual(config.providers?.dashscope)
     expect(disabled.auth).toEqual(config.auth)
@@ -88,47 +88,47 @@ describe("provider management", () => {
     })
     expect(enabled.providers?.["github-copilot"]).toEqual({
       enabled: true,
-      codexModels: ["gpt-5.4"],
+      agentsModels: ["gpt-5.4"],
     })
     expect(getProviderManagementConfig(disabled).providers[0]?.enabled).toBe(
       false,
     )
   })
   test("supports automatic, empty, and explicit model lists", () => {
-    expect(isProviderCodexModelVisible(undefined, "anything")).toBe(true)
-    expect(isProviderCodexModelVisible({ enabled: false }, "anything")).toBe(
+    expect(isProviderAgentModelVisible(undefined, "anything")).toBe(true)
+    expect(isProviderAgentModelVisible({ enabled: false }, "anything")).toBe(
       false,
     )
-    expect(isProviderCodexModelVisible({ codexModels: [] }, "anything")).toBe(
+    expect(isProviderAgentModelVisible({ agentsModels: [] }, "anything")).toBe(
       false,
     )
     expect(
-      isProviderCodexModelVisible(
-        { codexModels: [" model ", "model"] },
+      isProviderAgentModelVisible(
+        { agentsModels: [" model ", "model"] },
         "model",
       ),
     ).toBe(true)
     expect(
-      isProviderCodexModelVisible({ codexModels: ["model"] }, "other"),
+      isProviderAgentModelVisible({ agentsModels: ["model"] }, "other"),
     ).toBe(false)
     expect(
-      getProviderCodexModels({ codexModels: [" model ", "", "model"] }),
+      getProviderAgentModels({ agentsModels: [" model ", "", "model"] }),
     ).toEqual(["model"])
     expect(
-      getProviderCodexModels({ codexModels: [42] as unknown as string[] }),
+      getProviderAgentModels({ agentsModels: [42] as unknown as string[] }),
     ).toBeUndefined()
   })
   test("updates only requested fields, deduplicates selections, and preserves credentials", () => {
     const original = fixture()
     const updated = applyProviderManagementUpdate(original, {
       providers: {
-        dashscope: { enabled: false, codexModels: [" model ", "model"] },
+        dashscope: { enabled: false, agentsModels: [" model ", "model"] },
       },
     })
     expect(updated.providers?.dashscope).toEqual({
       ...original.providers?.dashscope,
       enabled: false,
-      codexModels: ["model"],
+      agentsModels: ["model"],
     })
     expect(updated.providers?.codex).toEqual(original.providers?.codex)
     expect(updated.auth).toEqual(original.auth)
@@ -136,9 +136,9 @@ describe("provider management", () => {
     expect(original.providers?.dashscope.enabled).toBeUndefined()
     expect(
       applyProviderManagementUpdate(updated, {
-        providers: { dashscope: { codexModels: null } },
+        providers: { dashscope: { agentsModels: null } },
       }).providers?.dashscope,
-    ).not.toHaveProperty("codexModels")
+    ).not.toHaveProperty("agentsModels")
     expect(applyProviderManagementUpdate(original, {})).toEqual(original)
   })
   test.each([
@@ -148,7 +148,7 @@ describe("provider management", () => {
     { providers: { missing: { enabled: true } } },
     { providers: { copilot: { enabled: false } } },
     { providers: { dashscope: { apiKey: "overwrite" } } },
-    { providers: { dashscope: { codexModels: [""] } } },
+    { providers: { dashscope: { agentsModels: [""] } } },
     { providers: { dashscope: { enabled: "false" } } },
   ])("rejects invalid updates %j", (input) => {
     expect(() => applyProviderManagementUpdate(fixture(), input)).toThrow()

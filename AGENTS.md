@@ -41,6 +41,12 @@ pre-commit hook 只跑 `lint-staged`（仅暂存文件的 lint），不保证项
 
 任何一步失败，必须修复后从受影响检查重新运行；**不要用 `--no-verify` 跳过**。目标测试可用于定位，但不能替代全量 `bun run test`。
 
+补充要求：
+
+- 测试文件以 `*.test.ts` 命名，放在 `tests/` 或 `desktop/tests/`，与受影响的包对应。
+- 汇报测试时只给结果摘要、相关失败与变更代码覆盖率，不要把完整测试输出整段贴进对话。
+- 纯文档改动：核对引用的路径/命令并检查 diff 即可，无需运行应用测试。
+
 ## Commit 规范
 
 - Conventional Commit 前缀：`feat:`、`fix:`、`chore:`、`refactor:` 等。

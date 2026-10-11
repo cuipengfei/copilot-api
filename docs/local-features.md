@@ -43,6 +43,7 @@
 - [auto-session-websocket-local.test.ts](../tests/auto-session-websocket-local.test.ts)：本机真实 WebSocket 握手头验证不附 Auto token；[create-responses-websocket-pool.test.ts](../tests/create-responses-websocket-pool.test.ts)：Responses WebSocket 池化行为。
 - [tls-retry.test.ts](../tests/tls-retry.test.ts)。
 - [start-auto-session-prewarm.test.ts](../tests/start-auto-session-prewarm.test.ts)、[token-metadata.test.ts](../tests/token-metadata.test.ts)、[token-metadata-apply.test.ts](../tests/token-metadata-apply.test.ts)。
+- [start-mode.test.ts](../tests/start-mode.test.ts)：GitHub 凭据来源优先级、provider-only 启动、交互配置完成后的启动与无可用 provider 时拒绝开放服务。
 
 ## 2. Native Messages 兼容
 
@@ -57,6 +58,8 @@
 - 调整 assistant 的 text/tool_use 顺序时，保持 thinking 与 redacted_thinking 的原位置。
 - 仅匹配已有 `400` effort 或 thinking 错误时执行对应的单次兼容重试；首次请求保留完整 thinking 内容。
 - 保留模型专属 header 条件、请求标识、错误响应以及 Telemetry 的调用顺序。
+- 完整 Claude metadata 的 Messages proxy 使用 GitHub token、客户端 API version 和每次请求的新 request ID；该 ID 同时用于 Telemetry。图像标记、请求来源、interaction/compact 信息与匹配的 Auto session token 在身份准备后保留。
+- 最后一条 user 消息包含非 `tool_result` 内容时，默认请求来源为 `user`；工具结果与 assistant 续写默认为 `agent`，显式选项及 smart-agent 规则继续生效。
 
 **本地实现**：[messages-compat.ts](../src/services/copilot/messages-compat.ts) 承载 headers、payload 准备与协议错误重试。
 
@@ -66,6 +69,7 @@
 
 - [create-messages.test.ts](../tests/create-messages.test.ts)：公开 service 行为。
 - [messages-compat.test.ts](../tests/messages-compat.test.ts)：纯数据变换与本地真实 HTTP 重试。
+- [create-messages-headers.test.ts](../tests/create-messages-headers.test.ts)：本机真实 HTTP header casing、proxy 认证、API version、图像工具结果及 compact 信息。
 - [auto-session-chains.test.ts](../tests/auto-session-chains.test.ts)。
 
 ## 3. Chat Completions 兼容
@@ -152,6 +156,7 @@
 - [should-use-agent-mode.test.ts](../tests/should-use-agent-mode.test.ts)、[resolve-initiator.test.ts](../tests/resolve-initiator.test.ts)。
 - [token-usage.test.ts](../tests/token-usage.test.ts)、[logger.test.ts](../tests/logger.test.ts) 与 [logger-local.test.ts](../tests/logger-local.test.ts)。
 - [api-config.test.ts](../tests/api-config.test.ts)、[api-config-local.test.ts](../tests/api-config-local.test.ts)、[token-copilot-url.test.ts](../tests/token-copilot-url.test.ts) 与 [token-metadata-apply.test.ts](../tests/token-metadata-apply.test.ts)。
+- [token-lifecycle.test.ts](../tests/token-lifecycle.test.ts)：直接验证凭据装载、账户选择、后台刷新成功与失败、禁用状态、登录错误及凭据持久化，使用临时目录隔离用户数据。
 
 ## 7. 多实例 router 与 dashboard
 
@@ -206,11 +211,11 @@
 
 ## 12. Responses reasoning replay 防护与 effort 映射
 
-**行为**：Messages 转 Responses 时，只重放具有有效 signature 且 reasoning ID 长度不超过 64 的 thinking 内容；缺失 signature 或超过长度限制的内容按原规则处理并保留诊断。assistant phase 仅在模型配置含 `## Intermediary updates` extra prompt 时设置；effort `max` 映射为 `xhigh`。
+**行为**：Messages 转 Responses 时，只重放具有有效 signature 且 reasoning ID 长度不超过 64 的 thinking 内容；缺失 signature 或超过长度限制的内容按原规则处理并保留诊断。assistant phase 在模型配置含 `## Intermediary updates` extra prompt 或为 Grok 模型时设置；请求显式指定的 effort 优先，`max` 映射为 `xhigh`。Grok 使用 `concise` reasoning summary，并保留文本、图像、工具调用与 phase（commentary/final_answer）。
 
 **源码与接入**：[responses-translation.ts](../src/routes/messages/responses-translation.ts) 的 `createReasoningContent`、`shouldApplyPhase` 与 effort 映射。
 
-**验证入口**：[reasoning-effort-local.test.ts](../tests/reasoning-effort-local.test.ts) 覆盖本地 effort 映射与日志值解析；[reasoning-effort.test.ts](../tests/reasoning-effort.test.ts) 保留上游 effort 归一化用例。reasoning ID 长度与 phase 条件的专门测试尚未确认。
+**验证入口**：[responses-translation.test.ts](../tests/responses-translation.test.ts) 覆盖 reasoning ID 的 64/65 字符边界、phase 配置条件、显式 effort、Grok 内容保留、compaction 的双向回放与工具参数边界；[reasoning-effort-local.test.ts](../tests/reasoning-effort-local.test.ts) 覆盖本地 effort 映射与日志值解析；[reasoning-effort.test.ts](../tests/reasoning-effort.test.ts) 保留上游 effort 归一化用例。
 
 ## 13. prompt-cache 的 thinking 保护
 
@@ -232,7 +237,7 @@
 
 **行为**：`GET /v1/models` 提供 premium、倍率、可用账号、模型限制、family、endpoints、工具调用、并行工具调用、流式与结构化输出能力等字段。排序依次考虑模型种类、premium、最大 prompt 和 context window；必要时使用已有的模型缓存加载路径。
 
-**源码与接入**：[models route](../src/routes/models/route.ts) 的 `buildLimits`、`sortModels` 与模型缓存调用；[models.ts](../src/lib/types/models.ts) 保留 billing 类型。
+**源码与接入**：[models route](../src/routes/models/route.ts) 按客户端调用共享发现模块；[model-discovery.ts](../src/routes/models/model-discovery.ts) 负责 `buildLimits`、`sortModels` 与模型缓存调用，[default-models.ts](../src/routes/models/default-models.ts) 保留普通客户端排序；Claude Code、Codex 与 OpenCode 使用各自的模型展示格式。[models.ts](../src/lib/types/models.ts) 保留 billing 类型。
 
 **验证入口**：[models-route.test.ts](../tests/models-route.test.ts) 与 [models-log.test.ts](../tests/models-log.test.ts)。
 

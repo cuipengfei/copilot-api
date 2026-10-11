@@ -43,8 +43,8 @@ afterAll(() => {
 })
 
 describe("normalizeSystemMessages", () => {
-  test.each(["gpt-5.4", "codex-mini-latest"])(
-    "preserves inline system messages for %s models",
+  test.each(["gpt-5.4", "codex-mini-latest", "claude-opus-4.6"])(
+    "preserves mid system messages for %s models",
     (model) => {
       const payload: AnthropicMessagesPayload = {
         model,
@@ -83,7 +83,7 @@ describe("normalizeSystemMessages", () => {
 
   test("merges system string content into the previous message", () => {
     const payload: AnthropicMessagesPayload = {
-      model: "claude-opus-4.6",
+      model: "gemini-2.5-pro",
       max_tokens: 128,
       messages: [
         {
@@ -119,7 +119,7 @@ describe("normalizeSystemMessages", () => {
 
   test("moves leading system messages to payload.system and appends block content to the previous array message", () => {
     const payload: AnthropicMessagesPayload = {
-      model: "claude-opus-4.6",
+      model: "gemini-2.5-pro",
       max_tokens: 128,
       messages: [
         {
@@ -171,7 +171,7 @@ describe("normalizeSystemMessages", () => {
 
   test("inserts system text after tool_result blocks in user array content", () => {
     const payload: AnthropicMessagesPayload = {
-      model: "claude-opus-4.6",
+      model: "gemini-2.5-pro",
       max_tokens: 128,
       messages: [
         {
@@ -221,7 +221,7 @@ describe("normalizeSystemMessages", () => {
 
   test("splits SubagentStart hook additional first line into its own content block", () => {
     const payload: AnthropicMessagesPayload = {
-      model: "claude-opus-4.6",
+      model: "gemini-2.5-pro",
       max_tokens: 128,
       messages: [
         {
@@ -260,7 +260,7 @@ describe("normalizeSystemMessages", () => {
 
   test("splits SubagentStart hook additional array block and preserves its cache boundary", () => {
     const payload: AnthropicMessagesPayload = {
-      model: "claude-opus-4.6",
+      model: "gemini-2.5-pro",
       max_tokens: 128,
       messages: [
         {
@@ -750,77 +750,6 @@ describe("mergeToolResultForClaude attachments", () => {
       ],
     })
   })
-
-  test("appends image and document blocks to the last tool_result", () => {
-    const payload: AnthropicMessagesPayload = {
-      model: "claude-opus-4.6",
-      max_tokens: 128,
-      messages: [
-        {
-          role: "user",
-          content: [
-            {
-              type: "tool_result",
-              tool_use_id: "tool-1",
-              content: "binary output",
-            },
-            {
-              type: "image",
-              source: {
-                type: "base64",
-                media_type: "image/png",
-                data: "image-data",
-              },
-            },
-            {
-              type: "document",
-              source: {
-                type: "base64",
-                media_type: "application/pdf",
-                data: "pdf-data",
-              },
-              title: "report.pdf",
-            },
-          ],
-        },
-      ],
-    }
-
-    mergeToolResultForClaude(payload)
-
-    expect(payload.messages[0]).toEqual({
-      role: "user",
-      content: [
-        {
-          type: "tool_result",
-          tool_use_id: "tool-1",
-          content: [
-            {
-              type: "text",
-              text: "binary output",
-            },
-            {
-              type: "image",
-              source: {
-                type: "base64",
-                media_type: "image/png",
-                data: "image-data",
-              },
-            },
-            {
-              type: "document",
-              source: {
-                type: "base64",
-                media_type: "application/pdf",
-                data: "pdf-data",
-              },
-              title: "report.pdf",
-            },
-          ],
-        },
-      ],
-    })
-  })
 })
 
 describe("mergeToolResultForClaude attachments fallback", () => {
@@ -1110,42 +1039,34 @@ describe("sanitizeIdeTools", () => {
     )
     expect(executeCodeTool?.description).toBe("Execute code")
   })
-
-  test("rewrites getDiagnostics description for GPT models", () => {
-    const payload: AnthropicMessagesPayload = {
-      model: "gpt-5.4",
-      max_tokens: 128,
-      messages: [{ role: "user", content: "hello" }],
-      tools: [
-        {
-          name: "mcp__ide__executeCode",
-          description: "Execute code",
-          input_schema: { type: "object" },
-        },
-        {
-          name: "mcp__ide__getDiagnostics",
-          description: "Old description",
-          input_schema: { type: "object" },
-        },
-      ],
-    }
-
-    sanitizeIdeTools(payload)
-
-    expect(payload.tools?.map((tool) => tool.name)).toEqual([
-      "mcp__ide__executeCode",
-      "mcp__ide__getDiagnostics",
-    ])
-    const diagnosticsTool = payload.tools?.find(
-      (tool) => tool.name === "mcp__ide__getDiagnostics",
-    )
-    expect(diagnosticsTool?.description).toBe(
-      "Get language diagnostics from VS Code. Returns errors, warnings, information, and hints for files in the workspace.",
-    )
-  })
 })
 
 describe("prepareMessagesApiPayload", () => {
+  test("preserves low effort and output format with adaptive thinking", () => {
+    const outputConfig: AnthropicMessagesPayload["output_config"] = {
+      effort: "low",
+      format: { type: "json_schema", schema: { type: "object" } },
+    }
+    const payload: AnthropicMessagesPayload = {
+      model: "claude-opus-4.8",
+      max_tokens: 128,
+      messages: [{ role: "user", content: "hello" }],
+      output_config: outputConfig,
+    }
+
+    prepareMessagesApiPayload(payload, {
+      capabilities: {
+        supports: {
+          adaptive_thinking: true,
+          reasoning_effort: ["low", "medium", "high", "max"],
+        },
+      },
+    } as never)
+
+    expect(payload.output_config).toEqual(outputConfig)
+    expect(payload.thinking?.type).toBe("adaptive")
+  })
+
   test("strips cache_control scope, filters thinking blocks, and enables adaptive thinking", () => {
     const payload: AnthropicMessagesPayload = {
       model: "gpt-5.4",

@@ -12,10 +12,29 @@ import type { BrowserWindow } from 'electron'
 import * as serverAuth from '../electron/server-auth-config'
 import * as settingsStore from '../electron/settings-store'
 import * as providerManagement from '../../src/lib/provider-management'
-import type { DesktopSettings, ServerKeysConfigUpdate } from '../src/types/ipc'
+import { CodexOAuthError } from '../../src/lib/oauth/codex'
+import { XaiOAuthError } from '../../src/lib/oauth/xai'
+import * as xaiToken from '../../src/lib/xai-token'
+import type {
+  DesktopSettings,
+  ServerKeysConfigUpdate,
+  XaiAuthInfo,
+} from '../src/types/ipc'
 
 type IpcHandler = (event: unknown, ...parameters: unknown[]) => unknown
 const handlers = new Map<string, IpcHandler>()
+const openExternal = mock(() => Promise.resolve())
+let preloadApi: Window['electronAPI'] | undefined
+type RendererListener = (event: unknown, payload: unknown) => void
+const rendererListeners = new Map<string, Set<RendererListener>>()
+const rendererOff = mock((channel: string, listener: RendererListener) => {
+  const listeners = rendererListeners.get(channel)
+  listeners?.delete(listener)
+  if (listeners?.size === 0) rendererListeners.delete(channel)
+})
+const rendererInvoke = mock((_channel: string, ..._args: unknown[]) =>
+  Promise.resolve(),
+)
 let running = true
 let activeAdminApiKey = 'old-admin'
 let keys = { apiKeys: ['old-api'], adminApiKey: 'old-admin' }
@@ -31,14 +50,34 @@ const startServer = mock((port: number, options?: { host?: string }) => {
 })
 
 await mock.module('electron', () => ({
+  contextBridge: {
+    exposeInMainWorld: (_name: string, api: Window['electronAPI']) => {
+      preloadApi = api
+    },
+  },
+  ipcRenderer: {
+    invoke: rendererInvoke,
+    on: (channel: string, listener: RendererListener) => {
+      const listeners =
+        rendererListeners.get(channel) ?? new Set<RendererListener>()
+      listeners.add(listener)
+      rendererListeners.set(channel, listeners)
+    },
+    off: rendererOff,
+  },
   ipcMain: {
     handle: (channel: string, handler: IpcHandler) =>
       handlers.set(channel, handler),
     on: () => {},
   },
-  shell: { openExternal: () => Promise.resolve() },
+  shell: { openExternal },
   BrowserWindow: class {},
-  app: { getAppPath: () => process.cwd(), getPath: () => process.cwd() },
+  app: {
+    getAppPath: () => process.cwd(),
+    getPath: () => process.cwd(),
+    isReady: () => true,
+    getLocale: () => 'en',
+  },
   utilityProcess: {},
 }))
 await mock.module('../electron/server-manager', () => ({
@@ -69,6 +108,10 @@ async function invoke(
 
 beforeEach(async () => {
   handlers.clear()
+  openExternal.mockClear()
+  rendererListeners.clear()
+  rendererOff.mockClear()
+  rendererInvoke.mockClear()
   keys = { apiKeys: ['old-api'], adminApiKey: 'old-admin' }
   activeAdminApiKey = keys.adminApiKey
   settings = settingsStore.normalizeSettings({})
@@ -111,6 +154,19 @@ beforeEach(async () => {
   spyOn(providerAuth, 'selectCodexAccountForDesktop').mockResolvedValue(result)
   spyOn(providerAuth, 'removeCodexAccountForDesktop').mockResolvedValue(result)
   spyOn(providerAuth, 'loginCodexForDesktop').mockResolvedValue(result)
+  spyOn(providerAuth, 'loginXaiForDesktop').mockResolvedValue({
+    ...result,
+    providers: ['xai'],
+  })
+  spyOn(xaiToken, 'getXaiAccounts').mockResolvedValue([])
+  spyOn(xaiToken, 'selectXaiAccount').mockResolvedValue({
+    accountId: 'account-id',
+    active: true,
+  })
+  spyOn(xaiToken, 'removeXaiAccount').mockResolvedValue({
+    accountId: 'account-id',
+    active: false,
+  })
   spyOn(auth, 'getGitHubUser').mockResolvedValue('test-user')
   spyOn(auth, 'getCopilotAccountType').mockResolvedValue('individual')
   spyOn(auth, 'saveToken').mockResolvedValue(undefined)
@@ -135,13 +191,474 @@ beforeEach(async () => {
     { preconnect: () => {} },
   )
   spyOn(globalThis, 'fetch').mockImplementation(fetchResponse)
-  registerIpcHandlers({} as BrowserWindow)
+  registerIpcHandlers({ once: () => {} } as unknown as BrowserWindow)
   running = false
   await invoke('config:save-provider-management', {})
   running = true
 })
 
 afterEach(() => mock.restore())
+
+describe('desktop Codex login controls', () => {
+  test('exposes cancellation and URL subscription through the preload bridge', async () => {
+    await import('../electron/preload')
+    if (!preloadApi) throw new Error('Preload bridge was not exposed')
+    const callback = mock((_url: string) => {})
+    const unsubscribe = preloadApi.onCodexAuthUrl(callback)
+    const handler = [...rendererListeners.get('auth:codex-url')!][0]
+    const otherCallback = mock((_url: string) => {})
+    const unsubscribeOther = preloadApi.onCodexAuthUrl(otherCallback)
+    for (const listener of rendererListeners.get('auth:codex-url')!) {
+      listener(undefined, 'https://auth.example/login')
+    }
+    expect(callback).toHaveBeenCalledWith('https://auth.example/login')
+    unsubscribe()
+    expect(rendererOff).toHaveBeenCalledWith('auth:codex-url', handler)
+    expect(rendererListeners.get('auth:codex-url')?.size).toBe(1)
+    for (const listener of rendererListeners.get('auth:codex-url')!) {
+      listener(undefined, 'https://auth.example/second')
+    }
+    expect(callback).toHaveBeenCalledTimes(1)
+    expect(otherCallback).toHaveBeenCalledTimes(2)
+    unsubscribeOther()
+    expect(rendererListeners.has('auth:codex-url')).toBe(false)
+    const onSaving = mock(() => {})
+    const unsubscribeSaving = preloadApi.onCodexLoginSaving(onSaving)
+    const savingHandler = [...rendererListeners.get('auth:codex-saving')!][0]
+    savingHandler(undefined, '')
+    expect(onSaving).toHaveBeenCalledTimes(1)
+    unsubscribeSaving()
+    expect(rendererOff).toHaveBeenCalledWith('auth:codex-saving', savingHandler)
+    await preloadApi.cancelCodexLogin()
+    expect(rendererInvoke).toHaveBeenCalledWith('auth:cancel-codex-login')
+    await preloadApi.startCodexLogin({ alias: 'Work' })
+    expect(rendererInvoke).toHaveBeenCalledWith('auth:start-codex-login', {
+      alias: 'Work',
+    })
+  })
+
+  test('publishes the URL without opening the browser and cancels the active login', async () => {
+    const notifications = mock((_channel: string, _url: string) => {})
+    registerIpcHandlers({
+      once: () => {},
+      isDestroyed: () => false,
+      webContents: { send: notifications },
+    } as unknown as BrowserWindow)
+    const started = Promise.withResolvers<AbortSignal>()
+    spyOn(providerAuth, 'loginCodexForDesktop').mockImplementation(
+      (options) => {
+        options.onAuthUrl?.('https://auth.example/login')
+        const signal = options.signal!
+        started.resolve(signal)
+        return new Promise((_resolve, reject) => {
+          signal.addEventListener(
+            'abort',
+            () => reject(signal.reason as Error),
+            {
+              once: true,
+            },
+          )
+        })
+      },
+    )
+    const pending = invoke('auth:start-codex-login')
+    const signal = await started.promise
+    expect(notifications).toHaveBeenCalledWith(
+      'auth:codex-url',
+      'https://auth.example/login',
+    )
+    expect(openExternal).not.toHaveBeenCalled()
+    expect(await invoke('auth:start-codex-login')).toMatchObject({
+      success: false,
+      error: 'Codex sign-in is already in progress.',
+    })
+    await invoke('auth:cancel-codex-login')
+    expect(signal.aborted).toBe(true)
+    expect(await pending).toEqual({
+      success: false,
+      mode: 'none',
+      cancelled: true,
+    })
+    expect(fetch).not.toHaveBeenCalled()
+
+    spyOn(providerAuth, 'loginCodexForDesktop').mockResolvedValue({
+      success: true,
+      mode: 'provider',
+    })
+    expect(await invoke('auth:start-codex-login')).toMatchObject({
+      success: true,
+    })
+    await invoke('auth:cancel-codex-login')
+  })
+
+  test('reports login failures and allows another attempt', async () => {
+    spyOn(providerAuth, 'loginCodexForDesktop').mockRejectedValueOnce(
+      new Error('Missing Codex authorization code'),
+    )
+    expect(await invoke('auth:start-codex-login')).toMatchObject({
+      success: false,
+      error: 'Missing Codex authorization code',
+    })
+    expect(await invoke('auth:start-codex-login')).toMatchObject({
+      success: true,
+    })
+  })
+
+  test('waits for cancelled callback cleanup before starting a new login', async () => {
+    const first =
+      Promise.withResolvers<
+        Awaited<ReturnType<typeof providerAuth.loginCodexForDesktop>>
+      >()
+    const started = Promise.withResolvers<AbortSignal>()
+    const login = spyOn(
+      providerAuth,
+      'loginCodexForDesktop',
+    ).mockImplementationOnce((options) => {
+      started.resolve(options.signal)
+      return first.promise
+    })
+    const pending = invoke('auth:start-codex-login')
+    const signal = await started.promise
+    const cancellation = invoke('auth:cancel-codex-login')
+    const next = invoke('auth:start-codex-login', { alias: 'Next' })
+    expect(signal.aborted).toBe(true)
+    expect(login).toHaveBeenCalledTimes(1)
+    first.reject(signal.reason as Error)
+    expect(await pending).toMatchObject({ cancelled: true })
+    expect(await cancellation).toBe(true)
+    expect(await next).toMatchObject({ success: true })
+    expect(login).toHaveBeenCalledTimes(2)
+    expect(login).toHaveBeenLastCalledWith(
+      expect.objectContaining({ alias: 'Next' }),
+    )
+  })
+
+  test.each([false, true])(
+    'finishes persistence and preserves the refresh outcome (fails: %s)',
+    async (fails) => {
+      const refresh = Promise.withResolvers<Response>()
+      const refreshing = Promise.withResolvers<void>()
+      const notifications = mock((_channel: string) => {})
+      registerIpcHandlers({
+        once: () => {},
+        isDestroyed: () => false,
+        webContents: { send: notifications },
+      } as unknown as BrowserWindow)
+      let signal: AbortSignal | undefined
+      const login = spyOn(
+        providerAuth,
+        'loginCodexForDesktop',
+      ).mockImplementationOnce((options) => {
+        signal = options.signal
+        options.onSaving?.()
+        return Promise.resolve({
+          success: true,
+          mode: 'provider',
+          providers: ['codex'],
+        })
+      })
+      spyOn(globalThis, 'fetch').mockImplementationOnce(
+        Object.assign(
+          () => {
+            refreshing.resolve()
+            return refresh.promise
+          },
+          { preconnect: () => {} },
+        ),
+      )
+      const pending = invoke('auth:start-codex-login')
+      await refreshing.promise
+      expect(notifications).toHaveBeenCalledWith('auth:codex-saving')
+      expect(await invoke('auth:cancel-codex-login')).toBe(false)
+      expect(signal?.aborted).toBe(false)
+      const next = invoke('auth:start-codex-login')
+      expect(login).toHaveBeenCalledTimes(1)
+      if (fails) refresh.reject(new Error('connection failed'))
+      else refresh.resolve(Response.json({ reloaded: true }))
+      if (fails) {
+        expect(await pending).toEqual({
+          success: false,
+          mode: 'none',
+          error: 'Configuration saved, but refresh failed: connection failed',
+        })
+      } else {
+        expect(await pending).toMatchObject({ success: true })
+      }
+      expect(await next).toMatchObject({ success: true })
+      expect(login).toHaveBeenCalledTimes(2)
+    },
+  )
+
+  test('does not hide an unrelated failure when cancellation races with it', async () => {
+    const failure =
+      Promise.withResolvers<
+        Awaited<ReturnType<typeof providerAuth.loginCodexForDesktop>>
+      >()
+    const started = Promise.withResolvers<void>()
+    spyOn(providerAuth, 'loginCodexForDesktop').mockImplementationOnce(() => {
+      started.resolve()
+      return failure.promise
+    })
+    const pending = invoke('auth:start-codex-login')
+    await started.promise
+    const cancellation = invoke('auth:cancel-codex-login')
+    failure.reject(new Error('Persistence failed'))
+    expect(await pending).toEqual({
+      success: false,
+      mode: 'none',
+      error: 'Persistence failed',
+    })
+    await cancellation
+  })
+
+  test('can cancel a queued login without cancelling the previous saved login', async () => {
+    const refresh = Promise.withResolvers<Response>()
+    const refreshing = Promise.withResolvers<void>()
+    registerIpcHandlers({
+      once: () => {},
+      isDestroyed: () => false,
+      webContents: { send: () => {} },
+    } as unknown as BrowserWindow)
+    const login = spyOn(
+      providerAuth,
+      'loginCodexForDesktop',
+    ).mockImplementationOnce((options) => {
+      options.onSaving?.()
+      return Promise.resolve({ success: true, mode: 'provider' })
+    })
+    spyOn(globalThis, 'fetch').mockImplementationOnce(
+      Object.assign(
+        () => {
+          refreshing.resolve()
+          return refresh.promise
+        },
+        { preconnect: () => {} },
+      ),
+    )
+    const previous = invoke('auth:start-codex-login')
+    await refreshing.promise
+    const queued = invoke('auth:start-codex-login', { alias: 'Cancelled' })
+    expect(await invoke('auth:cancel-codex-login')).toBe(true)
+    const next = invoke('auth:start-codex-login', { alias: 'Next' })
+    expect(login).toHaveBeenCalledTimes(1)
+    refresh.resolve(Response.json({ reloaded: true }))
+    expect(await previous).toMatchObject({ success: true })
+    expect(await queued).toMatchObject({ cancelled: true })
+    expect(await next).toMatchObject({ success: true })
+    expect(login).toHaveBeenCalledTimes(2)
+    expect(login).toHaveBeenLastCalledWith(
+      expect.objectContaining({ alias: 'Next' }),
+    )
+  })
+
+  test('recognizes a fetch AbortError as cancellation before saving', async () => {
+    const failure =
+      Promise.withResolvers<
+        Awaited<ReturnType<typeof providerAuth.loginCodexForDesktop>>
+      >()
+    const started = Promise.withResolvers<void>()
+    spyOn(providerAuth, 'loginCodexForDesktop').mockImplementationOnce(() => {
+      started.resolve()
+      return failure.promise
+    })
+    const pending = invoke('auth:start-codex-login')
+    await started.promise
+    expect(await invoke('auth:cancel-codex-login')).toBe(true)
+    failure.reject(new DOMException('The operation was aborted', 'AbortError'))
+    expect(await pending).toMatchObject({ cancelled: true })
+  })
+
+  test.each([
+    ['callback_timeout', '授权已超过 2 分钟'],
+    ['callback_unavailable', '端口 1455'],
+  ] as const)(
+    'localizes %s and keeps retry available',
+    async (reason, message) => {
+      settings.language = 'zh'
+      spyOn(providerAuth, 'loginCodexForDesktop').mockRejectedValueOnce(
+        new CodexOAuthError(reason),
+      )
+      expect(await invoke('auth:start-codex-login')).toMatchObject({
+        success: false,
+        error: expect.stringContaining(message) as string,
+      })
+      expect(await invoke('auth:start-codex-login')).toMatchObject({
+        success: true,
+      })
+    },
+  )
+
+  test('localizes duplicate active logins', async () => {
+    settings.language = 'zh'
+    const first =
+      Promise.withResolvers<
+        Awaited<ReturnType<typeof providerAuth.loginCodexForDesktop>>
+      >()
+    const started = Promise.withResolvers<void>()
+    spyOn(providerAuth, 'loginCodexForDesktop').mockImplementationOnce(() => {
+      started.resolve()
+      return first.promise
+    })
+    const pending = invoke('auth:start-codex-login')
+    await started.promise
+    expect(await invoke('auth:start-codex-login')).toMatchObject({
+      success: false,
+      error: 'Codex 登录正在进行中。',
+    })
+    first.resolve({ success: true, mode: 'provider' })
+    await pending
+  })
+})
+
+describe('desktop xAI login controls', () => {
+  const authInfo: XaiAuthInfo = {
+    url: 'https://auth.x.ai/device?user_code=CODE',
+    verificationUri: 'https://auth.x.ai/device',
+    userCode: 'CODE',
+    expiresAt: 123,
+  }
+
+  test('passes device codes, saving events and account actions through preload', async () => {
+    await import('../electron/preload')
+    if (!preloadApi) throw new Error('Preload bridge was not exposed')
+    const code = mock((_info: XaiAuthInfo) => {})
+    const saving = mock(() => {})
+    const unsubscribeCode = preloadApi.onXaiAuth(code)
+    const unsubscribeSaving = preloadApi.onXaiLoginSaving(saving)
+    for (const listener of rendererListeners.get('auth:xai-code')!) {
+      listener(undefined, authInfo)
+    }
+    for (const listener of rendererListeners.get('auth:xai-saving')!) {
+      listener(undefined, undefined)
+    }
+    expect(code).toHaveBeenCalledWith(authInfo)
+    expect(saving).toHaveBeenCalledTimes(1)
+    unsubscribeCode()
+    unsubscribeSaving()
+    expect(rendererListeners.size).toBe(0)
+    await preloadApi.getXaiAccounts()
+    await preloadApi.switchXaiAccount('work')
+    await preloadApi.removeXaiAccount('personal')
+    await preloadApi.startXaiLogin({ alias: 'Work' })
+    await preloadApi.cancelXaiLogin()
+    expect(rendererInvoke.mock.calls).toEqual([
+      ['auth:get-xai-accounts'],
+      ['auth:switch-xai-account', 'work'],
+      ['auth:remove-xai-account', 'personal'],
+      ['auth:start-xai-login', { alias: 'Work' }],
+      ['auth:cancel-xai-login'],
+    ])
+  })
+
+  test('publishes codes, rejects duplicate login and cancels when the window closes', async () => {
+    const notifications = mock((_channel: string, _payload?: unknown) => {})
+    let closed: (() => void) | undefined
+    registerIpcHandlers({
+      once: (_event: string, callback: () => void) => {
+        closed = callback
+      },
+      isDestroyed: () => false,
+      webContents: { send: notifications },
+    } as unknown as BrowserWindow)
+    const started = Promise.withResolvers<AbortSignal>()
+    spyOn(providerAuth, 'loginXaiForDesktop').mockImplementation((options) => {
+      options.onAuth?.(authInfo)
+      started.resolve(options.signal)
+      return new Promise((_resolve, reject) => {
+        options.signal!.addEventListener(
+          'abort',
+          () => reject(options.signal!.reason as Error),
+          { once: true },
+        )
+      })
+    })
+    const login = invoke('auth:start-xai-login', { alias: 'Work' })
+    const signal = await started.promise
+    expect(notifications).toHaveBeenCalledWith('auth:xai-code', authInfo)
+    expect(openExternal).not.toHaveBeenCalled()
+    expect(await invoke('auth:start-xai-login')).toMatchObject({
+      success: false,
+      error: 'xAI sign-in is already in progress.',
+    })
+    closed!()
+    expect(signal.aborted).toBe(true)
+    expect(await login).toMatchObject({ cancelled: true })
+    expect(await invoke('auth:cancel-xai-login')).toBe(false)
+    expect(fetch).not.toHaveBeenCalled()
+  })
+
+  test('publishes saving and keeps persistence uncancellable', async () => {
+    const notifications = mock((_channel: string, _payload?: unknown) => {})
+    registerIpcHandlers({
+      once: () => {},
+      isDestroyed: () => false,
+      webContents: { send: notifications },
+    } as unknown as BrowserWindow)
+    const saving = Promise.withResolvers<void>()
+    const persisted =
+      Promise.withResolvers<
+        Awaited<ReturnType<typeof providerAuth.loginXaiForDesktop>>
+      >()
+    spyOn(providerAuth, 'loginXaiForDesktop').mockImplementation((options) => {
+      options.onSaving?.()
+      saving.resolve()
+      return persisted.promise
+    })
+    const login = invoke('auth:start-xai-login')
+    await saving.promise
+    expect(notifications).toHaveBeenCalledWith('auth:xai-saving')
+    expect(await invoke('auth:cancel-xai-login')).toBe(false)
+    persisted.resolve({ success: true, mode: 'provider', providers: ['xai'] })
+    expect(await login).toMatchObject({ success: true, providers: ['xai'] })
+    expect(fetch).toHaveBeenCalledTimes(1)
+  })
+
+  test.each([
+    [
+      'authorization_expired',
+      'xAI authorization expired. Please sign in again.',
+    ],
+    [
+      'authorization_denied',
+      'xAI authorization was denied. Please sign in again.',
+    ],
+  ] as const)('reports %s in the selected locale', async (reason, error) => {
+    spyOn(providerAuth, 'loginXaiForDesktop').mockRejectedValueOnce(
+      new XaiOAuthError(reason),
+    )
+    expect(await invoke('auth:start-xai-login')).toMatchObject({
+      success: false,
+      error,
+    })
+    settings.language = 'zh'
+    spyOn(providerAuth, 'loginXaiForDesktop').mockRejectedValueOnce(
+      new XaiOAuthError(reason),
+    )
+    const result = await invoke('auth:start-xai-login')
+    expect(result).toMatchObject({ success: false })
+    expect(result).not.toMatchObject({ error })
+  })
+
+  test('returns account summaries and mutation failures without refreshing', async () => {
+    const accounts = [{ accountId: 'account-id', alias: 'Work', active: true }]
+    spyOn(xaiToken, 'getXaiAccounts').mockResolvedValueOnce(accounts)
+    expect(await invoke('auth:get-xai-accounts')).toEqual(accounts)
+    spyOn(xaiToken, 'selectXaiAccount').mockRejectedValueOnce(
+      new Error('Unknown account'),
+    )
+    expect(await invoke('auth:switch-xai-account', 'unknown')).toMatchObject({
+      success: false,
+      error: 'Unknown account',
+    })
+    spyOn(xaiToken, 'removeXaiAccount').mockRejectedValueOnce(
+      new Error('Active account'),
+    )
+    expect(await invoke('auth:remove-xai-account', 'account-id')).toMatchObject(
+      { success: false, error: 'Active account' },
+    )
+    expect(fetch).not.toHaveBeenCalled()
+  })
+})
 
 describe('desktop saves automatically refresh the running gateway', () => {
   test('remembers the startup key before the first save after an external rotation', async () => {
@@ -206,6 +723,9 @@ describe('desktop saves automatically refresh the running gateway', () => {
     ['auth:switch-codex-account', 'account-id'],
     ['auth:remove-codex-account', 'account-id'],
     ['auth:start-codex-login', {}],
+    ['auth:switch-xai-account', 'account-id'],
+    ['auth:remove-xai-account', 'account-id'],
+    ['auth:start-xai-login', {}],
     ['auth:save-token', 'github-token'],
     ['auth:logout', undefined],
   ]
@@ -264,6 +784,7 @@ describe('desktop saves automatically refresh the running gateway', () => {
       ++polls === 1 ? Promise.resolve('cancelled-token') : nextToken.promise,
     )
     registerIpcHandlers({
+      once: () => {},
       isDestroyed: () => false,
       webContents: { send: (channel: string) => notifications.push(channel) },
     } as unknown as BrowserWindow)

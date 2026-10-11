@@ -12,6 +12,7 @@ import {
   compactTextOnlyGuard,
   type CompactType,
 } from "~/lib/compact"
+import { isClaudeUserAgent } from "~/lib/claude-models"
 import { getReasoningEffortForModel } from "~/lib/config"
 import { normalizeSdkModelId } from "~/lib/models"
 
@@ -200,12 +201,17 @@ export const normalizeClaudeCodeBillingHeaderInSystem = (
   )
 }
 
+const supportsMidSystemMessages = (model: string): boolean =>
+  model.startsWith("gpt")
+  || model.startsWith("codex")
+  || model.startsWith("claude")
+
 export const normalizeSystemMessages = (
   payload: AnthropicMessagesPayload,
 ): void => {
   normalizeClaudeCodeBillingHeaderInSystem(payload)
 
-  if (payload.model.startsWith("gpt") || payload.model.startsWith("codex")) {
+  if (supportsMidSystemMessages(payload.model)) {
     return
   }
 
@@ -396,6 +402,20 @@ export const getCompactType = (
   }
 
   return 0
+}
+
+export const applyClaudeNoToolsEffort = (
+  payload: AnthropicMessagesPayload,
+  userAgent: string | undefined,
+): void => {
+  if (!isClaudeUserAgent(userAgent) || (payload.tools?.length ?? 0) > 0) {
+    return
+  }
+
+  payload.output_config = {
+    ...payload.output_config,
+    effort: "low",
+  }
 }
 
 /**
@@ -932,6 +952,18 @@ const filterAssistantThinkingBlocks = (
   }
 }
 
+export const appendClaudeContinuationMessage = (
+  payload: AnthropicMessagesPayload,
+): void => {
+  const lastMessage = payload.messages.at(-1)
+  if (payload.model.includes("claude") && lastMessage?.role === "assistant") {
+    payload.messages.push({
+      role: "user",
+      content: [{ type: "text", text: "Please continue." }],
+    })
+  }
+}
+
 export const prepareMessagesApiPayload = (
   payload: AnthropicMessagesPayload,
   selectedModel?: Model,
@@ -973,6 +1005,7 @@ export const prepareMessagesApiPayload = (
         "low" | "medium" | "high" | "xhigh" | "max"
     }
     payload.output_config = {
+      ...payload.output_config,
       effort: effort,
     }
   }

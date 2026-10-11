@@ -13,6 +13,7 @@ export interface AnthropicMessagesPayload {
   tool_choice?: {
     type: "auto" | "any" | "tool" | "none"
     name?: string
+    disable_parallel_tool_use?: boolean
   }
   max_tokens: number
   thinking?: {

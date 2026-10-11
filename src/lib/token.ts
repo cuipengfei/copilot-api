@@ -16,11 +16,9 @@ import {
 import {
   readCodexCredentialStore,
   readGitHubToken,
-  removeCodexCredentials,
   withCodexAccountMutationLock,
   writeCodexCredentials,
   writeGitHubToken,
-  type CodexStoredAccount,
 } from "~/lib/credential-store"
 import {
   isCodexCredentialsExpired,
@@ -38,6 +36,9 @@ import { pollAccessToken } from "~/services/github/poll-access-token"
 import { HTTPError } from "./error"
 import { state } from "./state"
 import { applyCopilotTokenExchange } from "./token-metadata"
+import { createOAuthAccountManager } from "./oauth-accounts"
+import type { OAuthAccountSummary } from "./types/oauth"
+import { PATHS } from "./paths"
 
 export { applyCopilotTokenResponse } from "./token-metadata"
 
@@ -47,11 +48,7 @@ let codexRuntimeGeneration = 0
 const codexRefreshInFlight = new Map<string, Promise<CodexCredentials>>()
 const codexCredentialsPendingPersistence = new Map<string, CodexCredentials>()
 
-export interface CodexAccountSummary {
-  accountId: string
-  alias?: string
-  active: boolean
-}
+export type CodexAccountSummary = OAuthAccountSummary
 
 export interface PersistCodexCredentialsOptions {
   activateAccount?: boolean
@@ -157,109 +154,15 @@ function getConfiguredCodexAccountId(): string | undefined {
   return getRawProviderConfig("codex")?.accountId?.trim() || undefined
 }
 
-function getPersistedCodexAccountId(): string | undefined {
-  return (
-    readEditableConfigFromDisk().providers?.codex?.accountId?.trim()
-    || undefined
-  )
-}
-
-function resolveActiveCodexAccountId(
-  accounts: Array<CodexStoredAccount>,
-  configuredAccountId: string | undefined = getConfiguredCodexAccountId(),
-): string | undefined {
-  return (
-    configuredAccountId
-    ?? (accounts.length === 1 ? accounts[0].accountId : undefined)
-  )
-}
-
-function normalizeCodexSelector(selector: string): string {
-  const normalizedSelector = selector.trim()
-  if (!normalizedSelector) {
-    throw new Error("Codex account selector must be a non-empty string")
-  }
-
-  return normalizedSelector
-}
-
-function findCodexAccount(
-  accounts: Array<CodexStoredAccount>,
-  selector: string,
-): CodexStoredAccount | undefined {
-  return (
-    accounts.find((candidate) => candidate.accountId === selector)
-    ?? accounts.find(
-      (candidate) => candidate.alias?.toLowerCase() === selector.toLowerCase(),
-    )
-  )
-}
-
-function toCodexAccountSummary(
-  account: CodexStoredAccount,
-  active: boolean,
-): CodexAccountSummary {
-  return {
-    accountId: account.accountId,
-    ...(account.alias ? { alias: account.alias } : {}),
-    active,
-  }
-}
-
-export async function getCodexAccounts(): Promise<Array<CodexAccountSummary>> {
-  return await withCodexAccountMutationLock(async () => {
-    const accounts = (await readCodexCredentialStore())?.accounts ?? []
-    const activeAccountId = resolveActiveCodexAccountId(
-      accounts,
-      getPersistedCodexAccountId(),
-    )
-
-    return accounts.map((account) =>
-      toCodexAccountSummary(account, account.accountId === activeAccountId),
-    )
-  })
-}
-
-export async function selectCodexAccount(
-  selector: string,
-): Promise<CodexAccountSummary> {
-  return await withCodexAccountMutationLock(async () => {
-    const normalizedSelector = normalizeCodexSelector(selector)
-    const accounts = (await readCodexCredentialStore())?.accounts ?? []
-    const account = findCodexAccount(accounts, normalizedSelector)
-    if (!account) {
-      throw new Error(`Codex account '${normalizedSelector}' was not found`)
-    }
-
-    syncCodexProviderConfig({ accountId: account.accountId })
-    return toCodexAccountSummary(account, true)
-  })
-}
-
-export async function removeCodexAccount(
-  selector: string,
-): Promise<CodexAccountSummary> {
-  return await withCodexAccountMutationLock(async () => {
-    const normalizedSelector = normalizeCodexSelector(selector)
-    const accounts = (await readCodexCredentialStore())?.accounts ?? []
-    const account = findCodexAccount(accounts, normalizedSelector)
-    if (!account) {
-      throw new Error(`Codex account '${normalizedSelector}' was not found`)
-    }
-
-    if (
-      account.accountId
-      === resolveActiveCodexAccountId(accounts, getPersistedCodexAccountId())
-    ) {
-      throw new Error(
-        `Codex account '${account.accountId}' is currently in use; switch to another account before removing it`,
-      )
-    }
-
-    const removedAccount = await removeCodexCredentials(account.accountId)
-    return toCodexAccountSummary(removedAccount, false)
-  })
-}
+const codexAccounts = createOAuthAccountManager({
+  provider: "codex",
+  label: "Codex",
+  credentialPath: () => PATHS.CODEX_CREDENTIAL_PATH,
+  selectAccount: (accountId) => syncCodexProviderConfig({ accountId }),
+})
+export const getCodexAccounts = codexAccounts.list
+export const selectCodexAccount = codexAccounts.select
+export const removeCodexAccount = codexAccounts.remove
 
 export async function persistCodexCredentials(
   credentials: CodexCredentials,

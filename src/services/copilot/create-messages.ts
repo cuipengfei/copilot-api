@@ -25,18 +25,18 @@ import {
   sendWithSignatureRetry,
 } from "~/services/copilot/messages-compat"
 
-import { copilotBaseUrl, prepareMessageProxyHeaders } from "~/lib/api-config"
+import { copilotBaseUrl } from "~/lib/api-config"
 import { logCopilotRateLimits } from "~/lib/copilot-rate-limit"
 import { HTTPError } from "~/lib/error"
 import { attachPremiumInfo, getPremiumInfoFromHeaders } from "~/lib/logger"
 import { attachResponseHeaders } from "~/lib/response-headers"
 import { state } from "~/lib/state"
-import { parseUserIdMetadata } from "~/lib/utils"
 
 export type MessagesStream = ReturnType<typeof events>
 export type CreateMessagesReturn = AnthropicResponse | MessagesStream
 
 export interface CreateMessagesOptions {
+  anthropicVersionHeader?: string
   clientSignal?: AbortSignal
   initiator?: "user" | "agent"
   subagentMarker?: SubagentMarker | null
@@ -48,12 +48,9 @@ export interface CreateMessagesOptions {
 export { getAnthropicEffortForModel }
 
 /**
- * Passthrough to Copilot's native /v1/messages endpoint.
- * No payload transformation - direct Anthropic format.
- *
- * Implements Strategy C (error fallback): if signature validation fails,
- * retry with thinking blocks stripped. This preserves request body integrity
- * unless absolutely necessary.
+ * Send Anthropic messages through Copilot's native /v1/messages endpoint.
+ * Shared compatibility preparation preserves thinking blocks and applies
+ * model capabilities, payload parameters, and protocol-specific retries.
  */
 export const createMessages = async (
   payload: AnthropicMessagesPayload,
@@ -66,26 +63,8 @@ export const createMessages = async (
   const modelCallId = randomUUID()
   const headers = await buildMessagesHeaders(payload, options)
 
-  const { safetyIdentifier, sessionId } = parseUserIdMetadata(
-    payload.metadata?.user_id,
-  )
-
-  // claude-opus-4.8 is excluded: Copilot's upstream WAF returns a generic
-  // "Access to this endpoint is forbidden" 403 whenever a request carries
-  // the Claude-Code-style user-agent without a `copilot-integration-id`
-  // header. The exact same header set is accepted on claude-opus-4.7, so
-  // the gate is a model-id rollout gap on Copilot's side. Skipping the
-  // rewrite for 4.8 keeps the default Copilot identity
-  // (copilot-integration-id: vscode-chat + GitHubCopilotChat UA +
-  // conversation-agent intent) in place; that path is 200. Remove this
-  // skip once Copilot's upstream accepts the Claude-Code identity on 4.8.
-  // Probed 2026-05-29.
-  if (safetyIdentifier && sessionId && payload.model !== "claude-opus-4.8") {
-    prepareMessageProxyHeaders(headers)
-  }
-
-  // Extract requestId from already-built headers (do NOT re-generate)
-  const requestId = headers["x-request-id"]
+  // Use the final upstream request ID for telemetry.
+  const requestId = headers["X-Request-Id"] ?? headers["x-request-id"]
 
   const start = Date.now()
   trackRequestSent(payload.model, state.accountType, requestId, modelCallId)

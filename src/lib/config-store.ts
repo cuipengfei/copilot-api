@@ -5,6 +5,7 @@ import fs from "node:fs"
 import type { TokenUsagePricingConfig } from "~/lib/token-usage/pricing"
 
 import { writeFileAtomically } from "./atomic-file"
+import { isGitHubCopilotAvailable } from "./github-copilot-provider"
 import { PATHS } from "./paths"
 
 export interface AppConfig {
@@ -20,6 +21,7 @@ export interface AppConfig {
   compactUseSmallModel?: boolean
   smallModels?: SmallModelsConfig
   contextManagement?: ContextManagementConfig
+  opencodeModelContextWindow?: number
   modelResponsesApiCompactThresholds?: Record<string, number>
   modelReasoningEfforts?: Record<
     string,
@@ -45,7 +47,10 @@ export interface AppConfig {
   // "You are a security monitor for autonomous AI coding agents.".
   // A `provider/model` alias is forwarded to that provider's message API on
   // the top-level route. Provider message routes use the configured value on
-  // their current provider. Leave empty to disable (default).
+  // their current provider. Defaults to codex-auto-review when Codex is
+  // enabled, otherwise gpt-6-luna when GitHub Copilot is enabled and both its
+  // GitHub and Copilot tokens are loaded. An explicit empty value disables
+  // the override.
   claudeAutoModel?: string
   claudeTokenMultiplier?: number
   autoDiscovery?: { models?: Array<string> }
@@ -125,7 +130,7 @@ export interface ProviderConfig {
   accountId?: string
   pricingCurrency?: string
   models?: Record<string, ModelConfig>
-  codexModels?: Array<string>
+  agentsModels?: Array<string>
 }
 
 const modelResponsesApiCompactThresholds = {
@@ -137,6 +142,8 @@ export const defaultContextManagement = {
   messages: true,
   responses: false,
 } satisfies Required<ContextManagementConfig>
+
+export const defaultOpencodeModelContextWindow = 300_000
 
 export const defaultConfig: AppConfig = {
   auth: {
@@ -152,6 +159,7 @@ export const defaultConfig: AppConfig = {
     copilot: "gpt-6-luna",
   },
   contextManagement: defaultContextManagement,
+  opencodeModelContextWindow: defaultOpencodeModelContextWindow,
   modelResponsesApiCompactThresholds,
   useMessagesApi: true,
   useResponsesApiWebSocket: true,
@@ -238,7 +246,7 @@ export function readEditableConfigFromDisk(): AppConfig {
     if (!raw.trim()) {
       return {}
     }
-    return JSON.parse(raw) as AppConfig
+    return migrateProviderAgentModels(JSON.parse(raw) as AppConfig).mergedConfig
   } catch (error) {
     if (isNodeError(error) && error.code === "ENOENT") {
       return {}
@@ -253,7 +261,11 @@ export function readEditableConfigFromDisk(): AppConfig {
 }
 
 export function writeConfigToDisk(config: AppConfig): void {
-  writeFileAtomically(PATHS.CONFIG_PATH, `${JSON.stringify(config, null, 2)}\n`)
+  const { mergedConfig } = migrateProviderAgentModels(config)
+  writeFileAtomically(
+    PATHS.CONFIG_PATH,
+    `${JSON.stringify(mergedConfig, null, 2)}\n`,
+  )
 }
 
 export function setConfiguredApiKeys(apiKeys: Array<string>): Array<string> {
@@ -274,10 +286,12 @@ export function setConfiguredApiKeys(apiKeys: Array<string>): Array<string> {
   return [...uniqueKeys]
 }
 
-function mergeDefaultConfig(config: AppConfig): {
+function mergeDefaultConfig(inputConfig: AppConfig): {
   mergedConfig: AppConfig
   changed: boolean
 } {
+  const { mergedConfig: config, changed: agentModelsMigrated } =
+    migrateProviderAgentModels(inputConfig)
   const modelMappings = config.modelMappings ?? {}
   const defaultModelMappings = defaultConfig.modelMappings ?? {}
   const extraPrompts = config.extraPrompts ?? {}
@@ -290,6 +304,10 @@ function mergeDefaultConfig(config: AppConfig): {
   const defaultModelReasoningEfforts = defaultConfig.modelReasoningEfforts ?? {}
   const contextManagement = normalizeContextManagementConfig(
     config.contextManagement,
+  )
+  const opencodeModelContextWindow = positiveIntegerOrDefault(
+    config.opencodeModelContextWindow,
+    defaultOpencodeModelContextWindow,
   )
   const {
     changed: upstreamTransportMigrated,
@@ -324,6 +342,8 @@ function mergeDefaultConfig(config: AppConfig): {
   const hasResponsesApiCompactThresholdChanges =
     missingResponsesApiCompactThresholdModels.length > 0
   const hasContextManagementChanges = missingContextManagementKeys.length > 0
+  const hasOpencodeModelContextWindowChanges =
+    config.opencodeModelContextWindow !== opencodeModelContextWindow
   const hasUpstreamTransportChanges = Object.entries(upstreamTransport).some(
     ([key, value]) =>
       migratedUpstreamTransport[key as keyof UpstreamTransportConfig] !== value,
@@ -335,8 +355,10 @@ function mergeDefaultConfig(config: AppConfig): {
     && !hasReasoningEffortChanges
     && !hasResponsesApiCompactThresholdChanges
     && !hasContextManagementChanges
+    && !hasOpencodeModelContextWindowChanges
     && !hasUpstreamTransportChanges
     && !upstreamTransportMigrated
+    && !agentModelsMigrated
   ) {
     return { mergedConfig: config, changed: false }
   }
@@ -356,6 +378,7 @@ function mergeDefaultConfig(config: AppConfig): {
         ...defaultContextManagementConfig,
         ...contextManagement,
       },
+      opencodeModelContextWindow,
       extraPrompts: {
         ...defaultExtraPrompts,
         ...extraPrompts,
@@ -372,6 +395,27 @@ function mergeDefaultConfig(config: AppConfig): {
     },
     changed: true,
   }
+}
+
+function migrateProviderAgentModels(config: AppConfig): {
+  mergedConfig: AppConfig
+  changed: boolean
+} {
+  let migratedProviders: AppConfig["providers"]
+  for (const [name, provider] of Object.entries(config.providers ?? {})) {
+    if (!Object.hasOwn(provider, "codexModels")) continue
+    const { codexModels, ...currentProvider } = provider as ProviderConfig & {
+      codexModels?: Array<string>
+    }
+    migratedProviders ??= { ...config.providers }
+    migratedProviders[name] = { agentsModels: codexModels, ...currentProvider }
+  }
+  return migratedProviders ?
+      {
+        mergedConfig: { ...config, providers: migratedProviders },
+        changed: true,
+      }
+    : { mergedConfig: config, changed: false }
 }
 
 function normalizeContextManagementConfig(
@@ -516,6 +560,13 @@ export function isResponsesApiWebSocketEnabled(): boolean {
   return config.useResponsesApiWebSocket ?? true
 }
 
+export function getOpencodeModelContextWindow(): number {
+  return positiveIntegerOrDefault(
+    getConfig().opencodeModelContextWindow,
+    defaultOpencodeModelContextWindow,
+  )
+}
+
 // Applies to every upstream HTTP transport (Copilot Chat Completions and
 // Messages, Codex Responses, and provider-forwarded requests), not only the
 // Responses API.
@@ -585,10 +636,25 @@ export function getMessageApiWebSearchModel(): string | undefined {
   return model && model.trim().length > 0 ? model : undefined
 }
 
-export function getClaudeAutoModel(): string | undefined {
+export function getClaudeAutoModel(
+  useDefault: boolean = false,
+): string | undefined {
   const config = getConfig()
   const model = config.claudeAutoModel
-  return model && model.trim().length > 0 ? model.trim() : undefined
+  if (model !== undefined) {
+    return model && model.trim().length > 0 ? model.trim() : undefined
+  }
+
+  if (!useDefault) {
+    return undefined
+  }
+
+  const codexProvider = config.providers?.codex
+  if (codexProvider && codexProvider.enabled !== false) {
+    return "codex-auto-review"
+  }
+
+  return isGitHubCopilotAvailable(config) ? "gpt-6-luna" : undefined
 }
 
 export function getClaudeTokenMultiplier(): number {

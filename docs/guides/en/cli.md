@@ -32,7 +32,6 @@ The following command line options are available for the `start` command:
 | --port         | Port to listen on                                                             | 4141       | -p    |
 | --verbose      | Enable verbose logging                                                        | false      | -v    |
 | --github-token | Provide GitHub token directly (must be generated using the `auth` subcommand); prefer `COPILOT_API_GITHUB_TOKEN`, since arguments are visible in the process list | none       | -g    |
-| --claude-code  | Generate a command to launch Claude Code with Copilot API config              | false      | -c    |
 | --show-token   | Show GitHub and Copilot tokens on fetch and refresh                           | false      | none  |
 | --proxy-env    | Initialize proxy from environment variables                                   | false      | none  |
 

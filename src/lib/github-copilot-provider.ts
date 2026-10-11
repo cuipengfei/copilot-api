@@ -1,5 +1,6 @@
 import { getConfig, type AppConfig } from "./config-store"
 import { HTTPError } from "./error"
+import { state, type State } from "./state"
 
 export const GITHUB_COPILOT_PROVIDER = "github-copilot"
 
@@ -8,6 +9,17 @@ export function isGitHubCopilotEnabled(
   config: AppConfig = getConfig(),
 ): boolean {
   return config.providers?.[GITHUB_COPILOT_PROVIDER]?.enabled !== false
+}
+
+// Provider-only mode may leave Copilot enabled without loading its credentials.
+export function isGitHubCopilotAvailable(
+  config: AppConfig = getConfig(),
+  runtime: Pick<State, "githubToken" | "copilotToken"> = state,
+): boolean {
+  return (
+    isGitHubCopilotEnabled(config)
+    && Boolean(runtime.githubToken && runtime.copilotToken)
+  )
 }
 
 export function assertGitHubCopilotEnabled(): void {

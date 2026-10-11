@@ -113,15 +113,15 @@ describe("provider resolver", () => {
       tempDir,
       `
       const { getProviderConfig, listEnabledProviders } = await import("./src/lib/provider-config");
-      const { saveProviderManagementConfig, isProviderCodexModelVisible } = await import("./src/lib/provider-management");
+      const { saveProviderManagementConfig, isProviderAgentModelVisible } = await import("./src/lib/provider-management");
       const { getConfig } = await import("./src/lib/config-store");
       const before = getProviderConfig("dashscope") !== null;
       saveProviderManagementConfig({ providers: { dashscope: { enabled: false } } });
       const disabled = getProviderConfig("dashscope") === null && !listEnabledProviders().includes("dashscope");
-      saveProviderManagementConfig({ providers: { dashscope: { enabled: true, codexModels: [] } } });
+      saveProviderManagementConfig({ providers: { dashscope: { enabled: true, agentsModels: [] } } });
       console.log(JSON.stringify({ before, disabled, reenabled: getProviderConfig("dashscope") !== null,
         credentialsPreserved: getProviderConfig("dashscope")?.apiKey === "provider-key",
-        codexVisible: isProviderCodexModelVisible(getConfig().providers?.dashscope, "model") }));
+        codexVisible: isProviderAgentModelVisible(getConfig().providers?.dashscope, "model") }));
     `,
     )
     expect(JSON.parse(output)).toEqual({

@@ -7,7 +7,10 @@ import type { CompactType } from "~/lib/compact"
 import type { SubagentMarker } from "~/lib/subagent"
 import type { Model } from "~/lib/types/models"
 
+import { getRawProviderConfig } from "~/lib/config"
+import { GITHUB_COPILOT_PROVIDER } from "~/lib/github-copilot-provider"
 import { debugJson, debugJsonTail, debugLazy } from "~/lib/logger"
+import { getProviderModelPdfSupport } from "~/lib/model-pdf-support"
 import { writeSSEIfConnected } from "~/lib/sse"
 import { resolveBridgeToolSearchName } from "~/lib/tool-search"
 import {
@@ -122,6 +125,14 @@ export const handleWithChatCompletions = async (
     compactType,
   } = options
   const openAIPayload = translateToOpenAI(anthropicPayload, {
+    supportPdf: getProviderModelPdfSupport(
+      anthropicPayload.model,
+      {
+        ...getRawProviderConfig(GITHUB_COPILOT_PROVIDER),
+        name: GITHUB_COPILOT_PROVIDER,
+      },
+      selectedModel,
+    ),
     validateReasoningEffort: true,
     reasoningEffortSupport:
       selectedModel?.capabilities.supports.reasoning_effort,
@@ -403,6 +414,7 @@ export const handleWithMessagesApi = async (
     anthropicPayload,
     anthropicBetaHeader,
     {
+      anthropicVersionHeader: c.req?.header("anthropic-version"),
       clientSignal: c.req?.raw?.signal,
       subagentMarker,
       requestId,

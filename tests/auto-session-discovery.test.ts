@@ -25,6 +25,7 @@ const createResponse = (payload: AutoSelectionResponse) =>
   new Response(JSON.stringify(payload), { status: 200 })
 
 const originalFetch = globalThis.fetch
+const originalAutoDiscovery = getConfig().autoDiscovery
 
 // 动态导入用于重置模块级配对表：每个用例需要干净的 auto-session 状态。
 // 带 query 的动态导入被 TS 视为 any，断言回模块类型以满足类型安全返回
@@ -141,11 +142,13 @@ const discoveryLogLine = (infoSpy: InfoSpy): string => {
 
 beforeEach(() => {
   state.copilotToken = "discovery-auth-token"
+  getConfig().autoDiscovery = undefined
 })
 
 afterEach(() => {
   ;(globalThis as { fetch: typeof fetch }).fetch = originalFetch
   mock.restore()
+  getConfig().autoDiscovery = originalAutoDiscovery
 })
 
 test("startup discovery probes four tiers with hello easy and 100-line source hard prompt", async () => {

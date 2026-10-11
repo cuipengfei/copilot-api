@@ -8,6 +8,10 @@ import {
   loadCachedModelsDevCatalog,
 } from '../../src/lib/models-dev-cache'
 import type { ProviderModelOptions } from '../../src/lib/types/provider-management'
+import {
+  isProviderModelVisible,
+  resolveProviderModelsDevId,
+} from '../../src/lib/provider-model-catalog'
 
 export function buildProviderModelOptions(
   config: AppConfig,
@@ -28,11 +32,13 @@ export function buildProviderModelOptions(
         [
           ...new Set([
             ...Object.keys(provider.models ?? {}),
-            ...(provider.codexModels ?? []),
+            ...(provider.agentsModels ?? []),
             ...sources.builtin(name),
-            ...sources.catalog(provider.modelsDevProviderId ?? name),
+            ...sources.catalog(resolveProviderModelsDevId(name, provider)),
           ]),
-        ].sort(),
+        ]
+          .filter((id) => isProviderModelVisible(name, id, provider))
+          .sort(),
       ]),
   )
 }

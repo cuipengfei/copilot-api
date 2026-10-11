@@ -15,6 +15,9 @@ import * as telemetryModule from "../src/services/telemetry/telemetry"
 // Telemetry mock (captures modelCallId for assertions)
 let capturedModelCallId: string | undefined
 
+const originalFetch = globalThis.fetch
+const originalTelemetryEnabled = state.copilotTelemetryEnabled
+
 // Mock state
 state.copilotToken = "test-token"
 state.vsCodeVersion = "1.0.0"
@@ -40,6 +43,7 @@ const getMessagesBody = (): string =>
 
 beforeEach(() => {
   capturedModelCallId = undefined
+  state.copilotTelemetryEnabled = false
   state.interactionId = "test-interaction-id"
   state.forceAgent = false
   state.models = undefined
@@ -87,6 +91,8 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  globalThis.fetch = originalFetch
+  state.copilotTelemetryEnabled = originalTelemetryEnabled
   mock.restore()
 })
 

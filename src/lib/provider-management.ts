@@ -24,7 +24,7 @@ const updateSchema = z
         z
           .object({
             enabled: z.boolean().optional(),
-            codexModels: z
+            agentsModels: z
               .array(z.string().trim().min(1))
               .nullable()
               .optional(),
@@ -35,22 +35,22 @@ const updateSchema = z
   })
   .strict()
 
-export function getProviderCodexModels(
+export function getProviderAgentModels(
   provider: ProviderConfig | null | undefined,
 ): Array<string> | undefined {
-  const models = provider?.codexModels
+  const models = provider?.agentsModels
   if (!Array.isArray(models) || !models.every((id) => typeof id === "string")) {
     return undefined
   }
   return [...new Set(models.map((id) => id.trim()).filter(Boolean))]
 }
 
-export function isProviderCodexModelVisible(
+export function isProviderAgentModelVisible(
   provider: ProviderConfig | null | undefined,
   modelId: string,
 ): boolean {
   if (provider?.enabled === false) return false
-  const models = getProviderCodexModels(provider)
+  const models = getProviderAgentModels(provider)
   return models === undefined || models.includes(modelId)
 }
 
@@ -72,7 +72,7 @@ export function getProviderManagementConfig(
             (provider.type ?? "anthropic")
           ),
         enabled: provider.enabled !== false,
-        codexModels: getProviderCodexModels(provider),
+        agentsModels: getProviderAgentModels(provider),
       })),
   }
 }
@@ -98,10 +98,10 @@ export function applyProviderManagementUpdate(
     }
     const provider = { ...providers[name] }
     if (update.enabled !== undefined) provider.enabled = update.enabled
-    if (update.codexModels === null) {
-      delete provider.codexModels
-    } else if (update.codexModels !== undefined) {
-      provider.codexModels = [...new Set(update.codexModels)]
+    if (update.agentsModels === null) {
+      delete provider.agentsModels
+    } else if (update.agentsModels !== undefined) {
+      provider.agentsModels = [...new Set(update.agentsModels)]
     }
     providers[name] = provider
   }

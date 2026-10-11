@@ -28,7 +28,7 @@ async function runProvider(
         enabled: initialEnabled,
         apiKey: "keep-provider-secret",
         baseUrl: "https://example.test",
-        codexModels: ["model"],
+        agentsModels: ["model"],
         models: { model: { temperature: 0.2 } },
       },
     },

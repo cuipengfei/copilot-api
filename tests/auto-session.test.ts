@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test"
 
 import { state } from "../src/lib/state"
 import type { AutoSelectionResponse } from "../src/services/copilot/get-auto-selection"
+import { getConfig } from "../src/lib/config-store"
 
 type AutoSessionModule = typeof import("../src/lib/auto-session")
 
@@ -44,6 +45,7 @@ const setFetchMock = (mockedFetch: typeof fetch): void => {
 }
 
 const originalFetch = globalThis.fetch
+const originalAutoDiscovery = getConfig().autoDiscovery
 
 const loadAutoSessionModule = async (): Promise<AutoSessionModule> => {
   const module = (await import(
@@ -59,6 +61,7 @@ describe("auto-session", () => {
     const queue: Array<AutoSelectionResponse> = []
     ;(globalThis as TestGlobal).__AUTO_SESSION_QUEUE__ = queue
     state.copilotToken = "dummy-auth-token-a"
+    getConfig().autoDiscovery = undefined
 
     fetchMock = mock(() => {
       const currentQueue = getQueue()
@@ -78,6 +81,7 @@ describe("auto-session", () => {
     setFetchMock(originalFetch)
     delete (globalThis as TestGlobal).__AUTO_SESSION_QUEUE__
     mock.restore()
+    getConfig().autoDiscovery = originalAutoDiscovery
   })
 
   test("prewarm registers pairing by selected model id and caches token", async () => {

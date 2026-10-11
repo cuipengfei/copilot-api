@@ -14,7 +14,7 @@ interface ConfigFileShape {
       apiKey?: string
       authType?: string
       baseUrl?: string
-      codexModels?: Array<string>
+      agentsModels?: Array<string>
       enabled?: boolean
       models?: Record<string, unknown>
       modelsDevProviderId?: string
@@ -95,7 +95,7 @@ describe("auth login validation", () => {
     )
 
     expect(output).toBe(
-      "Unknown provider 'unknown'. Expected one of: copilot, codex, opencode-go, kimi, deepseek, dashscope, openrouter, custom",
+      "Unknown provider 'unknown'. Expected one of: copilot, codex, xai, opencode-go, kimi, deepseek, dashscope, openrouter, custom",
     )
   })
 
@@ -423,7 +423,7 @@ describe("auth login validation", () => {
         dashscope: {
           apiKey: "old-key",
           baseUrl: "https://old.example",
-          codexModels: [],
+          agentsModels: [],
           enabled: true,
           models: {
             "qwen-plus": {
@@ -452,7 +452,7 @@ describe("auth login validation", () => {
     expect(readConfigFile(tempDir).providers?.dashscope).toEqual({
       apiKey: "new-key",
       baseUrl: "https://dashscope.aliyuncs.com/compatible-mode",
-      codexModels: [],
+      agentsModels: [],
       enabled: true,
       models: {
         "qwen-plus": {
@@ -592,7 +592,7 @@ describe("auth login validation", () => {
           apiKey: "old-key",
           authType: "x-api-key",
           baseUrl: "https://old.example",
-          codexModels: ["qwen-plus"],
+          agentsModels: ["qwen-plus"],
           enabled: true,
           models: {
             "qwen-plus": {
@@ -621,7 +621,7 @@ describe("auth login validation", () => {
     expect(readConfigFile(tempDir).providers?.dash).toEqual({
       apiKey: "new-key",
       baseUrl: "https://new.example",
-      codexModels: ["qwen-plus"],
+      agentsModels: ["qwen-plus"],
       enabled: true,
       models: {
         "qwen-plus": {

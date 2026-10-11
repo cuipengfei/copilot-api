@@ -8,25 +8,17 @@
 
 这个 AI gateway 可以为 [Claude Code](https://docs.anthropic.com/en/claude-code) 提供后端能力。Claude Code 是 Anthropic 提供的实验性面向开发者的对话式 AI 助手。
 
-有两种方式可以把 Claude Code 配置为使用这个 AI gateway：
-
-### 通过 `--claude-code` 标志进行交互式配置
-
-执行带 `--claude-code` 的 `start` 命令开始：
+启动网关，然后通过 `settings.json` 配置 Claude Code：
 
 ```sh
-npx @jeffreycao/copilot-api@latest start --claude-code
+npx @jeffreycao/copilot-api@latest start
 ```
-
-你不再需要手动选择模型。Gateway 会自动检测每个 Claude Code 尺寸档位对应的最新可用模型——opus 映射到最新的 Opus 模型，sonnet 映射到最新的 Sonnet 模型，haiku 映射到最新的 Haiku 模型——并生成相应设置 `ANTHROPIC_DEFAULT_OPUS_MODEL`、`ANTHROPIC_DEFAULT_SONNET_MODEL` 和 `ANTHROPIC_DEFAULT_HAIKU_MODEL` 的命令。若某个档位没有匹配的可用模型，则会被省略。该命令会被复制到剪贴板，并设置 Claude Code 使用这个 AI gateway 所需的环境变量。
-
-在新的终端中粘贴并执行这条命令，即可启动 Claude Code。
 
 <a id="manual-configuration-with-settingsjson"></a>
 
 ### 通过 `settings.json` 手动配置
 
-另一种方式是在项目根目录中创建 `.claude/settings.json` 文件，并写入 Claude Code 所需的环境变量。这样你就不需要每次都运行交互式配置了。
+在项目根目录中创建 `.claude/settings.json` 文件，写入 Claude Code 使用网关所需的环境变量。
 
 下面是一个 `.claude/settings.json` 示例：
 
@@ -35,11 +27,13 @@ npx @jeffreycao/copilot-api@latest start --claude-code
   "env": {
     "ANTHROPIC_BASE_URL": "http://localhost:4141",
     "ANTHROPIC_AUTH_TOKEN": "dummy",
-    "ANTHROPIC_MODEL": "gpt-5.6-sol[1m]",
-    "ANTHROPIC_DEFAULT_OPUS_MODEL": "gpt-5.6-sol[1m]",
-    "ANTHROPIC_DEFAULT_SONNET_MODEL": "gpt-5.6-sol[1m]",
-    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "gpt-5.6-luna[1m]",
+    "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY": "1",
+    "ANTHROPIC_DEFAULT_FABLE_MODEL": "gpt-6.1-sol[1m]",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL": "gpt-6.1-sol[1m]",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL": "gpt-6.1-sol[1m]",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "gpt-6-luna[1m]",
     "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "272000",
+    "CLAUDE_CODE_AUTO_MODE_SERVER": "0",
     "CLAUDE_CODE_USE_VERTEX": "0",
     "CLAUDE_CODE_USE_BEDROCK": "0",
     "DISABLE_NON_ESSENTIAL_MODEL_CALLS": "1",
@@ -57,16 +51,11 @@ npx @jeffreycao/copilot-api@latest start --claude-code
 }
 ```
 
-- 请根据需要替换 `ANTHROPIC_MODEL`、`ANTHROPIC_DEFAULT_OPUS_MODEL`、`ANTHROPIC_DEFAULT_SONNET_MODEL` 和 `ANTHROPIC_DEFAULT_HAIKU_MODEL`。配置完成后，请安装 claude code 插件，见 [插件集成](integrations.md#plugin-integrations)。
+- `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY: "1"` 让 Claude Code 的 `/model` 菜单发现网关模型，参见[官方网关配置说明](https://code.claude.com/docs/en/llm-gateway-connect#add-gateway-models-to-the-model-picker)。当 User-Agent 包含 `claude`（不区分大小写）时，`/v1/models` 会给本身不含 `claude` 的模型名添加 `my-claude-`，保留 provider 前缀，并给所有模型 ID 追加 `[1m]`，不判断上下文大小。例如 `opencode-go/glm-5.3-flash` 返回为 `opencode-go/my-claude-glm-5.3-flash[1m]`，`claude-opus-4-8` 返回为 `claude-opus-4-8[1m]`。Messages 和 token 计数接口会在模型映射及 provider 路由前去掉这个兼容前缀和 `[1m]` 后缀；其他客户端的模型 ID 保持原有格式。
+- 桌面端 **Coding Agent 展示模型** 通过 `agentsModels` 同时控制 Codex 和 Claude Code 的发现列表。填写上游原始模型 ID，不加 `my-claude-`、`[1m]` 或网关 provider 前缀。
+- 模型显示名包含 provider，例如 `GLM-5.3-Flash (opencode-go)`。已有显示名会作为基础，已有相同 provider 前缀或后缀时不重复添加；Copilot 模型标记为 `github-copilot`。
+- 请根据需要替换 `ANTHROPIC_DEFAULT_FABLE_MODEL`、`ANTHROPIC_DEFAULT_OPUS_MODEL`、`ANTHROPIC_DEFAULT_SONNET_MODEL` 和 `ANTHROPIC_DEFAULT_HAIKU_MODEL`。配置完成后，请安装 claude code 插件，见 [插件集成](integrations.md#plugin-integrations)。
 - `CLAUDE_CODE_TOTAL_TOKENS_REMINDER: "off"` 用于关闭 Claude Code 的 total tokens 提醒功能。该功能开启时会在对话中注入 `<total_tokens>N tokens left</total_tokens>` 块，提示模型剩余的 token 预算；默认预算为 1500w（15,000,000）tokens，意义不大，因此这里配置为关闭。
-- 如果你使用的是 codex provider，建议**不要**将模型名配置成 `codex/xxx` 格式（如 `codex/gpt-5.6-sol`）。Claude Code 会针对 `codex/` 前缀做降智行为——例如每次请求时移除所有之前返回的思考块（thinking blocks）。请使用纯模型名（如 `gpt-5.6-sol`），并在 `config.json` 中配置 `modelMappings` 将其映射回 codex provider：
-  ```json
-  "modelMappings": {
-    "gpt-5.6-sol": "codex/gpt-5.6-sol",
-    "gpt-5.6-terra": "codex/gpt-5.6-terra",
-    "gpt-5.6-luna": "codex/gpt-5.6-luna"
-  },
-  ```
 - 将 `CLAUDE_CODE_ATTRIBUTION_HEADER` 设为 `0` 可以阻止 Claude Code 在 system prompt 中附加计费和版本信息，从而避免 prompt cache 失效。
 - 关闭 `CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION` 和 `CLAUDE_CODE_ENABLE_AWAY_SUMMARY` 可以避免不必要地消耗额度。
 - Claude Code WebSearch 已支持纯搜索请求。Copilot 路径请保持全局 `messageApiWebSearchModel` 指向 Responses-capable GPT 模型或 `provider/model` 别名；provider 路由请使用原生 Anthropic provider 或 `openai-responses` provider。只有在你明确想禁止这类流量时，才需要把 `WebSearch` 加到 `permissions.deny`。

@@ -21,6 +21,7 @@
     "../src/services/**/*.ts",
     "../src/routes/responses/utils.ts",
     "../src/routes/responses/messages-translation.ts",
-    "../src/routes/models/codex-models-types.ts"
+    "../src/routes/models/codex-models-types.ts",
+    "../tests/fixtures/models-dev-catalog.ts"
   ]
 }

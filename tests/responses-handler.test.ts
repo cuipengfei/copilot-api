@@ -1158,202 +1158,129 @@ describe("responses handler token usage", () => {
     expect(createResponses.mock.calls[0][1]?.transport).toBe("http")
   })
 
-  test("normalizes unsupported max reasoning effort to the highest supported level", async () => {
-    state.models = {
-      object: "list",
-      data: [
-        {
-          capabilities: {
-            limits: { max_prompt_tokens: 128000 },
-            supports: {
-              reasoning_effort: ["low", "medium", "high", "xhigh"],
-            },
-          },
-          id: "gpt-capability-test",
-          supported_endpoints: ["/responses"],
-        },
-      ],
-    } as typeof state.models
-    createResponses.mockImplementation((payload) =>
-      Promise.resolve(createResponsesResult(payload.model)),
-    )
+  const reasoningEffortCases: Array<
+    [string, string, Array<string> | undefined, string]
+  > = [
+    ["unsupported max", "max", ["low", "medium", "high", "xhigh"], "xhigh"],
+    [
+      "supported ultra alias",
+      "ultra",
+      ["none", "low", "medium", "high", "xhigh", "max"],
+      "max",
+    ],
+    ["max without capabilities", "max", undefined, "max"],
+    ["ultra without capabilities", "ultra", undefined, "max"],
+    ["unknown effort", "turbo", undefined, "turbo"],
+    [
+      "supported max",
+      "max",
+      ["none", "low", "medium", "high", "xhigh", "max"],
+      "max",
+    ],
+  ]
+  test.each(reasoningEffortCases)(
+    "forwards %s reasoning effort to native Responses",
+    async (_scenario, effort, supportedEfforts, expectedEffort) => {
+      if (supportedEfforts) {
+        state.models!.data[0].capabilities.supports = {
+          reasoning_effort: supportedEfforts,
+        }
+      }
+      createResponses.mockImplementation((payload) =>
+        Promise.resolve(createResponsesResult(payload.model)),
+      )
 
-    const response = await createApp().request("/v1/responses", {
-      body: JSON.stringify({
-        input: "hello",
-        model: "gpt-capability-test",
-        reasoning: { effort: "max" },
-      }),
-      headers: { "content-type": "application/json" },
-      method: "POST",
-    })
+      const response = await createApp().request("/v1/responses", {
+        body: JSON.stringify({
+          input: "hello",
+          model: "gpt-responses-test",
+          reasoning: { effort },
+        }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      })
 
-    expect(response.status).toBe(200)
-    expect(createResponses).toHaveBeenCalledTimes(1)
-    expect(createResponses.mock.calls[0][0].reasoning).toEqual({
-      effort: "xhigh",
-    })
-  })
-
-  test("maps ultra reasoning effort to max when max is supported", async () => {
-    state.models = {
-      object: "list",
-      data: [
-        {
-          capabilities: {
-            limits: { max_prompt_tokens: 128000 },
-            supports: {
-              reasoning_effort: [
-                "none",
-                "low",
-                "medium",
-                "high",
-                "xhigh",
-                "max",
-              ],
-            },
-          },
-          id: "gpt-ultra-capability",
-          supported_endpoints: ["/responses"],
-        },
-      ],
-    } as typeof state.models
-    createResponses.mockImplementation((payload) =>
-      Promise.resolve(createResponsesResult(payload.model)),
-    )
-
-    const response = await createApp().request("/v1/responses", {
-      body: JSON.stringify({
-        input: "hello",
-        model: "gpt-ultra-capability",
-        reasoning: { effort: "ultra" },
-      }),
-      headers: { "content-type": "application/json" },
-      method: "POST",
-    })
-
-    expect(response.status).toBe(200)
-    expect(createResponses).toHaveBeenCalledTimes(1)
-    expect(createResponses.mock.calls[0][0].reasoning).toEqual({
-      effort: "max",
-    })
-  })
-
-  test("preserves max reasoning effort when capabilities are unknown", async () => {
-    createResponses.mockImplementation((payload) =>
-      Promise.resolve(createResponsesResult(payload.model)),
-    )
-
-    const response = await createApp().request("/v1/responses", {
-      body: JSON.stringify({
-        input: "hello",
-        model: "gpt-responses-test",
-        reasoning: { effort: "max" },
-      }),
-      headers: { "content-type": "application/json" },
-      method: "POST",
-    })
-
-    expect(response.status).toBe(200)
-    expect(createResponses).toHaveBeenCalledTimes(1)
-    expect(createResponses.mock.calls[0][0].reasoning).toEqual({
-      effort: "max",
-    })
-  })
-
-  test("maps ultra reasoning effort to max when capabilities are unknown", async () => {
-    createResponses.mockImplementation((payload) =>
-      Promise.resolve(createResponsesResult(payload.model)),
-    )
-
-    const response = await createApp().request("/v1/responses", {
-      body: JSON.stringify({
-        input: "hello",
-        model: "gpt-responses-test",
-        reasoning: { effort: "ultra" },
-      }),
-      headers: { "content-type": "application/json" },
-      method: "POST",
-    })
-
-    expect(response.status).toBe(200)
-    expect(createResponses).toHaveBeenCalledTimes(1)
-    expect(createResponses.mock.calls[0][0].reasoning).toEqual({
-      effort: "max",
-    })
-  })
-
-  test("preserves unknown reasoning effort for upstream validation", async () => {
-    createResponses.mockImplementation((payload) =>
-      Promise.resolve(createResponsesResult(payload.model)),
-    )
-
-    const response = await createApp().request("/v1/responses", {
-      body: JSON.stringify({
-        input: "hello",
-        model: "gpt-responses-test",
-        reasoning: { effort: "turbo" },
-      }),
-      headers: { "content-type": "application/json" },
-      method: "POST",
-    })
-
-    expect(response.status).toBe(200)
-    expect(createResponses).toHaveBeenCalledTimes(1)
-    expect(
-      (createResponses.mock.calls[0][0].reasoning as { effort?: string })
-        ?.effort,
-    ).toBe("turbo")
-  })
-
-  test("preserves supported max reasoning effort for native Responses", async () => {
-    state.models = {
-      object: "list",
-      data: [
-        {
-          capabilities: {
-            limits: { max_prompt_tokens: 128000 },
-            supports: {
-              reasoning_effort: [
-                "none",
-                "low",
-                "medium",
-                "high",
-                "xhigh",
-                "max",
-              ],
-            },
-          },
-          id: "gpt-max-capability",
-          supported_endpoints: ["/responses"],
-        },
-      ],
-    } as typeof state.models
-    createResponses.mockImplementation((payload) =>
-      Promise.resolve(createResponsesResult(payload.model)),
-    )
-
-    const response = await createApp().request("/v1/responses", {
-      body: JSON.stringify({
-        input: "hello",
-        model: "gpt-max-capability",
-        reasoning: { effort: "max" },
-      }),
-      headers: { "content-type": "application/json" },
-      method: "POST",
-    })
-
-    expect(response.status).toBe(200)
-    expect(createResponses).toHaveBeenCalledTimes(1)
-    expect(createResponses.mock.calls[0][0].reasoning).toEqual({
-      effort: "max",
-    })
-  })
+      expect(response.status).toBe(200)
+      expect(createResponses).toHaveBeenCalledTimes(1)
+      expect(
+        createResponses.mock.calls[0][0].reasoning as
+          { effort?: string } | null | undefined,
+      ).toEqual({
+        effort: expectedEffort,
+      })
+    },
+  )
 
   for (const [transport, supportedEndpoints] of [
     ["http", ["/responses"]],
     ["websocket", ["/responses", "ws:/responses"]],
   ] as const) {
+    test(`translates Guardian agent messages before the ${transport} transport`, async () => {
+      state.models = {
+        object: "list",
+        data: [
+          {
+            capabilities: { limits: { max_prompt_tokens: 128000 } },
+            id: "gpt-test",
+            supported_endpoints: [...supportedEndpoints],
+          },
+        ],
+      } as typeof state.models
+      createResponses.mockImplementation((payload) =>
+        Promise.resolve(createResponsesResult(payload.model)),
+      )
+
+      const response = await createApp().request("/v1/responses", {
+        body: JSON.stringify({
+          model: "gpt-test",
+          prompt_cache_key: "guardian:01a12870-03e0-7331-8eec-2b0677454fba",
+          text: {
+            format: {
+              type: "json_schema",
+              name: "guardian_decision",
+              schema: { type: "object" },
+            },
+          },
+          input: [
+            { type: "message", role: "developer", content: "Review action" },
+            {
+              id: "amsg-1",
+              type: "agent_message",
+              author: "agent-a",
+              recipient: "agent-b",
+              content: [
+                { type: "input_text", text: "Planned action" },
+                {
+                  type: "encrypted_content",
+                  encrypted_content: "encrypted-handoff",
+                },
+              ],
+            },
+          ],
+        }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      })
+
+      expect(response.status).toBe(200)
+      expect(createResponses).toHaveBeenCalledTimes(1)
+      const [payload, options] = createResponses.mock.calls[0]
+      expect(options.transport).toBe(transport)
+      expect(options.initiator).toBe("user")
+      expect(payload.input).toEqual([
+        { type: "message", role: "developer", content: "Review action" },
+        {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: "Planned action" }],
+        },
+      ])
+      expect(payload.prompt_cache_key).toBe(
+        "guardian:01a12870-03e0-7331-8eec-2b0677454fba",
+      )
+      expect(payload.text?.format?.type).toBe("json_schema")
+    })
+
     test(`sanitizes unsupported Copilot input fields before the ${transport} transport`, async () => {
       state.models = {
         object: "list",
@@ -1540,47 +1467,53 @@ describe("responses handler token usage", () => {
     ])
   })
 
-  test("does not compact input ending with compaction trigger when context management is disabled", async () => {
-    createResponses.mockImplementation((payload) =>
-      Promise.resolve(createResponsesResult(payload.model)),
-    )
+  test.each(["other-client/1.0", "opencode/2.0.24"])(
+    "preserves compaction trigger input with context management disabled for %s",
+    async (userAgent) => {
+      createResponses.mockImplementation((payload) =>
+        Promise.resolve(createResponsesResult(payload.model)),
+      )
 
-    const input = [
-      {
-        content: "old content before compaction",
-        role: "user",
-      },
-      {
-        encrypted_content: "cipher",
-        id: "compaction-1",
-        type: "compaction",
-      },
-      {
-        content: "Continue after the latest compaction.",
-        role: "user",
-      },
-      {
-        type: "compaction_trigger",
-      },
-    ]
+      const input = [
+        {
+          content: "old content before compaction",
+          role: "user",
+        },
+        {
+          encrypted_content: "cipher",
+          id: "compaction-1",
+          type: "compaction",
+        },
+        {
+          content: "Continue after the latest compaction.",
+          role: "user",
+        },
+        {
+          type: "compaction_trigger",
+        },
+      ]
 
-    const app = createApp()
-    const response = await app.request("/v1/responses", {
-      body: JSON.stringify({
-        input,
-        model: "gpt-responses-test",
-      }),
-      headers: {
-        "content-type": "application/json",
-      },
-      method: "POST",
-    })
+      const app = createApp()
+      const response = await app.request("/v1/responses", {
+        body: JSON.stringify({
+          input,
+          model: "gpt-responses-test",
+        }),
+        headers: {
+          "content-type": "application/json",
+          "user-agent": userAgent,
+        },
+        method: "POST",
+      })
 
-    expect(response.status).toBe(200)
-    expect(createResponses).toHaveBeenCalledTimes(1)
-    expect(createResponses.mock.calls[0][0].context_management).toBeUndefined()
-    expect(createResponses.mock.calls[0][0].input).toEqual(input)
-  })
+      expect(response.status).toBe(200)
+      expect(createResponses).toHaveBeenCalledTimes(1)
+      expect(
+        createResponses.mock.calls[0][0].context_management,
+      ).toBeUndefined()
+      expect(createResponses.mock.calls[0][0].input).toEqual(input)
+    },
+  )
 
   test("preserves custom apply_patch tools for Copilot Responses", async () => {
     createResponses.mockImplementation((payload) =>
@@ -1656,83 +1589,40 @@ describe("responses handler token usage", () => {
     ).toBe("workspace")
   })
 
-  test("disables context management for gpt-5.6 models even when responses context management is enabled", async () => {
-    state.models = {
-      object: "list",
-      data: [
-        {
-          capabilities: {
-            limits: {
-              max_prompt_tokens: 272000,
-            },
+  test.each(["gpt-5.6-sol", "gpt-6"])(
+    "disables context management for %s even when enabled",
+    async (model) => {
+      state.models = {
+        object: "list",
+        data: [
+          {
+            capabilities: { limits: { max_prompt_tokens: 272000 } },
+            id: model,
+            supported_endpoints: ["/responses"],
           },
-          id: "gpt-5.6-sol",
-          supported_endpoints: ["/responses"],
-        },
-      ],
-    } as typeof state.models
-    responsesUtilsDependencies.isContextManagementEnabledForResponses = () =>
-      true
-    responsesUtilsDependencies.getModelResponsesApiCompactThreshold = () =>
-      231200
-    createResponses.mockImplementation((payload) =>
-      Promise.resolve(createResponsesResult(payload.model)),
-    )
+        ],
+      } as typeof state.models
+      responsesUtilsDependencies.isContextManagementEnabledForResponses = () =>
+        true
+      responsesUtilsDependencies.getModelResponsesApiCompactThreshold = () =>
+        231200
+      createResponses.mockImplementation((payload) =>
+        Promise.resolve(createResponsesResult(payload.model)),
+      )
 
-    const app = createApp()
-    const response = await app.request("/v1/responses", {
-      body: JSON.stringify({
-        input: "hello",
-        model: "gpt-5.6-sol",
-      }),
-      headers: {
-        "content-type": "application/json",
-      },
-      method: "POST",
-    })
+      const response = await createApp().request("/v1/responses", {
+        body: JSON.stringify({ input: "hello", model }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      })
 
-    expect(response.status).toBe(200)
-    expect(createResponses).toHaveBeenCalledTimes(1)
-    expect(createResponses.mock.calls[0][0].context_management).toBeUndefined()
-  })
-
-  test("disables context management for gpt-6 models even when responses context management is enabled", async () => {
-    state.models = {
-      object: "list",
-      data: [
-        {
-          capabilities: {
-            limits: {
-              max_prompt_tokens: 272000,
-            },
-          },
-          id: "gpt-6",
-          supported_endpoints: ["/responses"],
-        },
-      ],
-    } as typeof state.models
-    responsesUtilsDependencies.isContextManagementEnabledForResponses = () =>
-      true
-    createResponses.mockImplementation((payload) =>
-      Promise.resolve(createResponsesResult(payload.model)),
-    )
-
-    const app = createApp()
-    const response = await app.request("/v1/responses", {
-      body: JSON.stringify({
-        input: "hello",
-        model: "gpt-6",
-      }),
-      headers: {
-        "content-type": "application/json",
-      },
-      method: "POST",
-    })
-
-    expect(response.status).toBe(200)
-    expect(createResponses).toHaveBeenCalledTimes(1)
-    expect(createResponses.mock.calls[0][0].context_management).toBeUndefined()
-  })
+      expect(response.status).toBe(200)
+      expect(createResponses).toHaveBeenCalledTimes(1)
+      expect(
+        createResponses.mock.calls[0][0].context_management,
+      ).toBeUndefined()
+    },
+  )
 
   test("uses Codex subagent headers for Responses request attribution", async () => {
     createResponses.mockImplementation((payload) =>

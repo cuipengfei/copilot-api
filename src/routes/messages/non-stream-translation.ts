@@ -95,6 +95,7 @@ export function translateToOpenAI(
     toolContentSupportType: options.toolContentSupportType ?? [],
   }
   const tools = translateAnthropicToolsToOpenAI(payload.tools)
+  const parallelToolCalls = translateParallelToolCalls(payload.tool_choice)
   return {
     model: modelId,
     messages: translateAnthropicMessagesToOpenAI(
@@ -116,6 +117,9 @@ export function translateToOpenAI(
     thinking_budget: thinkingBudget,
     ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}),
     ...(promptCacheKey ? { prompt_cache_key: promptCacheKey } : {}),
+    ...(parallelToolCalls === undefined ?
+      {}
+    : { parallel_tool_calls: parallelToolCalls }),
   }
 }
 
@@ -586,6 +590,16 @@ function translateAnthropicToolChoiceToOpenAI(
       return undefined
     }
   }
+}
+
+function translateParallelToolCalls(
+  toolChoice: AnthropicMessagesPayload["tool_choice"],
+): boolean | undefined {
+  if (typeof toolChoice?.disable_parallel_tool_use !== "boolean") {
+    return undefined
+  }
+
+  return !toolChoice.disable_parallel_tool_use
 }
 
 // Response translation

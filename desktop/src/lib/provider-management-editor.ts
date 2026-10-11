@@ -20,10 +20,10 @@ export function createProviderDrafts(
     type: provider.type,
     enabled: provider.enabled,
     mode:
-      provider.codexModels === undefined ? 'auto'
-      : provider.codexModels.length ? 'selected'
+      provider.agentsModels === undefined ? 'auto'
+      : provider.agentsModels.length ? 'selected'
       : 'none',
-    models: provider.codexModels?.join('\n') ?? '',
+    models: provider.agentsModels?.join('\n') ?? '',
   }))
 }
 
@@ -48,7 +48,7 @@ export function buildProviderManagementUpdate(
     if (draft.mode === 'selected' && models.length === 0) {
       throw new Error(`Enter at least one model ID for '${draft.name}'.`)
     }
-    const codexModels =
+    const agentsModels =
       draft.mode === 'auto' ? null
       : draft.mode === 'none' ? []
       : models
@@ -56,10 +56,10 @@ export function buildProviderManagementUpdate(
       {}
     if (draft.enabled !== previous.enabled) update.enabled = draft.enabled
     if (
-      JSON.stringify(codexModels)
-      !== JSON.stringify(previous.codexModels ?? null)
+      JSON.stringify(agentsModels)
+      !== JSON.stringify(previous.agentsModels ?? null)
     ) {
-      update.codexModels = codexModels
+      update.agentsModels = agentsModels
     }
     if (Object.keys(update).length > 0) providers[draft.name] = update
   }

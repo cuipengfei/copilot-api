@@ -5,9 +5,13 @@ import consola from "consola"
 import {
   getAnthropicApiKey,
   getClaudeTokenMultiplier,
+  getRawProviderConfig,
   resolveMappedModel,
 } from "~/lib/config"
+import { GITHUB_COPILOT_PROVIDER } from "~/lib/github-copilot-provider"
+import { getProviderModelPdfSupport } from "~/lib/model-pdf-support"
 import { createFallbackModel } from "~/lib/provider-model"
+import { fromClaudeDiscoveryModelId } from "~/lib/claude-models"
 import { resolveConfiguredProviderModelAlias } from "~/lib/provider-resolver"
 import { getTokenCount } from "~/lib/tokenizer"
 import { handleProviderCountTokensForProvider } from "~/routes/provider/messages/count-tokens-handler"
@@ -90,7 +94,9 @@ async function countTokensViaAnthropic(
  */
 export async function handleCountTokens(c: Context) {
   const anthropicPayload = await c.req.json<AnthropicMessagesPayload>()
-  anthropicPayload.model = resolveMappedModel(anthropicPayload.model)
+  anthropicPayload.model = resolveMappedModel(
+    fromClaudeDiscoveryModelId(anthropicPayload.model),
+  )
   normalizeSystemMessages(anthropicPayload)
 
   const providerModelAlias = await resolveConfiguredProviderModelAlias(
@@ -111,13 +117,22 @@ export async function handleCountTokens(c: Context) {
   // Fallback: GPT tokenizer estimation (also used for non-Claude models)
   const anthropicBeta = c.req.header("anthropic-beta")
 
-  const openAIPayload = translateToOpenAI(anthropicPayload)
-
   const requestedModel = anthropicPayload.model
   const resolve = resolveCountTokensModel(requestedModel)
 
   const selectedModel = resolve.model
   anthropicPayload.model = selectedModel.id
+
+  const openAIPayload = translateToOpenAI(anthropicPayload, {
+    supportPdf: getProviderModelPdfSupport(
+      requestedModel,
+      {
+        ...getRawProviderConfig(GITHUB_COPILOT_PROVIDER),
+        name: GITHUB_COPILOT_PROVIDER,
+      },
+      selectedModel,
+    ),
+  })
 
   if (resolve.fallback) {
     consola.warn(

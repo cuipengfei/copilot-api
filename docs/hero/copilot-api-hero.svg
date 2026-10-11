@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="700" viewBox="0 0 1600 700" role="img" aria-label="Copilot API - Universal AI Gateway">
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="760" viewBox="0 0 1600 760" role="img" aria-label="Copilot API - Universal AI Gateway">
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
       <stop offset="0" stop-color="#0d1117"/>
@@ -34,9 +34,9 @@
     </style>
   </defs>
 
-  <rect width="1600" height="700" fill="url(#bg)"/>
-  <rect width="1600" height="700" fill="url(#grid)"/>
-  <rect width="1600" height="700" fill="url(#glow)"/>
+  <rect width="1600" height="760" fill="url(#bg)"/>
+  <rect width="1600" height="760" fill="url(#grid)"/>
+  <rect width="1600" height="760" fill="url(#glow)"/>
 
   <!-- Header -->
   <text x="800" y="88" text-anchor="middle" class="sans" font-size="56" font-weight="800" letter-spacing="6" fill="url(#title)">COPILOT API</text>
@@ -82,23 +82,27 @@
     <circle cx="1284" cy="335" r="4.5" fill="#f778ba"/>
     <text x="1298" y="340" fill="#e6edf3">Codex</text>
     <rect x="1260" y="358" width="250" height="34" rx="9" fill="url(#box)" stroke="#30363d"/>
-    <circle cx="1284" cy="375" r="4.5" fill="#e3b341"/>
-    <text x="1298" y="380" fill="#e6edf3">OpenCode Go</text>
+    <circle cx="1284" cy="375" r="4.5" fill="#f0f6fc"/>
+    <text x="1298" y="380" fill="#e6edf3">xAI</text>
     <rect x="1260" y="398" width="250" height="34" rx="9" fill="url(#box)" stroke="#30363d"/>
-    <circle cx="1284" cy="415" r="4.5" fill="#39d0d8"/>
-    <text x="1298" y="420" fill="#e6edf3">Kimi</text>
+    <circle cx="1284" cy="415" r="4.5" fill="#e3b341"/>
+    <text x="1298" y="420" fill="#e6edf3">OpenCode Go</text>
     <rect x="1260" y="438" width="250" height="34" rx="9" fill="url(#box)" stroke="#30363d"/>
-    <circle cx="1284" cy="455" r="4.5" fill="#3fb950"/>
-    <text x="1298" y="460" fill="#e6edf3">DeepSeek</text>
+    <circle cx="1284" cy="455" r="4.5" fill="#39d0d8"/>
+    <text x="1298" y="460" fill="#e6edf3">Kimi</text>
     <rect x="1260" y="478" width="250" height="34" rx="9" fill="url(#box)" stroke="#30363d"/>
-    <circle cx="1284" cy="495" r="4.5" fill="#f0883e"/>
-    <text x="1298" y="500" fill="#e6edf3">DashScope</text>
+    <circle cx="1284" cy="495" r="4.5" fill="#3fb950"/>
+    <text x="1298" y="500" fill="#e6edf3">DeepSeek</text>
     <rect x="1260" y="518" width="250" height="34" rx="9" fill="url(#box)" stroke="#30363d"/>
-    <circle cx="1284" cy="535" r="4.5" fill="#d2a8ff"/>
-    <text x="1298" y="540" fill="#e6edf3">OpenRouter</text>
-    <rect x="1260" y="558" width="250" height="34" rx="9" fill="url(#box)" stroke="#30363d" stroke-dasharray="5 4"/>
-    <circle cx="1284" cy="575" r="4.5" fill="#8b949e"/>
-    <text x="1298" y="580" fill="#8b949e">Custom Providers</text>
+    <circle cx="1284" cy="535" r="4.5" fill="#f0883e"/>
+    <text x="1298" y="540" fill="#e6edf3">DashScope</text>
+    <rect x="1260" y="558" width="250" height="34" rx="9" fill="url(#box)" stroke="#30363d"/>
+    <circle cx="1284" cy="575" r="4.5" fill="#d2a8ff"/>
+    <text x="1298" y="580" fill="#e6edf3">OpenRouter</text>
+    <rect x="1260" y="598" width="250" height="52" rx="9" fill="url(#box)" stroke="#30363d" stroke-dasharray="5 4"/>
+    <circle cx="1284" cy="615" r="4.5" fill="#8b949e"/>
+    <text x="1298" y="620" fill="#8b949e">Custom Providers</text>
+    <text x="1385" y="638" text-anchor="middle" font-size="11" font-weight="500" fill="#8b949e">Choose providers from models.dev</text>
   </g>
 
   <!-- Flow arrows: clients -> gateway -->
@@ -111,14 +115,15 @@
 
   <!-- Flow arrows: gateway -> providers -->
   <g fill="none" stroke="#2ea043" stroke-width="1.6" stroke-opacity="0.75">
-    <path class="flow" marker-end="url(#arrow-out)" d="M 964 352 C 1100 329, 1150 295, 1252 295"/>
-    <path class="flow" marker-end="url(#arrow-out)" d="M 964 364 C 1100 352, 1150 335, 1252 335"/>
-    <path class="flow" marker-end="url(#arrow-out)" d="M 964 376 C 1100 376, 1150 375, 1252 375"/>
-    <path class="flow" marker-end="url(#arrow-out)" d="M 964 388 C 1100 399, 1150 415, 1252 415"/>
-    <path class="flow" marker-end="url(#arrow-out)" d="M 964 400 C 1100 422, 1150 455, 1252 455"/>
-    <path class="flow" marker-end="url(#arrow-out)" d="M 964 412 C 1100 445, 1150 495, 1252 495"/>
-    <path class="flow" marker-end="url(#arrow-out)" d="M 964 424 C 1100 468, 1150 535, 1252 535"/>
-    <path class="flow" marker-end="url(#arrow-out)" d="M 964 436 C 1100 492, 1150 575, 1252 575"/>
+    <path class="flow" marker-end="url(#arrow-out)" d="M 964 346 C 1100 326, 1150 295, 1252 295"/>
+    <path class="flow" marker-end="url(#arrow-out)" d="M 964 358 C 1100 349, 1150 335, 1252 335"/>
+    <path class="flow" marker-end="url(#arrow-out)" d="M 964 370 C 1100 372, 1150 375, 1252 375"/>
+    <path class="flow" marker-end="url(#arrow-out)" d="M 964 382 C 1100 395, 1150 415, 1252 415"/>
+    <path class="flow" marker-end="url(#arrow-out)" d="M 964 394 C 1100 418, 1150 455, 1252 455"/>
+    <path class="flow" marker-end="url(#arrow-out)" d="M 964 406 C 1100 442, 1150 495, 1252 495"/>
+    <path class="flow" marker-end="url(#arrow-out)" d="M 964 418 C 1100 465, 1150 535, 1252 535"/>
+    <path class="flow" marker-end="url(#arrow-out)" d="M 964 430 C 1100 488, 1150 575, 1252 575"/>
+    <path class="flow" marker-end="url(#arrow-out)" d="M 964 442 C 1100 511, 1150 615, 1252 615"/>
   </g>
 
   <!-- Gateway box -->
@@ -130,13 +135,13 @@
 
   <!-- Footer chips -->
   <g class="sans" font-size="15" font-weight="600">
-    <rect x="468" y="612" width="152" height="34" rx="17" fill="#161b26" stroke="#30363d"/>
-    <text x="544" y="634" text-anchor="middle" fill="#8b949e">Multi-Provider</text>
-    <rect x="636" y="612" width="130" height="34" rx="17" fill="#161b26" stroke="#30363d"/>
-    <text x="701" y="634" text-anchor="middle" fill="#8b949e">Streaming</text>
-    <rect x="782" y="612" width="130" height="34" rx="17" fill="#161b26" stroke="#30363d"/>
-    <text x="847" y="634" text-anchor="middle" fill="#8b949e">WebSocket</text>
-    <rect x="928" y="612" width="164" height="34" rx="17" fill="#161b26" stroke="#30363d"/>
-    <text x="1010" y="634" text-anchor="middle" fill="#8b949e">Usage Tracking</text>
+    <rect x="468" y="672" width="152" height="34" rx="17" fill="#161b26" stroke="#30363d"/>
+    <text x="544" y="694" text-anchor="middle" fill="#8b949e">Multi-Provider</text>
+    <rect x="636" y="672" width="130" height="34" rx="17" fill="#161b26" stroke="#30363d"/>
+    <text x="701" y="694" text-anchor="middle" fill="#8b949e">Streaming</text>
+    <rect x="782" y="672" width="130" height="34" rx="17" fill="#161b26" stroke="#30363d"/>
+    <text x="847" y="694" text-anchor="middle" fill="#8b949e">WebSocket</text>
+    <rect x="928" y="672" width="164" height="34" rx="17" fill="#161b26" stroke="#30363d"/>
+    <text x="1010" y="694" text-anchor="middle" fill="#8b949e">Usage Tracking</text>
   </g>
 </svg>

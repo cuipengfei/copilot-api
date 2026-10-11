@@ -2,7 +2,8 @@ import { Hono } from "hono"
 
 import { forwardError } from "~/lib/error"
 import { createHandlerLogger } from "~/lib/logger"
-import { getOpencodeGoModelRecords } from "~/lib/models-dev-cache"
+import { withModelDisplayName } from "~/lib/model-display-name"
+import { getLocalProviderModelRecords } from "~/lib/provider-model-catalog"
 import { resolveProviderConfig } from "~/lib/provider-resolver"
 import {
   handleCodexModelsProxy,
@@ -11,6 +12,7 @@ import {
 import { getModels as getCodexModels } from "~/services/codex/get-models"
 import {
   createProviderProxyResponse,
+  createProviderProxyResponseHeaders,
   forwardProviderModels,
 } from "~/services/providers/provider-proxy"
 
@@ -43,25 +45,36 @@ providerModelRoutes.get("/", async (c) => {
       const models = getCodexModels()
       return c.json({
         object: "list",
-        data: models.data,
+        data: models.data.map((model) =>
+          withModelDisplayName(model, providerConfig.name),
+        ),
         has_more: false,
       })
     }
 
-    if (providerConfig.name === "opencode-go") {
-      const models = getOpencodeGoModelRecords()
-      if (models.length === 0) {
+    const localModels = getLocalProviderModelRecords(
+      providerConfig.name,
+      providerConfig,
+    )
+    if (localModels !== undefined) {
+      if (localModels.length === 0) {
         return c.json(
           {
             error: {
-              message: "OpenCode Go model catalog is unavailable",
+              message: `${providerConfig.name} model catalog is unavailable`,
               type: "service_unavailable",
             },
           },
           503,
         )
       }
-      return c.json({ object: "list", data: models, has_more: false })
+      return c.json({
+        object: "list",
+        data: localModels.map((model) =>
+          withModelDisplayName(model, providerConfig.name),
+        ),
+        has_more: false,
+      })
     }
 
     const upstreamResponse = await forwardProviderModels(
@@ -74,6 +87,34 @@ providerModelRoutes.get("/", async (c) => {
       statusCode: upstreamResponse.status,
     })
 
+    if (upstreamResponse.ok) {
+      const body: unknown = await upstreamResponse
+        .clone()
+        .json()
+        .catch(() => null)
+      if (
+        typeof body === "object"
+        && body !== null
+        && "data" in body
+        && Array.isArray(body.data)
+      ) {
+        const upstreamModels = body.data
+        const data = upstreamModels.map((model: unknown) =>
+          withModelDisplayName(model, providerConfig.name),
+        )
+        if (data.every((model, index) => model === upstreamModels[index])) {
+          return createProviderProxyResponse(upstreamResponse)
+        }
+        const headers = createProviderProxyResponseHeaders(
+          upstreamResponse.headers,
+        )
+        headers.delete("etag")
+        return Response.json(
+          { ...body, data },
+          { status: upstreamResponse.status, headers },
+        )
+      }
+    }
     return createProviderProxyResponse(upstreamResponse)
   } catch (error) {
     logger.error("provider.models.error", {

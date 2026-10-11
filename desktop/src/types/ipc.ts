@@ -1,5 +1,10 @@
 import type { LangPreference } from '../locales'
 import type {
+  XaiAuthInfo,
+  OAuthAccountSummary,
+} from '../../../src/lib/types/oauth'
+export type { XaiAuthInfo }
+import type {
   ProviderManagementConfig,
   ProviderManagementUpdate,
   ProviderModelOptions,
@@ -26,21 +31,22 @@ export interface AuthResult {
   mode?: DesktopAuthMode
   providers?: string[]
   error?: string
+  cancelled?: boolean
 }
 
 export interface AuthStatus extends AuthResult {
   mode: DesktopAuthMode
 }
 
-export interface CodexAccountSummary {
-  accountId: string
-  alias?: string
-  active: boolean
-}
+export type CodexAccountSummary = OAuthAccountSummary
 
 export interface CodexLoginInput {
   alias?: string
   callbackUrlOrCode?: string
+}
+
+export interface XaiLoginInput {
+  alias?: string
 }
 
 export type ProviderType =
@@ -265,6 +271,16 @@ declare global {
       switchCodexAccount: (accountId: string) => Promise<AuthResult>
       removeCodexAccount: (accountId: string) => Promise<AuthResult>
       startCodexLogin: (input?: CodexLoginInput) => Promise<AuthResult>
+      cancelCodexLogin: () => Promise<boolean>
+      onCodexAuthUrl: (callback: (url: string) => void) => () => void
+      onCodexLoginSaving: (callback: () => void) => () => void
+      getXaiAccounts: () => Promise<Array<CodexAccountSummary>>
+      switchXaiAccount: (accountId: string) => Promise<AuthResult>
+      removeXaiAccount: (accountId: string) => Promise<AuthResult>
+      startXaiLogin: (input?: XaiLoginInput) => Promise<AuthResult>
+      cancelXaiLogin: () => Promise<boolean>
+      onXaiAuth: (callback: (info: XaiAuthInfo) => void) => () => void
+      onXaiLoginSaving: (callback: () => void) => () => void
       logout: () => Promise<void>
       startServer: (
         port: number,

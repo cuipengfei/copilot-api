@@ -1,65 +1,110 @@
-import { afterEach, describe, expect, test } from "bun:test"
+import { afterEach, beforeEach, expect, test } from "bun:test"
 
-import { requestContext } from "../src/lib/request-context"
+import type { State } from "~/lib/state"
 
 import {
   copilotHeaders,
   prepareForCompact,
   prepareMessageProxyHeaders,
-} from "../src/lib/api-config"
-import { COMPACT_AUTO_CONTINUE, COMPACT_REQUEST } from "../src/lib/compact"
-import { isAlphaSearchCodexPriorityEnabled } from "../src/lib/config"
-import { state } from "../src/lib/state"
+} from "~/lib/api-config"
+import { COMPACT_AUTO_CONTINUE, COMPACT_REQUEST } from "~/lib/compact"
+import { requestContext } from "~/lib/request-context"
+import { state } from "~/lib/state"
 
-describe("prepareMessageProxyHeaders", () => {
-  const originalOauthApp = process.env.COPILOT_API_OAUTH_APP
+const originalOauthApp = process.env.COPILOT_API_OAUTH_APP
+const originalEnterpriseUrl = process.env.COPILOT_API_ENTERPRISE_URL
+const proxyState: State = {
+  interactionId: "interaction-1",
+  accountType: "individual",
+  forceAgent: false,
+  nativeMessages: false,
+  copilotApiUrl: "https://api.individual.githubcopilot.com",
+  githubToken: "test-github-token",
+  copilotToken: "test-copilot-token",
+  vsCodeVersion: "1.140.0",
+  vsCodeDeviceId: "device-1",
+  vsCodeSessionId: "session-1",
+  macMachineId: "machine-1",
+  showToken: false,
+  verbose: false,
+}
 
-  afterEach(() => {
-    if (originalOauthApp === undefined) {
-      delete process.env.COPILOT_API_OAUTH_APP
-      return
-    }
-
-    process.env.COPILOT_API_OAUTH_APP = originalOauthApp
-  })
-
-  test("applies message proxy headers by default", () => {
-    delete process.env.COPILOT_API_OAUTH_APP
-
-    const headers: Record<string, string> = {
-      "user-agent": "GitHubCopilotChat/0.42.3",
-    }
-
-    prepareMessageProxyHeaders(headers)
-
-    expect(headers["x-interaction-type"]).toBe("messages-proxy")
-    expect(headers["openai-intent"]).toBe("messages-proxy")
-    expect(headers["user-agent"]).toBe(
-      "vscode_claude_code/2.1.258 (external, sdk-ts, agent-sdk/0.3.258)",
-    )
-    expect(headers["x-request-id"]).toBeDefined()
-    expect(headers["x-agent-task-id"]).toBe(headers["x-request-id"])
-  })
-
-  test("leaves opencode headers untouched", () => {
-    process.env.COPILOT_API_OAUTH_APP = "opencode"
-
-    const headers: Record<string, string> = {
-      "Openai-Intent": "conversation-edits",
-      "User-Agent": "opencode/1.0.0",
-    }
-
-    prepareMessageProxyHeaders(headers)
-
-    expect(headers).toEqual({
-      "Openai-Intent": "conversation-edits",
-      "User-Agent": "opencode/1.0.0",
-    })
-  })
+beforeEach(() => {
+  delete process.env.COPILOT_API_OAUTH_APP
+  delete process.env.COPILOT_API_ENTERPRISE_URL
 })
 
-test("reads the alpha search Codex priority setting", () => {
-  expect(typeof isAlphaSearchCodexPriorityEnabled()).toBe("boolean")
+afterEach(() => {
+  if (originalEnterpriseUrl === undefined) {
+    delete process.env.COPILOT_API_ENTERPRISE_URL
+  } else {
+    process.env.COPILOT_API_ENTERPRISE_URL = originalEnterpriseUrl
+  }
+  if (originalOauthApp === undefined) {
+    delete process.env.COPILOT_API_OAUTH_APP
+    return
+  }
+
+  process.env.COPILOT_API_OAUTH_APP = originalOauthApp
+})
+
+test("prepareMessageProxyHeaders rebuilds proxy headers with GitHub auth and fresh identity", () => {
+  const headers: Record<string, string> = {
+    ...copilotHeaders(proxyState, "original-request-id", true),
+    "anthropic-version": "client-version",
+    "anthropic-beta": "context-management-2025-06-27",
+    "x-initiator": "user",
+    "x-interaction-id": "interaction-1",
+  }
+
+  prepareMessageProxyHeaders(headers, proxyState)
+
+  // Core authentication derives from the GitHub token carried in state.
+  expect(headers.Authorization).toBe(`Bearer ${proxyState.githubToken}`)
+
+  // Proxy intent metadata is applied regardless of client input.
+  expect(headers["OpenAI-Intent"]).toBe("messages-proxy")
+  expect(headers["X-Interaction-Type"]).toBe("messages-proxy")
+
+  // Client body metadata is forwarded verbatim.
+  expect(headers["anthropic-version"]).toBe("client-version")
+  expect(headers["anthropic-beta"]).toBe("context-management-2025-06-27")
+
+  // Identity propagates from the captured session/machine/device inputs.
+  expect(headers["VScode-SessionId"]).toBe(proxyState.vsCodeSessionId!)
+  expect(headers["VScode-MachineId"]).toBe(proxyState.macMachineId!)
+  expect(headers["Editor-Device-Id"]).toBe(proxyState.vsCodeDeviceId)
+
+  // Editor version headers derive from the VS Code version input, not a pinned constant.
+  expect(headers["Editor-Version"]).toBe(`vscode/${proxyState.vsCodeVersion}`)
+  expect(headers["Editor-Plugin-Version"]).toBe(
+    `copilot-chat/${proxyState.vsCodeVersion}`,
+  )
+
+  // Every upstream request gets a fresh UUID request id, never the client's.
+  expect(headers["X-Request-Id"]).toMatch(
+    /^[a-f\d]{8}-[a-f\d]{4}-4[a-f\d]{3}-[89ab][a-f\d]{3}-[a-f\d]{12}$/u,
+  )
+  expect(headers["X-Request-Id"]).not.toBe("original-request-id")
+
+  // The stale client interaction id is dropped during the rebuild.
+  expect(headers["x-interaction-id"]).toBeUndefined()
+})
+
+test("prepareMessageProxyHeaders leaves opencode headers untouched", () => {
+  process.env.COPILOT_API_OAUTH_APP = "opencode"
+
+  const headers: Record<string, string> = {
+    "Openai-Intent": "conversation-edits",
+    "User-Agent": "opencode/1.0.0",
+  }
+
+  prepareMessageProxyHeaders(headers, proxyState)
+
+  expect(headers).toEqual({
+    "Openai-Intent": "conversation-edits",
+    "User-Agent": "opencode/1.0.0",
+  })
 })
 
 test.each([

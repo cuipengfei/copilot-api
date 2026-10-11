@@ -6,13 +6,13 @@ export interface ProviderManagementConfig {
     name: string
     type: string
     enabled: boolean
-    codexModels?: Array<string>
+    agentsModels?: Array<string>
   }>
 }
 
 export interface ProviderManagementUpdate {
   providers?: Record<
     string,
-    { enabled?: boolean; codexModels?: Array<string> | null }
+    { enabled?: boolean; agentsModels?: Array<string> | null }
   >
 }

@@ -766,7 +766,7 @@ describe("createResponses websocket helpers", () => {
       "Copilot-Integration-Id": "vscode-chat",
       "Copilot-Vision-Request": "true",
       "Editor-Device-Id": "device-1",
-      "Editor-Plugin-Version": "copilot-chat/0.67.0",
+      "Editor-Plugin-Version": "copilot-chat/0.68.0",
       "Editor-Version": "vscode/1.120.0",
       "OpenAI-Intent": "conversation-agent",
       "VScode-SessionId": "session-1",

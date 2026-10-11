@@ -15,6 +15,8 @@ import { createMessages } from "../src/services/copilot/create-messages"
 import { createResponses } from "../src/services/copilot/create-responses"
 import type { AutoSelectionResponse } from "../src/services/copilot/get-auto-selection"
 
+const originalGithubToken = state.githubToken
+const originalTelemetryEnabled = state.copilotTelemetryEnabled
 const createMessagesPayload: AnthropicMessagesPayload = {
   model: "gpt-5.3-codex",
   max_tokens: 256,
@@ -203,6 +205,7 @@ beforeEach(() => {
   ).__AUTO_SESSION_FINAL_CALLS__ = []
 
   state.copilotToken = "test-copilot-token"
+  state.copilotTelemetryEnabled = false
   state.vsCodeVersion = "1.0.0"
   state.accountType = "individual"
   state.forceAgent = false
@@ -211,42 +214,51 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  state.githubToken = originalGithubToken
+  state.copilotTelemetryEnabled = originalTelemetryEnabled
   invalidateAutoSession()
   mock.restore()
 })
 
 describe("auto-session token injection across chains", () => {
-  test("messages chain adds Copilot-Session-Token when model is covered", async () => {
-    ;(
-      globalThis as unknown as {
-        __AUTO_SESSION_QUEUE__: Array<AutoSelectionResponse>
+  test.each([
+    undefined,
+    { user_id: "user_device_account_account_session_session" },
+  ])(
+    "messages chain preserves paired session token with metadata %j",
+    async (metadata) => {
+      ;(
+        globalThis as unknown as {
+          __AUTO_SESSION_QUEUE__: Array<AutoSelectionResponse>
+        }
+      ).__AUTO_SESSION_QUEUE__.push(
+        queuedAutoSelection("gpt-5.3-codex", "session-hit", ["/v1/messages"]),
+      )
+
+      const fetchMock = wireFetchMock(
+        () => new Response(JSON.stringify({ id: "msg-1" }), { status: 200 }),
+      )
+
+      await prewarmAutoSession()
+      state.githubToken = "test-github-token"
+      await createMessages({ ...createMessagesPayload, metadata }, undefined, {
+        initiator: "user",
+      })
+
+      const [, init] = findCall(fetchMock, "/v1/messages")
+      expect(getSessionHeader(init)).toBe("session-hit")
+
+      const parsedBody: unknown = JSON.parse(requestBodyText(init))
+      if (
+        typeof parsedBody !== "object"
+        || parsedBody === null
+        || !("model" in parsedBody)
+      ) {
+        throw new Error("inference request body missing model")
       }
-    ).__AUTO_SESSION_QUEUE__.push(
-      queuedAutoSelection("gpt-5.3-codex", "session-hit", ["/v1/messages"]),
-    )
-
-    const fetchMock = wireFetchMock(
-      () => new Response(JSON.stringify({ id: "msg-1" }), { status: 200 }),
-    )
-
-    await prewarmAutoSession()
-    await createMessages(createMessagesPayload, undefined, {
-      initiator: "user",
-    })
-
-    const [, init] = findCall(fetchMock, "/v1/messages")
-    expect(getSessionHeader(init)).toBe("session-hit")
-
-    const parsedBody: unknown = JSON.parse(requestBodyText(init))
-    if (
-      typeof parsedBody !== "object"
-      || parsedBody === null
-      || !("model" in parsedBody)
-    ) {
-      throw new Error("inference request body missing model")
-    }
-    expect(parsedBody.model).toBe("gpt-5.3-codex")
-  })
+      expect(parsedBody.model).toBe("gpt-5.3-codex")
+    },
+  )
 
   test("messages chain keeps old path when model is not covered", async () => {
     ;(

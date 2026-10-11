@@ -18,6 +18,10 @@ import {
   getModelsDevProviderApi,
   getOpencodeGoModelProviderType,
 } from "./models-dev-cache"
+import {
+  resolveProviderModelsDevId,
+  usesModelsDevModelCatalog,
+} from "./provider-model-catalog"
 
 export interface ResolvedProviderConfig {
   name: string
@@ -29,7 +33,7 @@ export interface ResolvedProviderConfig {
   authTypeExplicit?: boolean
   pricingCurrency?: string
   models?: Record<string, ModelConfig>
-  codexModels?: Array<string>
+  agentsModels?: Array<string>
 }
 
 export function normalizeProviderBaseUrl(url: string): string {
@@ -61,12 +65,12 @@ export function resolveProviderAuthType(
   }
 
   if (authType === "oauth2") {
-    if (providerName === "codex") {
+    if (providerName === "codex" || providerName === "xai") {
       return authType
     }
 
     consola.warn(
-      `Provider ${providerName} has authType 'oauth2', which is only supported by the builtin codex provider, falling back to ${defaultAuthType}`,
+      `Provider ${providerName} has authType 'oauth2', which is only supported by the builtin codex and xai providers, falling back to ${defaultAuthType}`,
     )
     return defaultAuthType
   }
@@ -87,7 +91,10 @@ function isProviderApiKeyRequired(
 ): boolean {
   return (
     authType !== "azure-entra"
-    && !(providerName === "codex" && authType === "oauth2")
+    && !(
+      (providerName === "codex" || providerName === "xai")
+      && authType === "oauth2"
+    )
   )
 }
 
@@ -191,7 +198,7 @@ export function getProviderConfig(name: string): ResolvedProviderConfig | null {
     authTypeExplicit: provider.authType !== undefined,
     pricingCurrency: normalizePricingCurrency(provider.pricingCurrency),
     models: provider.models,
-    codexModels: provider.codexModels,
+    agentsModels: provider.agentsModels,
   }
 }
 
@@ -240,8 +247,14 @@ export function resolveProviderConfigForModel(
     : undefined
   const configuredModel = providerConfig.models?.[model]
   const catalogPricing =
-    providerConfig.modelsDevProviderId ?
-      getModelsDevModelPricing(providerConfig.modelsDevProviderId, model)
+    (
+      providerConfig.modelsDevProviderId
+      || usesModelsDevModelCatalog(providerConfig.name)
+    ) ?
+      getModelsDevModelPricing(
+        resolveProviderModelsDevId(providerConfig.name, providerConfig),
+        model,
+      )
     : undefined
   const useCatalogPricing =
     catalogPricing !== undefined && configuredModel?.pricing === undefined

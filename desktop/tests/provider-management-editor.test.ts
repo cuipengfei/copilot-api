@@ -13,9 +13,9 @@ const config: ProviderManagementConfig = {
       name: 'selected',
       type: 'openai-compatible',
       enabled: false,
-      codexModels: ['vendor/model'],
+      agentsModels: ['vendor/model'],
     },
-    { name: 'none', type: 'openai-responses', enabled: true, codexModels: [] },
+    { name: 'none', type: 'openai-responses', enabled: true, agentsModels: [] },
   ],
 }
 describe('provider management editor', () => {
@@ -35,17 +35,20 @@ describe('provider management editor', () => {
     drafts[1].models = ' vendor/model \nmodel-two\nmodel-two'
     expect(buildProviderManagementUpdate(drafts, config)).toEqual({
       providers: {
-        selected: { enabled: true, codexModels: ['vendor/model', 'model-two'] },
+        selected: {
+          enabled: true,
+          agentsModels: ['vendor/model', 'model-two'],
+        },
       },
     })
     drafts[1].mode = 'auto'
     expect(
       buildProviderManagementUpdate(drafts, config).providers?.selected,
-    ).toEqual({ enabled: true, codexModels: null })
+    ).toEqual({ enabled: true, agentsModels: null })
     drafts[0].mode = 'none'
     expect(
       buildProviderManagementUpdate(drafts, config).providers?.auto,
-    ).toEqual({ codexModels: [] })
+    ).toEqual({ agentsModels: [] })
   })
   test('rejects empty specified lists and stale unknown providers', () => {
     const drafts = createProviderDrafts(config)

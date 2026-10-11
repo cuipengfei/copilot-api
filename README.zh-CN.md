@@ -22,17 +22,17 @@
   <a href="README.md">English</a> | 简体中文
 </p>
 
-Copilot API 是一个本地 AI 网关，让 Claude Code、OpenCode、Codex 等客户端通过统一的 API 使用 GitHub Copilot、内置 Codex 和第三方模型服务。
+Copilot API 是一个本地 AI 网关，让 Claude Code、OpenCode、Codex 等客户端通过统一的 API 使用 GitHub Copilot、内置 Codex、xAI 和第三方模型服务。
 
 <a id="highlights"></a>
 
 ## 功能亮点
 
 - **统一 API 网关**：在同一个本地端点上提供 OpenAI 兼容的 Chat Completions（`/v1/chat/completions`）、OpenAI Responses API（`/v1/responses`）和 Anthropic 兼容的 Messages（`/v1/messages`）。
-- **多 Provider 接入**：在同一个网关后面统一路由 GitHub Copilot、内置 `codex` provider 和第三方 provider（Kimi、DeepSeek、DashScope、OpenRouter、OpenCode Go 或自定义 provider）。GitHub Copilot 是可选能力——只要至少有一个启用中的 provider，无需 GitHub token 也能按 provider-only 模式启动。
-- **为 Coding Agent 而生**：为 Claude Code、OpenCode 和 Codex 提供完整的配置指南，包括交互式 `--claude-code` 启动器和面向 Codex 的合并模型目录。
+- **多 Provider 接入**：在同一个网关后面统一路由 GitHub Copilot、内置 `codex`、`xai` provider 和第三方 provider（Kimi、DeepSeek、DashScope、OpenRouter、OpenCode Go 或从 models.dev 选择的自定义 provider）。GitHub Copilot 是可选能力——只要至少有一个启用中的 provider，无需 GitHub token 也能按 provider-only 模式启动。
+- **为 Coding Agent 而生**：为 Claude Code、OpenCode 和 Codex 提供完整的配置指南，包括 settings.json 网关模型发现和面向 Codex 的合并模型目录。
 - **Streaming 与 WebSocket**：三种面向客户端的协议都支持 SSE 流式输出。上游 Copilot Responses 流量会根据每个模型声明的端点选择 WebSocket 或 HTTP；内置 `codex` provider 的流式 Responses 请求默认走 WebSocket，关闭 `useResponsesApiWebSocket` 后改走 HTTP。
-- **桌面应用**：Electron 图形界面，支持 GitHub Copilot 登录、Codex OAuth、provider 配置、token 用量、日志查看和一键启动 / 停止。
+- **桌面应用**：Electron 图形界面，支持 GitHub Copilot 登录、Codex 与 xAI OAuth、provider 配置、token 用量、日志查看和一键启动 / 停止。
 
 <a id="quick-start"></a>
 
@@ -65,7 +65,7 @@ curl http://localhost:4141/v1/models
 
 ## 兼容性
 
-所有客户端都访问同一个本地端点。网关会把每个请求路由到 GitHub Copilot、内置 `codex` provider 或已配置的第三方 provider，并在 provider 使用不同协议时进行协议翻译。
+所有客户端都访问同一个本地端点。网关会把每个请求路由到 GitHub Copilot、内置 `codex`、`xai` provider 或已配置的第三方 provider，并在 provider 使用不同协议时进行协议翻译。
 
 **客户端 / 协议矩阵**
 
@@ -83,7 +83,7 @@ curl http://localhost:4141/v1/models
 
 ## 桌面应用
 
-更喜欢图形界面？`desktop/` 目录下的 Electron 桌面应用支持 GitHub Copilot 登录、OpenAI Codex OAuth，以及 Kimi、DeepSeek、DashScope、OpenRouter 或自定义 provider 的 API Key 配置——可以一键启动 / 停止本地服务，并在一个窗口里查看本地端点、鉴权 Header、可用模型、用量和日志。
+更喜欢图形界面？`desktop/` 目录下的 Electron 桌面应用支持 GitHub Copilot 登录、OpenAI Codex 与 xAI OAuth，以及 Kimi、DeepSeek、DashScope、OpenRouter 或从 models.dev 选择的自定义 provider 的 API Key 配置——可以一键启动 / 停止本地服务，并在一个窗口里查看本地端点、鉴权 Header、可用模型、用量和日志。
 
 <p align="center">
   <img src="docs/screenshots/desktop-dashboard.png" alt="Copilot API 桌面应用首页" width="49%" />
@@ -97,8 +97,8 @@ Windows x64（`.exe`）、macOS Apple Silicon（`.dmg`）和 Linux x64（`.AppIm
 | 文档 | 内容 |
 | --- | --- |
 | [安装与启动](docs/guides/zh-CN/getting-started.md) | 环境要求、项目概览、npx 与源码运行、无 Copilot 时的 provider-only 模式，以及网关 API Key 配置 |
-| [Claude Code](docs/guides/zh-CN/claude-code.md) | `--claude-code` 交互式启动器、`.claude/settings.json` 环境变量、opus / sonnet / haiku 档位映射、自动压缩窗口与 WebSearch 行为 |
-| [OpenCode](docs/guides/zh-CN/opencode.md) | OpenCode OAuth 登录、`opencode.json` 中的 `@ai-sdk/anthropic` provider、`baseURL` 约定、模型上下文上限与思考选项 |
+| [Claude Code](docs/guides/zh-CN/claude-code.md) | settings.json、网关模型发现、模型映射、自动压缩窗口与 WebSearch 行为 |
+| [OpenCode](docs/guides/zh-CN/opencode.md) | v2 Responses 插件与自动模型发现、原生压缩、模型能力与价格、上下文上限，以及 v1 Anthropic SDK 配置 |
 | [Codex](docs/guides/zh-CN/codex.md) | 完整的 `config.toml` provider 配置块、`GITHUB_COPILOT_API_KEY` 环境变量设置、自动审核模型映射、生成 `model_catalog.json`，以及合并后的模型选择器目录与协议适配 |
 | [Docker](docs/guides/zh-CN/docker.md) | Docker Compose 快速启动、`/data` 持久化挂载与属主修复、支持的环境变量，以及监听所有网卡地址 |
 | [桌面应用](docs/guides/zh-CN/desktop.md) | Copilot 登录、Codex OAuth 账号切换、API Key provider、一键启停、共享模型映射、高级设置与各平台安装包 |
@@ -107,6 +107,6 @@ Windows x64（`.exe`）、macOS Apple Silicon（`.dmg`）和 Linux x64（`.AppIm
 | [命令行参考](docs/guides/zh-CN/cli.md) | 命令结构、全局选项，以及 `start`、`auth`、`debug` 子命令的完整参数与使用示例 |
 | [配置参考](docs/guides/zh-CN/configuration.md) | `config.json` 全部配置项：网关与管理 API Key、provider 定义、模型映射、WebSocket 与 HTTP 传输、超时与上下文管理 |
 | [API 与认证](docs/guides/zh-CN/api.md) | 支持的认证请求头与 CORS 规则、OpenAI / Codex 后端 / Anthropic 端点、用量监控接口与管理配置接口 |
-| [故障排查](docs/guides/zh-CN/troubleshooting.md) | Copilot 加密输出失败与 Claude 模型缺失的处理方法 |
+| [故障排查](docs/guides/zh-CN/troubleshooting.md) | Copilot 模型列表中缺少 Claude 模型的处理方法 |
 
 使用 GitHub Copilot 前请阅读 [GitHub Copilot 安全提示](NOTICE.md#github-copilot-security-notice)。
