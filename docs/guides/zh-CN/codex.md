@@ -27,7 +27,7 @@ plan_mode_reasoning_effort = "max"
 # 上下文窗口和自动压缩阈值（单位：token）可自行调整。
 # 按 OpenAI API 定价，GPT 模型（如 gpt-6.1-sol）输入超过 272000 token 时，
 # 输入及缓存费用翻倍，输出费用为 1.5 倍。
-model_context_window = 300000
+model_context_window = 400000
 # 沙箱策略。可改用 "workspace-write" 以启用限制。
 sandbox_mode = "danger-full-access"
 approvals_reviewer = "auto_review"

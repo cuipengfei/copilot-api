@@ -25,7 +25,7 @@ plan_mode_reasoning_effort = "max"
 # Adjust the context window and auto-compaction threshold (in tokens) as needed.
 # Under OpenAI API pricing, GPT models such as gpt-6.1-sol charge 2x input and
 # cache rates and 1.5x output rates when input exceeds 272000 tokens.
-model_context_window = 300000
+model_context_window = 400000
 # Sandbox policy. Use "workspace-write" to restrict it.
 sandbox_mode = "danger-full-access"
 approvals_reviewer = "auto_review"
