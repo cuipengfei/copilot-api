@@ -776,12 +776,6 @@ async function runRefresh(
         { cause: error },
       )
     }
-    if (generation === refreshGeneration && !controller.signal.aborted) {
-      consola.warn(
-        "Failed to refresh models.dev catalog; keeping cached models.",
-        error,
-      )
-    }
   } finally {
     if (refreshAbortController === controller) refreshAbortController = null
     if (generation === refreshGeneration && (!required || refreshed)) {

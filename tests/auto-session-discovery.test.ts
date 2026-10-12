@@ -135,7 +135,7 @@ interface InfoSpy {
 const discoveryLogLine = (infoSpy: InfoSpy): string => {
   const line = infoSpy.mock.calls
     .map((call) => String(call[0]))
-    .find((text) => text.includes("discovery complete"))
+    .find((text) => text.includes("discovery result"))
   expect(line).toBeDefined()
   return line as string
 }
@@ -513,7 +513,7 @@ test("terminal probe failures log minimal diagnosable status without prompt, sou
   }
 })
 
-test("insufficient source reports incomplete and normal request path stays usable", async () => {
+test("insufficient source still reports acquired models and keeps requests usable", async () => {
   const mod = await loadAutoSessionModule()
   const infoSpy = spyOn(consola, "info")
   const { calls } = installRouter((body) =>
@@ -528,7 +528,7 @@ test("insufficient source reports incomplete and normal request path stays usabl
     expect(mod.isModelAutoCovered("only-easy")).toBe(true)
     expect(mod.isModelAutoCovered("only-hard")).toBe(false)
     const line = discoveryLogLine(infoSpy)
-    expect(line).toContain("incomplete=4")
+    expect(line).toContain('obtained=["only-easy"]')
     // 请求路径仍可用（命中已注册配对）
     expect(
       await mod.getAutoSessionTokenForModel("only-easy", "/responses"),
@@ -538,7 +538,7 @@ test("insufficient source reports incomplete and normal request path stays usabl
   }
 })
 
-test("discovery log reports only incomplete probe count without model IDs, tiers, prompts, source or tokens", async () => {
+test("discovery reports model IDs without exposing prompts or tokens", async () => {
   const mod = await loadAutoSessionModule()
   const infoSpy = spyOn(consola, "info")
   installRouter(() => okSelection("shared-model", "secret-session-token"))
@@ -547,8 +547,7 @@ test("discovery log reports only incomplete probe count without model IDs, tiers
   expect(mod.isModelAutoCovered("shared-model")).toBe(true)
 
   const line = discoveryLogLine(infoSpy)
-  expect(line).toBe("[auto-session] discovery complete incomplete=0")
-  expect(line).not.toContain("shared-model")
+  expect(line).toContain('obtained=["shared-model"] missing=[]')
   expect(line).not.toContain("secret-session-token")
   expect(line).not.toContain("hello")
   for (const tier of TIERS) {
@@ -775,13 +774,15 @@ test("network failure probe retries with backoff and eventually succeeds", async
   const dir = await mkdtemp(path.join(os.tmpdir(), "auto-snippet-net-"))
   const mod = await loadAutoSessionModule()
   const warnSpy = spyOn(consola, "warn")
+  const debugSpy = spyOn(consola, "debug")
+  const infoSpy = spyOn(consola, "info")
   try {
     await writeWideSource(dir, "wide.ts")
     let easyAttempts = 0
     installRouter((body) => {
       if (body.tier === "efficiency" && body.prompt === "hello") {
         easyAttempts += 1
-        if (easyAttempts === 1) return new TypeError("fetch failed")
+        if (easyAttempts <= 2) return new TypeError("fetch failed")
         return okSelection("easy-efficiency")
       }
       return okSelection(
@@ -793,7 +794,7 @@ test("network failure probe retries with backoff and eventually succeeds", async
     await mod.prewarmAutoSession({ sourceRoot: dir })
     const elapsed = Date.now() - startedAt
 
-    expect(easyAttempts).toBe(2)
+    expect(easyAttempts).toBe(3)
     // 单次退避抖动下限 1s
     expect(elapsed).toBeGreaterThanOrEqual(1_000)
     expect(mod.isModelAutoCovered("easy-efficiency")).toBe(true)
@@ -804,6 +805,12 @@ test("network failure probe retries with backoff and eventually succeeds", async
       .filter((line) => line.includes("probe retry"))
     expect(retryLines).toHaveLength(1)
     expect(retryLines[0]).toBe("[auto-session] probe retry: network")
+    expect(debugSpy).toHaveBeenCalledWith("[auto-session] probe retry: network")
+    expect(
+      infoSpy.mock.calls.filter(
+        (call) => call[0] === "[auto-session] probe recovered",
+      ),
+    ).toHaveLength(1)
   } finally {
     mod.stopProbeScheduler?.()
     await mod.whenProbeSchedulerIdle?.()
@@ -896,13 +903,13 @@ test("budget expiry logs a snapshot while probes still run; final log follows co
     expect(
       infoLines().some((line) => line.includes("discovery snapshot")),
     ).toBe(true)
-    expect(
-      infoLines().some((line) => line.includes("discovery complete")),
-    ).toBe(false)
+    expect(infoLines().some((line) => line.includes("discovery result"))).toBe(
+      false,
+    )
 
     gate.resolve()
     await waitFor(
-      () => infoLines().some((line) => line.includes("discovery complete")),
+      () => infoLines().some((line) => line.includes("discovery result")),
       3_000,
     )
   } finally {
@@ -1004,11 +1011,12 @@ test("backoff starts at 1s, doubles, and is capped at 30s", async () => {
   }
 })
 
-test("budget snapshot counts all eight unsettled probe points as incomplete", async () => {
+test("budget snapshot reports no acquired models before responses arrive", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "auto-snippet-snap8-"))
   const mod = await loadAutoSessionModule()
   const gate = Promise.withResolvers<void>()
   const infoSpy = spyOn(consola, "info")
+  getConfig().autoDiscovery = { models: ["gated-model", "missing-model"] }
   try {
     await writeWideSource(dir, "wide.ts")
     installRouter(() => gate.promise.then(() => okSelection("gated-model")))
@@ -1018,7 +1026,17 @@ test("budget snapshot counts all eight unsettled probe points as incomplete", as
     const snapshot = infoSpy.mock.calls
       .map((call) => String(call[0]))
       .find((line) => line.includes("discovery snapshot"))
-    expect(snapshot).toContain("incomplete=8")
+    expect(snapshot).toContain(
+      'obtained=[] missing=["gated-model","missing-model"]',
+    )
+    mod.stopProbeScheduler()
+    gate.resolve()
+    await mod.whenProbeSchedulerIdle()
+    expect(discoveryLogLine(infoSpy)).toContain('obtained=["gated-model"]')
+    const targetResult = infoSpy.mock.calls
+      .map((call) => String(call[0]))
+      .find((line) => line.includes("target discovery stopped"))
+    expect(targetResult).toContain('added=[] missing=["missing-model"]')
   } finally {
     gate.resolve()
     mod.stopProbeScheduler?.()
@@ -1456,6 +1474,7 @@ test("configured cold misses share discovery and accept only the selected target
   const gate = Promise.withResolvers<AutoSelectionResponse>()
   config.autoDiscovery = { models: ["target-model"] }
   const { calls } = installRouter(() => gate.promise)
+  const infoSpy = spyOn(consola, "info")
   try {
     mod.resumeAutoSessionDiscoveryAfterRotation()
     const pending = Array.from({ length: 20 }, () =>
@@ -1474,6 +1493,16 @@ test("configured cold misses share discovery and accept only the selected target
       await mod.getAutoSessionTokenForModel("target-model", "/v1/messages"),
     ).toBeUndefined()
     expect(calls).toHaveLength(1)
+    await mod.whenProbeSchedulerIdle()
+    const lines = infoSpy.mock.calls.map((call) => String(call[0]))
+    expect(
+      lines.filter((line) => line.includes("target discovery start")),
+    ).toHaveLength(1)
+    expect(
+      lines.filter((line) => line.includes("target discovery result")),
+    ).toEqual([
+      '[auto-session] target discovery result added=["target-model"] missing=[]',
+    ])
   } finally {
     mod.stopProbeScheduler()
     gate.resolve(okSelection("target-model"))

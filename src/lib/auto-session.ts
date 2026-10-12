@@ -55,6 +55,17 @@ const pairingSupportsEndpoint = (
   endpoint: string,
 ): boolean => pairing.supportedEndpoints.includes(endpoint)
 
+const logAutoDiscovery = (
+  phase: string,
+  wanted = getConfiguredTargetModels(),
+): void => {
+  const obtained = [...pairings.keys()].filter(isModelAutoCovered)
+  const missing = getMissingAutoDiscoveryModels(wanted)
+  consola.info(
+    `[auto-session] ${phase} obtained=${JSON.stringify(obtained)} missing=${JSON.stringify(missing)}`,
+  )
+}
+
 export const registerAutoSelection = (
   selection: AutoSelectionResponse,
 ): boolean => {
@@ -80,6 +91,7 @@ export const registerAutoSelection = (
     return false
   }
 
+  const newlyCovered = !isModelAutoCovered(modelId)
   pairings.set(modelId, {
     sessionToken,
     expiresAt,
@@ -89,6 +101,8 @@ export const registerAutoSelection = (
   // 登记真实 selected_model 后唤醒该目标下同一凭据 epoch 的 miss 等待者；
   // 等待者醒后仍按凭据/有效期/端点重检，旧 epoch 等待只由 invalidate/stop 终止
   wakeTargetWaiters(modelId, state.copilotToken)
+  if (newlyCovered)
+    consola.debug(`[auto-session] acquired model=${JSON.stringify(modelId)}`)
   return true
 }
 
@@ -110,8 +124,8 @@ export const refreshAutoSession = async (): Promise<void> => {
       PREWARM_PROMPT,
       selection.expires_at,
     )
-    consola.info(
-      `[auto-session] refreshed token, models=${[...pairings.keys()].join(",")}`,
+    consola.debug(
+      `[auto-session] refreshed model=${JSON.stringify(selection.selected_model.id)}`,
     )
     return
   }
@@ -161,7 +175,11 @@ export const resumeAutoSessionDiscoveryAfterRotation = (): void => {
   for (const { tier, kind, prompt } of lastSuccessPrompts.values()) {
     void runProbePoint(tier, kind, prompt)
   }
-  startTargetDiscovery(getConfiguredTargetModels())
+  startTargetDiscovery(
+    getConfiguredTargetModels(),
+    Promise.resolve(),
+    "rotation",
+  )
 }
 
 export interface HardSnippet {
@@ -523,6 +541,7 @@ const probePointLoop = async (
 ): Promise<string | undefined> => {
   let requests = 0
   let failures = 0
+  let lastNetworkFailure: string | undefined
   // 首试不受暂停影响：每个点都完成第一次尝试，暂停只作用于重试
   let attempted = false
   for (;;) {
@@ -550,9 +569,10 @@ const probePointLoop = async (
           selection.expires_at,
           fromRefreshTimer,
         )
+        if (lastNetworkFailure !== undefined)
+          consola.info("[auto-session] probe recovered")
         return selection.selected_model.id
       }
-      consola.warn("[auto-session] ignored invalid auto selection")
       return undefined
     } catch (error) {
       if (error instanceof HTTPError) {
@@ -590,9 +610,11 @@ const probePointLoop = async (
         return undefined
       }
       if (error instanceof Error && isRetriableNetworkError(error)) {
-        // 每次重试前只记固定类别，不带错误对象与请求上下文；
-        // 退避下限 1s 保证日志频率有界
-        consola.warn(`[auto-session] probe retry: ${probeFailureKind(error)}`)
+        const failure = probeFailureKind(error)
+        const message = `[auto-session] probe retry: ${failure}`
+        if (failure === lastNetworkFailure) consola.debug(message)
+        else consola.warn(message)
+        lastNetworkFailure = failure
         await probeSleep(nextBackoffMs(failures))
         failures += 1
         continue
@@ -631,15 +653,10 @@ export const runProbePoint = (
 
 // 同一轮请求服务所有缺失模型，避免为每个目标重复发送相同的 /auto 请求。
 const discoverTargets = async (models: Array<string>): Promise<void> => {
-  let lastMissingCount = -1
   for (let attempt = 0; attempt < TARGET_ATTEMPTS_PER_TIER; attempt++) {
     for (const tier of STARTUP_TIERS) {
       if (probeSchedulerStopped) return
       const missing = getMissingAutoDiscoveryModels(models)
-      if (missing.length !== lastMissingCount) {
-        consola.info(`[auto-session] target models missing=${missing.length}`)
-        lastMissingCount = missing.length
-      }
       if (missing.length === 0) return
 
       await waitOutHalt()
@@ -655,15 +672,10 @@ const discoverTargets = async (models: Array<string>): Promise<void> => {
       await runProbePoint(tier, "target", prompt, false, 1)
       const remaining = getMissingAutoDiscoveryModels(models).length
       if (remaining === 0) {
-        consola.info("[auto-session] target models missing=0")
         return
       }
       await probeSleep(TARGET_PROBE_INTERVAL_MS)
     }
-  }
-  const remaining = getMissingAutoDiscoveryModels(models).length
-  if (remaining !== lastMissingCount) {
-    consola.info(`[auto-session] target models missing=${remaining}`)
   }
 }
 
@@ -691,17 +703,47 @@ const getConfiguredTargetModels = (): Array<string> =>
 const startTargetDiscovery = (
   models: Array<string>,
   after: Promise<unknown> = Promise.resolve(),
+  reason: "startup" | "miss" | "expired" | "rotation" = "miss",
 ): void => {
   if (models.length === 0 || probeSchedulerStopped || targetProbeRound) return
   const startedToken = state.copilotToken
   // 首轮真正开始即置位：后续凭据轮换走 resume 正常补采
   discoveryRan = true
+  let previous: Set<string>
+  if (reason !== "startup") {
+    consola.info(
+      `[auto-session] target discovery start reason=${reason} missing=${JSON.stringify(getMissingAutoDiscoveryModels(models))}`,
+    )
+  }
   targetProbeRound = after
-    .then(() => discoverTargets(models))
+    .then(() => {
+      previous = new Set([...pairings.keys()].filter(isModelAutoCovered))
+      return discoverTargets(models)
+    })
+    .then(() => {
+      const missing = getMissingAutoDiscoveryModels(models)
+      const added = [...pairings.keys()].filter(
+        (model) => isModelAutoCovered(model) && !previous.has(model),
+      )
+      const outcome =
+        probeSchedulerStopped ? "stopped"
+        : state.copilotToken !== startedToken ? "rotated"
+        : missing.length > 0 ? "exhausted"
+        : "result"
+      if (reason !== "startup" || added.length > 0 || missing.length > 0) {
+        consola.info(
+          `[auto-session] target discovery ${outcome} added=${JSON.stringify(added)} missing=${JSON.stringify(missing)}`,
+        )
+      }
+    })
     .finally(() => {
       targetProbeRound = undefined
       if (!probeSchedulerStopped && state.copilotToken !== startedToken) {
-        startTargetDiscovery(getConfiguredTargetModels())
+        startTargetDiscovery(
+          getConfiguredTargetModels(),
+          Promise.resolve(),
+          "rotation",
+        )
       } else if (
         !probeSchedulerStopped
         && getMissingAutoDiscoveryModels(models).length > 0
@@ -725,21 +767,14 @@ export const prewarmAutoSession = async ({
   startupBudgetMs,
 }: PrewarmOptions = {}): Promise<void> => {
   const targetModels = getConfiguredTargetModels()
-  // 未完成点按"待处理"口径统计：四档×两点全部先计入，
-  // 每个点成功登记时即时扣减，预算到期打快照即为剩余未完成点数；
-  // 终止失败/无法取样的点自然维持待处理
-  let incomplete = STARTUP_TIERS.length * 2
+  consola.info(
+    `[auto-session] discovery start wanted=${JSON.stringify(targetModels)}`,
+  )
 
   // 八点互不阻断：同档简单题与难题并发发起，各自独立重试
   const probeTierPair = async (tier: AutoSelectionTier): Promise<void> => {
     // 简单题先发起、不等源码采样：采样挂起或失败不得阻断登记
     const easyPromise = runProbePoint(tier, "easy", PREWARM_PROMPT)
-    // 逐点结算即扣减：挂在原始 promise 上的 then 先于 Promise.all 续体执行，
-    // 成功登记的点在快照前必然已扣
-    const easyCounted = easyPromise.then((model) => {
-      if (model !== undefined) incomplete -= 1
-      return model
-    })
     // 每档难题独立取样：各档随机取样仍可能偶然相同；重采仅排除本档第一次片段
     const snippet = await sampleHardSnippet(sourceRoot)
     const hardPrompt =
@@ -748,11 +783,7 @@ export const prewarmAutoSession = async ({
       hardPrompt === undefined ?
         Promise.resolve(undefined)
       : runProbePoint(tier, "hard", hardPrompt)
-    const hardCounted = hardPromise.then((model) => {
-      if (model !== undefined) incomplete -= 1
-      return model
-    })
-    const [easyModel, hardModel] = await Promise.all([easyCounted, hardCounted])
+    const [easyModel, hardModel] = await Promise.all([easyPromise, hardPromise])
     if (
       easyModel === undefined
       || hardModel === undefined
@@ -760,32 +791,27 @@ export const prewarmAutoSession = async ({
     ) {
       return
     }
-    // 同档两题选中同一模型：重采难题一次；无替代源码段记未完成，不做无限重试
+    // 同档两题选中同一模型：重采难题一次，无替代源码段则结束该点
     const resample = await sampleHardSnippet(sourceRoot, defaultRng, snippet)
-    if (resample === undefined) {
-      incomplete += 1
-      return
-    }
-    const retried = await runProbePoint(
-      tier,
-      "hard",
-      `${resample.text}\n\n${HARD_QUESTION}`,
-    )
-    if (retried === undefined) incomplete += 1
-  }
-
-  const logDiscovery = (label: "complete" | "snapshot"): void => {
-    consola.info(`[auto-session] discovery ${label} incomplete=${incomplete}`)
+    if (resample === undefined) return
+    await runProbePoint(tier, "hard", `${resample.text}\n\n${HARD_QUESTION}`)
   }
 
   discoveryRan = true
   discoveryToken = state.copilotToken
   latestProbeRound = Promise.all(STARTUP_TIERS.map(probeTierPair))
   const probes = latestProbeRound
-  startTargetDiscovery(targetModels, probes)
+  startTargetDiscovery(targetModels, probes, "startup")
+  let snapshot: string | undefined
+  const reportResult = (): void => {
+    const current = JSON.stringify(
+      [...pairings.keys()].filter(isModelAutoCovered),
+    )
+    if (current !== snapshot) logAutoDiscovery("discovery result", targetModels)
+  }
   if (startupBudgetMs === undefined) {
     await probes
-    logDiscovery("complete")
+    reportResult()
   } else {
     const timer = new AbortController()
     try {
@@ -796,12 +822,15 @@ export const prewarmAutoSession = async ({
         ),
       ])
       if (winner === "probes") {
-        logDiscovery("complete")
+        reportResult()
       } else {
         // 预算到期只是快照：后台探测仍在运行，全部结束后补最终日志
-        logDiscovery("snapshot")
+        logAutoDiscovery("discovery snapshot", targetModels)
+        snapshot = JSON.stringify(
+          [...pairings.keys()].filter(isModelAutoCovered),
+        )
         probes.then(
-          () => logDiscovery("complete"),
+          () => reportResult(),
           () => undefined,
         )
       }
@@ -840,6 +869,7 @@ const colorAutoSessionEvent = (event: "hit" | "miss"): string => {
 const acquireConfiguredTarget = async (
   model: string,
   endpoint?: string,
+  reason: "miss" | "expired" = "miss",
 ): Promise<string | undefined> => {
   if (probeSchedulerStopped) return undefined
   const requestToken = state.copilotToken
@@ -852,10 +882,12 @@ const acquireConfiguredTarget = async (
     targetProbeRound === undefined
     && Date.now() >= targetDiscoveryCooldownUntil
   ) {
-    startTargetDiscovery(targets)
+    startTargetDiscovery(targets, Promise.resolve(), reason)
   }
   if (targetProbeRound === undefined) return undefined
-  consola.info(`[auto-session] target miss acquire model=${model}`)
+  consola.debug(
+    `[auto-session] target miss acquire model=${JSON.stringify(model)}`,
+  )
   await waitForTarget(model, requestToken)
   if (state.copilotToken !== requestToken) return undefined
   const acquired = pairings.get(model)
@@ -912,8 +944,7 @@ export const getAutoSessionTokenForModel = async (
     clearRefreshTimer(model)
     const targets = getConfiguredTargetModels()
     if (targets.includes(model) && !probeSchedulerStopped) {
-      consola.info(`[auto-session] expired model=${model} re-probe`)
-      const acquired = await acquireConfiguredTarget(model, endpoint)
+      const acquired = await acquireConfiguredTarget(model, endpoint, "expired")
       if (acquired !== undefined) {
         consola.info(
           `[auto-session] ${colorAutoSessionEvent("hit")} model=${model}`,
@@ -921,8 +952,20 @@ export const getAutoSessionTokenForModel = async (
         return acquired
       }
     } else if (source !== undefined && !probeSchedulerStopped) {
-      consola.info(`[auto-session] expired model=${model} re-probe`)
-      void runProbePoint(source.tier, source.kind, source.prompt)
+      if (!inflightProbePoints.has(`${source.tier}:${source.kind}`)) {
+        consola.info(
+          `[auto-session] probe start reason=expired model=${JSON.stringify(model)}`,
+        )
+      }
+      const existing = inflightProbePoints.has(`${source.tier}:${source.kind}`)
+      const probe = runProbePoint(source.tier, source.kind, source.prompt)
+      if (!existing) {
+        void probe.then((selected) =>
+          consola.info(
+            `[auto-session] probe result reason=expired obtained=${JSON.stringify(selected === undefined ? [] : [selected])} missing=${JSON.stringify(isModelAutoCovered(model) ? [] : [model])}`,
+          ),
+        )
+      }
     } else {
       consola.info(
         `[auto-session] ${colorAutoSessionEvent("miss")} model=${model}`,

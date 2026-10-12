@@ -13,8 +13,13 @@ import {
   getAutoSessionTokenForModel,
   invalidateAutoSession,
   prewarmAutoSession,
+  refreshAutoSession,
+  registerAutoSelection,
+  runProbePoint,
 } from "../src/lib/auto-session"
 import type { AutoSelectionResponse } from "../src/services/copilot/get-auto-selection"
+import { getConfig } from "../src/lib/config-store"
+import { state } from "../src/lib/state"
 
 const selection = (
   modelId: string,
@@ -28,7 +33,13 @@ const selection = (
 const createResponse = (payload: AutoSelectionResponse) =>
   new Response(JSON.stringify(payload), { status: 200 })
 
+const originalFetch = globalThis.fetch
+const originalTargets = getConfig().autoDiscovery
+const originalToken = state.copilotToken
+
 beforeEach(() => {
+  getConfig().autoDiscovery = undefined
+  state.copilotToken = "logging-auth-token"
   invalidateAutoSession()
   const queue: Array<AutoSelectionResponse> = []
   ;(
@@ -60,25 +71,71 @@ beforeEach(() => {
 
 afterEach(() => {
   invalidateAutoSession()
+  globalThis.fetch = originalFetch
+  getConfig().autoDiscovery = originalTargets
+  state.copilotToken = originalToken
   mock.restore()
 })
 
 describe("auto-session logging", () => {
-  test("logs discovery incomplete probe count", async () => {
-    ;(
-      globalThis as unknown as {
-        __AUTO_SESSION_QUEUE__: Array<AutoSelectionResponse>
-      }
-    ).__AUTO_SESSION_QUEUE__.push(selection("gpt-5.3-codex", "token-initial"))
-
+  test("startup reports targets and one result without acquisition info", async () => {
     const infoSpy = spyOn(consola, "info")
-
+    const queue = Reflect.get(
+      globalThis,
+      "__AUTO_SESSION_QUEUE__",
+    ) as Array<AutoSelectionResponse>
+    queue.push(selection("extra-model", "private-token"))
     await prewarmAutoSession()
+    expect(infoSpy.mock.calls.map((call) => String(call[0]))).toEqual([
+      "[auto-session] discovery start wanted=[]",
+      '[auto-session] discovery result obtained=["extra-model"] missing=[]',
+    ])
+  })
 
-    // 仅 1 个探测点成功，其余 7 个未完成；日志只报告数量
-    expect(infoSpy).toHaveBeenCalledWith(
-      "[auto-session] discovery complete incomplete=7",
+  test("invalid selection emits only one warning per response", async () => {
+    const warnSpy = spyOn(consola, "warn")
+    const queue = Reflect.get(
+      globalThis,
+      "__AUTO_SESSION_QUEUE__",
+    ) as Array<AutoSelectionResponse>
+    queue.push({
+      ...selection("invalid-model", "private-token"),
+      expires_at: 0,
+    })
+    expect(
+      await runProbePoint("balance", "easy", "hello", false, 1),
+    ).toBeUndefined()
+    expect(warnSpy.mock.calls.map((call) => String(call[0]))).toEqual([
+      "[auto-session] ignored invalid auto selection",
+    ])
+  })
+  test("registration reports model acquisition only at debug level", () => {
+    const infoSpy = spyOn(consola, "info")
+    const debugSpy = spyOn(consola, "debug")
+    registerAutoSelection(selection("wanted-model", "secret-session-token"))
+    expect(infoSpy).not.toHaveBeenCalled()
+    expect(debugSpy).toHaveBeenCalledWith(
+      '[auto-session] acquired model="wanted-model"',
     )
+    expect(JSON.stringify(debugSpy.mock.calls)).not.toContain(
+      "secret-session-token",
+    )
+  })
+
+  test("same-model refresh remains quiet and preserves its hit log", async () => {
+    registerAutoSelection(selection("extra-model", "first-token"))
+    const infoSpy = spyOn(consola, "info")
+    const queue = Reflect.get(
+      globalThis,
+      "__AUTO_SESSION_QUEUE__",
+    ) as Array<AutoSelectionResponse>
+    queue.push(selection("extra-model", "second-token"))
+    await refreshAutoSession()
+    expect(infoSpy).not.toHaveBeenCalled()
+    expect(await getAutoSessionTokenForModel("extra-model")).toBe(
+      "second-token",
+    )
+    expect(infoSpy).toHaveBeenCalledWith("[auto-session] hit model=extra-model")
   })
 
   test("logs hit event via consola.info when model is covered", async () => {
