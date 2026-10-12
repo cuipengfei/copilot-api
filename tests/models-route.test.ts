@@ -433,7 +433,7 @@ describe("model routes", () => {
     const { data } = (await response.json()) as { data: Array<OpencodeModel> }
     expect(data[0]).toMatchObject({
       id: "kimi/openai/gpt-5.1-codex",
-      limit: { context: 300_000, output: 128_000 },
+      limit: { context: 400_000, output: 128_000 },
     })
     expect(fetchMock).not.toHaveBeenCalled()
   })
@@ -548,14 +548,14 @@ describe("model routes", () => {
       name: "both limits above the default",
       context: 1_000_000,
       input: 900_000,
-      expectedContext: 300_000,
-      expectedInput: 300_000,
+      expectedContext: 400_000,
+      expectedInput: 400_000,
     },
     {
       name: "only context above the default",
-      context: 400_000,
+      context: 500_000,
       input: 250_000,
-      expectedContext: 300_000,
+      expectedContext: 400_000,
       expectedInput: 250_000,
     },
     {
@@ -567,15 +567,22 @@ describe("model routes", () => {
     },
     {
       name: "both limits equal to the default",
-      context: 300_000,
-      input: 300_000,
-      expectedContext: 300_000,
-      expectedInput: 300_000,
+      context: 400_000,
+      input: 400_000,
+      expectedContext: 400_000,
+      expectedInput: 400_000,
+    },
+    {
+      name: "limits between the old and new defaults",
+      context: 350_000,
+      input: 320_000,
+      expectedContext: 350_000,
+      expectedInput: 320_000,
     },
     {
       name: "missing input stays omitted",
       context: 1_000_000,
-      expectedContext: 300_000,
+      expectedContext: 400_000,
     },
     {
       name: "input still cannot exceed the original context",
@@ -591,6 +598,14 @@ describe("model routes", () => {
       input: 250_000,
       expectedContext: 150_000,
       expectedInput: 150_000,
+    },
+    {
+      name: "an explicitly configured old default",
+      configured: 300_000,
+      context: 1_000_000,
+      input: 900_000,
+      expectedContext: 300_000,
+      expectedInput: 300_000,
     },
     {
       name: "a higher configured ceiling",
@@ -629,8 +644,8 @@ describe("model routes", () => {
       configured,
       context: 1_000_000,
       input: 900_000,
-      expectedContext: 300_000,
-      expectedInput: 300_000,
+      expectedContext: 400_000,
+      expectedInput: 400_000,
     })),
   ])(
     "applies the OpenCode context window ceiling: $name",
@@ -1087,7 +1102,7 @@ describe("model routes", () => {
       id: "openrouter/openai/gpt-5.1-codex",
       modelID: "openrouter/openai/gpt-5.1-codex",
       capabilities: { input: ["text", "image"] },
-      limit: { context: 300_000, output: 128_000 },
+      limit: { context: 400_000, output: 128_000 },
     })
     expect(fetchMock).not.toHaveBeenCalled()
   })
@@ -1101,7 +1116,7 @@ describe("model routes", () => {
     expect(data.find((model) => model.id === "codex/gpt-6-luna")).toMatchObject(
       {
         capabilities: { input: ["text", "image", "pdf"] },
-        limit: { context: 300_000, input: 300_000, output: 128_000 },
+        limit: { context: 400_000, input: 400_000, output: 128_000 },
         cost: [
           { input: 0.1, output: 0.5, cache: { read: 0.01, write: 0.125 } },
           {

@@ -149,7 +149,7 @@ export const defaultContextManagement = {
   responses: false,
 } satisfies Required<ContextManagementConfig>
 
-export const defaultOpencodeModelContextWindow = 300_000
+export const defaultOpencodeModelContextWindow = 400_000
 
 export const defaultConfig: AppConfig = {
   auth: {

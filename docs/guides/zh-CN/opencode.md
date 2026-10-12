@@ -25,7 +25,7 @@ OpenCode 已经有直接的 GitHub Copilot provider。本节适用于你希望�
 
 `codex` provider 默认支持 PDF 输入；`github-copilot` 也会识别实时模型的 `capabilities.limits.vision.supported_media_types` 中的 `application/pdf`。所有 provider 还会识别匹配的 models.dev 模型 `modalities.input` 中的 `pdf`，目录匹配遵循 `modelsDevProviderId`。显式 `models.<id>.supportPdf` 配置优先于以上来源，包括用 `false` 关闭 PDF 支持。OpenCode 模型发现和 Messages 到 Chat Completions 的请求转换复用同一套 PDF 能力判断；上游不支持 tool result 中的 PDF 时，会将 file part 移到 user 消息中。
 
-网关 `config.json` 中的 `opencodeModelContextWindow` 默认值为 `300000`，分别限制目录返回的 `limit.context` 和已有的 `limit.input`；较小值保持不变，缺失的 input 上限不补填。模型没有已知上下文限制时，目录使用 `256000` tokens 兜底，再应用此配置上限。不改变输出上限、上游模型配置或其他客户端目录。例如设置 `"opencodeModelContextWindow": 500000` 可提高该上限，修改后重启网关加载配置。
+网关 `config.json` 中的 `opencodeModelContextWindow` 默认值为 `400000`，分别限制目录返回的 `limit.context` 和已有的 `limit.input`；较小值保持不变，缺失的 input 上限不补填。模型没有已知上下文限制时，目录使用 `256000` tokens 兜底，再应用此配置上限。不改变输出上限、上游模型配置或其他客户端目录。例如设置 `"opencodeModelContextWindow": 500000` 可提高该上限，修改后重启网关加载配置。
 
 ### OpenCode v1：最小配置
 

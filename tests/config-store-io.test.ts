@@ -102,8 +102,8 @@ test("reloadConfig creates a default config when it is missing", () => {
   })
   expect(config.alphaSearchModel).toBe("gpt-6-luna")
   expect(config.messageApiWebSearchModel).toBe("gpt-6-luna")
-  expect(config.opencodeModelContextWindow).toBe(300_000)
-  expect(getOpencodeModelContextWindow()).toBe(300_000)
+  expect(config.opencodeModelContextWindow).toBe(400_000)
+  expect(getOpencodeModelContextWindow()).toBe(400_000)
   expect(config.extraPrompts).toBeUndefined()
   expect(config.modelReasoningEfforts).toBeUndefined()
   if (process.platform !== "win32") {
@@ -112,19 +112,20 @@ test("reloadConfig creates a default config when it is missing", () => {
 })
 
 test.each([
-  { configured: undefined, expected: 300_000 },
+  { configured: undefined, expected: 400_000 },
   { configured: 150_000, expected: 150_000 },
+  { configured: 300_000, expected: 300_000 },
   { configured: 600_000, expected: 600_000 },
   { configured: 150_000.9, expected: 150_000 },
   { configured: 1, expected: 1 },
-  { configured: 0, expected: 300_000 },
-  { configured: -1, expected: 300_000 },
-  { configured: 0.5, expected: 300_000 },
-  { configured: null, expected: 300_000 },
-  { configured: "600000", expected: 300_000 },
-  { configured: true, expected: 300_000 },
-  { configured: {}, expected: 300_000 },
-  { configured: [], expected: 300_000 },
+  { configured: 0, expected: 400_000 },
+  { configured: -1, expected: 400_000 },
+  { configured: 0.5, expected: 400_000 },
+  { configured: null, expected: 400_000 },
+  { configured: "600000", expected: 400_000 },
+  { configured: true, expected: 400_000 },
+  { configured: {}, expected: 400_000 },
+  { configured: [], expected: 400_000 },
 ])(
   "normalizes and persists the OpenCode context window setting %j",
   ({ configured, expected }) => {
@@ -160,13 +161,13 @@ test("uses the default OpenCode context ceiling on a lazy read without rewriting
   fs.writeFileSync(configPath, legacyConfig, "utf8")
   invalidateConfigCache()
 
-  expect(getOpencodeModelContextWindow()).toBe(300_000)
+  expect(getOpencodeModelContextWindow()).toBe(400_000)
   expect(fs.readFileSync(configPath, "utf8")).toBe(legacyConfig)
   reloadConfig()
   expect(
     (JSON.parse(fs.readFileSync(configPath, "utf8")) as AppConfig)
       .opencodeModelContextWindow,
-  ).toBe(300_000)
+  ).toBe(400_000)
 })
 
 test("reloadConfig refreshes an explicitly configured OpenCode context ceiling", () => {
