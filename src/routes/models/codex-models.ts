@@ -314,19 +314,18 @@ function createCatalogAlias(
   slug: string,
   providerName: string | undefined,
 ): CodexModel {
-  const alias = { ...model, slug }
-  const prefix = providerName?.trim()
-  if (
-    !prefix
-    || typeof alias.display_name !== "string"
-    || alias.display_name.startsWith(`${prefix} `)
-  ) {
-    return alias
-  }
+  const provider = providerName?.trim()
+  const shouldSuffix =
+    provider
+    && typeof model.display_name === "string"
+    && !model.display_name.endsWith(` (${provider})`)
 
   return {
-    ...alias,
-    display_name: `${prefix} ${alias.display_name}`,
+    ...model,
+    slug,
+    ...(shouldSuffix && {
+      display_name: `${model.display_name} (${provider})`,
+    }),
   }
 }
 

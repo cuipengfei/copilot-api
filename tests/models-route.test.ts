@@ -2757,7 +2757,7 @@ describe("model routes", () => {
     )
   })
 
-  test("copies matching Codex catalog models for provider-prefixed aliases", async () => {
+  test("copies matching Codex catalog models with provider suffixes", async () => {
     const solCatalogModel = {
       slug: "gpt-5.6-sol",
       display_name: "GPT-5.6 Sol",
@@ -2851,7 +2851,7 @@ describe("model routes", () => {
     ).toEqual({
       ...expectedSol,
       slug: "codex/gpt-5.6-sol",
-      display_name: "codex GPT-5.6 Sol",
+      display_name: "GPT-5.6 Sol (codex)",
       priority: 1_000,
     })
     expect(
@@ -2859,7 +2859,7 @@ describe("model routes", () => {
     ).toEqual({
       ...expectedLuna,
       slug: "opencode-go/gpt-5.6-luna",
-      display_name: "opencode-go GPT-5.6 Luna",
+      display_name: "GPT-5.6 Luna (opencode-go)",
       priority: expect.any(Number),
     })
     expect(
@@ -2868,7 +2868,7 @@ describe("model routes", () => {
       ...remoteOnlyCatalogModel,
       model_messages: bundledCodexCatalogJson.models[0].model_messages,
       slug: "codex/gpt-remote-only",
-      display_name: "codex GPT Remote Only",
+      display_name: "GPT Remote Only (codex)",
       priority: 1_002,
     })
     expect(
