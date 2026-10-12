@@ -155,6 +155,7 @@ const {
   invalidateCodexRuntime,
   logUser,
   persistCodexCredentials,
+  refreshCodexCredentialsOnce,
   setupCodexToken,
   setupCopilotToken,
   setupGitHubToken,
@@ -596,23 +597,34 @@ test("the Codex refresh loop renews and persists credentials at the deadline", a
     },
   ])
   const refreshed = Promise.withResolvers<void>()
+  const credentials = Promise.withResolvers<CodexCredentials>()
+  let refreshCalls = 0
   refreshCodexImpl = () => {
+    refreshCalls += 1
     refreshed.resolve()
-    return Promise.resolve({
-      accountId: "acct_bg",
-      accessToken: "bg-access-1",
-      refreshToken: "bg-refresh-1",
-      expiresAt: virtualNow + 2 * 60 * 60 * 1000,
-    })
+    return credentials.promise
   }
 
   await setupCodexToken()
   expect(state.codexAccessToken).toBe("bg-access-0")
 
   await flushUntil(refreshed.promise)
-  await settle()
+  const completed = refreshCodexCredentialsOnce({
+    accountId: "acct_bg",
+    accessToken: "bg-access-0",
+    refreshToken: "bg-refresh-0",
+    expiresAt: near,
+  })
 
+  credentials.resolve({
+    accountId: "acct_bg",
+    accessToken: "bg-access-1",
+    refreshToken: "bg-refresh-1",
+    expiresAt: virtualNow + 2 * 60 * 60 * 1000,
+  })
+  await completed
   expect(state.codexAccessToken).toBe("bg-access-1")
+  expect(refreshCalls).toBe(1)
   const store = JSON.parse(
     fs.readFileSync(PATHS.CODEX_CREDENTIAL_PATH, "utf8"),
   ) as { accounts: Array<CodexCredentials> }
