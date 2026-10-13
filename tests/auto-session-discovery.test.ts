@@ -1710,3 +1710,45 @@ test("cold miss waits for metadata readiness before issuing an authenticated pro
     config.autoDiscovery = previous
   }
 })
+
+test("exhausted target discovery resumes on a miss after 90 seconds", async () => {
+  const mod = await loadAutoSessionModule()
+  const dir = await mkdtemp(path.join(os.tmpdir(), "auto-cooldown-"))
+  let now = Date.now()
+  let advancing = true
+  const clock = spyOn(Date, "now").mockImplementation(() => {
+    if (advancing) now += 4_000
+    return now
+  })
+  getConfig().autoDiscovery = { models: ["target-model"] }
+  let available = false
+  const { calls } = installRouter(() =>
+    available ?
+      okSelection("target-model")
+    : new Response(null, { status: 400 }),
+  )
+  try {
+    await mod.prewarmAutoSession({ sourceRoot: dir })
+    await mod.whenProbeSchedulerIdle()
+    advancing = false
+    const exhaustedAt = now
+    const exhaustedCalls = calls.length
+    now = exhaustedAt + 89_999
+    expect(
+      await mod.getAutoSessionTokenForModel("target-model", "/responses"),
+    ).toBeUndefined()
+    expect(calls).toHaveLength(exhaustedCalls)
+    now = exhaustedAt + 90_000
+    available = true
+    expect(
+      await mod.getAutoSessionTokenForModel("target-model", "/responses"),
+    ).toBe("token-target-model")
+    await mod.whenProbeSchedulerIdle()
+    expect(calls).toHaveLength(exhaustedCalls + 1)
+  } finally {
+    mod.stopProbeScheduler()
+    await mod.whenProbeSchedulerIdle()
+    clock.mockRestore()
+    await rm(dir, { recursive: true, force: true })
+  }
+})

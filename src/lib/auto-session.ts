@@ -40,7 +40,7 @@ const TARGET_PROBE_INTERVAL_MS = 3_000
 const TARGET_ATTEMPTS_PER_TIER = 10
 // 配置目标 miss 补采：前台等待上限；一轮耗尽后防止连续 miss 重开扫描的短冷却
 const TARGET_MISS_WAIT_MS = 2_000
-const TARGET_DISCOVERY_COOLDOWN_MS = 600_000
+const TARGET_DISCOVERY_COOLDOWN_MS = 90_000
 const DEFAULT_SOURCE_ROOT = join(process.cwd(), "src")
 // 启动等待预算：上游持续故障时服务启动的最长等待；在途探测到期后转后台继续
 export const STARTUP_PROBE_BUDGET_MS = 30_000
