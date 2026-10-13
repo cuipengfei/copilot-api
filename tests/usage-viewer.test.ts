@@ -461,37 +461,58 @@ describe("usage viewer session fetching", () => {
     const source = [
       extractInlineFunctionRange(
         html,
-        "        async function fetchTokenUsageSessionsPage(page) {",
+        "        function resolveUsageUrl(endpoint) {",
+        "        async function fetchJson(url) {",
+      ),
+      extractInlineFunctionRange(
+        html,
+        "        async function fetchData(page = 1) {",
         "        // --- Event Handlers & Initialization ---",
       ),
-      "({ fetchTokenUsageSessionsPage, invalidateSessionsRequest })",
+      "({ fetchData, fetchTokenUsageSummaryAndEvents, fetchTokenUsageSessionsPage, invalidateSessionsRequest })",
     ].join("\n")
     const pending: Array<{
+      url: string
       resolve: (value: unknown) => void
       reject: (reason: unknown) => void
     }> = []
     const state = {
+      isLoading: false,
+      isTokenUsageLoading: false,
+      tokenUsageSummaryError: null as string | null,
       isSessionsLoading: false,
       sessionsRequestId: 0,
       tokenUsageSessionsError: null as string | null,
       tokenUsageSessionsPage: null as unknown,
     }
+    const endpointUrlInput = { value: "http://server-a/usage" }
+    const rendering = { onRender: () => {} }
     const viewer = runInNewContext(source, {
       state,
-      endpointUrlInput: { value: "http://localhost/usage" },
-      render: () => {},
-      resolveUsageUrl: (value: string) => value,
+      endpointUrlInput,
+      window: { location: { href: "http://localhost/usage-viewer" } },
+      URL,
+      SESSION_PAGE_SIZE: 10,
+      DEFAULT_TOKEN_USAGE_EVENTS_PAGE_SIZE: 20,
+      render: () => rendering.onRender(),
       getSelectedPeriod: () => "today",
-      buildTokenUsageEventsUrl: () => "http://localhost/token-usage/sessions",
       getErrorMessage: (error: Error) => error.message,
-      isMissingTokenUsageEndpointError: () => false,
-      fetchJson: () =>
-        new Promise((resolve, reject) => pending.push({ resolve, reject })),
+      isMissingTokenUsageEndpointError: (error: unknown) =>
+        typeof error === "object"
+        && error !== null
+        && "status" in error
+        && error.status === 404,
+      fetchJson: (url: string) =>
+        new Promise((resolve, reject) =>
+          pending.push({ url, resolve, reject }),
+        ),
     }) as {
+      fetchData: () => Promise<void>
+      fetchTokenUsageSummaryAndEvents: () => Promise<void>
       fetchTokenUsageSessionsPage: (page: number) => Promise<void>
       invalidateSessionsRequest: () => void
     }
-    return { pending, state, viewer }
+    return { endpointUrlInput, pending, rendering, state, viewer }
   }
 
   test("ignores a response that arrives after the context changed", async () => {
@@ -523,6 +544,111 @@ describe("usage viewer session fetching", () => {
     expect(state.tokenUsageSessionsError).toBe("sessions failed")
     expect(state.isSessionsLoading).toBe(false)
   })
+
+  const refreshMethods = [
+    "fetchData",
+    "fetchTokenUsageSummaryAndEvents",
+  ] as const
+
+  test.each([...refreshMethods])(
+    "%s clears old sessions when refreshing another endpoint fails",
+    async (refreshMethod) => {
+      const { endpointUrlInput, pending, state, viewer } =
+        await createSessionsFetcher()
+      const oldPage = { page: 2, items: [{ session_id: "server-a-session" }] }
+      state.tokenUsageSessionsPage = oldPage
+      const stale = viewer.fetchTokenUsageSessionsPage(2)
+      state.tokenUsageSessionsError = "old sessions error"
+      endpointUrlInput.value = "http://server-b/usage"
+
+      const refresh = viewer[refreshMethod]()
+      expect(state.tokenUsageSessionsPage).toBeNull()
+      expect(state.tokenUsageSessionsError).toBeNull()
+      expect(state.isSessionsLoading).toBe(false)
+      expect(
+        pending.slice(1).every(({ url }) => new URL(url).host === "server-b"),
+      ).toBe(true)
+
+      const unauthorized = Object.assign(new Error("Unauthorized"), {
+        status: 401,
+      })
+      for (const request of pending.slice(1)) {
+        request.reject(unauthorized)
+      }
+      await refresh
+      pending[0].resolve(oldPage)
+      await stale
+
+      expect(state.tokenUsageSessionsPage).toBeNull()
+      expect(state.tokenUsageSessionsError).toBeNull()
+      expect(state.tokenUsageSummaryError).toBe("Unauthorized")
+      expect(state.isSessionsLoading).toBe(false)
+      expect(
+        pending.filter(({ url }) =>
+          new URL(url).pathname.endsWith("/sessions"),
+        ),
+      ).toHaveLength(1)
+    },
+  )
+
+  test.each([...refreshMethods])(
+    "%s clears old sessions and rejects a late response for an empty endpoint",
+    async (refreshMethod) => {
+      const { endpointUrlInput, pending, state, viewer } =
+        await createSessionsFetcher()
+      const oldPage = { page: 2, items: [{ session_id: "server-a-session" }] }
+      state.tokenUsageSessionsPage = oldPage
+      const stale = viewer.fetchTokenUsageSessionsPage(2)
+      state.tokenUsageSessionsError = "old sessions error"
+      endpointUrlInput.value = "   "
+
+      await viewer[refreshMethod]()
+      expect(state.tokenUsageSessionsPage).toBeNull()
+      expect(state.tokenUsageSessionsError).toBeNull()
+      expect(state.isSessionsLoading).toBe(false)
+      expect(pending).toHaveLength(1)
+
+      pending[0].resolve(oldPage)
+      await stale
+      expect(state.tokenUsageSessionsPage).toBeNull()
+      expect(state.isSessionsLoading).toBe(false)
+    },
+  )
+
+  test.each([...refreshMethods])(
+    "%s loads the new endpoint's sessions after clearing the previous page",
+    async (refreshMethod) => {
+      const { endpointUrlInput, pending, rendering, state, viewer } =
+        await createSessionsFetcher()
+      state.tokenUsageSessionsPage = {
+        page: 2,
+        items: [{ session_id: "server-a-session" }],
+      }
+      endpointUrlInput.value = "http://server-b/usage"
+
+      const refresh = viewer[refreshMethod]()
+      expect(state.tokenUsageSessionsPage).toBeNull()
+      for (const request of pending) {
+        request.resolve({})
+      }
+      await refresh
+
+      const sessions = pending.at(-1)!
+      expect(sessions.url).toBe(
+        "http://server-b/token-usage/sessions?period=today&page=1&page_size=10",
+      )
+      expect(state.isSessionsLoading).toBe(true)
+      const newPage = { page: 1, items: [{ session_id: "server-b-session" }] }
+      const sessionRendered = new Promise<void>((resolve) => {
+        rendering.onRender = () => resolve()
+      })
+      sessions.resolve(newPage)
+      await sessionRendered
+
+      expect(state.tokenUsageSessionsPage).toEqual(newPage)
+      expect(state.isSessionsLoading).toBe(false)
+    },
+  )
 })
 
 describe("usage viewer Copilot quota", () => {

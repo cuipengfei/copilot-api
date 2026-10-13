@@ -2512,6 +2512,7 @@
          * Fetches usage data and token usage data from the specified API endpoint.
          */
         async function fetchData(page = 1) {
+          invalidateSessionsRequest();
           const endpoint = endpointUrlInput.value.trim();
           if (!endpoint) {
             state.data = null;
@@ -2530,7 +2531,6 @@
 
           const period = getSelectedPeriod();
           state.isLoading = true;
-          invalidateSessionsRequest();
           state.error = null;
           state.tokenUsageDailyError = null;
           state.tokenUsageSummaryError = null;
@@ -2613,6 +2613,7 @@
         }
 
         async function fetchTokenUsageSummaryAndEvents(page = 1) {
+          invalidateSessionsRequest();
           const endpoint = endpointUrlInput.value.trim();
           if (!endpoint) {
             state.tokenUsageDailySummary = null;
@@ -2629,9 +2630,7 @@
 
           const period = getSelectedPeriod();
           state.isTokenUsageLoading = true;
-          invalidateSessionsRequest();
           state.tokenUsageDailySummary = null;
-          state.tokenUsageSessionsPage = null;
           state.tokenUsageSummary = null;
           state.tokenUsageEventsPage = null;
           state.tokenUsageDailyError = null;
@@ -2777,11 +2776,12 @@
           render("usage");
         }
 
-        // Drops any in-flight sessions request so a late response cannot
-        // overwrite data for a different period.
+        // Clears sessions when refreshing the endpoint or period and ignores
+        // late responses from the previous context.
         function invalidateSessionsRequest() {
           state.sessionsRequestId += 1;
           state.isSessionsLoading = false;
+          state.tokenUsageSessionsPage = null;
           state.tokenUsageSessionsError = null;
         }
 
