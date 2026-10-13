@@ -114,6 +114,11 @@ describe("usage viewer model cache hit rate", () => {
       ),
       extractInlineFunctionRange(
         html,
+        "        function formatCellText(value) {",
+        "        function formatRangeDate(value) {",
+      ),
+      extractInlineFunctionRange(
+        html,
         "        function renderTokenUsageValueLines(value) {",
         "        function renderTokenUsageEventsTable(eventsPage) {",
       ),
@@ -132,9 +137,18 @@ describe("usage viewer model cache hit rate", () => {
     const state: {
       isTokenUsageLoading: boolean
       tokenUsageSummary?: TokenUsageSummary
-    } = { isTokenUsageLoading: false }
+      isSessionsLoading: boolean
+      tokenUsageSessionsError: string | null
+      tokenUsageSessionsPage: unknown
+    } = {
+      isTokenUsageLoading: false,
+      isSessionsLoading: false,
+      tokenUsageSessionsError: null,
+      tokenUsageSessionsPage: null,
+    }
     const viewer = runInNewContext(source, {
       state,
+      renderError: (message: string) => `<p>${message}</p>`,
       renderTokenUsageRangeText: () => "Today",
       renderTokenUsageDailyTrend: () => "",
       renderPaginationButton: () => "",
@@ -297,6 +311,11 @@ describe("usage viewer cost metrics", () => {
       ),
       extractInlineFunctionRange(
         html,
+        "        function formatCellText(value) {",
+        "        function formatRangeDate(value) {",
+      ),
+      extractInlineFunctionRange(
+        html,
         "        function renderTokenUsageValueLines(value) {",
         "        function renderTokenUsageEventsTable(eventsPage) {",
       ),
@@ -315,9 +334,18 @@ describe("usage viewer cost metrics", () => {
     const state: {
       isTokenUsageLoading: boolean
       tokenUsageSummary?: TokenUsageSummary
-    } = { isTokenUsageLoading: false }
+      isSessionsLoading: boolean
+      tokenUsageSessionsError: string | null
+      tokenUsageSessionsPage: unknown
+    } = {
+      isTokenUsageLoading: false,
+      isSessionsLoading: false,
+      tokenUsageSessionsError: null,
+      tokenUsageSessionsPage: null,
+    }
     const viewer = runInNewContext(source, {
       state,
+      renderError: (message: string) => `<p>${message}</p>`,
       renderTokenUsageRangeText: () => "Today",
       renderTokenUsageDailyTrend: () => "",
       renderPaginationButton: () => "",
@@ -365,9 +393,135 @@ describe("usage viewer cost metrics", () => {
           node.querySelector(".metric-label")?.textContent?.trim() === "Cost",
       )
       expect(costCard?.querySelector(".metric-value")?.textContent).toBe("—")
+
+      state.tokenUsageSummary = summaryFor([])
+      const sessionsPage = (page: number, count: number) => ({
+        items: Array.from({ length: count }, (_, index) => ({
+          ...summaryFor([]).totals,
+          session_id: `session-${(page - 1) * 10 + index + 1}`,
+        })),
+        page,
+        total: 25,
+        total_pages: 3,
+      })
+      state.tokenUsageSessionsPage = sessionsPage(1, 10)
+      const sessionPanel = () =>
+        [...win.document.querySelectorAll(".panel")].find(
+          (node) =>
+            node.querySelector(".panel-title")?.textContent
+            === "Session Breakdown",
+        )!
+      const sessionIds = () =>
+        [...sessionPanel().querySelectorAll("tbody tr td:first-child")].map(
+          (node) => node.textContent,
+        )
+      const nextButton = () =>
+        sessionPanel().querySelector('[data-session-page="1"]')!
+      const previousButton = () =>
+        sessionPanel().querySelector('[data-session-page="-1"]')!
+
+      win.document.body.innerHTML = viewer.renderTokenUsageSection()
+      expect(sessionIds()).toHaveLength(10)
+      expect(sessionIds()[0]).toBe("session-1")
+      expect(sessionPanel().textContent).toContain("Page 1 / 3 - 25 sessions")
+      expect(previousButton().hasAttribute("disabled")).toBe(true)
+      expect(nextButton().hasAttribute("disabled")).toBe(false)
+
+      state.tokenUsageSessionsPage = sessionsPage(3, 5)
+      win.document.body.innerHTML = viewer.renderTokenUsageSection()
+      expect(sessionIds()).toEqual([
+        "session-21",
+        "session-22",
+        "session-23",
+        "session-24",
+        "session-25",
+      ])
+      expect(nextButton().hasAttribute("disabled")).toBe(true)
+
+      state.isSessionsLoading = true
+      win.document.body.innerHTML = viewer.renderTokenUsageSection()
+      expect(previousButton().hasAttribute("disabled")).toBe(true)
+
+      state.isSessionsLoading = false
+      state.tokenUsageSessionsError = "boom"
+      win.document.body.innerHTML = viewer.renderTokenUsageSection()
+      expect(sessionPanel().textContent).toContain("boom")
+      expect(
+        sessionPanel().querySelector('[data-session-page="0"]'),
+      ).not.toBeNull()
     } finally {
       await win.happyDOM.close()
     }
+  })
+})
+
+describe("usage viewer session fetching", () => {
+  async function createSessionsFetcher() {
+    const html = await readUsageViewerPage()
+    const source = [
+      extractInlineFunctionRange(
+        html,
+        "        async function fetchTokenUsageSessionsPage(page) {",
+        "        // --- Event Handlers & Initialization ---",
+      ),
+      "({ fetchTokenUsageSessionsPage, invalidateSessionsRequest })",
+    ].join("\n")
+    const pending: Array<{
+      resolve: (value: unknown) => void
+      reject: (reason: unknown) => void
+    }> = []
+    const state = {
+      isSessionsLoading: false,
+      sessionsRequestId: 0,
+      tokenUsageSessionsError: null as string | null,
+      tokenUsageSessionsPage: null as unknown,
+    }
+    const viewer = runInNewContext(source, {
+      state,
+      endpointUrlInput: { value: "http://localhost/usage" },
+      render: () => {},
+      resolveUsageUrl: (value: string) => value,
+      getSelectedPeriod: () => "today",
+      buildTokenUsageEventsUrl: () => "http://localhost/token-usage/sessions",
+      getErrorMessage: (error: Error) => error.message,
+      isMissingTokenUsageEndpointError: () => false,
+      fetchJson: () =>
+        new Promise((resolve, reject) => pending.push({ resolve, reject })),
+    }) as {
+      fetchTokenUsageSessionsPage: (page: number) => Promise<void>
+      invalidateSessionsRequest: () => void
+    }
+    return { pending, state, viewer }
+  }
+
+  test("ignores a response that arrives after the context changed", async () => {
+    const { pending, state, viewer } = await createSessionsFetcher()
+    const stale = viewer.fetchTokenUsageSessionsPage(2)
+    viewer.invalidateSessionsRequest()
+    const current = viewer.fetchTokenUsageSessionsPage(1)
+
+    pending[1].resolve({ page: 1, items: [] })
+    await current
+    pending[0].resolve({ page: 2, items: [] })
+    await stale
+
+    expect(state.tokenUsageSessionsPage).toEqual({ page: 1, items: [] })
+    expect(state.isSessionsLoading).toBe(false)
+  })
+
+  test("ignores a stale failure and surfaces a current failure", async () => {
+    const { pending, state, viewer } = await createSessionsFetcher()
+    const stale = viewer.fetchTokenUsageSessionsPage(2)
+    viewer.invalidateSessionsRequest()
+    pending[0].reject(new Error("old failure"))
+    await stale
+    expect(state.tokenUsageSessionsError).toBeNull()
+
+    const current = viewer.fetchTokenUsageSessionsPage(1)
+    pending[1].reject(new Error("sessions failed"))
+    await current
+    expect(state.tokenUsageSessionsError).toBe("sessions failed")
+    expect(state.isSessionsLoading).toBe(false)
   })
 })
 
