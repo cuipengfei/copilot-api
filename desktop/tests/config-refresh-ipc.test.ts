@@ -889,3 +889,70 @@ describe('desktop saves automatically refresh the running gateway', () => {
     ).rejects.toThrow('address unavailable')
   })
 })
+
+describe('desktop token usage sessions', () => {
+  function fetchInputUrl(input: Parameters<typeof fetch>[0]): string {
+    if (typeof input === 'string') return input
+    if (input instanceof URL) return input.toString()
+    return input.url
+  }
+
+  test('requests five sessions per page and normalizes invalid paging', async () => {
+    const payload = {
+      items: [],
+      page: 1,
+      page_size: 5,
+      total: 0,
+      total_pages: 1,
+    }
+    const fetchSessions = Object.assign(
+      (input: Parameters<typeof fetch>[0]) => {
+        if (
+          fetchInputUrl(input)
+          === 'http://127.0.0.1:4141/token-usage/sessions?page=1&page_size=5&period=this_week'
+        ) {
+          return Promise.resolve(Response.json(payload))
+        }
+        return Promise.resolve(new Response(null, { status: 500 }))
+      },
+      { preconnect: () => {} },
+    )
+    spyOn(globalThis, 'fetch').mockImplementation(fetchSessions)
+    await expect(
+      invoke('server:fetch-token-usage-sessions', 'this_week', 0, Number.NaN),
+    ).resolves.toEqual(payload)
+  })
+
+  test('returns null when session usage cannot be loaded', async () => {
+    const fetchSessions = Object.assign(
+      (input: Parameters<typeof fetch>[0]) => {
+        expect(fetchInputUrl(input)).toBe(
+          'http://127.0.0.1:4141/token-usage/sessions?page=2&page_size=5&period=today',
+        )
+        return Promise.resolve(new Response(null, { status: 500 }))
+      },
+      { preconnect: () => {} },
+    )
+    spyOn(globalThis, 'fetch').mockImplementation(fetchSessions)
+    await expect(
+      invoke('server:fetch-token-usage-sessions', 'nope', 2, 5),
+    ).resolves.toBeNull()
+
+    spyOn(globalThis, 'fetch').mockRejectedValue(new Error('offline'))
+    await expect(
+      invoke('server:fetch-token-usage-sessions', 'today', 2, 5),
+    ).resolves.toBeNull()
+  })
+
+  test('exposes session usage through the preload bridge', async () => {
+    await import('../electron/preload')
+    if (!preloadApi) throw new Error('Preload bridge was not exposed')
+    await preloadApi.fetchTokenUsageSessions('today', 2, 5)
+    expect(rendererInvoke).toHaveBeenCalledWith(
+      'server:fetch-token-usage-sessions',
+      'today',
+      2,
+      5,
+    )
+  })
+})

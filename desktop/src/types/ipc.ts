@@ -142,6 +142,10 @@ export interface TokenUsageModelSummary extends TokenUsageTotals {
   model: string
 }
 
+export interface TokenUsageSessionSummary extends TokenUsageTotals {
+  session_id: string
+}
+
 export interface TokenUsageSummary {
   period: TokenUsagePeriod
   range: {
@@ -196,6 +200,21 @@ export interface TokenUsageEventRecord {
 
 export interface TokenUsageEventsPage {
   items: TokenUsageEventRecord[]
+  page: number
+  page_size: number
+  period: TokenUsagePeriod
+  range: {
+    start_ms: number
+    end_ms: number
+    start_utc: string
+    end_utc: string
+  }
+  total: number
+  total_pages: number
+}
+
+export interface TokenUsageSessionsPage {
+  items: TokenUsageSessionSummary[]
   page: number
   page_size: number
   period: TokenUsagePeriod
@@ -312,6 +331,11 @@ declare global {
       fetchTokenUsage: (period: TokenUsagePeriod) => Promise<unknown>
       fetchTokenUsageDaily: (period: TokenUsagePeriod) => Promise<unknown>
       fetchTokenUsageEvents: (
+        period: TokenUsagePeriod,
+        page: number,
+        pageSize: number,
+      ) => Promise<unknown>
+      fetchTokenUsageSessions: (
         period: TokenUsagePeriod,
         page: number,
         pageSize: number,

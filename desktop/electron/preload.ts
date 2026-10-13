@@ -94,6 +94,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
       page,
       pageSize,
     ),
+  fetchTokenUsageSessions: (period: string, page: number, pageSize: number) =>
+    ipcRenderer.invoke(
+      'server:fetch-token-usage-sessions',
+      period,
+      page,
+      pageSize,
+    ),
   getServerAuthInfo: () => ipcRenderer.invoke('server:get-auth-info'),
   getServerKeys: () => ipcRenderer.invoke('auth:get-server-keys'),
   saveServerKeys: (keys: unknown) =>

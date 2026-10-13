@@ -708,6 +708,38 @@ export function registerIpcHandlers(
     },
   )
 
+  ipcMain.handle(
+    'server:fetch-token-usage-sessions',
+    async (_event, period: string, page: number, pageSize: number) => {
+      const baseUrl = getServerBaseUrl()
+      const normalizedPeriod =
+        TOKEN_USAGE_PERIODS.has(period) ? period : 'today'
+      const normalizedPage =
+        Number.isFinite(page) && page > 0 ? Math.floor(page) : 1
+      const normalizedPageSize =
+        Number.isFinite(pageSize) && pageSize > 0 ? Math.floor(pageSize) : 5
+      const params = new URLSearchParams({
+        page: String(normalizedPage),
+        page_size: String(normalizedPageSize),
+        period: normalizedPeriod,
+      })
+      try {
+        const headers = await getServerRequestHeaders()
+        const res = await fetch(
+          `${baseUrl}/token-usage/sessions?${params.toString()}`,
+          {
+            headers,
+            signal: AbortSignal.timeout(5000),
+          },
+        )
+        if (!res.ok) return null
+        return (await res.json()) as unknown
+      } catch {
+        return null
+      }
+    },
+  )
+
   ipcMain.handle('server:get-auth-info', async () => getServerAuthInfo())
 
   // Server: Return the in-memory log buffer

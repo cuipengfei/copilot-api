@@ -184,6 +184,10 @@ const en: Locale = {
     tokenUsageProvider: 'Provider',
     tokenUsageRequests: 'Requests',
     tokenUsageSession: 'Session',
+    tokenUsageSessionBreakdown: 'Session breakdown',
+    tokenUsageSessionsCount: '{{n}} sessions',
+    tokenUsageSessionsLoadFailed:
+      'Failed to load session usage. Click Refresh to retry.',
     tokenUsageSource: 'Source',
     tokenUsageTime: 'Time',
     tokenUsageTotal: 'Total',

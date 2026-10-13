@@ -170,6 +170,9 @@ export interface Locale {
     tokenUsageProvider: string
     tokenUsageRequests: string
     tokenUsageSession: string
+    tokenUsageSessionBreakdown: string
+    tokenUsageSessionsCount: string
+    tokenUsageSessionsLoadFailed: string
     tokenUsageSource: string
     tokenUsageTime: string
     tokenUsageTotal: string

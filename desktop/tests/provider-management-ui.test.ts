@@ -12,6 +12,8 @@ import type {
   ProviderManagementUpdate,
   ProviderModelOptions,
   ServerStatus,
+  TokenUsagePeriod,
+  TokenUsageSessionsPage,
   TokenUsageSummary,
 } from '../src/types/ipc'
 
@@ -152,7 +154,10 @@ async function changeText(
   })
 }
 
-async function renderTokenUsageDashboard(summary: TokenUsageSummary) {
+async function renderTokenUsageDashboard(
+  summary: TokenUsageSummary,
+  apiOverrides: Partial<typeof window.electronAPI> = {},
+) {
   Object.assign(window.electronAPI, {
     getServerStatus: () => Promise.resolve({ running: true }),
     getServerAuthInfo: () => Promise.resolve({ enabled: false }),
@@ -168,6 +173,9 @@ async function renderTokenUsageDashboard(summary: TokenUsageSummary) {
         total: 0,
         total_pages: 1,
       }),
+    fetchTokenUsageSessions: () =>
+      Promise.resolve(emptyTokenUsageSessionsPage()),
+    ...apiOverrides,
   })
   await act(async () => {
     root.render(
@@ -202,6 +210,58 @@ function createTokenUsageSummary(
     totals,
     byModel: [{ ...totals, model: 'cached-model' }],
   }
+}
+
+function emptyTokenUsageSessionsPage(): TokenUsageSessionsPage {
+  return {
+    items: [],
+    page: 1,
+    page_size: 5,
+    period: 'today' as const,
+    range: { start_ms: 0, end_ms: 1, start_utc: '', end_utc: '' },
+    total: 0,
+    total_pages: 1,
+  }
+}
+
+function createTokenUsageSessionsPage(
+  summary: TokenUsageSummary,
+  period: TokenUsagePeriod = 'today',
+  page = 1,
+): TokenUsageSessionsPage {
+  return {
+    ...emptyTokenUsageSessionsPage(),
+    items: Array.from({ length: page === 1 ? 5 : 1 }, (_, index) => ({
+      ...summary.totals,
+      session_id: `${period}-session-${page === 1 ? index + 1 : 6}`,
+    })),
+    page,
+    period,
+    range: summary.range,
+    total: 6,
+    total_pages: 2,
+  }
+}
+
+function sessionUsagePanel(): HTMLElement {
+  const title = [...container.querySelectorAll('span')].find(
+    (node) => node.textContent === 'Session breakdown',
+  )
+  const panel = title?.parentElement?.parentElement
+  if (!panel) throw new Error('Missing session usage panel')
+  return panel
+}
+
+async function changeTokenUsagePeriod(period: TokenUsagePeriod) {
+  const select = container.querySelector('select')
+  if (!select) throw new Error('Missing token usage period selector')
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(
+      Object.getPrototypeOf(select),
+      'value',
+    )?.set?.call(select, period)
+    select.dispatchEvent(new Event('change', { bubbles: true }))
+  })
 }
 
 function leafDivTexts(): Array<string | null> {
@@ -255,6 +315,8 @@ describe('provider management UI', () => {
           total: 0,
           total_pages: 1,
         }),
+      fetchTokenUsageSessions: () =>
+        Promise.resolve(emptyTokenUsageSessionsPage()),
     })
     await act(async () => {
       root.render(
@@ -334,6 +396,231 @@ describe('provider management UI', () => {
     )
     expect(costLabel?.parentElement?.textContent).toBe('—Cost')
   })
+
+  test('pages session breakdown five rows at a time', async () => {
+    const totals = {
+      request_count: 2,
+      input_tokens: 10,
+      output_tokens: 20,
+      cache_read_input_tokens: 5,
+      cache_creation_input_tokens: 5,
+      costs: [{ currency: 'USD', amount: 0.5, total_cost_nanos: 500_000_000 }],
+      total_tokens: 40,
+    }
+    const summary: TokenUsageSummary = {
+      period: 'today',
+      range: { start_ms: 0, end_ms: 1, start_utc: '', end_utc: '' },
+      totals,
+      byModel: [{ ...totals, model: 'cached-model' }],
+    }
+    const fetchTokenUsageSessions = mock(
+      (_period: string, page: number, pageSize: number) =>
+        Promise.resolve({
+          items: Array.from({ length: page === 1 ? 5 : 1 }, (_, index) => ({
+            ...totals,
+            session_id: page === 1 ? 'session-' + (index + 1) : 'session-next',
+          })),
+          page,
+          page_size: pageSize,
+          period: 'today' as const,
+          range: summary.range,
+          total: 6,
+          total_pages: 2,
+        }),
+    )
+    Object.assign(window.electronAPI, {
+      getServerStatus: () => Promise.resolve({ running: true }),
+      getServerAuthInfo: () => Promise.resolve({ enabled: false }),
+      fetchTokenUsage: () => Promise.resolve(summary),
+      fetchTokenUsageDaily: () => Promise.resolve({ ...summary, days: [] }),
+      fetchTokenUsageEvents: () =>
+        Promise.resolve({
+          period: summary.period,
+          range: summary.range,
+          items: [],
+          page: 1,
+          page_size: 10,
+          total: 0,
+          total_pages: 1,
+        }),
+      fetchTokenUsageSessions,
+    })
+    await act(async () => {
+      root.render(
+        createElement(LanguageProvider, {
+          children: createElement(DashboardPage, {
+            authMode: 'provider',
+            defaultPort: 4141,
+            defaultHost: '127.0.0.1',
+            onChangeAuth: () => {},
+          }),
+        }),
+      )
+    })
+    await act(async () => button('Token usage').click())
+
+    expect(fetchTokenUsageSessions).toHaveBeenCalledWith('today', 1, 5)
+    const sessionTable = [...container.querySelectorAll('table')].find(
+      (node) => node.querySelector('th')?.textContent === 'Session',
+    )
+    expect(sessionTable).toBeDefined()
+    expect(
+      [...sessionTable!.querySelectorAll('tbody tr')].map(
+        (row) => row.querySelector('td')?.textContent,
+      ),
+    ).toEqual(['session-1', 'session-2', 'session-3', 'session-4', 'session-5'])
+    expect(container.textContent).toContain('Page 1 / 2')
+    expect(container.textContent).toContain('6 sessions')
+
+    const sessionHeader = [...container.querySelectorAll('span')].find(
+      (node) => node.textContent === 'Session breakdown',
+    )?.parentElement
+    const next = [...(sessionHeader?.querySelectorAll('button') ?? [])].find(
+      (node) => node.textContent === 'Next',
+    )
+    expect(next?.disabled).toBe(false)
+    await act(async () => next?.click())
+    expect(fetchTokenUsageSessions).toHaveBeenLastCalledWith('today', 2, 5)
+    expect(
+      [...sessionTable!.querySelectorAll('tbody tr')].map(
+        (row) => row.querySelector('td')?.textContent,
+      ),
+    ).toEqual(['session-next'])
+    expect(container.textContent).toContain('Page 2 / 2')
+
+    const periodSelect = container.querySelector('select')
+    expect(periodSelect).not.toBeNull()
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(
+        Object.getPrototypeOf(periodSelect),
+        'value',
+      )?.set?.call(periodSelect, 'this_week')
+      periodSelect!.dispatchEvent(new Event('change', { bubbles: true }))
+    })
+    expect(fetchTokenUsageSessions).toHaveBeenLastCalledWith('this_week', 1, 5)
+  })
+
+  test('clears old sessions on period changes and reports failure until a successful retry', async () => {
+    const summary = createTokenUsageSummary([])
+    const pending = Promise.withResolvers<unknown>()
+    const fetchTokenUsageSessions = mock(
+      (period: TokenUsagePeriod, page: number): Promise<unknown> =>
+        Promise.resolve(createTokenUsageSessionsPage(summary, period, page)),
+    )
+    await renderTokenUsageDashboard(summary, { fetchTokenUsageSessions })
+    expect(sessionUsagePanel().textContent).toContain('today-session-1')
+
+    fetchTokenUsageSessions.mockReturnValueOnce(pending.promise)
+    await changeTokenUsagePeriod('this_week')
+    expect(fetchTokenUsageSessions).toHaveBeenLastCalledWith('this_week', 1, 5)
+    expect(sessionUsagePanel().querySelector('table') === null).toBe(true)
+    expect(sessionUsagePanel().textContent).toContain('Loading')
+
+    await act(async () => pending.resolve(null))
+    expect(sessionUsagePanel().querySelector('table') === null).toBe(true)
+    expect(
+      sessionUsagePanel().querySelector('[role="alert"]')?.textContent,
+    ).toBe('Failed to load session usage. Click Refresh to retry.')
+    expect(sessionUsagePanel().textContent).not.toContain(
+      'No token usage recorded',
+    )
+    expect(button('Refresh').disabled).toBe(false)
+
+    await act(async () => button('Refresh').click())
+    expect(fetchTokenUsageSessions).toHaveBeenLastCalledWith('this_week', 1, 5)
+    expect(sessionUsagePanel().querySelector('[role="alert"]') === null).toBe(
+      true,
+    )
+    expect(sessionUsagePanel().textContent).toContain('this_week-session-1')
+    expect(sessionUsagePanel().textContent).not.toContain('today-session-1')
+  })
+
+  test('clears existing sessions and reports errors when refreshing rejects', async () => {
+    const summary = createTokenUsageSummary([])
+    const fetchTokenUsageSessions = mock((): Promise<unknown> =>
+      Promise.resolve(createTokenUsageSessionsPage(summary)),
+    )
+    await renderTokenUsageDashboard(summary, { fetchTokenUsageSessions })
+    expect(sessionUsagePanel().textContent).toContain('today-session-1')
+
+    fetchTokenUsageSessions.mockRejectedValueOnce(new Error('offline'))
+    await act(async () => button('Refresh').click())
+    expect(sessionUsagePanel().querySelector('table') === null).toBe(true)
+    expect(sessionUsagePanel().querySelector('[role="alert"]')).not.toBeNull()
+    expect(button('Refresh').disabled).toBe(false)
+  })
+
+  test.each(['unavailable', 'rejected'] as const)(
+    'clears sessions after %s pagination and retries the requested page',
+    async (failure) => {
+      const summary = createTokenUsageSummary([])
+      const fetchTokenUsageSessions = mock(
+        (period: TokenUsagePeriod, page: number): Promise<unknown> =>
+          Promise.resolve(createTokenUsageSessionsPage(summary, period, page)),
+      )
+      await renderTokenUsageDashboard(summary, { fetchTokenUsageSessions })
+      const next = [...sessionUsagePanel().querySelectorAll('button')].find(
+        (node) => node.textContent === 'Next',
+      )
+      expect(next?.disabled).toBe(false)
+      if (failure === 'unavailable') {
+        fetchTokenUsageSessions.mockResolvedValueOnce(null)
+      } else {
+        fetchTokenUsageSessions.mockRejectedValueOnce(new Error('offline'))
+      }
+      await act(async () => next!.click())
+      expect(fetchTokenUsageSessions).toHaveBeenLastCalledWith('today', 2, 5)
+      expect(sessionUsagePanel().querySelector('table') === null).toBe(true)
+      expect(sessionUsagePanel().querySelector('[role="alert"]')).not.toBeNull()
+      expect(button('Refresh').disabled).toBe(false)
+
+      await act(async () => button('Refresh').click())
+      expect(fetchTokenUsageSessions).toHaveBeenLastCalledWith('today', 2, 5)
+      expect(sessionUsagePanel().querySelector('[role="alert"]') === null).toBe(
+        true,
+      )
+      expect(sessionUsagePanel().textContent).toContain('today-session-6')
+      expect(sessionUsagePanel().textContent).toContain('Page 2 / 2')
+    },
+  )
+
+  test.each(['unavailable', 'rejected', 'success'] as const)(
+    'ignores %s responses from an old session request after switching periods',
+    async (result) => {
+      const summary = createTokenUsageSummary([])
+      const pending = Promise.withResolvers<unknown>()
+      const fetchTokenUsageSessions = mock(
+        (period: TokenUsagePeriod, page: number): Promise<unknown> =>
+          period === 'this_week' ?
+            pending.promise
+          : Promise.resolve(
+              createTokenUsageSessionsPage(summary, period, page),
+            ),
+      )
+      await renderTokenUsageDashboard(summary, { fetchTokenUsageSessions })
+      await changeTokenUsagePeriod('this_week')
+      await changeTokenUsagePeriod('this_month')
+      expect(sessionUsagePanel().textContent).toContain('this_month-session-1')
+
+      await act(async () => {
+        if (result === 'rejected') pending.reject(new Error('offline'))
+        else
+          pending.resolve(
+            result === 'unavailable' ? null : (
+              createTokenUsageSessionsPage(summary, 'this_week')
+            ),
+          )
+      })
+      expect(sessionUsagePanel().querySelector('[role="alert"]') === null).toBe(
+        true,
+      )
+      expect(sessionUsagePanel().textContent).toContain('this_month-session-1')
+      expect(sessionUsagePanel().textContent).not.toContain(
+        'this_week-session-1',
+      )
+      expect(button('Refresh').disabled).toBe(false)
+    },
+  )
 
   test('shows Copilot percentages without rounding 99.9 percent to a full bar', async () => {
     const quota = {
