@@ -53,13 +53,15 @@ The Codex model catalog, Copilot model cache, and other custom providers retain 
 
 ### Codex Backend Endpoints
 
-These endpoints implement Codex backend APIs. Top-level image requests require an active Codex login; alpha search can use either the Codex backend or a Responses web-search adapter.
+These endpoints implement Codex backend APIs. Image requests routed to Codex require an active Codex login; configured provider image routes use that provider's credentials. Alpha search can use either the Codex backend or a Responses web-search adapter.
 
 | Endpoint                                                       | Method | Description                                                     |
 | -------------------------------------------------------------- | ------ | --------------------------------------------------------------- |
 | `POST /v1/alpha/search`                | `POST` | Routes Codex alpha-search requests to the Codex backend, or handles supported commands locally and through Responses web search. |
 | `POST /v1/images/generations` | `POST` | Forwards a JSON image generation request to the Codex Images upstream. When the request omits `Content-Type`, the gateway defaults it to `application/json`. Configured model mappings apply to the request `model`; a mapping that resolves to a `provider/model` alias forwards the request to that provider's images endpoint when the provider is configured. |
 | `POST /v1/images/edits` | `POST` | Forwards an image edit request to the Codex Images upstream. Send this request as `multipart/form-data` and let the HTTP client generate the `boundary`. The gateway streams uploaded files to temporary disk files while receiving them and forwards them from disk, so large uploads are not held in memory. Multipart requests are limited to 128 MiB total, 64 MiB per file, and 16 files; requests over a limit return `413`. Model mappings and `provider/model` alias routing apply to this endpoint as well. |
+
+When `imageGenerationModel` or `imageEditModel` is an `xai/model` alias, that top-level route translates the OpenAI image request and sends it to the enabled `xai` provider's Imagine API. The alias selects the upstream model. An empty setting keeps the OpenAI forwarding path described above. Other providers are not accepted in these two settings.
 
 For requests routed to the Codex backend, the gateway replaces client authorization and account headers with the active Codex login and preserves compatible request metadata. Responses-backed alpha search instead follows the selected Copilot or provider route.
 

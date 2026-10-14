@@ -4,10 +4,15 @@ import { forwardError } from "~/lib/error"
 import {
   createForwardRequest,
   handleCodexImages,
+  imageRouteDependencies,
   logger,
   routeImagesRequest,
   snapshotRequestHeaders,
 } from "~/routes/images/shared"
+import {
+  handleXaiImageEdit,
+  xaiImagesRequestErrorResponse,
+} from "~/routes/images/xai-handler"
 import {
   InvalidMultipartBodyError,
   MultipartBodyTooLargeError,
@@ -78,7 +83,24 @@ async function parseEditsRequest(
 
 export async function handleImagesEdits(c: Context): Promise<Response> {
   try {
+    const configuredModel = imageRouteDependencies.getImageEditModel()
+    if (configuredModel.status === "invalid") {
+      return c.json(
+        {
+          error: {
+            message: configuredModel.message,
+            type: "invalid_request_error",
+          },
+        },
+        400,
+      )
+    }
+
     const parsed = await parseEditsRequest(c.req.raw)
+    if (configuredModel.status === "xai") {
+      return await handleXaiImageEdit(c, configuredModel.model, parsed)
+    }
+
     if (parsed instanceof Request) {
       return await handleCodexImages(c, "edits", undefined, parsed)
     }
@@ -129,6 +151,9 @@ export async function handleImagesEdits(c: Context): Promise<Response> {
         error instanceof MultipartBodyTooLargeError ? 413 : 400,
       )
     }
+
+    const invalidRequest = xaiImagesRequestErrorResponse(c, error)
+    if (invalidRequest) return invalidRequest
 
     logger.error("images.edits.error", { error })
     return await forwardError(c, error)

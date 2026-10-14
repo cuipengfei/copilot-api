@@ -6,6 +6,10 @@ import { forwardError } from "~/lib/error"
 import { createHandlerLogger, debugJson, debugJsonAsync } from "~/lib/logger"
 import { parseProviderModelAlias } from "~/lib/provider-model"
 import { resolveProviderConfig } from "~/lib/provider-resolver"
+import {
+  getImageEditModel,
+  getImageGenerationModel,
+} from "~/lib/xai-image-model"
 import { forwardProviderImagesWithLogging } from "~/routes/images/forward-provider-images"
 import {
   forwardCodexImages,
@@ -17,6 +21,8 @@ export const logger = createHandlerLogger("images-handler")
 
 export const imageRouteDependencies = {
   debugJsonAsync,
+  getImageEditModel,
+  getImageGenerationModel,
   resolveMappedModel,
   resolveProviderConfig,
 }

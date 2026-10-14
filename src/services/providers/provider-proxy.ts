@@ -342,7 +342,10 @@ export async function forwardProviderImages(
     headers,
     body: request.body,
     duplex: "half",
-    signal: AbortSignal.timeout(PROVIDER_IMAGES_TIMEOUT_MS),
+    signal: AbortSignal.any([
+      request.signal,
+      AbortSignal.timeout(PROVIDER_IMAGES_TIMEOUT_MS),
+    ]),
   }
 
   const upstreamUrl = resolveProviderRequestUrl(

@@ -57,13 +57,15 @@ Codex model catalog、Copilot 模型缓存和其他自定义 provider 的远程�
 
 ### Codex 后端端点
 
-这些端点实现 Codex 后端 API。顶层图片请求要求已有可用的 Codex 登录态；alpha-search 则可以使用 Codex 后端或 Responses web-search 适配器。
+这些端点实现 Codex 后端 API。路由到 Codex 的图片请求要求已有可用的 Codex 登录态；路由到已配置 provider 的图片请求使用该 provider 的凭据。alpha-search 则可以使用 Codex 后端或 Responses web-search 适配器。
 
 | 端点                                                       | 方法 | 说明                                                                                                 |
 | ---------------------------------------------------------- | ---- | ---------------------------------------------------------------------------------------------------- |
 | `POST /v1/alpha/search`            | `POST` | 将 Codex alpha-search 请求路由到 Codex 后端，或在本地及通过 Responses web search 处理支持的命令。 |
 | `POST /v1/images/generations` | `POST` | 将 JSON 图片生成请求转发到 Codex Images 上游。请求未携带 `Content-Type` 时，网关默认补充 `application/json`。请求 `model` 命中已配置的 model mapping 时会被改写；映射结果为已配置 provider 的 `provider/model` 别名时，请求将转发到该 provider 的 images 端点。 |
 | `POST /v1/images/edits` | `POST` | 将图片编辑请求转发到 Codex Images 上游。请使用 `multipart/form-data`，并让 HTTP 客户端自动生成 `boundary`；网关在接收上传时就把文件流式写入临时磁盘文件，转发时从磁盘读取，大文件不会常驻内存。multipart 请求总大小上限为 128 MiB，单文件上限为 64 MiB，最多包含 16 个文件；超过限制时返回 `413`。model mapping 与 `provider/model` 别名路由同样适用于此端点。 |
+
+当 `imageGenerationModel` 或 `imageEditModel` 配置为 `xai/model` 别名时，对应的顶层图片路由会把 OpenAI 图片请求翻译后发到已启用的 `xai` provider 的 Imagine 接口，上游模型由该别名决定。配置为空时仍走上面的 OpenAI 转发路径。这两项目前不接受其他 provider。
 
 对于路由到 Codex 后端的请求，网关会使用当前 Codex 登录态覆盖客户端的 authorization 和 account header，并保留兼容的请求元数据。基于 Responses 的 alpha-search 则遵循所选 Copilot 或 provider 的路由。
 
