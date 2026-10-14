@@ -11,7 +11,7 @@
 启动网关，然后通过 `settings.json` 配置 Claude Code：
 
 ```sh
-bunx --bun @jeffreycao/copilot-api start
+npx @jeffreycao/copilot-api@latest start
 ```
 
 <a id="manual-configuration-with-settingsjson"></a>

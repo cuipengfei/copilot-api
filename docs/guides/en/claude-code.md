@@ -9,7 +9,7 @@ This AI gateway can be used to power [Claude Code](https://docs.anthropic.com/en
 Start the gateway, then configure Claude Code through `settings.json`:
 
 ```sh
-bunx --bun @jeffreycao/copilot-api start
+npx @jeffreycao/copilot-api@latest start
 ```
 
 ### Manual Configuration with `settings.json`
