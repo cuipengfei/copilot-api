@@ -12,6 +12,7 @@ function runManagerScenario(scenario: string): void {
       import { mock, spyOn } from 'bun:test'
       import childProcess from 'node:child_process'
       import { EventEmitter } from 'node:events'
+      import path from 'node:path'
       let stopExitCode = 0
       let forkError
       let startupExitCode
@@ -197,7 +198,7 @@ test('starts the packaged JavaScript directly with supported Bun and preserves p
     assert.equal(spawnOptions[0], '/local/bun')
     assert.equal(spawnOptions[1][0], '--no-orphans')
     assert.equal(spawnOptions[1][1], '--no-install')
-    assert.equal(spawnOptions[1][2], '/app resources/server/main.js')
+    assert.equal(spawnOptions[1][2], path.join(process.resourcesPath, 'server', 'main.js'))
     assert.deepEqual(spawnOptions[1].slice(3), ['start', '--port', '0', '--proxy-env', '--verbose', '--show-token'])
     assert.equal(spawnOptions[2].env.HTTPS_PROXY, 'http://127.0.0.1:7890/')
     assert.equal(spawnOptions[2].env.NODE_USE_SYSTEM_CA, '1')
@@ -220,6 +221,23 @@ test('uses bundled Node when Bun is unavailable or explicitly disabled', () => {
     assert.equal(spawnOptions, undefined)
     assert.equal(forkOptions[2].env.NODE_USE_SYSTEM_CA, '1')
     assert.ok(!manager.getLogs().some((line) => line.includes('server.bunFallback')))
+  `)
+})
+
+test('keeps migrated system proxy settings on bundled Node when Bun is available', () => {
+  runManagerScenario(`
+    bunRuntime = { available: true, version: '1.4.0', path: '/local/bun' }
+    const { normalizeSettings } = await import('./electron/settings-store')
+    const settings = normalizeSettings({ proxy: { mode: 'system' } })
+    const status = await manager.startServer(0, {
+      runtime: settings.serverRuntime, proxy: settings.proxy,
+    })
+    assert.equal(settings.serverRuntime, 'node')
+    assert.equal(status.running, true)
+    assert.equal(spawnOptions, undefined)
+    assert.ok(forkOptions)
+    assert.ok(!forkOptions[1].includes('--proxy-env'))
+    assert.ok(manager.getLogs().some((line) => line.includes('Node.js (Electron)')))
   `)
 })
 

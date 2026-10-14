@@ -75,8 +75,14 @@ export function normalizeProxySettings(
 export function normalizeSettings(
   settings: Partial<DesktopSettings> | null | undefined,
 ): DesktopSettings {
+  // Existing settings without a runtime used Electron's system proxy and PAC.
+  // Only new installations should opt into Bun without an explicit selection.
+  const legacyRuntime = settings != null && settings.serverRuntime === undefined
   return {
-    serverRuntime: settings?.serverRuntime === 'node' ? 'node' : 'bun',
+    serverRuntime:
+      settings?.serverRuntime === 'node' || legacyRuntime ?
+        'node'
+      : DEFAULT_SETTINGS.serverRuntime,
     apiHome:
       typeof settings?.apiHome === 'string' ?
         settings.apiHome

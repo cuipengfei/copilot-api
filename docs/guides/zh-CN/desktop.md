@@ -23,7 +23,7 @@ chmod +x Copilot-API-*-linux-x86_64.AppImage
 ./Copilot-API-*-linux-x86_64.AppImage
 ```
 
-**设置 → 启动参数 → 服务运行时** 默认选择 **Bun（推荐）**。应用会检测本地 `PATH`、`BUN_INSTALL`、用户 Bun 安装目录及常见桌面安装位置，仅使用稳定版 Bun >= 1.4.0；未安装、版本过低或无法执行时会回退到 Electron 内置的 Node.js。设置页显示检测结果，服务日志显示实际运行时；选择 **Node.js（内置）** 可以始终使用内置 Node，无需额外安装 Node.js。
+新安装时，**设置 → 启动参数 → 服务运行时** 默认选择 **Bun（推荐）**。升级时，未包含运行时选项的已有配置继续使用内置 Node.js，以保留系统代理和 PAC 行为；可在设置中主动切换到 Bun。应用会检测本地 `PATH`、`BUN_INSTALL`、用户 Bun 安装目录及常见桌面安装位置，仅使用稳定版 Bun >= 1.4.0；未安装、版本过低或无法执行时会回退到 Electron 内置的 Node.js。设置页显示检测结果，服务日志显示实际运行时；选择 **Node.js（内置）** 可以始终使用内置 Node，无需额外安装 Node.js。
 
 Bun 直接运行桌面应用随包发布的 JavaScript（`bun --no-orphans --no-install <resources>/server/main.js start ...`），不会调用 `bunx`、安装 npm 包或执行 TypeScript 源码。桌面服务 bundle 已包含依赖，应用继续管理子进程日志、就绪检测、重启及退出。请自行安装或升级 Bun，之后启动或重启服务即可重新检测。
 

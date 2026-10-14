@@ -207,7 +207,7 @@ describe('desktop proxy config', () => {
         proxy: createProxySettings({ mode: 'direct' }),
       }),
     ).toEqual({
-      serverRuntime: 'bun',
+      serverRuntime: 'node',
       apiHome: 'C:/copilot-api',
       sqliteDbPath: 'D:/copilot-data/usage.sqlite',
       oauthApp: 'opencode',

@@ -124,18 +124,17 @@ describe('Bun runtime detection', () => {
   })
 
   test('probes a real Bun executable', async () => {
-    const executable = Bun.which('bun')
-    if (!executable) throw new Error('The Bun test runner must be on PATH')
     const result = await detectBunRuntime({
-      env: { PATH: path.dirname(executable) },
+      env: { PATH: path.dirname(process.execPath) },
     })
     expect(result.available).toBe(true)
     expect(result.version).toBe(Bun.version)
   })
 
-  test('defaults existing and invalid settings to Bun while retaining Node selection', () => {
+  test('defaults new installations to Bun and migrates legacy settings to Node', () => {
     expect(normalizeSettings(null).serverRuntime).toBe('bun')
-    expect(normalizeSettings({}).serverRuntime).toBe('bun')
+    expect(normalizeSettings(undefined).serverRuntime).toBe('bun')
+    expect(normalizeSettings({}).serverRuntime).toBe('node')
     expect(normalizeSettings({ serverRuntime: 'node' }).serverRuntime).toBe(
       'node',
     )
