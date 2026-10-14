@@ -14,7 +14,7 @@
   <a href="https://www.npmjs.com/package/@jeffreycao/copilot-api"><img src="https://img.shields.io/npm/v/@jeffreycao/copilot-api.svg" alt="npm version"></a>
   <a href="https://github.com/caozhiyuan/copilot-api/blob/dev/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License"></a>
   <a href="https://github.com/caozhiyuan/copilot-api/stargazers"><img src="https://img.shields.io/github/stars/caozhiyuan/copilot-api.svg" alt="GitHub stars"></a>
-  <a href="https://bun.sh"><img src="https://img.shields.io/badge/Bun-%3E%3D1.2.x-orange.svg" alt="Bun >= 1.2.x"></a>
+  <a href="https://bun.sh"><img src="https://img.shields.io/badge/Bun-%3E%3D1.4.0-orange.svg" alt="Bun >= 1.4.0"></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/Node-%3E%3D22.13.0-green.svg" alt="Node >= 22.13.0"></a>
 </p>
 
@@ -38,7 +38,7 @@ Copilot API 是一个本地 AI 网关，让 Claude Code、OpenCode、Codex 等�
 
 ## 快速开始
 
-需要 **Node.js >= 22.13.0**（npx）或 **Bun >= 1.2.x**。使用 GitHub Copilot 时需要相应订阅；也可以配置其他 provider 独立运行。
+需要 **Node.js >= 22.13.0**（npx）或 **Bun >= 1.4.0**。使用 GitHub Copilot 时需要相应订阅；也可以配置其他 provider 独立运行。
 
 ```sh
 npx @jeffreycao/copilot-api@latest start
@@ -49,6 +49,18 @@ npx @jeffreycao/copilot-api@latest start
 ```sh
 npx @jeffreycao/copilot-api@latest auth login
 ```
+
+也可以使用 Bun >= 1.4.0 运行，可获得更好的性能：
+
+```sh
+bunx --bun @jeffreycao/copilot-api start
+```
+
+`--bun` 用于选择 Bun 运行时，日常启动省略 `@latest` 以复用缓存。全局安装与升级方式见 [Bun 使用说明](docs/guides/zh-CN/getting-started.md#using-with-bun)。
+
+> [!NOTE]
+> 如需信任系统安装的 CA 证书（例如使用企业 HTTPS 代理时），请在运行 `npx` 或 `bunx` 前设置 `NODE_USE_SYSTEM_CA=1`：bash/zsh 使用 `export NODE_USE_SYSTEM_CA=1`，PowerShell 使用 `$env:NODE_USE_SYSTEM_CA="1"`。
+> 支持 Bun >= 1.4.0，以及 [Node.js >= 22.19.0（22.x）或 >= 24.6.0](https://nodejs.org/api/cli.html#node_use_system_ca1)。Desktop 默认对子进程启用此设置，并保留显式配置的环境变量。
 
 验证网关已启动：
 

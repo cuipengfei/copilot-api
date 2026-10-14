@@ -14,7 +14,7 @@
   <a href="https://www.npmjs.com/package/@jeffreycao/copilot-api"><img src="https://img.shields.io/npm/v/@jeffreycao/copilot-api.svg" alt="npm version"></a>
   <a href="https://github.com/caozhiyuan/copilot-api/blob/dev/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License"></a>
   <a href="https://github.com/caozhiyuan/copilot-api/stargazers"><img src="https://img.shields.io/github/stars/caozhiyuan/copilot-api.svg" alt="GitHub stars"></a>
-  <a href="https://bun.sh"><img src="https://img.shields.io/badge/Bun-%3E%3D1.2.x-orange.svg" alt="Bun >= 1.2.x"></a>
+  <a href="https://bun.sh"><img src="https://img.shields.io/badge/Bun-%3E%3D1.4.0-orange.svg" alt="Bun >= 1.4.0"></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/Node-%3E%3D22.13.0-green.svg" alt="Node >= 22.13.0"></a>
 </p>
 
@@ -34,7 +34,7 @@ Copilot API is a local AI gateway that connects Claude Code, OpenCode, Codex, an
 
 ## Quick Start
 
-Requires **Node.js >= 22.13.0** (npx) or **Bun >= 1.2.x**. A Copilot subscription is needed only for the GitHub Copilot provider; other configured providers can run independently.
+Requires **Node.js >= 22.13.0** (npx) or **Bun >= 1.4.0**. A Copilot subscription is needed only for the GitHub Copilot provider; other configured providers can run independently.
 
 ```sh
 npx @jeffreycao/copilot-api@latest start
@@ -45,6 +45,18 @@ The server listens on `http://localhost:4141` by default. Optionally authenticat
 ```sh
 npx @jeffreycao/copilot-api@latest auth login
 ```
+
+Alternatively, run with Bun >= 1.4.0, which can offer better performance:
+
+```sh
+bunx --bun @jeffreycao/copilot-api start
+```
+
+Use `--bun` to select the Bun runtime and omit `@latest` for routine starts to reuse the cache. See [Bun setup](docs/guides/en/getting-started.md#using-with-bun) for global installation and upgrades.
+
+> [!NOTE]
+> To trust system-installed CA certificates (for example, behind a corporate HTTPS proxy), set `NODE_USE_SYSTEM_CA=1` before running `npx` or `bunx`: `export NODE_USE_SYSTEM_CA=1` in bash/zsh, or `$env:NODE_USE_SYSTEM_CA="1"` in PowerShell.
+> Supported by Bun >= 1.4.0 and [Node.js >= 22.19.0 (22.x) or >= 24.6.0](https://nodejs.org/api/cli.html#node_use_system_ca1). Desktop enables this for server subprocesses by default, preserving explicit environment settings.
 
 Verify the gateway is up:
 
