@@ -2298,7 +2298,7 @@
               const name = formatCellText(by === "session" ? model.session_id : model.model);
               return `
                 <tr class="border-b last:border-b-0" style="border-color: var(--color-bg-light-1);">
-                  <td class="px-4 py-2 max-w-[280px] truncate${by === "session" ? " font-mono" : ""}" style="color: var(--color-fg-lightest);" title="${escapeHtml(
+                  <td class="px-4 py-2 truncate${by === "session" ? " font-mono" : ""}" style="color: var(--color-fg-lightest);" title="${escapeHtml(
                     name
                   )}">${escapeHtml(name)}</td>
                   <td class="px-4 py-2 text-right" style="color: var(--color-fg-dark);">${formatNumber(
@@ -2331,11 +2331,11 @@
             .join("");
 
           return `
-            <div class="overflow-auto ${state.isTokenUsageLoading ? "opacity-60" : ""}">
-              <table class="data-table min-w-[960px] text-left">
+            <div class="overflow-auto [scrollbar-gutter:stable] ${state.isTokenUsageLoading ? "opacity-60" : ""}">
+              <table class="data-table min-w-[960px] table-fixed text-left">
                 <thead>
                   <tr>
-                    <th class="px-4 py-2 font-semibold">${by === "session" ? "Session" : "Model"}</th>
+                    <th class="w-[270px] px-4 py-2 font-semibold">${by === "session" ? "Session" : "Model"}</th>
                     <th class="px-4 py-2 text-right font-semibold">Requests</th>
                     <th class="px-4 py-2 text-right font-semibold">Input</th>
                     <th class="px-4 py-2 text-right font-semibold">Output</th>

@@ -1510,12 +1510,12 @@ function TokenUsagePanel({
             </div>
           : hasModelRows && tokenUsage ?
             <div
-              className={`h-44 overflow-auto ${loading ? 'opacity-60' : ''}`}
+              className={`h-44 overflow-auto [scrollbar-gutter:stable] ${loading ? 'opacity-60' : ''}`}
             >
-              <table className="w-full min-w-[960px] text-left text-[13px]">
+              <table className="w-full min-w-[960px] table-fixed text-left text-[13px]">
                 <thead className="sticky top-0 bg-surface text-ink-faint">
                   <tr className="border-b border-line-soft">
-                    <th className="px-2.5 py-1.5 font-semibold">
+                    <th className="w-[280px] px-2.5 py-1.5 font-semibold">
                       {t('dashboard.tokenUsageModel')}
                     </th>
                     <th className="px-2.5 py-1.5 text-right font-semibold">
@@ -1619,12 +1619,12 @@ function TokenUsagePanel({
             </div>
           : hasSessionRows && sessionsPage ?
             <div
-              className={`overflow-auto ${sessionsLoading ? 'opacity-60' : ''}`}
+              className={`overflow-auto [scrollbar-gutter:stable] ${sessionsLoading ? 'opacity-60' : ''}`}
             >
-              <table className="w-full min-w-[960px] text-left text-[13px]">
+              <table className="w-full min-w-[960px] table-fixed text-left text-[13px]">
                 <thead className="sticky top-0 bg-surface text-ink-faint">
                   <tr className="border-b border-line-soft">
-                    <th className="px-2.5 py-1.5 font-semibold">
+                    <th className="w-[280px] px-2.5 py-1.5 font-semibold">
                       {t('dashboard.tokenUsageSession')}
                     </th>
                     <th className="px-2.5 py-1.5 text-right font-semibold">
@@ -2137,10 +2137,7 @@ function TokenUsageTrendChart({
 function TokenUsageModelRow({ model }: { model: TokenUsageModelSummary }) {
   return (
     <tr className="border-b border-line-soft last:border-b-0">
-      <td
-        className="max-w-[260px] truncate px-2.5 py-1.5 text-ink"
-        title={model.model}
-      >
+      <td className="truncate px-2.5 py-1.5 text-ink" title={model.model}>
         {model.model}
       </td>
       <td className="px-2.5 py-1.5 text-right text-ink-soft">
@@ -2182,7 +2179,7 @@ function TokenUsageSessionRow({
   return (
     <tr className="border-b border-line-soft last:border-b-0">
       <td
-        className="max-w-[280px] truncate px-2.5 py-1.5 font-mono text-ink"
+        className="truncate px-2.5 py-1.5 font-mono text-ink"
         title={sessionId}
       >
         {sessionId}
@@ -2239,13 +2236,13 @@ function TokenUsageEventRow({ event }: { event: TokenUsageEventRecord }) {
         {event.model}
       </td>
       <td
-        className="max-w-[160px] truncate px-2.5 py-1.5 font-mono text-ink-soft"
+        className="max-w-[240px] truncate px-2.5 py-1.5 font-mono text-ink-soft"
         title={formatCellText(event.session_id)}
       >
         {formatCellText(event.session_id)}
       </td>
       <td
-        className="max-w-[160px] truncate px-2.5 py-1.5 font-mono text-ink-soft"
+        className="max-w-[110px] truncate px-2.5 py-1.5 font-mono text-ink-soft"
         title={event.trace_id}
       >
         {event.trace_id}
