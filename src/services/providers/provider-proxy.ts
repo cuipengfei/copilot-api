@@ -7,6 +7,7 @@ import {
 
 import {
   getUpstreamTransportConfig,
+  normalizeProviderBaseUrl,
   type ResolvedProviderConfig,
 } from "~/lib/config"
 import { getGrokBuildVersion } from "~/lib/grok-build"
@@ -19,6 +20,9 @@ import type { ResponsesPayload } from "~/lib/types/responses"
 import type { GoogleModelsResponse } from "~/lib/types/google"
 import { parseUserIdMetadata } from "~/lib/utils"
 import { fetchUpstreamWithLifecycle } from "~/services/upstream-http"
+
+const OPENCODE_GO_PROVIDER_NAME = "opencode-go"
+const OPENCODE_SESSION_HEADER = "x-opencode-session"
 
 const SHARED_FORWARDABLE_HEADERS = ["accept", "user-agent"] as const
 
@@ -44,6 +48,11 @@ export function resolveProviderEndpointUrl(
   providerConfig: ResolvedProviderConfig,
   endpoint: string,
 ): string {
+  if (providerConfig.name === OPENCODE_GO_PROVIDER_NAME) {
+    const base = normalizeProviderBaseUrl(providerConfig.baseUrl)
+    const apiBase = /\/v\d+(?:alpha|beta)?$/u.test(base) ? base : `${base}/v1`
+    return `${apiBase}/${endpoint}`
+  }
   if (providerConfig.type === "google") {
     const base = providerConfig.baseUrl.replace(/\/+$/u, "")
     const apiBase =
@@ -102,10 +111,7 @@ export function buildProviderUpstreamHeaders(
   return headers
 }
 
-const OPENCODE_GO_PROVIDER_NAME = "opencode-go"
-const OPENCODE_SESSION_HEADER = "x-opencode-session"
-
-const resolveOpencodeMessagesSession = (
+export const resolveOpencodeMessagesSession = (
   payload: AnthropicMessagesPayload,
 ): string | undefined => {
   const sessionAffinity = requestContext.getStore()?.sessionAffinity?.trim()
@@ -122,7 +128,7 @@ const resolveOpencodeMessagesSession = (
   return sessionId ?? userId
 }
 
-const applyOpencodeSessionHeader = (
+export const applyOpencodeSessionHeader = (
   providerConfig: ResolvedProviderConfig,
   headers: Record<string, string>,
   session: string | undefined,

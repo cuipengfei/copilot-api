@@ -19,13 +19,14 @@ import type {
 import { translateGoogleThinking } from "./google-thinking"
 
 // Anthropic has a standard opaque signature field only on thinking blocks.
-// Signature-only blocks carry signatures belonging to the preceding text/tool
-// part, keeping the bridge stateless across tool-result requests and restarts.
+// Tool signatures are bound by tool_use ID so they can precede the call.
+// "previous" remains supported for text signatures and existing histories.
 const GOOGLE_SIGNATURE_PREFIX = "google:"
+type GoogleSignatureTarget = "thinking" | "previous" | { toolUseId: string }
 
 export function encodeGoogleSignature(
   signature: string,
-  target: "thinking" | "previous",
+  target: GoogleSignatureTarget,
 ): string {
   return (
     GOOGLE_SIGNATURE_PREFIX
@@ -35,7 +36,7 @@ export function encodeGoogleSignature(
 
 function decodeGoogleSignature(
   value: string,
-): { signature: string; target: "thinking" | "previous" } | undefined {
+): { signature: string; target: GoogleSignatureTarget } | undefined {
   if (!value.startsWith(GOOGLE_SIGNATURE_PREFIX)) return undefined
   try {
     const decoded: unknown = JSON.parse(
@@ -46,11 +47,18 @@ function decodeGoogleSignature(
     )
     if (typeof decoded !== "object" || decoded === null) return undefined
     const { signature, target } = decoded as Record<string, unknown>
-    if (
-      typeof signature === "string"
-      && (target === "thinking" || target === "previous")
-    ) {
+    if (typeof signature !== "string") return undefined
+    if (target === "thinking" || target === "previous") {
       return { signature, target }
+    }
+    if (
+      typeof target === "object"
+      && target !== null
+      && "toolUseId" in target
+      && typeof target.toolUseId === "string"
+      && target.toolUseId.length > 0
+    ) {
+      return { signature, target: { toolUseId: target.toolUseId } }
     }
   } catch {
     // A foreign or malformed signature must never be sent to Google.
@@ -61,19 +69,24 @@ function decodeGoogleSignature(
 function translateThinkingBlock(
   block: AnthropicThinkingBlock,
   parts: Array<GooglePart>,
+  toolSignatures: Map<string, string>,
 ): void {
   const decoded = decodeGoogleSignature(block.signature)
-  if (!decoded) return
-  if (decoded.target === "previous") {
+  if (decoded?.target === "previous") {
     const previous = parts.at(-1)
     if (previous) previous.thoughtSignature = decoded.signature
-    return
+  } else if (decoded && typeof decoded.target === "object") {
+    toolSignatures.set(decoded.target.toolUseId, decoded.signature)
   }
-  parts.push({
-    text: block.thinking,
-    thought: true,
-    thoughtSignature: decoded.signature,
-  })
+  if (block.thinking || decoded?.target === "thinking") {
+    parts.push({
+      text: block.thinking,
+      thought: true,
+      ...(decoded?.target === "thinking" && {
+        thoughtSignature: decoded.signature,
+      }),
+    })
+  }
 }
 
 function invalidRequest(message: string): never {
@@ -155,6 +168,7 @@ export function translateAnthropicToGoogle(
       [{ text: payload.system }]
     : (payload.system ?? []).map((block) => ({ text: block.text }))
   const toolNames = new Map<string, string>()
+  const toolSignatures = new Map<string, string>()
 
   for (const message of payload.messages) {
     if (message.role === "system") {
@@ -197,7 +211,7 @@ export function translateAnthropicToGoogle(
             parts.push(translateToolResult(block, toolNames))
             break
           case "thinking":
-            translateThinkingBlock(block, parts)
+            translateThinkingBlock(block, parts, toolSignatures)
             break
         }
       }
@@ -207,6 +221,13 @@ export function translateAnthropicToGoogle(
     const previous = result.contents.at(-1)
     if (previous?.role === role) previous.parts.push(...parts)
     else result.contents.push({ role, parts })
+  }
+  for (const content of result.contents) {
+    for (const part of content.parts) {
+      const id = part.functionCall?.id
+      const signature = id ? toolSignatures.get(id) : undefined
+      if (signature !== undefined) part.thoughtSignature = signature
+    }
   }
   if (systemParts.length) result.systemInstruction = { parts: systemParts }
 
@@ -288,11 +309,15 @@ export function getGoogleStopReason(
 
 export function googleSignatureBlock(
   signature: string,
+  toolUseId?: string,
 ): AnthropicThinkingBlock {
   return {
     type: "thinking",
     thinking: "",
-    signature: encodeGoogleSignature(signature, "previous"),
+    signature: encodeGoogleSignature(
+      signature,
+      toolUseId ? { toolUseId } : "previous",
+    ),
   }
 }
 
@@ -307,12 +332,21 @@ export function translateGoogleToAnthropic(
   for (const part of candidate?.content?.parts ?? []) {
     if (part.functionCall) {
       const call = part.functionCall
+      const id = call.id || `toolu_${randomUUID()}`
+      if (part.thoughtSignature) {
+        const previous = content.at(-1)
+        const signature = googleSignatureBlock(part.thoughtSignature, id)
+        if (previous?.type === "thinking" && !previous.signature) {
+          previous.signature = signature.signature
+        } else content.push(signature)
+      }
       content.push({
         type: "tool_use",
-        id: call.id || `toolu_${randomUUID()}`,
+        id,
         name: call.name,
         input: call.args ?? {},
       })
+      continue
     } else if (part.thought) {
       content.push({
         type: "thinking",

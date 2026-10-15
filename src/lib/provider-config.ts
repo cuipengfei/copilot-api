@@ -37,7 +37,13 @@ export interface ResolvedProviderConfig {
 }
 
 export function normalizeProviderBaseUrl(url: string): string {
-  return url.trim().replace(/\/+$/u, "")
+  return url
+    .trim()
+    .replace(/\/+$/u, "")
+    .replace(
+      /^https:\/\/opencode\.ai\/zen\/go(?=\/|$)/u,
+      "https://opencode.ai/inference/go",
+    )
 }
 
 export function isSupportedProviderType(value: string): value is ProviderType {

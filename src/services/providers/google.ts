@@ -6,6 +6,7 @@ import type { GoogleGenerateContentPayload } from "~/lib/types/google"
 import { fetchUpstreamWithLifecycle } from "~/services/upstream-http"
 
 import {
+  applyOpencodeSessionHeader,
   buildProviderUpstreamHeaders,
   resolveProviderEndpointUrl,
 } from "./provider-proxy"
@@ -15,7 +16,7 @@ export async function forwardGoogleGenerateContent(
   model: string,
   payload: GoogleGenerateContentPayload,
   requestHeaders: Headers,
-  options: { stream: boolean; clientSignal: AbortSignal },
+  options: { stream: boolean; clientSignal: AbortSignal; sessionId?: string },
 ): Promise<Response> {
   const modelId = encodeURIComponent(model.replace(/^models\//u, ""))
   const method = options.stream ? "streamGenerateContent" : "generateContent"
@@ -24,6 +25,7 @@ export async function forwardGoogleGenerateContent(
   )
   if (options.stream) url.searchParams.set("alt", "sse")
   const headers = buildProviderUpstreamHeaders(provider, requestHeaders)
+  applyOpencodeSessionHeader(provider, headers, options.sessionId)
   headers.accept = options.stream ? "text/event-stream" : "application/json"
   const transport = getUpstreamTransportConfig()
   return await fetchUpstreamWithLifecycle(

@@ -355,7 +355,7 @@ describe("auth login validation", () => {
 
     expect(readConfigFile(tempDir).providers?.["opencode-go"]).toEqual({
       apiKey: "opencode-key",
-      baseUrl: "https://opencode.ai/zen/go",
+      baseUrl: "https://opencode.ai/inference/go",
       enabled: true,
       pricingCurrency: "USD",
       type: "openai-compatible",

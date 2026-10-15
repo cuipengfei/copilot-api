@@ -343,13 +343,26 @@ describe("Messages to Google translation", () => {
     ])
   })
 
-  test("drops foreign and malformed thinking signatures instead of forwarding them to Google", () => {
+  test("preserves thinking text without forwarding foreign or malformed signatures", () => {
     const signatures = [
+      "",
       "foreign",
       "google:not-json",
       "google:" + Buffer.from("null").toString("base64url"),
       "google:"
         + Buffer.from('{"target":"unknown","signature":"x"}').toString(
+          "base64url",
+        ),
+      "google:"
+        + Buffer.from('{"target":{"toolUseId":42},"signature":"x"}').toString(
+          "base64url",
+        ),
+      "google:"
+        + Buffer.from('{"target":{"toolUseId":""},"signature":"x"}').toString(
+          "base64url",
+        ),
+      "google:"
+        + Buffer.from('{"target":"thinking","signature":42}').toString(
           "base64url",
         ),
     ]
@@ -362,12 +375,13 @@ describe("Messages to Google translation", () => {
           {
             role: "assistant",
             content: [
-              ...thinking,
               {
                 type: "thinking",
                 thinking: "",
                 signature: encodeGoogleSignature("orphan", "previous"),
               },
+              ...thinking,
+              { type: "thinking", thinking: "", signature: "" },
               { type: "text", text: "visible" },
             ],
           },
@@ -375,12 +389,154 @@ describe("Messages to Google translation", () => {
       }),
     )
     expect(translated.contents).toEqual([
-      { role: "model", parts: [{ text: "visible" }] },
+      {
+        role: "model",
+        parts: [
+          ...signatures.map(() => ({ text: "hidden", thought: true })),
+          { text: "visible" },
+        ],
+      },
+    ])
+  })
+
+  test("binds tool signatures by ID across separately stored assistant blocks", () => {
+    const translated = translateAnthropicToGoogle(
+      payload({
+        messages: [
+          {
+            role: "assistant",
+            content: [
+              {
+                type: "thinking",
+                thinking: "Plan",
+                signature: encodeGoogleSignature("sig-a", {
+                  toolUseId: "call-a",
+                }),
+              },
+              {
+                type: "thinking",
+                thinking: "",
+                signature: encodeGoogleSignature("sig-b", {
+                  toolUseId: "call-b",
+                }),
+              },
+            ],
+          },
+          {
+            role: "assistant",
+            content: [
+              { type: "tool_use", id: "call-b", name: "read", input: {} },
+              { type: "text", text: "Checking files" },
+              { type: "tool_use", id: "call-a", name: "read", input: {} },
+            ],
+          },
+        ],
+      }),
+    )
+    expect(translated.contents).toEqual([
+      {
+        role: "model",
+        parts: [
+          { text: "Plan", thought: true },
+          {
+            functionCall: { id: "call-b", name: "read", args: {} },
+            thoughtSignature: "sig-b",
+          },
+          { text: "Checking files" },
+          {
+            functionCall: { id: "call-a", name: "read", args: {} },
+            thoughtSignature: "sig-a",
+          },
+        ],
+      },
+    ])
+  })
+
+  test("restores tool signatures from existing histories using previous-part carriers", () => {
+    const translated = translateAnthropicToGoogle(
+      payload({
+        messages: [
+          {
+            role: "assistant",
+            content: [
+              { type: "thinking", thinking: "Plan", signature: "" },
+              { type: "tool_use", id: "call-a", name: "read", input: {} },
+              {
+                type: "thinking",
+                thinking: "",
+                signature: encodeGoogleSignature("tool-sig", "previous"),
+              },
+            ],
+          },
+        ],
+      }),
+    )
+    expect(translated.contents[0].parts).toEqual([
+      { text: "Plan", thought: true },
+      {
+        functionCall: { id: "call-a", name: "read", args: {} },
+        thoughtSignature: "tool-sig",
+      },
     ])
   })
 })
 
 describe("Google responses and usage", () => {
+  test.each([false, true])(
+    "places tool signatures before tool calls and preserves thinking with upstream IDs=%s",
+    (hasId) => {
+      const response = translateGoogleToAnthropic(
+        {
+          candidates: [
+            {
+              content: {
+                parts: [
+                  { text: "Plan", thought: true },
+                  {
+                    functionCall: {
+                      ...(hasId && { id: "call-a" }),
+                      name: "read",
+                      args: { path: "a" },
+                    },
+                    thoughtSignature: "tool-sig",
+                  },
+                ],
+              },
+              finishReason: "STOP",
+            },
+          ],
+        },
+        "gemini",
+      )
+      expect(response.content).toHaveLength(2)
+      const [thinking, tool] = response.content
+      expect(thinking).toMatchObject({ type: "thinking", thinking: "Plan" })
+      expect(tool).toMatchObject({ type: "tool_use", name: "read" })
+      if (tool.type !== "tool_use") throw new Error("Expected tool_use")
+      if (hasId) expect(tool.id).toBe("call-a")
+      else expect(tool.id).toStartWith("toolu_")
+      const restored = translateAnthropicToGoogle(
+        payload({
+          messages: [
+            {
+              role: "assistant",
+              content: response.content as Array<
+                import("~/lib/types/anthropic").AnthropicAssistantContentBlock
+              >,
+            },
+          ],
+        }),
+      )
+      expect(restored.contents[0].parts).toEqual([
+        { text: "Plan", thought: true },
+        {
+          functionCall: { id: tool.id, name: "read", args: { path: "a" } },
+          thoughtSignature: "tool-sig",
+        },
+      ])
+    },
+  )
+
   test("handles missing IDs, empty function arguments and unsigned thinking", () => {
     const response = translateGoogleToAnthropic(
       {

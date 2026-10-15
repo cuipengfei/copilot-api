@@ -4,6 +4,7 @@ import type {
   AnthropicAssistantContentBlock,
   AnthropicStreamEventData,
 } from "~/lib/types/anthropic"
+import type { GooglePart } from "~/lib/types/google"
 import { GoogleMessagesStreamTranslator } from "~/routes/messages/google-stream-translation"
 import { translateAnthropicToGoogle } from "~/routes/messages/google-translation"
 
@@ -37,6 +38,86 @@ function collectContent(
 }
 
 describe("Google SSE to Anthropic", () => {
+  test.each(["thinking", "text", "empty"] as const)(
+    "emits signatures before their tool calls following %s content",
+    (prefixType) => {
+      const translator = new GoogleMessagesStreamTranslator("gemini")
+      const prefix: Array<GooglePart> =
+        prefixType === "empty" ?
+          []
+        : [
+            {
+              text: "Plan",
+              ...(prefixType === "thinking" && { thought: true }),
+            },
+          ]
+      const events = [
+        ...translator.push({ candidates: [{ content: { parts: prefix } }] }),
+        ...translator.push({
+          candidates: [
+            {
+              content: {
+                parts: [
+                  {
+                    functionCall: { id: "call-a", name: "read", args: {} },
+                    thoughtSignature: "sig-a",
+                  },
+                  {
+                    functionCall: { name: "read", args: { path: "b" } },
+                    thoughtSignature: "sig-b",
+                  },
+                ],
+              },
+              finishReason: "STOP",
+            },
+          ],
+        }),
+        ...translator.finish(),
+      ]
+      for (const [index, event] of events.entries()) {
+        if (
+          event.type !== "content_block_start"
+          || event.content_block.type !== "tool_use"
+        )
+          continue
+        expect(events[index - 2]).toMatchObject({
+          type: "content_block_delta",
+          index: event.index - 1,
+          delta: { type: "signature_delta" },
+        })
+        expect(events[index - 1]).toEqual({
+          type: "content_block_stop",
+          index: event.index - 1,
+        })
+      }
+      const content = collectContent(events)
+      expect(content.at(-1)?.type).toBe("tool_use")
+      if (prefixType === "thinking") {
+        expect(content[0]).toMatchObject({ type: "thinking", thinking: "Plan" })
+        expect(content[1].type).toBe("tool_use")
+      }
+      const lastTool = content.at(-1)
+      if (lastTool?.type !== "tool_use") throw new Error("Expected tool_use")
+      expect(lastTool.id).toStartWith("toolu_")
+      const restored = translateAnthropicToGoogle({
+        model: "gemini",
+        max_tokens: 100,
+        messages: [{ role: "assistant", content }],
+      })
+      expect(restored.contents[0].parts).toEqual([
+        ...prefix,
+        {
+          functionCall: { id: "call-a", name: "read", args: {} },
+          thoughtSignature: "sig-a",
+        },
+        {
+          functionCall: { id: lastTool.id, name: "read", args: { path: "b" } },
+          thoughtSignature: "sig-b",
+        },
+      ])
+    },
+  )
+
   test("streams thinking, text and parallel tool calls while retaining all thought signatures", () => {
     const translator = new GoogleMessagesStreamTranslator("gemini-3.8-flash")
     const events = [

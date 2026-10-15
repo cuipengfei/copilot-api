@@ -20,13 +20,20 @@ import {
   getModelsDevProviderOptions,
   installModelsDevCatalog,
 } from "~/lib/models-dev-cache"
+import { QUICK_PROVIDER_CONFIGS } from "~/lib/quick-providers"
+import { requestContext } from "~/lib/request-context"
 import * as tokenUsage from "~/lib/token-usage"
 import type {
   AnthropicMessagesPayload,
   AnthropicResponse,
   AnthropicStreamEventData,
 } from "~/lib/types/anthropic"
-import type { ResponsesPayload } from "~/lib/types/responses"
+import type {
+  ResponseOutputItem,
+  ResponseStreamEvent,
+  ResponsesPayload,
+  ResponsesResult,
+} from "~/lib/types/responses"
 import type { GoogleGenerateContentPayload } from "~/lib/types/google"
 import { handleCompletion } from "~/routes/messages/handler"
 import {
@@ -292,6 +299,187 @@ describe("Google provider configuration and discovery", () => {
   })
 })
 
+describe("OpenCode Go Google forwarding", () => {
+  const model = "gemini-4-argon-contributor"
+  const defaultBaseUrl = QUICK_PROVIDER_CONFIGS["opencode-go"].baseUrl
+  const catalogApi = "https://opencode.ai/inference/go/v1"
+  const runWithSession = <T>(
+    sessionAffinity: string | undefined,
+    callback: () => T,
+  ): T =>
+    requestContext.run(
+      {
+        traceId: "google-test",
+        startTime: Date.now(),
+        userAgent: "test-agent",
+        sessionAffinity,
+        parentSessionId: undefined,
+      },
+      callback,
+    )
+
+  beforeEach(() => {
+    installModelsDevCatalog({
+      ...modelsDevCatalogFixture,
+      "opencode-go": {
+        ...modelsDevCatalogFixture["opencode-go"],
+        api: catalogApi,
+        models: {
+          [model]: { id: model, provider: { npm: "@ai-sdk/google" } },
+        },
+      },
+    })
+    provider = {
+      ...provider,
+      name: "opencode-go",
+      type: "openai-compatible",
+      authType: "authorization",
+      authTypeExplicit: false,
+      baseUrl: defaultBaseUrl,
+    }
+  })
+
+  test.each([
+    [defaultBaseUrl, catalogApi],
+    ["https://opencode.ai/inference/go", catalogApi],
+    ["https://opencode.ai/zen/go/v1/", catalogApi],
+    [
+      "https://opencode.ai/inference/go/v1/",
+      "https://opencode.ai/inference/go/v1",
+    ],
+    ["https://proxy.example/go/", "https://proxy.example/go/v1"],
+  ])("routes Messages through the Go API at %s", async (baseUrl, apiBase) => {
+    provider.baseUrl = baseUrl
+    for (const stream of [false, true]) {
+      fetchMock.mockImplementationOnce(() =>
+        Promise.resolve(
+          stream ? sse([googleResponse]) : Response.json(googleResponse),
+        ),
+      )
+      const response = await send(
+        {
+          model,
+          stream,
+          metadata: { user_id: JSON.stringify({ session_id: "go-session" }) },
+        },
+        "/opencode-go/v1/messages",
+      )
+      expect(response.status).toBe(200)
+      if (stream) {
+        expect(parseSse(await response.text()).at(-1)).toEqual({
+          type: "message_stop",
+        })
+      } else {
+        expect(await response.json()).toMatchObject({
+          model,
+          content: [{ type: "text", text: "hello" }],
+        })
+      }
+      const [url, init] = fetchMock.mock.calls.at(-1)!
+      const method =
+        stream ? "streamGenerateContent?alt=sse" : "generateContent"
+      expect(requestUrl(url)).toBe(`${apiBase}/models/${model}:${method}`)
+      expect(init?.headers).toMatchObject({
+        "x-goog-api-key": "google-key",
+        "x-opencode-session": "go-session",
+        accept: stream ? "text/event-stream" : "application/json",
+      })
+    }
+  })
+
+  test.each(["authorization", "x-goog-api-key"] as const)(
+    "preserves an explicit Go %s credential header",
+    async (authType) => {
+      provider.authType = authType
+      provider.authTypeExplicit = true
+      const response = await send({ model }, "/opencode-go/v1/messages")
+      expect(response.status).toBe(200)
+      const headers = new Headers(fetchMock.mock.calls[0][1]?.headers)
+      expect(headers.get(authType)).toBe(
+        authType === "authorization" ? "Bearer google-key" : "google-key",
+      )
+      expect(headers.has("x-api-key")).toBe(false)
+    },
+  )
+
+  test.each([
+    {
+      affinity: " affinity-1 ",
+      userId: JSON.stringify({ session_id: "json-session" }),
+      expected: "affinity-1",
+    },
+    {
+      affinity: undefined,
+      userId: JSON.stringify({ session_id: "json-session" }),
+      expected: "json-session",
+    },
+    {
+      affinity: " ",
+      userId: "user_abc_account_def_session_legacy-session",
+      expected: "legacy-session",
+    },
+    { affinity: undefined, userId: "plain-user", expected: "plain-user" },
+    { affinity: undefined, userId: " ", expected: undefined },
+    { affinity: undefined, userId: undefined, expected: undefined },
+  ])(
+    "resolves the Go session from $affinity and $userId",
+    async ({ affinity, userId, expected }) => {
+      const response = await runWithSession(affinity, () =>
+        send(
+          { model, metadata: { user_id: userId } },
+          "/opencode-go/v1/messages",
+        ),
+      )
+      expect(response.status).toBe(200)
+      const headers = new Headers(fetchMock.mock.calls[0][1]?.headers)
+      expect(headers.get("x-opencode-session")).toBe(expected ?? null)
+    },
+  )
+
+  test.each([false, true])(
+    "preserves the Go session when adapting Responses with stream=%s",
+    async (stream) => {
+      if (stream)
+        fetchMock.mockImplementationOnce(() =>
+          Promise.resolve(sse([googleResponse])),
+        )
+      const response = await runWithSession("responses-session", () =>
+        createApp().request("/opencode-go/v1/responses", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            model,
+            input: "hello",
+            max_output_tokens: 100,
+            stream,
+          }),
+        }),
+      )
+      expect(response.status).toBe(200)
+      await response.text()
+      const headers = new Headers(fetchMock.mock.calls[0][1]?.headers)
+      expect(headers.get("x-opencode-session")).toBe("responses-session")
+    },
+  )
+
+  test("keeps Google defaults and omits the Go session for other providers", async () => {
+    provider = {
+      ...provider,
+      name: "google",
+      type: "google",
+      baseUrl: "https://google.example",
+    }
+    await runWithSession("go-session", () =>
+      send({ model, metadata: { user_id: "go-user" } }),
+    )
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(requestUrl(url)).toBe(
+      `https://google.example/v1beta/models/${model}:generateContent`,
+    )
+    expect(new Headers(init?.headers).has("x-opencode-session")).toBe(false)
+  })
+})
+
 describe("Google Messages routes", () => {
   test("forwards a prefixed Messages request with model defaults and records all usage", async () => {
     provider.models = {
@@ -392,6 +580,95 @@ describe("Google Messages routes", () => {
     })
     expect(requestUrl(fetchMock.mock.calls[0][0])).toContain(":generateContent")
   })
+  test.each([false, true])(
+    "round-trips Google thinking and tool signatures through Responses with stream=%s",
+    async (stream) => {
+      const upstream = {
+        ...googleResponse,
+        candidates: [
+          {
+            content: {
+              parts: [
+                { text: "Plan", thought: true },
+                {
+                  functionCall: { id: "call-a", name: "read_file", args: {} },
+                  thoughtSignature: "tool-sig",
+                },
+              ],
+            },
+            finishReason: "STOP",
+          },
+        ],
+      }
+      fetchMock.mockImplementationOnce(() =>
+        Promise.resolve(stream ? sse([upstream]) : Response.json(upstream)),
+      )
+      const tools = [
+        {
+          type: "function",
+          name: "read_file",
+          parameters: { type: "object", properties: {} },
+          strict: null,
+        },
+      ]
+      const response = await createApp().request("/google/v1/responses", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "gemini-3.8-flash",
+          input: "read a file",
+          max_output_tokens: 100,
+          tools,
+          stream,
+        }),
+      })
+      expect(response.status).toBe(200)
+      let output: Array<ResponseOutputItem>
+      if (stream) {
+        const events = (await response.text())
+          .split("\n")
+          .filter((line) => line.startsWith("data: {"))
+          .map((line) => JSON.parse(line.slice(6)) as ResponseStreamEvent)
+        output = events.flatMap((event) =>
+          event.type === "response.output_item.done" ? [event.item] : [],
+        )
+      } else output = ((await response.json()) as ResponsesResult).output
+      expect(output.map((item) => item.type)).toEqual([
+        "reasoning",
+        "function_call",
+      ])
+      const followup = await createApp().request("/google/v1/responses", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "gemini-3.8-flash",
+          max_output_tokens: 100,
+          tools,
+          input: [
+            ...output,
+            {
+              type: "function_call_output",
+              call_id: "call-a",
+              output: "file a",
+            },
+          ],
+        }),
+      })
+      expect(followup.status).toBe(200)
+      const body = JSON.parse(
+        fetchMock.mock.calls[1][1]?.body as string,
+      ) as GoogleGenerateContentPayload
+      expect(
+        body.contents.find((content) => content.role === "model")?.parts,
+      ).toEqual([
+        { text: "Plan", thought: true },
+        {
+          functionCall: { id: "call-a", name: "read_file", args: {} },
+          thoughtSignature: "tool-sig",
+        },
+      ])
+    },
+  )
   test.each([
     { model: "gemini-3.8-flash", effort: "low", expected: "LOW" as const },
     {

@@ -87,9 +87,12 @@ export class GoogleMessagesStreamTranslator {
     events: Array<AnthropicStreamEventData>,
   ): void {
     if (part.functionCall) {
+      const call = part.functionCall
+      const id = call.id || `toolu_${randomUUID()}`
+      if (part.thoughtSignature)
+        this.addSignature(part.thoughtSignature, events, id)
       this.closeBlock(events)
       const index = this.nextIndex++
-      const call = part.functionCall
       this.hasTools = true
       events.push(
         {
@@ -97,7 +100,7 @@ export class GoogleMessagesStreamTranslator {
           index,
           content_block: {
             type: "tool_use",
-            id: call.id || `toolu_${randomUUID()}`,
+            id,
             name: call.name,
             input: {},
           },
@@ -112,8 +115,6 @@ export class GoogleMessagesStreamTranslator {
         },
         { type: "content_block_stop", index },
       )
-      if (part.thoughtSignature)
-        this.addSignature(part.thoughtSignature, events)
       return
     }
     if (part.text || part.thought) {
@@ -144,6 +145,7 @@ export class GoogleMessagesStreamTranslator {
   private addSignature(
     signature: string,
     events: Array<AnthropicStreamEventData>,
+    toolUseId?: string,
   ): void {
     if (this.block?.type === "thinking") {
       this.block.signed = true
@@ -152,7 +154,10 @@ export class GoogleMessagesStreamTranslator {
         index: this.block.index,
         delta: {
           type: "signature_delta",
-          signature: encodeGoogleSignature(signature, "thinking"),
+          signature: encodeGoogleSignature(
+            signature,
+            toolUseId ? { toolUseId } : "thinking",
+          ),
         },
       })
       this.closeBlock(events)
@@ -171,7 +176,10 @@ export class GoogleMessagesStreamTranslator {
         index,
         delta: {
           type: "signature_delta",
-          signature: encodeGoogleSignature(signature, "previous"),
+          signature: encodeGoogleSignature(
+            signature,
+            toolUseId ? { toolUseId } : "previous",
+          ),
         },
       },
       { type: "content_block_stop", index },

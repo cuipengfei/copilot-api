@@ -25,6 +25,7 @@ import {
 } from "~/routes/messages/google-translation"
 import { applyMissingExtraBody } from "~/routes/provider/utils"
 import { forwardGoogleGenerateContent } from "~/services/providers/google"
+import { resolveOpencodeMessagesSession } from "~/services/providers/provider-proxy"
 
 const logger = createHandlerLogger("provider-google-messages")
 
@@ -34,6 +35,7 @@ export async function handleGoogleProviderMessages(
   provider: ResolvedProviderConfig,
   usageEndpoint?: TokenUsageEndpoint,
 ): Promise<Response> {
+  debugJson(logger, "provider.messages.google.original_request", payload)
   const translated = translateAnthropicToGoogle(payload)
   const modelConfig = provider.models?.[payload.model]
   const extraGenerationConfig = modelConfig?.extraBody?.generationConfig
@@ -61,7 +63,11 @@ export async function handleGoogleProviderMessages(
     payload.model,
     translated,
     c.req.raw.headers,
-    { stream: payload.stream === true, clientSignal: signal },
+    {
+      stream: payload.stream === true,
+      clientSignal: signal,
+      sessionId: resolveOpencodeMessagesSession(payload),
+    },
   )
   if (!upstream.ok)
     throw new HTTPError("Failed to create Google response", upstream)
@@ -86,6 +92,7 @@ export async function handleGoogleProviderMessages(
     stream.onAbort(() => controller.abort())
     const writeEvents = async (items: Array<AnthropicStreamEventData>) => {
       for (const item of items) {
+        debugJson(logger, "provider.messages.google.translated_event:", item)
         await writeSSEIfConnected(stream, {
           event: item.type,
           data: JSON.stringify(item),
@@ -108,6 +115,11 @@ export async function handleGoogleProviderMessages(
           const response = JSON.parse(
             event.data,
           ) as GoogleGenerateContentResponse
+          debugJson(
+            logger,
+            "provider.messages.google.raw_stream_event:",
+            response,
+          )
           await writeEvents(translator.push(response))
         }
       } else {
