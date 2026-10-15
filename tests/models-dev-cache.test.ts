@@ -13,6 +13,7 @@ import {
   getModelsDevModelMaxOutputTokens,
   getModelsDevModelPricing,
   getModelsDevModelProviderType,
+  getModelsDevProviderApi,
   getModelsDevProviderOptions,
   getModelsDevProviderModelIds,
   loadCachedModelsDevCatalog,
@@ -125,6 +126,57 @@ test("exposes raw models.dev metadata even for providers excluded from the provi
   expect(getModelsDevModel("opencode-go", "missing")).toBeUndefined()
 })
 
+test.each([
+  {
+    id: "anthropic",
+    name: "Anthropic",
+    npm: "@ai-sdk/anthropic",
+    api: "https://api.anthropic.com/v1",
+    type: "anthropic",
+  },
+  {
+    id: "openai",
+    name: "OpenAI",
+    npm: "@ai-sdk/openai",
+    api: "https://api.openai.com/v1",
+    type: "openai-responses",
+  },
+  {
+    id: "google",
+    name: "Google",
+    npm: "@ai-sdk/google",
+    api: "https://generativelanguage.googleapis.com/v1beta",
+    type: "google",
+  },
+] as const)(
+  "uses the official provider API for $id when the catalog omits it",
+  (expected) => {
+    const { id, name, npm, api, type } = expected
+    const provider = { name, npm, models: { example: { id: "example" } } }
+    for (const missingApi of [undefined, null]) {
+      installModelsDevCatalog({
+        ...modelsDevCatalogFixture,
+        [id]: { ...provider, api: missingApi },
+      })
+      expect(getModelsDevProviderOptions()).toContainEqual({
+        id,
+        name,
+        api,
+        type,
+      })
+      expect(getModelsDevProviderApi(id)).toBe(api)
+      expect(getModelsDevProviderModelIds(id)).toEqual(["example"])
+      expect(getModelsDevModelProviderType(id, "example")).toBe(type)
+    }
+
+    installModelsDevCatalog({
+      ...modelsDevCatalogFixture,
+      [id]: { ...provider, api: " https://catalog.example/v2/// " },
+    })
+    expect(getModelsDevProviderApi(id)).toBe("https://catalog.example/v2")
+  },
+)
+
 test("lists usable Chat, Responses, and Anthropic providers without the built-in choices", async () => {
   installModelsDevCatalog({
     ...modelsDevCatalogFixture,
@@ -185,6 +237,9 @@ test("lists usable Chat, Responses, and Anthropic providers without the built-in
       api: "https://copilot.example/v1",
     },
     "missing-api": { npm: "@ai-sdk/openai-compatible" },
+    "missing-anthropic-api": { npm: "@ai-sdk/anthropic" },
+    "missing-openai-api": { npm: "@ai-sdk/openai" },
+    "missing-google-api": { npm: "@ai-sdk/google" },
     templated: {
       npm: "@ai-sdk/openai-compatible",
       api: "https://${ACCOUNT}.example/v1",
