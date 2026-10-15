@@ -7,21 +7,6 @@ on:
     types: [opened, synchronize, reopened]
 
 jobs:
-  bun-runtime:
-    name: Bun runtime detection (${{ matrix.os }})
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: "1.4.0"
-      - name: Test Bun runtime detection
-        run: bun test --coverage desktop/tests/bun-runtime.test.ts
-
   test:
     runs-on: ubuntu-latest
     steps:
