@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process'
+import { readdir } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { promisify } from 'node:util'
@@ -20,13 +21,62 @@ interface BunDetectionOptions {
   platform?: NodeJS.Platform
   homeDir?: string
   getVersion?: (executable: string) => Promise<string>
+  readDirectory?: (directory: string) => Promise<string[]>
 }
 
-export function getBunCandidates({
+async function getNvmBinDirectories({
   env = process.env,
   platform = process.platform,
   homeDir = os.homedir(),
-}: BunDetectionOptions = {}): string[] {
+  readDirectory = readdir,
+}: BunDetectionOptions): Promise<string[]> {
+  const windows = platform === 'win32'
+  const paths = windows ? path.win32 : path.posix
+  const roots =
+    windows ?
+      [
+        env.NVM_HOME,
+        paths.join(
+          env.APPDATA ?? paths.join(homeDir, 'AppData', 'Roaming'),
+          'nvm',
+        ),
+        paths.join(
+          env.LOCALAPPDATA ?? paths.join(homeDir, 'AppData', 'Local'),
+          'nvm',
+        ),
+      ]
+    : [
+        env.NVM_DIR,
+        env.XDG_CONFIG_HOME && paths.join(env.XDG_CONFIG_HOME, 'nvm'),
+        paths.join(homeDir, '.nvm'),
+        paths.join(homeDir, '.config', 'nvm'),
+      ]
+  const directories: string[] = []
+  for (const root of new Set(roots)) {
+    if (!root || !paths.isAbsolute(root)) continue
+    const versionsRoot = windows ? root : paths.join(root, 'versions', 'node')
+    try {
+      // GUI launches need not inherit nvm's shell initialization or active PATH.
+      const versions = (await readDirectory(versionsRoot))
+        .filter((version) => /^v\d+\.\d+\.\d+$/.test(version))
+        .sort((a, b) => b.localeCompare(a, undefined, { numeric: true }))
+      for (const version of versions) {
+        const prefix = paths.join(versionsRoot, version)
+        directories.push(windows ? prefix : paths.join(prefix, 'bin'))
+      }
+    } catch {
+      // A missing or inaccessible nvm installation must not prevent fallback.
+    }
+  }
+  return directories
+}
+
+export async function getBunCandidates({
+  env = process.env,
+  platform = process.platform,
+  homeDir = os.homedir(),
+  readDirectory,
+}: BunDetectionOptions = {}): Promise<string[]> {
   const windows = platform === 'win32'
   const paths = windows ? path.win32 : path.posix
   const executable = windows ? 'bun.exe' : 'bun'
@@ -36,27 +86,33 @@ export function getBunCandidates({
     .map((directory) => directory.replace(/^"(.*)"$/, '$1'))
     .filter((directory) => paths.isAbsolute(directory))
 
-  const candidates = directories.map((directory) =>
-    paths.join(directory, executable),
-  )
+  const candidates: string[] = []
+  const addBinDirectory = (directory: string | undefined) => {
+    if (!directory || !paths.isAbsolute(directory)) return
+    candidates.push(paths.join(directory, executable))
+    if (windows) {
+      // npm exposes bun.cmd here; execFile/spawn need the package's native exe.
+      candidates.push(
+        paths.join(directory, 'node_modules', 'bun', 'bin', 'bun.exe'),
+      )
+    }
+  }
+  directories.forEach(addBinDirectory)
+  addBinDirectory(env.NVM_BIN)
+  if (windows) addBinDirectory(env.NVM_SYMLINK)
+  const npmPrefix = env.npm_config_prefix ?? env.NPM_CONFIG_PREFIX
+  if (npmPrefix && paths.isAbsolute(npmPrefix)) {
+    addBinDirectory(windows ? npmPrefix : paths.join(npmPrefix, 'bin'))
+  }
   if (env.BUN_INSTALL && paths.isAbsolute(env.BUN_INSTALL)) {
     candidates.push(paths.join(env.BUN_INSTALL, 'bin', executable))
   }
   candidates.push(paths.join(homeDir, '.bun', 'bin', executable))
   if (windows) {
     if (env.APPDATA) {
-      candidates.push(
-        paths.join(
-          env.APPDATA,
-          'npm',
-          'node_modules',
-          'bun',
-          'bin',
-          executable,
-        ),
-      )
+      addBinDirectory(paths.join(env.APPDATA, 'npm'))
     }
-    if (env.LOCALAPPDATA) {
+    if (env.LOCALAPPDATA && paths.isAbsolute(env.LOCALAPPDATA)) {
       candidates.push(
         paths.join(
           env.LOCALAPPDATA,
@@ -75,6 +131,13 @@ export function getBunCandidates({
       '/usr/bin/bun',
     )
   }
+  const nvmDirectories = await getNvmBinDirectories({
+    env,
+    platform,
+    homeDir,
+    readDirectory,
+  })
+  nvmDirectories.forEach(addBinDirectory)
   return [
     ...new Map(
       candidates.map((candidate) => [
@@ -100,7 +163,7 @@ export async function detectBunRuntime(
 ): Promise<BunRuntimeStatus> {
   const getVersion = options.getVersion ?? readBunVersion
   let unsupported: BunRuntimeStatus | undefined
-  for (const executable of getBunCandidates(options)) {
+  for (const executable of await getBunCandidates(options)) {
     try {
       const version = (await getVersion(executable)).trim()
       if (isSupportedBunVersion(version)) {
