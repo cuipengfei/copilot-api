@@ -2,8 +2,9 @@ import { describe, expect, test } from 'bun:test'
 import {
   getCopilotQuotaPercentRemaining,
   getCopilotQuotaRemaining,
-  getPremiumUsedText,
+  hasAnyCopilotQuotaSnapshot,
   hasCopilotQuotaValue,
+  shouldShowCopilotQuotaUsage,
 } from '../src/lib/copilot-usage-display'
 
 describe('Copilot quota display', () => {
@@ -17,7 +18,6 @@ describe('Copilot quota display', () => {
     }
     expect(getCopilotQuotaRemaining(quota)).toBe(1499)
     expect(getCopilotQuotaPercentRemaining(quota)).toBe(99.9)
-    expect(getPremiumUsedText(quota)).toBe('1 / 1500')
     expect(hasCopilotQuotaValue(quota)).toBe(true)
     expect(getCopilotQuotaPercentRemaining({ ...quota, remaining: 1200 })).toBe(
       99.9,
@@ -29,9 +29,6 @@ describe('Copilot quota display', () => {
       getCopilotQuotaRemaining({ remaining: 0, quota_remaining: 1499 }),
     ).toBe(0)
     expect(getCopilotQuotaRemaining({ quota_remaining: 1499 })).toBe(1499)
-    expect(
-      getPremiumUsedText({ entitlement: 1500, quota_remaining: 1499 }),
-    ).toBe('1 / 1500')
     expect(
       getCopilotQuotaPercentRemaining({
         entitlement: 1500,
@@ -50,7 +47,6 @@ describe('Copilot quota display', () => {
         percent_remaining: 0,
       }),
     ).toBe(100)
-    expect(getPremiumUsedText({ unlimited: true })).toBe('∞')
     expect(getCopilotQuotaPercentRemaining({ percent_remaining: -10 })).toBe(0)
     expect(getCopilotQuotaPercentRemaining({ percent_remaining: 110 })).toBe(
       100,
@@ -69,6 +65,38 @@ describe('Copilot quota display', () => {
     expect(getCopilotQuotaRemaining(undefined)).toBeNull()
     expect(getCopilotQuotaRemaining({ remaining: Infinity })).toBeNull()
     expect(hasCopilotQuotaValue({ entitlement: 1500 })).toBe(false)
-    expect(getPremiumUsedText(undefined)).toBeNull()
+    expect(hasCopilotQuotaValue({ unlimited: true })).toBe(true)
+    expect(hasCopilotQuotaValue(undefined)).toBe(false)
+  })
+
+  test('only shows the quota section when the Premium snapshot is usable', () => {
+    expect(shouldShowCopilotQuotaUsage(undefined)).toBe(false)
+    expect(shouldShowCopilotQuotaUsage({ quota_snapshots: {} })).toBe(false)
+    expect(
+      shouldShowCopilotQuotaUsage({
+        quota_snapshots: { premium_interactions: { entitlement: 1500 } },
+      }),
+    ).toBe(false)
+    expect(
+      shouldShowCopilotQuotaUsage({
+        quota_snapshots: {
+          premium_interactions: { entitlement: 1500, remaining: 1200 },
+        },
+      }),
+    ).toBe(true)
+    expect(
+      shouldShowCopilotQuotaUsage({
+        quota_snapshots: {
+          chat: { entitlement: 1000, remaining: 1 },
+          completions: { unlimited: true },
+        },
+      }),
+    ).toBe(false)
+    expect(
+      hasAnyCopilotQuotaSnapshot({ chat: { entitlement: 1000, remaining: 1 } }),
+    ).toBe(true)
+    expect(
+      hasAnyCopilotQuotaSnapshot({ completions: { unlimited: true } }),
+    ).toBe(true)
   })
 })

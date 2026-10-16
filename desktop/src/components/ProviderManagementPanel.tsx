@@ -14,23 +14,18 @@ import {
   mergeProviderModelOptions,
   parseModelSelection,
 } from '../lib/provider-model-options'
+import { getProviderTypeLabel } from '../lib/provider-type-labels'
 import ProviderModelPicker from './ProviderModelPicker'
 
 interface Props {
   serverRunning?: boolean
+  onOpenAuthConfig?: () => void
   onSavingChange?: (saving: boolean) => void
-}
-
-const protocolLabels: Record<string, string> = {
-  anthropic: 'Anthropic',
-  'github-copilot': 'GitHub Copilot',
-  'openai-compatible': 'Chat Completions',
-  'openai-responses': 'Responses API',
-  google: 'Google Gemini API',
 }
 
 export default function ProviderManagementPanel({
   serverRunning,
+  onOpenAuthConfig,
   onSavingChange,
 }: Props) {
   const { t } = useLanguage()
@@ -161,6 +156,16 @@ export default function ProviderManagementPanel({
           </p>
         </div>
         <div className="flex shrink-0 items-center gap-3 pt-1">
+          {onOpenAuthConfig && (
+            <button
+              type="button"
+              onClick={onOpenAuthConfig}
+              disabled={saving}
+              className="inline-flex h-9 items-center justify-center rounded-lg border border-line bg-surface px-4 text-[13px] font-medium text-ink-soft transition hover:bg-sunken disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              {t('header.changeAuth')}
+            </button>
+          )}
           {dirty && (
             <span className="hidden text-xs text-ink-faint sm:inline">
               {t('providers.unsaved')}
@@ -270,7 +275,7 @@ export default function ProviderManagementPanel({
                   {current.name}
                 </h3>
                 <span className="mt-1 inline-block rounded-md bg-sunken px-2 py-0.5 text-[11px] text-ink-soft">
-                  {protocolLabels[current.type] ?? current.type}
+                  {getProviderTypeLabel(current.type)}
                 </span>
               </div>
               <label className="inline-flex cursor-pointer items-center gap-2.5 text-[12px] font-medium text-ink-soft">

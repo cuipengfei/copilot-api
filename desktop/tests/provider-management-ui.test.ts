@@ -656,7 +656,7 @@ describe('provider management UI', () => {
       )
     })
     expect(container.textContent).toContain('1 / 1500 · 0.1% used')
-    expect(container.textContent).toContain('1499 / 1500 · 99.9% remaining')
+    expect(container.textContent).not.toContain('99.9% remaining')
     const quotaBar = (label: string) =>
       [...container.querySelectorAll('span')]
         .find((node) => node.textContent === label)
@@ -664,8 +664,8 @@ describe('provider management UI', () => {
           'div[style]',
         )
     expect(parseFloat(quotaBar('Premium')!.style.width)).toBeCloseTo(0.1)
-    expect(parseFloat(quotaBar('Chat')!.style.width)).toBe(99.9)
-    expect(quotaBar('Completions')!.style.width).toBe('100%')
+    expect(quotaBar('Chat')).toBeUndefined()
+    expect(quotaBar('Completions')).toBeUndefined()
   })
 
   test('does not report the update installer stopping the server as a crash', async () => {

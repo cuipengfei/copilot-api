@@ -30,6 +30,9 @@ export default function App() {
   const [page, setPage] = useState<Page | null>(null)
   const [authMode, setAuthMode] = useState<DesktopAuthMode>('none')
   const [canReturnFromAuth, setCanReturnFromAuth] = useState(false)
+  const [dashboardTab, setDashboardTab] = useState<'dashboard' | 'providers'>(
+    'dashboard',
+  )
   const [port, setPort] = useState<number>(4141)
   const [host, setHost] = useState<string>('')
   const [initialServerStatus, setInitialServerStatus] = useState<ServerStatus>()
@@ -90,7 +93,8 @@ export default function App() {
     setPage('dashboard')
   }
 
-  const handleChangeAuth = () => {
+  const handleChangeAuth = (returnTab: 'dashboard' | 'providers') => {
+    setDashboardTab(returnTab)
     setInitialServerStatus(undefined)
     setCanReturnFromAuth(true)
     setPage('auth')
@@ -113,6 +117,7 @@ export default function App() {
   if (page === 'auth') {
     return (
       <AuthPage
+        backTarget={dashboardTab === 'providers' ? 'providers' : 'home'}
         onBack={
           canReturnFromAuth ? () => void handleBackToDashboard() : undefined
         }
@@ -127,6 +132,7 @@ export default function App() {
       defaultPort={port}
       defaultHost={host}
       initialServerStatus={initialServerStatus}
+      initialTab={dashboardTab}
       onChangeAuth={handleChangeAuth}
     />
   )

@@ -15,6 +15,7 @@ import Header from '../components/Header'
 import { refreshProviderAuthStatus } from '../lib/provider-management-auth'
 
 interface AuthPageProps {
+  backTarget?: 'home' | 'providers'
   onBack?: () => void
   onSuccess: (result: AuthResult) => void
 }
@@ -87,7 +88,11 @@ const QUICK_PROVIDER_DEFAULTS: Record<
   },
 }
 
-export default function AuthPage({ onBack, onSuccess }: AuthPageProps) {
+export default function AuthPage({
+  backTarget = 'home',
+  onBack,
+  onSuccess,
+}: AuthPageProps) {
   const { t } = useLanguage()
   const [view, setView] = useState<AuthView>('default')
   const [deviceCode, setDeviceCode] = useState<DeviceCodeInfo | null>(null)
@@ -571,7 +576,11 @@ export default function AuthPage({ onBack, onSuccess }: AuthPageProps) {
               onClick={onBack}
               className="inline-flex h-8 items-center rounded-md border border-line bg-surface px-2.5 text-[13px] font-medium text-ink-soft shadow-sm transition-colors hover:bg-sunken hover:text-ink"
             >
-              {t('auth.backToHome')}
+              {t(
+                backTarget === 'providers' ?
+                  'auth.backToProviders'
+                : 'auth.backToHome',
+              )}
             </button>
           </div>
         )}

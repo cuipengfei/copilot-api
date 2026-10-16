@@ -58,6 +58,7 @@ daemon_auto_start = false
 apps = false
 prevent_idle_sleep = true
 defer_mailbox_preemption = true
+instant_interrupt = false
 
 [desktop]
 enabled-reasoning-efforts = ["low", "medium", "high", "xhigh", "ultra", "max"]

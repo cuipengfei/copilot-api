@@ -112,6 +112,7 @@ export interface Locale {
     waitingAuth: string
     back: string
     backToHome: string
+    backToProviders: string
     verifying: string
     confirmAdd: string
     authFailed: string
@@ -137,14 +138,18 @@ export interface Locale {
     overviewPort: string
     overviewModels: string
     overviewLastRefresh: string
-    premiumUsed: string
-    quotaReset: string
     serviceAddress: string
     authHeader: string
     copy: string
     quotaUsage: string
+    quotaResetsOn: string
+    quotaUnavailable: string
     quotaUsedPercent: string
     quotaRemainingPercent: string
+    providerOverview: string
+    providerOverviewSummary: string
+    providerOverviewManage: string
+    providerOverviewModels: string
     refreshing: string
     refresh: string
     tokenUsage: string
