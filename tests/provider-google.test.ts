@@ -304,7 +304,7 @@ describe("OpenCode Go Google forwarding", () => {
   const defaultBaseUrl = QUICK_PROVIDER_CONFIGS["opencode-go"].baseUrl
   const catalogApi = "https://opencode.ai/inference/go/v1"
   const runWithSession = <T>(
-    sessionAffinity: string | undefined,
+    context: { rootSessionId?: string; sessionAffinity?: string },
     callback: () => T,
   ): T =>
     requestContext.run(
@@ -312,7 +312,8 @@ describe("OpenCode Go Google forwarding", () => {
         traceId: "google-test",
         startTime: Date.now(),
         userAgent: "test-agent",
-        sessionAffinity,
+        sessionAffinity: context.sessionAffinity,
+        rootSessionId: context.rootSessionId,
         parentSessionId: undefined,
       },
       callback,
@@ -404,31 +405,69 @@ describe("OpenCode Go Google forwarding", () => {
 
   test.each([
     {
+      rootSessionId: "root-1",
+      affinity: " affinity-1 ",
+      userId: JSON.stringify({ session_id: "json-session" }),
+      expected: "root-1",
+    },
+    {
+      rootSessionId: undefined,
       affinity: " affinity-1 ",
       userId: JSON.stringify({ session_id: "json-session" }),
       expected: "affinity-1",
     },
     {
+      rootSessionId: "root-1",
+      affinity: undefined,
+      userId: undefined,
+      expected: "root-1",
+    },
+    {
+      rootSessionId: "  ",
       affinity: undefined,
       userId: JSON.stringify({ session_id: "json-session" }),
       expected: "json-session",
     },
     {
+      rootSessionId: undefined,
+      affinity: undefined,
+      userId: JSON.stringify({ session_id: "json-session" }),
+      expected: "json-session",
+    },
+    {
+      rootSessionId: undefined,
       affinity: " ",
       userId: "user_abc_account_def_session_legacy-session",
       expected: "legacy-session",
     },
-    { affinity: undefined, userId: "plain-user", expected: "plain-user" },
-    { affinity: undefined, userId: " ", expected: undefined },
-    { affinity: undefined, userId: undefined, expected: undefined },
+    {
+      rootSessionId: undefined,
+      affinity: undefined,
+      userId: "plain-user",
+      expected: "plain-user",
+    },
+    {
+      rootSessionId: undefined,
+      affinity: undefined,
+      userId: " ",
+      expected: undefined,
+    },
+    {
+      rootSessionId: undefined,
+      affinity: undefined,
+      userId: undefined,
+      expected: undefined,
+    },
   ])(
-    "resolves the Go session from $affinity and $userId",
-    async ({ affinity, userId, expected }) => {
-      const response = await runWithSession(affinity, () =>
-        send(
-          { model, metadata: { user_id: userId } },
-          "/opencode-go/v1/messages",
-        ),
+    "resolves the Go session from $rootSessionId, $affinity and $userId",
+    async ({ rootSessionId, affinity, userId, expected }) => {
+      const response = await runWithSession(
+        { rootSessionId, sessionAffinity: affinity },
+        () =>
+          send(
+            { model, metadata: { user_id: userId } },
+            "/opencode-go/v1/messages",
+          ),
       )
       expect(response.status).toBe(200)
       const headers = new Headers(fetchMock.mock.calls[0][1]?.headers)
@@ -443,17 +482,19 @@ describe("OpenCode Go Google forwarding", () => {
         fetchMock.mockImplementationOnce(() =>
           Promise.resolve(sse([googleResponse])),
         )
-      const response = await runWithSession("responses-session", () =>
-        createApp().request("/opencode-go/v1/responses", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            model,
-            input: "hello",
-            max_output_tokens: 100,
-            stream,
+      const response = await runWithSession(
+        { sessionAffinity: "responses-session" },
+        () =>
+          createApp().request("/opencode-go/v1/responses", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              model,
+              input: "hello",
+              max_output_tokens: 100,
+              stream,
+            }),
           }),
-        }),
       )
       expect(response.status).toBe(200)
       await response.text()
@@ -469,7 +510,7 @@ describe("OpenCode Go Google forwarding", () => {
       type: "google",
       baseUrl: "https://google.example",
     }
-    await runWithSession("go-session", () =>
+    await runWithSession({ sessionAffinity: "go-session" }, () =>
       send({ model, metadata: { user_id: "go-user" } }),
     )
     const [url, init] = fetchMock.mock.calls[0]

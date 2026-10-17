@@ -114,7 +114,15 @@ export function buildProviderUpstreamHeaders(
 export const resolveOpencodeMessagesSession = (
   payload: AnthropicMessagesPayload,
 ): string | undefined => {
-  const sessionAffinity = requestContext.getStore()?.sessionAffinity?.trim()
+  const store = requestContext.getStore()
+  // Keep sibling subagents on the root session so opencode-go routes them to the
+  // same prompt cache group, matching the chat completions/responses flows.
+  const rootSessionId = store?.rootSessionId?.trim()
+  if (rootSessionId) {
+    return rootSessionId
+  }
+
+  const sessionAffinity = store?.sessionAffinity?.trim()
   if (sessionAffinity) {
     return sessionAffinity
   }

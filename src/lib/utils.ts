@@ -125,6 +125,25 @@ export const generateRequestIdFromPayload = (
   return randomUUID()
 }
 
+// Shared by the Messages and Responses routes: `session-id` comes from codex
+// clients, `x-root-session-id` is set by the agent-context plugin.
+export const getRootSessionIdFromHeaders = (c: Context): string | undefined =>
+  c.req.header("session-id")?.trim()
+  || c.req.header("x-root-session-id")?.trim()
+  || c.req.header("x-session-id")?.trim()
+  || undefined
+
+// Shared by the request context and the Responses route. The codex thread id
+// counts as a client request id, so it is accepted as the last resort.
+export const getSessionAffinityFromHeaders = (c: Context): string | undefined =>
+  c.req.header("x-opencode-session-id")?.trim()
+  || c.req.header("x-session-affinity")?.trim()
+  || c.req.header("x-client-request-id")?.trim()
+  || c.req.header("thread-id")?.trim()
+  || undefined
+
+// Unlike getRootSessionIdFromHeaders, this prefers metadata.user_id, ignores
+// the `session-id` header, and hashes the resolved value.
 export const getRootSessionId = (
   anthropicPayload: AnthropicMessagesPayload,
   c: Context,
