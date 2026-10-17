@@ -68,18 +68,18 @@ export const MESSAGES_COMPACTION_PROMPT = [
 
 export const MESSAGES_TOOL_CALL_TIPS = [
   "# Tool Call Tips",
-  "- Do NOT call `exec_command` directly; that tool does not exist. Use `functions__exec` to run commands instead.",
-  '- The functions__exec tool accepts parameters only as {"input":"..."}; put the complete executable code inside input, including properly constructed tools.exec_command(...) calls and text(...) output handling.',
+  "- Do NOT call `exec_command` directly; that tool does not exist. Use `functions.exec` (tool name: `exec`) to run commands instead.",
+  '- The functions.exec tool accepts parameters only as {"input":"..."}; put the complete executable code inside input, including properly constructed tools.exec_command(...) calls and text(...) output handling.',
   "- Construct all tools.exec_command(...) arguments strictly according to its tool definition, and use OS/shell-compatible commands for Windows, Linux, and macOS.",
   "- Always assign the awaited tools.exec_command(...) call to a variable and forward the full result with text(JSON.stringify(r)); unforwarded output is silently dropped and makes results look empty.",
-  "- Yielded execution is not truncated output. Resume a running `cell_id` with `functions.wait`, and a live `session_id` with `tools.write_stdin`, until the command reaches a terminal result.",
+  "- Yielded execution is not truncated output. Resume a running `cell_id` with `functions.wait` (tool name: `wait`), and a live `session_id` with `tools.write_stdin`, until the command reaches a terminal result.",
   "- Read files with the OS-native command (Get-Content/Test-Path on Windows PowerShell, cat/ls on POSIX), quote paths containing spaces, and verify the forwarded output is non-empty before concluding a file was read.",
   "- For long-running commands, keep the returned `session_id` and poll it with `tools.write_stdin` until the command finishes; do not redirect output to a temp file and read it back in a second call.",
-  "- If `functions__exec` returns `aborted`, retry at most 3 times. After 3 failures, terminate immediately and inform the user that `functions__exec` is unavailable.",
+  "- If `functions.exec` returns `aborted`, retry at most 3 times. After 3 failures, terminate immediately and inform the user that `functions.exec` is unavailable.",
 ].join("\n")
 
 const MESSAGES_BATCH_TOOL_CALL_TIPS = [
-  "- Parallel tool calls are disabled for this request. Batch independent commands in one functions__exec call; keep dependent operations sequential.",
+  "- Parallel tool calls are disabled for this request. Batch independent commands in one functions.exec call; keep dependent operations sequential.",
   'const results = await Promise.allSettled([tools.exec_command({cmd: "git status --short"})]); for (const result of results) text(JSON.stringify(result.status === "fulfilled" ? result.value : {error: String(result.reason)}))',
 ].join("\n")
 
@@ -603,7 +603,7 @@ function createMessagesToolDescriptor(
 ): MessagesToolDescriptor {
   const originalKey = createOriginalToolKey(registration)
   const preferredName =
-    registration.namespace ?
+    registration.namespace && registration.namespace !== "functions" ?
       `${registration.namespace.replaceAll(".", "_")}__${registration.name}`
     : registration.name
   const alias = createToolAlias(preferredName, originalKey, registry)
@@ -831,7 +831,7 @@ function translateInputToolCall(
   const toolIdentity = { kind, name, namespace }
   // Historical calls preserve conversation state; they do not define tools.
   const descriptor =
-    registry.byOriginal.get(createOriginalToolKey(toolIdentity))
+    findOriginalDescriptor(registry, kind, name, namespace)
     ?? createMessagesToolDescriptor(toolIdentity, registry)
   const input =
     kind === "custom" ?
@@ -1301,18 +1301,13 @@ function findOriginalDescriptor(
   name: string,
   namespace?: string,
 ): MessagesToolDescriptor | undefined {
-  const matches: Array<MessagesToolDescriptor> = []
-  for (const descriptor of registry.byOriginal.values()) {
-    if (descriptor.kind !== kind || descriptor.name !== name) continue
-    if (namespace !== undefined) {
-      if (descriptor.namespace === namespace) return descriptor
-      continue
-    }
-    matches.push(descriptor)
-  }
   return (
-    matches.find((descriptor) => descriptor.namespace === undefined)
-    ?? (matches.length === 1 ? matches[0] : undefined)
+    registry.byOriginal.get(createOriginalToolKey({ kind, name, namespace }))
+    ?? (!namespace ?
+      registry.byOriginal.get(
+        createOriginalToolKey({ kind, name, namespace: "functions" }),
+      )
+    : undefined)
   )
 }
 
