@@ -65,7 +65,7 @@ import {
   type AnthropicUserContentBlock,
   type AnthropicUserMessage,
 } from "~/lib/types/anthropic"
-import { normalizeToolSchema, THINKING_TEXT } from "./non-stream-translation"
+import { normalizeToolSchema, THINKING_TEXT } from "./completions-translation"
 
 const MESSAGE_TYPE = "message"
 const COMPACTION_SIGNATURE_PREFIX = "cm1#"

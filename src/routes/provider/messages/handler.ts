@@ -54,12 +54,12 @@ import { isResponsesStream, parseUserIdMetadata } from "~/lib/utils"
 import {
   translateToAnthropic,
   translateToOpenAI,
-} from "~/routes/messages/non-stream-translation"
+} from "~/routes/messages/completions-translation"
 import {
   flushPendingAnthropicStreamEvents,
   translateChunkToAnthropicEvents,
   translateErrorToAnthropicErrorEvent,
-} from "~/routes/messages/stream-translation"
+} from "~/routes/messages/completions-stream-translation"
 import {
   buildErrorEvent,
   createResponsesStreamState,

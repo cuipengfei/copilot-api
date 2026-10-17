@@ -8,7 +8,7 @@ import { resolveProviderConfig } from "~/lib/provider-resolver"
 import { createFallbackModel } from "~/lib/provider-model"
 import { getTokenCount } from "~/lib/tokenizer"
 import { type AnthropicMessagesPayload } from "~/lib/types/anthropic"
-import { translateToOpenAI } from "~/routes/messages/non-stream-translation"
+import { translateToOpenAI } from "~/routes/messages/completions-translation"
 import { normalizeSystemMessages } from "~/routes/messages/preprocess"
 
 const logger = createHandlerLogger("provider-count-tokens-handler")

@@ -10,7 +10,7 @@ import { state } from "~/lib/state"
 import {
   RICH_TOOL_RESULT_MOVED_TEXT,
   translateToOpenAI,
-} from "~/routes/messages/non-stream-translation"
+} from "~/routes/messages/completions-translation"
 import { getCompactType } from "~/routes/messages/preprocess"
 
 // Zod schema for a single message in the chat completion request.

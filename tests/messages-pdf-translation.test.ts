@@ -12,7 +12,7 @@ import { createFallbackModel } from "~/lib/provider-model"
 import {
   RICH_TOOL_RESULT_MOVED_TEXT,
   translateToOpenAI as translatePayloadToOpenAI,
-} from "~/routes/messages/non-stream-translation"
+} from "~/routes/messages/completions-translation"
 
 import { modelsDevCatalogFixture } from "./fixtures/models-dev-catalog"
 

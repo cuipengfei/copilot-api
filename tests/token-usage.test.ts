@@ -29,7 +29,7 @@ import {
 } from "~/lib/token-usage/pricing"
 import { traceIdMiddleware } from "~/lib/trace"
 import { tokenUsageRoute } from "~/routes/token-usage/route"
-import { translateToOpenAI } from "~/routes/messages/non-stream-translation"
+import { translateToOpenAI } from "~/routes/messages/completions-translation"
 import { parseUserIdMetadata } from "~/lib/utils"
 
 import {

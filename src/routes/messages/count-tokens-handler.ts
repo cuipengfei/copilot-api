@@ -19,7 +19,7 @@ import { type Model } from "~/lib/types/models"
 
 import { findEndpointModel } from "../../lib/models"
 import { type AnthropicMessagesPayload } from "~/lib/types/anthropic"
-import { translateToOpenAI } from "./non-stream-translation"
+import { translateToOpenAI } from "./completions-translation"
 import { normalizeSystemMessages } from "./preprocess"
 
 export const resolveCountTokensModel = (

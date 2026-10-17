@@ -26,7 +26,7 @@ import {
   translateMessagesStream,
 } from "~/routes/responses/messages-stream-translation"
 import { translateAnthropicMessagesToResponsesPayload } from "~/routes/messages/responses-translation"
-import { translateToOpenAI } from "~/routes/messages/non-stream-translation"
+import { translateToOpenAI } from "~/routes/messages/completions-translation"
 
 const translate = (
   payload: Omit<ResponsesPayload, "model">,
