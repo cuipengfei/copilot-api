@@ -406,13 +406,17 @@ function handleAssistantMessage(
 
   const signature = thinkingBlocks.find((b) => b.signature)?.signature
 
+  const content = normalizeAssistantTextContent(
+    mapContent(message.content, {
+      supportPdf: capabilities.supportPdf,
+    }),
+  )
+
   return toolUseBlocks.length > 0 ?
       [
         {
           role: "assistant",
-          content: mapContent(message.content, {
-            supportPdf: capabilities.supportPdf,
-          }),
+          content,
           reasoning_text: allThinkingContent,
           reasoning_opaque: signature,
           tool_calls: toolUseBlocks.map((toolUse) => ({
@@ -428,13 +432,30 @@ function handleAssistantMessage(
     : [
         {
           role: "assistant",
-          content: mapContent(message.content, {
-            supportPdf: capabilities.supportPdf,
-          }),
+          content,
           reasoning_text: allThinkingContent,
           reasoning_opaque: signature,
         },
       ]
+}
+
+/**
+ * DashScope-compatible upstreams reject assistant messages whose content is an
+ * array of text parts, so collapse text-only arrays into a plain string here.
+ */
+function normalizeAssistantTextContent(
+  content: string | Array<ContentPart> | null,
+): string | Array<ContentPart> | null {
+  if (!Array.isArray(content)) {
+    return content
+  }
+
+  const textParts = content.filter(
+    (part): part is TextPart => part.type === "text",
+  )
+  return textParts.length === content.length ?
+      textParts.map((part) => part.text).join("")
+    : content
 }
 
 function mapContent(
