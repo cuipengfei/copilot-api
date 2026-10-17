@@ -6,6 +6,7 @@ import type { AnthropicMessagesPayload } from "~/lib/types/anthropic"
 import type { ResponsesStream } from "~/lib/types/responses"
 
 import { state } from "./state"
+import { requestContext } from "./request-context"
 
 export const sleep = (ms: number) =>
   new Promise((resolve) => {
@@ -70,6 +71,16 @@ export const parseUserIdMetadata = (
     legacySessionId ?? getUserIdJsonField(parsedUserId, "session_id")
 
   return { safetyIdentifier, sessionId }
+}
+
+export const getPromptCacheKey = (
+  payload: Pick<AnthropicMessagesPayload, "metadata">,
+): string | null => {
+  const { sessionId } = parseUserIdMetadata(payload.metadata?.user_id)
+  const store = requestContext.getStore()
+  const rootSessionId = store?.rootSessionId?.trim() || null
+  const sessionAffinity = store?.sessionAffinity?.trim() || null
+  return rootSessionId ?? sessionId ?? sessionAffinity
 }
 
 const findLastUserContent = (
