@@ -2,7 +2,6 @@ import { describe, expect, test } from 'bun:test'
 import {
   getCopilotQuotaPercentRemaining,
   getCopilotQuotaRemaining,
-  hasAnyCopilotQuotaSnapshot,
   hasCopilotQuotaValue,
   shouldShowCopilotQuotaUsage,
 } from '../src/lib/copilot-usage-display'
@@ -92,11 +91,5 @@ describe('Copilot quota display', () => {
         },
       }),
     ).toBe(false)
-    expect(
-      hasAnyCopilotQuotaSnapshot({ chat: { entitlement: 1000, remaining: 1 } }),
-    ).toBe(true)
-    expect(
-      hasAnyCopilotQuotaSnapshot({ completions: { unlimited: true } }),
-    ).toBe(true)
   })
 })

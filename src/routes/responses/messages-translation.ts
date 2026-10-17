@@ -40,7 +40,6 @@ import type {
   ResponsesResult,
   ResponsesTextFormat,
   ResponseUsage,
-  Tool,
 } from "~/lib/types/responses"
 
 export const MESSAGES_COMPACTION_PREFIX = "copilot-api:messages-compaction:v1:"
@@ -508,6 +507,7 @@ function createToolRegistry(
       for (const tool of getArrayField(item, "tools")) {
         registerTool(tool, registry, strictCustomTools)
       }
+      break
     }
   }
 
@@ -517,20 +517,29 @@ function createToolRegistry(
 const EXEC_COMMAND_TOOL_NAME = "exec_command"
 
 /**
- * Reports whether the request exposes a direct `exec_command` tool, either at
- * the top level or inside a namespace.
+ * Reports whether the request exposes a direct `exec_command` tool, at the top
+ * level, inside a namespace, or through `input.additional_tools`. The
+ * additional_tools items are scanned in place, so no tool list is copied.
  */
 function hasExecCommandTool(payload: ResponsesPayload): boolean {
-  return (payload.tools ?? []).some(isExecCommandTool)
+  if ((payload.tools ?? []).some(isExecCommandTool)) return true
+  if (!Array.isArray(payload.input)) return false
+
+  for (const item of payload.input) {
+    if (getItemType(item) !== "additional_tools") continue
+    if (getArrayField(item, "tools").some(isExecCommandTool)) return true
+    break
+  }
+  return false
 }
 
-function isExecCommandTool(tool: Tool): boolean {
+function isExecCommandTool(tool: unknown): boolean {
   if (getStringField(tool, "name") === EXEC_COMMAND_TOOL_NAME) return true
   if (!isNamespaceTool(tool)) return false
   return tool.tools.some(isExecCommandTool)
 }
 
-function isNamespaceTool(tool: Tool): tool is NamespaceTool {
+function isNamespaceTool(tool: unknown): tool is NamespaceTool {
   return getStringField(tool, "type") === "namespace"
 }
 

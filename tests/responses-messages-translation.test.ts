@@ -319,6 +319,35 @@ describe("Responses Lite to Messages translation", () => {
     ])
   })
 
+  test("skips tool call tips when additional_tools exposes exec_command", () => {
+    const result = translateWithTips({
+      instructions: "Base instructions",
+      input: [
+        {
+          role: "developer",
+          tools: [
+            {
+              type: "function",
+              name: "exec_command",
+              parameters: null,
+              strict: null,
+            },
+          ],
+          type: "additional_tools",
+        },
+        { role: "user", content: "Hello" },
+      ],
+    })
+
+    expect(result.messagesPayload.system).toEqual([
+      {
+        type: "text",
+        text: "Base instructions",
+        cache_control: { type: "ephemeral" },
+      },
+    ])
+  })
+
   test.each([undefined, "Base instructions"])(
     "adds Promise.allSettled guidance when parallel tool calls are disabled with instructions %j",
     (instructions) => {

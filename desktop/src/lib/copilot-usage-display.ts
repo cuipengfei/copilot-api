@@ -62,17 +62,6 @@ export function hasCopilotQuotaValue(
   )
 }
 
-export function hasAnyCopilotQuotaSnapshot(
-  snapshots: CopilotQuotaSnapshotsLike | null | undefined,
-): boolean {
-  return Boolean(
-    snapshots
-    && (hasCopilotQuotaValue(snapshots.premium_interactions)
-      || hasCopilotQuotaValue(snapshots.chat)
-      || hasCopilotQuotaValue(snapshots.completions)),
-  )
-}
-
 export function shouldShowCopilotQuotaUsage(
   usage: CopilotUsageDisplayLike | null | undefined,
 ): boolean {
