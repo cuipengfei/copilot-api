@@ -540,6 +540,24 @@ describe("responses handler token usage", () => {
           vendor: "anthropic",
           version: "test",
         },
+        {
+          capabilities: {
+            family: "deepseek",
+            limits: { max_prompt_tokens: 128000 },
+            object: "model_capabilities",
+            supports: { tool_calls: true },
+            tokenizer: "o200k_base",
+            type: "chat",
+          },
+          id: "deepseek-v4.1-flash",
+          model_picker_enabled: true,
+          name: "DeepSeek V4.1 Flash",
+          object: "model",
+          preview: false,
+          supported_endpoints: ["/v1/messages"],
+          vendor: "deepseek",
+          version: "test",
+        },
       ],
     }
     const handleMessages = mock(
@@ -948,6 +966,18 @@ describe("responses handler token usage", () => {
       },
       method: "POST",
     })
+    const codexDeepSeekResponse = await app.request("/v1/responses", {
+      body: JSON.stringify({
+        model: "deepseek-v4.1-flash",
+        instructions: "Base instructions",
+        input: "hello",
+      }),
+      headers: {
+        "content-type": "application/json",
+        "user-agent": "codex-cli/1.0.0",
+      },
+      method: "POST",
+    })
     const otherResponse = await app.request("/v1/responses", {
       body: JSON.stringify({
         model: "claude-tips",
@@ -959,8 +989,9 @@ describe("responses handler token usage", () => {
     })
 
     expect(codexResponse.status).toBe(200)
+    expect(codexDeepSeekResponse.status).toBe(200)
     expect(otherResponse.status).toBe(200)
-    expect(handleMessages).toHaveBeenCalledTimes(2)
+    expect(handleMessages).toHaveBeenCalledTimes(3)
     expect(handleMessages.mock.calls[0]?.[1].system).toEqual([
       {
         type: "text",
@@ -969,6 +1000,13 @@ describe("responses handler token usage", () => {
       },
     ])
     expect(handleMessages.mock.calls[1]?.[1].system).toEqual([
+      {
+        type: "text",
+        text: `Base instructions\n\n${MESSAGES_TOOL_CALL_TIPS}`,
+        cache_control: { type: "ephemeral" },
+      },
+    ])
+    expect(handleMessages.mock.calls[2]?.[1].system).toEqual([
       {
         type: "text",
         text: "Base instructions",

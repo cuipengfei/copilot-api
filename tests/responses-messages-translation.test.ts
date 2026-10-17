@@ -243,6 +243,82 @@ describe("Responses Lite to Messages translation", () => {
     ])
   })
 
+  test("skips tool call tips when the request exposes exec_command", () => {
+    const result = translateWithTips({
+      instructions: "Base instructions",
+      input: "Hello",
+      tools: [
+        {
+          type: "function",
+          name: "exec_command",
+          parameters: null,
+          strict: null,
+        },
+      ],
+    })
+
+    expect(result.messagesPayload.system).toEqual([
+      {
+        type: "text",
+        text: "Base instructions",
+        cache_control: { type: "ephemeral" },
+      },
+    ])
+  })
+
+  test("skips tool call tips when a namespace exposes exec_command", () => {
+    const result = translateWithTips({
+      instructions: "Base instructions",
+      input: "Hello",
+      tools: [
+        {
+          type: "namespace",
+          name: "functions",
+          tools: [
+            { type: "function", name: "exec", parameters: null, strict: null },
+            {
+              type: "function",
+              name: "exec_command",
+              parameters: null,
+              strict: null,
+            },
+          ],
+        },
+      ],
+    })
+
+    expect(result.messagesPayload.system).toEqual([
+      {
+        type: "text",
+        text: "Base instructions",
+        cache_control: { type: "ephemeral" },
+      },
+    ])
+  })
+
+  test("keeps tool call tips when only the code-mode exec tool exists", () => {
+    const result = translateWithTips({
+      input: "Hello",
+      tools: [
+        {
+          type: "namespace",
+          name: "functions",
+          tools: [
+            { type: "function", name: "exec", parameters: null, strict: null },
+          ],
+        },
+      ],
+    })
+
+    expect(result.messagesPayload.system).toEqual([
+      {
+        type: "text",
+        text: MESSAGES_TOOL_CALL_TIPS,
+        cache_control: { type: "ephemeral" },
+      },
+    ])
+  })
+
   test.each([undefined, "Base instructions"])(
     "adds Promise.allSettled guidance when parallel tool calls are disabled with instructions %j",
     (instructions) => {

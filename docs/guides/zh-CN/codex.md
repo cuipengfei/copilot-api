@@ -118,8 +118,6 @@ Codex 模型选择界面会展示网关已配置 provider 提供的模型：
 
 <img src="../../screenshots/codex-models.png" alt="Codex 模型选择界面展示网关提供的模型列表" width="900" />
 
-> **模型切换：** 在 DeepSeek 与 Responses Lite 模型之间切换时，请新建 Codex 会话。
-
 ### Codex provider 价格估算
 
 内置 `codex` provider 展示的费用为按 [OpenAI API 价格](https://developers.openai.com/api/docs/pricing)计算的价格估算，不代表 Codex 套餐的实际扣费或额度消耗。倍率根据请求中的 `service_tier` 统一计算，不按模型过滤：`fast` / `priority` 使用 2×，`ultrafast` 使用 6×，其余 tier 使用标准价格。上游响应返回 `default` 不会覆盖请求中的 tier。

@@ -116,8 +116,6 @@ Codex's model picker includes models from the gateway's configured providers:
 
 <img src="../../screenshots/codex-models.png" alt="Codex model picker showing models provided by the gateway" width="900" />
 
-> **Model switching:** Start a new Codex session when switching between DeepSeek and Responses Lite models.
-
 ### Codex Provider Price Estimates
 
 Costs shown for the built-in `codex` provider are price estimates based on [OpenAI API pricing](https://developers.openai.com/api/docs/pricing), not actual Codex subscription charges or allowance consumption. The request's `service_tier` determines the uniform multiplier: `fast` / `priority` use 2×, and `ultrafast` uses 6×, without filtering by model. Other tiers use Standard prices. An upstream response reporting `default` does not override the requested tier.

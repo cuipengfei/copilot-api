@@ -40,6 +40,7 @@ import type {
   ResponsesResult,
   ResponsesTextFormat,
   ResponseUsage,
+  Tool,
 } from "~/lib/types/responses"
 
 export const MESSAGES_COMPACTION_PREFIX = "copilot-api:messages-compaction:v1:"
@@ -180,15 +181,19 @@ export function translateResponsesToMessages(
   const outputFormatInstruction = buildOutputFormatInstruction(
     payload.text?.format,
   )
+  // The tips describe the code-mode `functions.exec` wrapper, so they are
+  // wrong for clients that expose `exec_command` as a real tool.
+  const toolCallTips =
+    (options.toolCallTips ?? false) && !hasExecCommandTool(payload)
   const { messages, system } = translateInputToAnthropic(
     normalized.input,
     registry,
     payload.instructions,
     payload.input,
-    options.toolCallTips ?? false,
+    toolCallTips,
   )
 
-  if (options.toolCallTips && payload.parallel_tool_calls === false) {
+  if (toolCallTips && payload.parallel_tool_calls === false) {
     appendToolCallTips(system, MESSAGES_BATCH_TOOL_CALL_TIPS)
   }
 
@@ -507,6 +512,26 @@ function createToolRegistry(
   }
 
   return registry
+}
+
+const EXEC_COMMAND_TOOL_NAME = "exec_command"
+
+/**
+ * Reports whether the request exposes a direct `exec_command` tool, either at
+ * the top level or inside a namespace.
+ */
+function hasExecCommandTool(payload: ResponsesPayload): boolean {
+  return (payload.tools ?? []).some(isExecCommandTool)
+}
+
+function isExecCommandTool(tool: Tool): boolean {
+  if (getStringField(tool, "name") === EXEC_COMMAND_TOOL_NAME) return true
+  if (!isNamespaceTool(tool)) return false
+  return tool.tools.some(isExecCommandTool)
+}
+
+function isNamespaceTool(tool: Tool): tool is NamespaceTool {
+  return getStringField(tool, "type") === "namespace"
 }
 
 function registerTool(
