@@ -23,7 +23,15 @@ chmod +x Copilot-API-*-linux-x86_64.AppImage
 ./Copilot-API-*-linux-x86_64.AppImage
 ```
 
-下载对应平台的安装包后，在应用内授权或配置 provider，选择端口并启动服务，再把你的客户端指向应用里显示的本地端点即可。发布版桌面应用使用随包内置的 Electron 运行时，正常使用不需要额外安装 Node.js；token usage 历史记录会在该内置运行时支持 SQLite 时启用。
+新安装时，**设置 → 启动参数 → 服务运行时** 默认选择 **Bun（推荐）**。升级时，未包含运行时选项的已有配置继续使用内置 Node.js，以保留系统代理和 PAC 行为；可在设置中主动切换到 Bun。应用会检测本地 `PATH`、`BUN_INSTALL`、用户 Bun 安装目录及常见桌面安装位置，仅使用稳定版 Bun >= 1.4.0；未安装、版本过低或无法执行时会回退到 Electron 内置的 Node.js。设置页显示检测结果，服务日志显示实际运行时；选择 **Node.js（内置）** 可以始终使用内置 Node，无需额外安装 Node.js。
+
+Windows、macOS 和 Linux 均支持通过 nvm 下的 `npm install -g bun` 安装 Bun。检测会检查当前 `NVM_BIN` 或 `NVM_SYMLINK`、显式配置的 npm 全局安装前缀，以及 `NVM_DIR`/`NVM_HOME` 或常见默认 nvm 目录（含 XDG 路径）下的各 Node 版本。桌面环境没有当前版本信息时，按 Node 版本从新到旧查找可用的 Bun；Windows 会直接运行 npm 包内的原生 `bun.exe`。
+
+Bun 直接运行桌面应用随包发布的 JavaScript（`bun --no-orphans --no-install <resources>/server/main.js start ...`），不会调用 `bunx`、安装 npm 包或执行 TypeScript 源码。桌面服务 bundle 已包含依赖，应用继续管理子进程日志、就绪检测、重启及退出。请自行安装或升级 Bun，之后启动或重启服务即可重新检测。
+
+Bun 模式下，**网络 → 自定义代理** 会向子进程传递 HTTP/HTTPS 代理与绕过规则。Bun 不使用 Electron 的系统代理或 PAC 配置；需要代理时请配置自定义代理，或选择 Node.js 保持 Electron 的系统网络行为。桌面界面与更新仍使用 Electron 中选择的代理模式。修改服务运行时并保存会自动重启运行中的服务。
+
+下载对应平台的安装包后，在应用内授权或配置 provider，选择端口并启动服务，再把你的客户端指向应用里显示的本地端点即可。推荐安装 Bun >= 1.4.0；未安装时可使用内置 Node.js。token usage 历史记录使用所选运行时的 SQLite。
 
 打包后的应用会在启动 15 秒后，以及每 6 小时检查 GitHub 最新稳定版。也可以通过 **设置 → 应用更新 → 检查更新** 手动触发。Windows NSIS 和 Linux AppImage 会自动下载更新，并使用 release 元数据中的 SHA-512 校验安装包。下载完成后点击 **重启并安装**；安装前会停止本地 API 服务，中断进行中的请求。正常关闭应用不会安装待更新版本。
 
@@ -31,4 +39,4 @@ macOS 版本未签名，发现新版本后提供下载入口，需要手动安�
 
 桌面发布流程会一并上传 `latest.yml`、Windows `.blockmap` 和 `latest-linux.yml`，先上传安装包，再上传更新元数据。v2.6.29 等现有 release 没有这些文件；用户需要先手动安装一次包含此功能的新版本，后续版本才可自动更新。用户电脑无需配置 GitHub Token。
 
-桌面应用里的高级配置页会通过 `GET/POST /admin/config/model-mappings` 读写这份共享的模型映射。同一份映射会统一作用于 `POST /v1/messages`、`POST /v1/messages/count_tokens`、`POST /v1/responses` 和 `POST /v1/chat/completions`，不再按接口区分。它使用的是 `auth.adminApiKey`，不是普通的 `auth.apiKeys`；应用会在服务启动并自动生成该 key 后，直接从 `config.json` 读取它来发起请求。
+桌面应用里的**高级配置**通过分组表单与共用的完整 JSON 草稿编辑 `config.json`，包括模型映射。文件读写通过 Electron IPC 完成，服务停止时也可以使用；运行中的服务通过 `/admin/config/reload` 刷新，使用 `auth.adminApiKey` 认证。校验、外部修改冲突、密钥脱敏和应用重试的说明见[桌面端配置编辑器](configuration.md#桌面端配置编辑器)。

@@ -7,11 +7,11 @@ import type {
 } from "~/lib/types/chat-completions"
 
 import { type AnthropicStreamState } from "~/lib/types/anthropic"
-import { translateToAnthropic } from "~/routes/messages/non-stream-translation"
+import { translateToAnthropic } from "~/routes/messages/completions-translation"
 import {
   flushPendingAnthropicStreamEvents,
   translateChunkToAnthropicEvents,
-} from "~/routes/messages/stream-translation"
+} from "~/routes/messages/completions-stream-translation"
 
 const anthropicUsageSchema = z.object({
   input_tokens: z.number().int(),

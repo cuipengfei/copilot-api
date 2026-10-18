@@ -56,6 +56,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getServerStatus: () => ipcRenderer.invoke('server:get-status'),
 
   getSettings: () => ipcRenderer.invoke('settings:get'),
+  getBunRuntime: () => ipcRenderer.invoke('settings:get-bun-runtime'),
   getAppUpdateStatus: () => ipcRenderer.invoke('update:get-status'),
   checkAppUpdate: () => ipcRenderer.invoke('update:check'),
   installAppUpdate: () => ipcRenderer.invoke('update:install'),
@@ -70,6 +71,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   saveSettings: (settings: unknown) =>
     ipcRenderer.invoke('settings:save', settings),
   getModelMappingsConfig: () => ipcRenderer.invoke('config:get-model-mappings'),
+  getAppConfig: () => ipcRenderer.invoke('config:get-document'),
+  saveAppConfig: (input: unknown) =>
+    ipcRenderer.invoke('config:save-document', input),
+  applyAppConfig: (revision: string) =>
+    ipcRenderer.invoke('config:apply-document', revision),
   getProviderManagementConfig: () =>
     ipcRenderer.invoke('config:get-provider-management'),
   getProviderModelOptions: () =>
@@ -90,6 +96,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
   fetchTokenUsageEvents: (period: string, page: number, pageSize: number) =>
     ipcRenderer.invoke(
       'server:fetch-token-usage-events',
+      period,
+      page,
+      pageSize,
+    ),
+  fetchTokenUsageSessions: (period: string, page: number, pageSize: number) =>
+    ipcRenderer.invoke(
+      'server:fetch-token-usage-sessions',
       period,
       page,
       pageSize,

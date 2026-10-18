@@ -9,7 +9,7 @@ import type {
 
 import { installModelsDevCatalog } from "~/lib/models-dev-cache"
 import { createFallbackModel } from "~/lib/provider-model"
-import { RICH_TOOL_RESULT_MOVED_TEXT } from "~/routes/messages/non-stream-translation"
+import { RICH_TOOL_RESULT_MOVED_TEXT } from "~/routes/messages/completions-translation"
 
 import { modelsDevCatalogFixture } from "./fixtures/models-dev-catalog"
 

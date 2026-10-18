@@ -193,6 +193,7 @@ const fetchMock = mock((url: string | URL | Request) => {
   return Promise.reject(new Error(`Unexpected fetch: ${target}`))
 })
 const actualUndici = await import("undici")
+const originalWebSocket = globalThis.WebSocket
 
 await mock.module("undici", () => ({
   ...actualUndici,
@@ -251,6 +252,7 @@ const createResponsesResult = (
 })
 
 beforeEach(() => {
+  globalThis.WebSocket = MockWebSocket as unknown as typeof globalThis.WebSocket
   MockWebSocket.autoComplete = true
   MockWebSocket.closeAfterComplete = false
   MockWebSocket.failOpen = false
@@ -271,6 +273,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  globalThis.WebSocket = originalWebSocket
   MockWebSocket.autoComplete = true
   MockWebSocket.closeAfterComplete = false
   MockWebSocket.failOpen = false

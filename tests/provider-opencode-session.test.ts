@@ -59,8 +59,8 @@ const createResponsesPayload = (
   ...overrides,
 })
 
-const runWithSessionAffinity = <T>(
-  sessionAffinity: string | undefined,
+const runWithContext = <T>(
+  context: { rootSessionId?: string; sessionAffinity?: string },
   callback: () => T,
 ): T =>
   requestContext.run(
@@ -68,11 +68,17 @@ const runWithSessionAffinity = <T>(
       traceId: "test-trace",
       startTime: Date.now(),
       userAgent: "test-agent",
-      sessionAffinity,
+      sessionAffinity: context.sessionAffinity,
+      rootSessionId: context.rootSessionId,
       parentSessionId: undefined,
     },
     callback,
   )
+
+const runWithSessionAffinity = <T>(
+  sessionAffinity: string | undefined,
+  callback: () => T,
+): T => runWithContext({ sessionAffinity }, callback)
 
 const opencodeSessionHeader = (): string | undefined =>
   capturedHeaders?.["x-opencode-session"]
@@ -90,6 +96,50 @@ afterEach(() => {
 
 describe("opencode-go x-opencode-session header", () => {
   describe("messages", () => {
+    test("prefers the root session over session affinity and metadata", async () => {
+      const payload = createMessagesPayload({
+        metadata: { user_id: JSON.stringify({ session_id: "ses_json" }) },
+      })
+
+      await runWithContext(
+        { rootSessionId: "root-1", sessionAffinity: "affinity-1" },
+        () =>
+          forwardProviderMessages(
+            createProviderConfig(),
+            payload,
+            new Headers(),
+          ),
+      )
+
+      expect(opencodeSessionHeader()).toBe("root-1")
+    })
+
+    test("uses the root session when no affinity or metadata exists", async () => {
+      await runWithContext({ rootSessionId: "root-1" }, () =>
+        forwardProviderMessages(
+          createProviderConfig(),
+          createMessagesPayload(),
+          new Headers(),
+        ),
+      )
+
+      expect(opencodeSessionHeader()).toBe("root-1")
+    })
+
+    test("ignores a blank root session and falls back to affinity", async () => {
+      await runWithContext(
+        { rootSessionId: "  ", sessionAffinity: "affinity-1" },
+        () =>
+          forwardProviderMessages(
+            createProviderConfig(),
+            createMessagesPayload(),
+            new Headers(),
+          ),
+      )
+
+      expect(opencodeSessionHeader()).toBe("affinity-1")
+    })
+
     test("prefers session affinity over metadata user_id", async () => {
       const payload = createMessagesPayload({
         metadata: { user_id: JSON.stringify({ session_id: "ses_json" }) },

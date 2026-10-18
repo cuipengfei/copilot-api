@@ -36,6 +36,8 @@
 
 - [copilot-request.test.ts](../tests/copilot-request.test.ts)：本地真实 HTTP 请求、headers、原始错误和预取消行为。
 - [responses-local-http.test.ts](../tests/responses-local-http.test.ts)：默认 handler 与 service 使用本地真实 HTTP 验证 JSON/SSE、413、发送前取消，以及发送后取消信号时的完整读取和用量记录。
+- Responses 本地 HTTP 验证通过 `traceIdMiddleware` 建立请求上下文，检查根 Session 在上游请求头、413 重试和用量记录中的一致性；会话优先级测试使用具备 Responses 能力的模型。
+- 用量页面的模型与 Session 明细同时保留 `Copilot AIU Cost` 和通用 `Total Cost`；只有 AIU 的历史记录继续显示 AIU 费用，名称与费用提示内容经过 HTML 转义。
 - [auto-session-chains.test.ts](../tests/auto-session-chains.test.ts)：三个公开 service 的 Auto-session 注入链路。
 - [auto-session-retry.test.ts](../tests/auto-session-retry.test.ts)：附带 token 的 `400`/`401` 单次重试、迟到 `401` 与失效后裸重试语义。
 - [auto-session-discovery.test.ts](../tests/auto-session-discovery.test.ts)、[auto-session.test.ts](../tests/auto-session.test.ts)：启动探测、退避分类、到期刷新、凭据轮换与 `forceAgent` 无关性。

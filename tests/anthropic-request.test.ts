@@ -1,7 +1,10 @@
 import { describe, test, expect } from "bun:test"
 import { z } from "zod"
 
-import type { AnthropicMessagesPayload } from "~/lib/types/anthropic"
+import type {
+  AnthropicAssistantContentBlock,
+  AnthropicMessagesPayload,
+} from "~/lib/types/anthropic"
 import type { Model } from "~/lib/types/models"
 
 import { COMPACT_REQUEST } from "~/lib/compact"
@@ -10,7 +13,7 @@ import { state } from "~/lib/state"
 import {
   RICH_TOOL_RESULT_MOVED_TEXT,
   translateToOpenAI,
-} from "~/routes/messages/non-stream-translation"
+} from "~/routes/messages/completions-translation"
 import { getCompactType } from "~/routes/messages/preprocess"
 
 // Zod schema for a single message in the chat completion request.
@@ -110,6 +113,29 @@ function createThinkingModel(): Model {
 }
 
 describe("Anthropic to OpenAI translation logic", () => {
+  test("shares the main agent metadata cache key with marked subagents", () => {
+    for (const agentId of ["agent-a", "agent-b"]) {
+      const payload: AnthropicMessagesPayload = {
+        model: "qwen-plus",
+        max_tokens: 128,
+        metadata: { user_id: JSON.stringify({ session_id: "root" }) },
+        messages: [
+          {
+            role: "user",
+            content: [
+              {
+                type: "text",
+                text: `<system-reminder>__SUBAGENT_MARKER__${JSON.stringify({ session_id: "child", agent_id: agentId, agent_type: "Explore" })}</system-reminder>`,
+              },
+            ],
+          },
+        ],
+      }
+
+      expect(translateToOpenAI(payload).prompt_cache_key).toBe("root")
+    }
+  })
+
   test("maps request session affinity to prompt_cache_key", () => {
     const anthropicPayload: AnthropicMessagesPayload = {
       model: "gpt-4o",
@@ -918,6 +944,102 @@ describe("provider tool result ordering", () => {
         },
       ],
     })
+  })
+})
+
+describe("assistant text content normalization", () => {
+  test("collapses assistant text arrays into a string for every provider", () => {
+    for (const model of ["qwen-plus", "gpt-4o"]) {
+      const openAIPayload = translateToOpenAI({
+        model,
+        messages: [
+          { role: "user", content: "hi" },
+          {
+            role: "assistant",
+            content: [
+              { type: "text", text: "first half " },
+              { type: "text", text: "second half" },
+            ],
+          },
+        ],
+        max_tokens: 100,
+      })
+
+      expect(openAIPayload.messages[1]?.content).toBe("first half second half")
+    }
+  })
+
+  test("keeps text, reasoning, and tool calls on one assistant message", () => {
+    const openAIPayload = translateToOpenAI({
+      model: "gpt-4o",
+      messages: [
+        { role: "user", content: "What's the weather?" },
+        {
+          role: "assistant",
+          content: [
+            {
+              type: "thinking",
+              thinking: "I should call the weather tool.",
+              signature: "sig-1",
+            },
+            { type: "text", text: "Checking the weather." },
+            {
+              type: "tool_use",
+              id: "call_1",
+              name: "get_weather",
+              input: { location: "Berlin" },
+            },
+          ],
+        },
+      ],
+      max_tokens: 100,
+    })
+
+    expect(openAIPayload.messages[1]?.content).toBe("Checking the weather.")
+    expect(openAIPayload.messages[1]?.reasoning_text).toBe(
+      "I should call the weather tool.",
+    )
+    expect(openAIPayload.messages[1]?.tool_calls).toHaveLength(1)
+    expect(isValidChatCompletionRequest(openAIPayload)).toBe(true)
+  })
+
+  test("keeps arrays that hold parts which cannot be collapsed", () => {
+    const openAIPayload = translateToOpenAI(
+      {
+        model: "gpt-4o",
+        messages: [
+          { role: "user", content: "Summarize the spec." },
+          {
+            role: "assistant",
+            content: [
+              { type: "text", text: "Here is the summary." },
+              {
+                source: {
+                  data: "pdf-data",
+                  media_type: "application/pdf",
+                  type: "base64",
+                },
+                title: "spec.pdf",
+                type: "document",
+              } as unknown as AnthropicAssistantContentBlock,
+            ],
+          },
+        ],
+        max_tokens: 100,
+      },
+      { supportPdf: true },
+    )
+
+    expect(openAIPayload.messages[1]?.content).toEqual([
+      { type: "text", text: "Here is the summary." },
+      {
+        type: "file",
+        file: {
+          file_data: "data:application/pdf;base64,pdf-data",
+          filename: "spec.pdf",
+        },
+      },
+    ])
   })
 })
 

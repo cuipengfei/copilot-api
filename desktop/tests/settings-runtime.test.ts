@@ -6,12 +6,20 @@ import type { DesktopSettings } from '../src/types/ipc'
 
 describe('automatic server restart for startup settings', () => {
   test.each<Partial<DesktopSettings>>([
+    { serverRuntime: 'node' },
     { host: '0.0.0.0' },
     { verbose: true },
     { showToken: true },
   ])('restarts for changed server settings %j', (update) => {
-    const previous = normalizeSettings({})
+    const previous = normalizeSettings(null)
     const next = normalizeSettings({ ...previous, ...update })
+    expect(shouldRestartServerForSettings(previous, next)).toBe(true)
+  })
+
+  test('restarts when migrated Node settings explicitly switch to Bun', () => {
+    const previous = normalizeSettings({})
+    const next = normalizeSettings({ ...previous, serverRuntime: 'bun' })
+    expect(previous.serverRuntime).toBe('node')
     expect(shouldRestartServerForSettings(previous, next)).toBe(true)
   })
 

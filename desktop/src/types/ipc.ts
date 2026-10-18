@@ -1,4 +1,5 @@
 import type { LangPreference } from '../locales'
+import type { ConfigEditorReply } from '../lib/config-editor-errors'
 import type {
   XaiAuthInfo,
   OAuthAccountSummary,
@@ -50,8 +51,8 @@ export interface XaiLoginInput {
 }
 
 export type ProviderType =
-  'anthropic' | 'openai-compatible' | 'openai-responses'
-export type ProviderAuthType = 'authorization' | 'x-api-key'
+  'anthropic' | 'openai-compatible' | 'openai-responses' | 'google'
+export type ProviderAuthType = 'authorization' | 'x-api-key' | 'x-goog-api-key'
 export type ProviderAuthTypeInput = ProviderAuthType | '__default__'
 export interface ModelsDevProviderOption {
   id: string
@@ -110,6 +111,24 @@ export interface ModelMappingsConfig {
   modelMappings: Record<string, string>
 }
 
+export interface AppConfigDocument {
+  configPath: string
+  content: string
+  revision: string
+  defaultContent: string
+}
+
+export interface AppConfigUpdate {
+  content: string
+  revision: string
+}
+
+export interface AppConfigSaveResult extends AppConfigDocument {
+  saved: true
+  applied: boolean
+  refreshError?: string
+}
+
 export type TokenUsagePeriod =
   | 'today'
   | 'this_week'
@@ -140,6 +159,10 @@ export interface TokenUsageTotals {
 
 export interface TokenUsageModelSummary extends TokenUsageTotals {
   model: string
+}
+
+export interface TokenUsageSessionSummary extends TokenUsageTotals {
+  session_id: string
 }
 
 export interface TokenUsageSummary {
@@ -209,6 +232,21 @@ export interface TokenUsageEventsPage {
   total_pages: number
 }
 
+export interface TokenUsageSessionsPage {
+  items: TokenUsageSessionSummary[]
+  page: number
+  page_size: number
+  period: TokenUsagePeriod
+  range: {
+    start_ms: number
+    end_ms: number
+    start_utc: string
+    end_utc: string
+  }
+  total: number
+  total_pages: number
+}
+
 export type ThemePreference = 'light' | 'dark' | 'auto'
 
 export interface AppUpdateStatus {
@@ -232,6 +270,14 @@ export interface AppUpdateStatus {
 
 export type DesktopProxyMode = 'system' | 'custom' | 'direct'
 
+export type ServerRuntime = 'bun' | 'node'
+
+export interface BunRuntimeStatus {
+  available: boolean
+  version?: string
+  path?: string
+}
+
 export interface DesktopProxySettings {
   mode: DesktopProxyMode
   http_proxy: string
@@ -240,6 +286,7 @@ export interface DesktopProxySettings {
 }
 
 export interface DesktopSettings {
+  serverRuntime: ServerRuntime
   apiHome: string
   sqliteDbPath: string
   oauthApp: 'default' | 'opencode'
@@ -290,6 +337,7 @@ declare global {
       stopServer: () => Promise<void>
       getServerStatus: () => Promise<ServerStatus>
       getSettings: () => Promise<DesktopSettings>
+      getBunRuntime: () => Promise<BunRuntimeStatus>
       getAppUpdateStatus: () => Promise<AppUpdateStatus>
       checkAppUpdate: () => Promise<AppUpdateStatus>
       installAppUpdate: () => Promise<AppUpdateStatus>
@@ -298,6 +346,13 @@ declare global {
       ) => () => void
       saveSettings: (settings: DesktopSettings) => Promise<void>
       getModelMappingsConfig: () => Promise<ModelMappingsConfig>
+      getAppConfig: () => Promise<ConfigEditorReply<AppConfigDocument>>
+      saveAppConfig: (
+        input: AppConfigUpdate,
+      ) => Promise<ConfigEditorReply<AppConfigSaveResult>>
+      applyAppConfig: (
+        revision: string,
+      ) => Promise<ConfigEditorReply<AppConfigSaveResult>>
       getProviderManagementConfig: () => Promise<ProviderManagementConfig>
       saveProviderManagementConfig: (
         input: ProviderManagementUpdate,
@@ -312,6 +367,11 @@ declare global {
       fetchTokenUsage: (period: TokenUsagePeriod) => Promise<unknown>
       fetchTokenUsageDaily: (period: TokenUsagePeriod) => Promise<unknown>
       fetchTokenUsageEvents: (
+        period: TokenUsagePeriod,
+        page: number,
+        pageSize: number,
+      ) => Promise<unknown>
+      fetchTokenUsageSessions: (
         period: TokenUsagePeriod,
         page: number,
         pageSize: number,

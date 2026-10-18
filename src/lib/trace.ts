@@ -1,6 +1,10 @@
 import type { MiddlewareHandler } from "hono"
 
 import { requestContext, resolveTraceId } from "./request-context"
+import {
+  getRootSessionIdFromHeaders,
+  getSessionAffinityFromHeaders,
+} from "./utils"
 
 export const traceIdMiddleware: MiddlewareHandler = async (c, next) => {
   const traceId = resolveTraceId(c.req.header("x-trace-id"))
@@ -11,10 +15,8 @@ export const traceIdMiddleware: MiddlewareHandler = async (c, next) => {
     traceId,
     startTime: Date.now(),
     userAgent: c.req.header("user-agent") || "",
-    sessionAffinity:
-      c.req.header("x-opencode-session-id")
-      ?? c.req.header("x-session-affinity")
-      ?? c.req.header("x-client-request-id"),
+    sessionAffinity: getSessionAffinityFromHeaders(c),
+    rootSessionId: getRootSessionIdFromHeaders(c),
     parentSessionId: c.req.header("x-parent-session-id"),
   }
 

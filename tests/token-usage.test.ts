@@ -19,6 +19,7 @@ import {
   type TokenUsageDailySummary,
   type TokenUsageEventsPage,
   type TokenUsagePeriod,
+  type TokenUsageSessionsPage,
   type TokenUsageSummary,
 } from "~/lib/token-usage"
 import {
@@ -28,6 +29,8 @@ import {
 } from "~/lib/token-usage/pricing"
 import { traceIdMiddleware } from "~/lib/trace"
 import { tokenUsageRoute } from "~/routes/token-usage/route"
+import { translateToOpenAI } from "~/routes/messages/completions-translation"
+import { parseUserIdMetadata } from "~/lib/utils"
 
 import {
   modelsDevCatalogFixture,
@@ -103,6 +106,93 @@ function buildPricedUsage(
 }
 
 describe("token usage storage", () => {
+  test.each(["copilot", "provider"] as const)(
+    "keeps sibling usage session ids separate with a shared cache key for %s",
+    async (source) => {
+      for (const sessionId of ["child-a", "child-b"]) {
+        requestContext.run(
+          {
+            traceId: `trace-${sessionId}`,
+            startTime: Date.now(),
+            userAgent: "test",
+            rootSessionId: "root",
+            parentSessionId: "root",
+            sessionAffinity: sessionId,
+          },
+          () => {
+            const payload = {
+              model: "gpt-test",
+              max_tokens: 128,
+              messages: [],
+              metadata: {
+                user_id: JSON.stringify({
+                  session_id: `metadata-${sessionId}`,
+                }),
+              },
+            }
+            expect(translateToOpenAI(payload).prompt_cache_key).toBe("root")
+            recordTokenUsageEvent({
+              source,
+              endpoint: "messages",
+              model: payload.model,
+              input_tokens: 10,
+              sessionId: parseUserIdMetadata(payload.metadata.user_id)
+                .sessionId,
+              fallbackSessionId: "interaction-session",
+              providerName: source === "provider" ? "test-provider" : undefined,
+            })
+          },
+        )
+      }
+
+      const page = await fetchEventsPage()
+      expect(page.items.map((row) => row.session_id).sort()).toEqual([
+        "child-a",
+        "child-b",
+      ])
+    },
+  )
+
+  test.each(["metadata", "fallback"] as const)(
+    "keeps %s usage session ids when only a root cache session exists",
+    async (mode) => {
+      requestContext.run(
+        {
+          traceId: "trace-child",
+          startTime: Date.now(),
+          userAgent: "test",
+          rootSessionId: "root",
+          parentSessionId: "root",
+          sessionAffinity: undefined,
+        },
+        () => {
+          const payload = {
+            model: "gpt-test",
+            max_tokens: 128,
+            messages: [],
+            metadata:
+              mode === "metadata" ?
+                { user_id: JSON.stringify({ session_id: "metadata-child" }) }
+              : undefined,
+          }
+          expect(translateToOpenAI(payload).prompt_cache_key).toBe("root")
+          recordTokenUsageEvent({
+            source: "copilot",
+            endpoint: "messages",
+            model: payload.model,
+            input_tokens: 10,
+            sessionId: parseUserIdMetadata(payload.metadata?.user_id).sessionId,
+            fallbackSessionId: "fallback-child",
+          })
+        },
+      )
+
+      const page = await fetchEventsPage()
+      expect(page.items).toHaveLength(1)
+      expect(page.items[0]?.session_id).toBe(`${mode}-child`)
+    },
+  )
+
   test("normalizes OpenAI cache creation usage details", () => {
     expect(
       normalizeOpenAIUsage({
@@ -1141,5 +1231,51 @@ describe("token usage storage", () => {
     expect(daily.days[0]?.totals.total_tokens).toBe(0)
     expect(daily.byModel).toEqual([])
     expect(daily.totals.request_count).toBe(0)
+  })
+})
+
+describe("token usage sessions page", () => {
+  test("aggregates per session and paginates on the server", async () => {
+    for (const [sessionId, tokens] of [
+      ["session-a", 10],
+      ["session-a", 20],
+      ["session-b", 5],
+      ["session-c", 50],
+    ] as const) {
+      recordTokenUsageEvent({
+        endpoint: "messages",
+        input_tokens: tokens,
+        model: "gpt-test",
+        output_tokens: 0,
+        sessionId,
+        source: "copilot",
+      })
+    }
+
+    const fetchPage = async (page: number) => {
+      const response = await createTokenUsageApp().request(
+        `/token-usage/sessions?period=today&page=${page}&page_size=2`,
+      )
+      expect(response.status).toBe(200)
+      return (await response.json()) as TokenUsageSessionsPage
+    }
+
+    const first = await fetchPage(1)
+    expect(first.total).toBe(3)
+    expect(first.total_pages).toBe(2)
+    expect(
+      first.items.map((row) => [
+        row.session_id,
+        row.request_count,
+        row.total_tokens,
+      ]),
+    ).toEqual([
+      ["session-c", 1, 50],
+      ["session-a", 2, 30],
+    ])
+
+    const second = await fetchPage(2)
+    expect(second.items.map((row) => row.session_id)).toEqual(["session-b"])
+    expect((await fetchPage(3)).items).toEqual([])
   })
 })

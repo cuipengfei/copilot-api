@@ -62,3 +62,6 @@ entities.json
 .omo/run-continuation/
 # oh-my-claudecode state
 .omc/
+
+# mac
+.DS_Store

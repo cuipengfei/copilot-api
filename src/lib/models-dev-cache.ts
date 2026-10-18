@@ -29,6 +29,11 @@ const MODELS_DEV_URL = "https://models.dev/api.json"
 const REFRESH_INTERVAL_MS = 5 * 60 * 1000
 const FETCH_TIMEOUT_MS = 15_000
 const OPENCODE_GO = "opencode-go"
+const DEFAULT_PROVIDER_APIS = new Map([
+  ["anthropic", "https://api.anthropic.com/v1"],
+  ["openai", "https://api.openai.com/v1"],
+  ["google", "https://generativelanguage.googleapis.com/v1beta"],
+])
 const MIN_RELEASE_DATE = Date.parse("2026-05-01")
 const REASONING_EFFORTS = new Set<CodexReasoningEffort>([
   "none",
@@ -267,6 +272,8 @@ function mapProviderType(
   providerNpm: string | undefined,
 ): ProviderType {
   switch (model.provider?.npm || providerNpm) {
+    case "@ai-sdk/google":
+      return "google"
     case "@ai-sdk/anthropic":
       return "anthropic"
     case "@ai-sdk/openai":
@@ -329,12 +336,13 @@ function parseSelectableProviders(
       || !isRecord(value)
       || (value.npm !== "@ai-sdk/openai-compatible"
         && value.npm !== "@ai-sdk/openai"
+        && value.npm !== "@ai-sdk/google"
         && value.npm !== "@ai-sdk/anthropic")
     ) {
       continue
     }
 
-    const api = normalizeCatalogApi(value.api)
+    const api = normalizeCatalogApi(value.api ?? DEFAULT_PROVIDER_APIS.get(id))
     if (!api) continue
 
     selectableProviders.push({
@@ -346,6 +354,7 @@ function parseSelectableProviders(
       api,
       type:
         value.npm === "@ai-sdk/openai" ? "openai-responses"
+        : value.npm === "@ai-sdk/google" ? "google"
         : value.npm === "@ai-sdk/anthropic" ? "anthropic"
         : "openai-compatible",
     })
@@ -365,6 +374,7 @@ function parseSelectableProviders(
         if (
           modelNpm !== "@ai-sdk/openai-compatible"
           && modelNpm !== "@ai-sdk/openai"
+          && modelNpm !== "@ai-sdk/google"
           && modelNpm !== "@ai-sdk/anthropic"
         ) {
           continue

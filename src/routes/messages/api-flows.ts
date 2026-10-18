@@ -69,13 +69,13 @@ import { resolveResponsesStreamCopilotUsage } from "./local-behavior"
 import {
   translateToAnthropic,
   translateToOpenAI,
-} from "./non-stream-translation"
+} from "./completions-translation"
 import { prepareMessagesApiPayload } from "./preprocess"
 import {
   flushPendingAnthropicStreamEvents,
   translateChunkToAnthropicEvents,
   translateErrorToAnthropicErrorEvent,
-} from "./stream-translation"
+} from "./completions-stream-translation"
 
 const COPILOT_CONTEXT_CACHE_SYSTEM_MARKER_LIMIT = 2
 const COPILOT_CONTEXT_CACHE_NON_SYSTEM_MARKER_LIMIT = 1
@@ -250,10 +250,8 @@ export const handleWithResponsesApi = async (
 ) => {
   const { logger, selectedModel, ...requestOptions } = options
 
-  const responsesPayload = translateAnthropicMessagesToResponsesPayload(
-    anthropicPayload,
-    requestOptions.subagentMarker?.agent_id,
-  )
+  const responsesPayload =
+    translateAnthropicMessagesToResponsesPayload(anthropicPayload)
   const recordUsage = createCopilotUsageRecorder({
     endpoint: options.usageEndpoint ?? "responses",
     fallbackSessionId: requestOptions.sessionId,

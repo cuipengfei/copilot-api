@@ -8,7 +8,7 @@ import {
   createDroppedThinkingLog,
   THINKING_TEXT,
   translateToOpenAI,
-} from "~/routes/messages/non-stream-translation"
+} from "~/routes/messages/completions-translation"
 import {
   countReasoningTextOpaqueDrops,
   describeReasoningTextOpaqueDrops,

@@ -32,6 +32,7 @@ let messagesApiEnabled = true
 let responsesApiWebSocketEnabled = true
 let modelMappings: Record<string, string> = {}
 let claudeAutoModel: string | undefined
+let restoreClaudeAutoModel = () => {}
 type SelectedModel = {
   id: string
   supported_endpoints?: Array<string>
@@ -81,7 +82,6 @@ await mock.module("~/lib/state", () => ({
 }))
 await mock.module("~/lib/config", () => ({
   ...actualConfigModule,
-  getClaudeAutoModel: () => claudeAutoModel,
   isMessagesApiEnabled: () => messagesApiEnabled,
   isResponsesApiWebSocketEnabled: () => responsesApiWebSocketEnabled,
   resolveMappedModel: (model: string) => modelMappings[model] ?? model,
@@ -111,6 +111,12 @@ const createPayload = (
 })
 
 beforeEach(() => {
+  // Restore this re-exported getter so other suites keep the real config lookup.
+  const claudeAutoModelLookup = spyOn(
+    actualConfigModule,
+    "getClaudeAutoModel",
+  ).mockImplementation(() => claudeAutoModel)
+  restoreClaudeAutoModel = () => claudeAutoModelLookup.mockRestore()
   const modelLookup = spyOn(
     actualModelsModule,
     "findEndpointModel",
@@ -138,6 +144,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  restoreClaudeAutoModel()
   restoreModelLookup()
   messagesFlowHandlers.handleWithMessagesApi =
     defaultMessagesFlowHandlers.handleWithMessagesApi

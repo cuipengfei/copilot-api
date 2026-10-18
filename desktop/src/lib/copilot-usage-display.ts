@@ -18,8 +18,6 @@ export interface CopilotUsageDisplayLike {
   quota_snapshots?: CopilotQuotaSnapshotsLike
 }
 
-const UNLIMITED_QUOTA_TEXT = '\u221e'
-
 function isFiniteNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value)
 }
@@ -64,41 +62,8 @@ export function hasCopilotQuotaValue(
   )
 }
 
-export function getPremiumUsedText(
-  quota: CopilotQuotaDetailLike | null | undefined,
-): string | null {
-  if (!hasCopilotQuotaValue(quota)) return null
-  if (quota.unlimited) return UNLIMITED_QUOTA_TEXT
-
-  const entitlement = quota.entitlement ?? 0
-  const quotaRemaining = getCopilotQuotaRemaining(quota) ?? 0
-
-  return `${Math.floor(entitlement - quotaRemaining)} / ${Math.floor(entitlement)}`
-}
-
-export function hasAnyCopilotQuotaSnapshot(
-  snapshots: CopilotQuotaSnapshotsLike | null | undefined,
-): boolean {
-  return Boolean(
-    snapshots
-    && (hasCopilotQuotaValue(snapshots.premium_interactions)
-      || hasCopilotQuotaValue(snapshots.chat)
-      || hasCopilotQuotaValue(snapshots.completions)),
-  )
-}
-
-export function shouldShowCopilotUsageSummary(
-  usage: CopilotUsageDisplayLike | null | undefined,
-): boolean {
-  return Boolean(
-    getNonEmptyUsageText(usage?.copilot_plan)
-    || getPremiumUsedText(usage?.quota_snapshots?.premium_interactions)
-    || getNonEmptyUsageText(usage?.quota_reset_date),
-  )
-}
-
 export function shouldShowCopilotQuotaUsage(
   usage: CopilotUsageDisplayLike | null | undefined,
 ): boolean {
-  return hasAnyCopilotQuotaSnapshot(usage?.quota_snapshots)
+  return hasCopilotQuotaValue(usage?.quota_snapshots?.premium_interactions)
 }

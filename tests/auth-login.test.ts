@@ -355,7 +355,7 @@ describe("auth login validation", () => {
 
     expect(readConfigFile(tempDir).providers?.["opencode-go"]).toEqual({
       apiKey: "opencode-key",
-      baseUrl: "https://opencode.ai/zen/go",
+      baseUrl: "https://opencode.ai/inference/go",
       enabled: true,
       pricingCurrency: "USD",
       type: "openai-compatible",
@@ -556,6 +556,34 @@ describe("auth login validation", () => {
       type: "anthropic",
     })
   })
+
+  test.each(["__default__", "x-goog-api-key"])(
+    "configures Google with %s auth from the CLI",
+    (authType) => {
+      const tempDir = createTempDir()
+      writeConfigFile(tempDir, {})
+      runScript(
+        tempDir,
+        `
+      const consolaModule = await import("consola");
+      const consola = consolaModule.default ?? consolaModule;
+      const answers = ["manual", "google", "google", "https://generativelanguage.googleapis.com/v1beta", "google-key", "${authType}"];
+      consola.prompt = async () => answers.shift();
+      consola.info = () => {};
+      consola.success = () => {};
+      const { runAuthLogin } = await import("./src/auth");
+      await runAuthLogin({ provider: "custom", verbose: false, showToken: false });
+    `,
+      )
+      expect(readConfigFile(tempDir).providers?.google).toEqual({
+        apiKey: "google-key",
+        baseUrl: "https://generativelanguage.googleapis.com/v1beta",
+        enabled: true,
+        type: "google",
+        ...(authType !== "__default__" && { authType }),
+      })
+    },
+  )
 
   test("writes the selected authorization auth type", () => {
     const tempDir = createTempDir()

@@ -58,7 +58,7 @@ Codex provider 最多保存 3 个账号。使用 `copilot-api auth login --provi
 
 OpenCode Go 的模型列表（`/opencode-go/v1/models` 及 `/v1/models` 中的对应条目）来自 [models.dev/api.json](https://models.dev/api.json) 的 `opencode-go.models`。服务启动时先读取 `COPILOT_API_HOME`（或默认应用数据目录）下的 `models-dev-api.json`。有有效缓存时，服务立即开始监听并在后台刷新目录，此后每五分钟刷新一次；没有有效缓存时，启动会等待首次下载，获取目录失败则启动失败。刷新时有 `ETag` 或 `Last-Modified` 就使用条件请求，并将两个校验值连同 JSON 校验和保存到 `models-dev-api.meta.json`。收到 `304` 则保留现有缓存；后台刷新失败时继续使用上一份有效的磁盘或内存目录。`status: deprecated` 的模型不会出现在列表中。
 
-使用 `copilot-api auth login --provider custom` 可以通过 CLI 新增或更新其他第三方 provider。先选择手动填写，或搜索现有的 models.dev 目录。目录仅列出具有 HTTP API URL、使用 Anthropic Messages、OpenAI 兼容 Chat Completions 或 OpenAI Responses 协议的 provider；不包含 `openrouter`、`github-copilot` 和 `opencode-go`。选中后会将 provider ID、协议和 API URL 预填到可编辑字段中。若 `config.json` 没有为模型显式配置价格，则使用 models.dev 的模型价格以 USD 估算 token 费用。随后输入掩码显示的 `apiKey` 和 `authType`；`authType` 可保持 type 默认值，也可选择 `x-api-key` / `authorization`。桌面端的自定义 provider 表单同样支持目录选择和手动填写。
+使用 `copilot-api auth login --provider custom` 可以通过 CLI 新增或更新其他第三方 provider。先选择手动填写，或搜索现有的 models.dev 目录。目录仅列出具有 HTTP API URL、使用 Anthropic Messages、OpenAI 兼容 Chat Completions、OpenAI Responses 或 Google Gemini 协议的 provider；不包含 `openrouter`、`github-copilot` 和 `opencode-go`。选中后会将 provider ID、协议和 API URL 预填到可编辑字段中。若 `config.json` 没有为模型显式配置价格，则使用 models.dev 的模型价格以 USD 估算 token 费用。随后输入掩码显示的 `apiKey` 和 `authType`；`authType` 可保持 type 默认值，也可选择 `x-api-key` / `x-goog-api-key` / `authorization`。桌面端的自定义 provider 表单同样支持目录选择和手动填写。
 
 网关 API Key 存放在 `config.json` 的 `auth.apiKeys` 中，可通过 `copilot-api auth keys` 管理（每次只执行一种操作）：`--add <key>` 添加、`--remove <key>` 删除、`--list` 列出全部、`--clear` 清空。客户端通过 `x-api-key` 或 `Authorization: Bearer` 使用任意已配置的 Key 认证。未配置任何 Key 时，回环监听会以“不校验认证”的方式启动并输出一条 info 级别提示；非回环监听则拒绝启动。
 
@@ -72,27 +72,28 @@ OpenCode Go 的模型列表（`/opencode-go/v1/models` 及 `/v1/models` 中的�
 
 ## 使用示例
 
-常用 `npx` 命令：
+npm 包常用命令（推荐 Bun >= 1.4.0）：
 
 ```sh
 # 基础启动
-npx @jeffreycao/copilot-api@latest start
+bunx --bun @jeffreycao/copilot-api start
 
 # 自定义端口并开启详细日志
-npx @jeffreycao/copilot-api@latest start --port 8080 --verbose
+bunx --bun @jeffreycao/copilot-api start --port 8080 --verbose
 
 # 执行认证流程
-npx @jeffreycao/copilot-api@latest auth login
+bunx --bun @jeffreycao/copilot-api auth login
 
 # 配置第三方 provider，然后不依赖 GitHub Copilot 启动
-npx @jeffreycao/copilot-api@latest auth login --provider dashscope
-npx @jeffreycao/copilot-api@latest start
+bunx --bun @jeffreycao/copilot-api auth login --provider dashscope
+bunx --bun @jeffreycao/copilot-api start
 
 # 以 JSON 格式输出调试信息
-npx @jeffreycao/copilot-api@latest debug --json
+bunx --bun @jeffreycao/copilot-api debug --json
 
-# 用 Bun 而不是 Node.js 运行已发布 CLI
-bunx --bun @jeffreycao/copilot-api@latest start
+# 也可以全局安装，再强制使用 Bun 运行已安装 CLI
+bun add --global @jeffreycao/copilot-api
+bun run --bun copilot-api start
 ```
 
 配置 `dashscope` 后的 OpenAI 兼容 provider 调用示例：
@@ -106,3 +107,5 @@ curl http://localhost:4141/dashscope/v1/messages \
   -H "content-type: application/json" \
   -d '{"model":"qwen3.6-plus","max_tokens":1024,"messages":[{"role":"user","content":"hello"}]}'
 ```
+
+缓存、升级及 Node.js 运行方式详见[安装与启动](getting-started.md#using-with-bun)。

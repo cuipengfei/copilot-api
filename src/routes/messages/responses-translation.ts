@@ -18,8 +18,7 @@ import {
   mapAnthropicEffortToResponses,
   isGpt56OrAbove,
 } from "~/lib/config"
-import { requestContext } from "~/lib/request-context"
-import { parseUserIdMetadata } from "~/lib/utils"
+import { getPromptCacheKey } from "~/lib/utils"
 import {
   type ResponsesPayload,
   type ResponseInputCompaction,
@@ -67,7 +66,7 @@ import {
   type AnthropicUserContentBlock,
   type AnthropicUserMessage,
 } from "~/lib/types/anthropic"
-import { normalizeToolSchema, THINKING_TEXT } from "./non-stream-translation"
+import { normalizeToolSchema, THINKING_TEXT } from "./completions-translation"
 
 const MESSAGE_TYPE = "message"
 const COMPACTION_SIGNATURE_PREFIX = "cm1#"
@@ -79,25 +78,8 @@ const REASONING_SUMMARY_SEPARATOR_PATTERN = /\u00a0\n\n|\u2063\n\n/
 
 const MAX_RESPONSES_REASONING_ID_LENGTH = 64
 
-const buildPromptCacheKey = (
-  basePromptCacheKey: string | null,
-  subagentAgentId?: string | null,
-): string | null => {
-  if (!basePromptCacheKey) {
-    return null
-  }
-
-  const normalizedSubagentAgentId = subagentAgentId?.trim() || null
-  if (!normalizedSubagentAgentId) {
-    return basePromptCacheKey
-  }
-
-  return `${basePromptCacheKey}:agent:${normalizedSubagentAgentId}`
-}
-
 export const translateAnthropicMessagesToResponsesPayload = (
   payload: AnthropicMessagesPayload,
-  subagentAgentId?: string | null,
 ): ResponsesPayload => {
   const input: Array<ResponseInputItem> = []
   const applyPhase = shouldApplyPhase(payload.model)
@@ -129,17 +111,7 @@ export const translateAnthropicMessagesToResponsesPayload = (
   )
 
   // Remove safetyIdentifier to align with vscode copilot
-  const { sessionId: metadataPromptCacheKey } = parseUserIdMetadata(
-    payload.metadata?.user_id,
-  )
-
-  const requestStore = requestContext.getStore()
-  const sessionAffinity = requestStore?.sessionAffinity?.trim() || null
-  const basePromptCacheKey = metadataPromptCacheKey ?? sessionAffinity
-  const promptCacheKey = buildPromptCacheKey(
-    basePromptCacheKey,
-    subagentAgentId,
-  )
+  const promptCacheKey = getPromptCacheKey(payload)
 
   const responsesPayload: ResponsesPayload = {
     model: payload.model,

@@ -15,6 +15,7 @@ import Header from '../components/Header'
 import { refreshProviderAuthStatus } from '../lib/provider-management-auth'
 
 interface AuthPageProps {
+  backTarget?: 'home' | 'providers'
   onBack?: () => void
   onSuccess: (result: AuthResult) => void
 }
@@ -39,10 +40,12 @@ const PROVIDER_TYPES: ProviderType[] = [
   'anthropic',
   'openai-compatible',
   'openai-responses',
+  'google',
 ]
 const PROVIDER_AUTH_TYPES: ProviderAuthTypeInput[] = [
   '__default__',
   'x-api-key',
+  'x-goog-api-key',
   'authorization',
 ]
 const MAX_OAUTH_ACCOUNTS = 3
@@ -85,7 +88,11 @@ const QUICK_PROVIDER_DEFAULTS: Record<
   },
 }
 
-export default function AuthPage({ onBack, onSuccess }: AuthPageProps) {
+export default function AuthPage({
+  backTarget = 'home',
+  onBack,
+  onSuccess,
+}: AuthPageProps) {
   const { t } = useLanguage()
   const [view, setView] = useState<AuthView>('default')
   const [deviceCode, setDeviceCode] = useState<DeviceCodeInfo | null>(null)
@@ -125,9 +132,14 @@ export default function AuthPage({ onBack, onSuccess }: AuthPageProps) {
   const [error, setError] = useState('')
   const [polling, setPolling] = useState(false)
   const [copied, setCopied] = useState(false)
+  const mountedRef = useRef(false)
+  const copyFeedbackTimer = useRef<ReturnType<typeof setTimeout>>()
 
   useEffect(() => {
+    mountedRef.current = true
     return () => {
+      mountedRef.current = false
+      clearTimeout(copyFeedbackTimer.current)
       const attempt = oauthLoginRef.current
       if (attempt) {
         attempt.unsubscribe()
@@ -175,15 +187,20 @@ export default function AuthPage({ onBack, onSuccess }: AuthPageProps) {
         .catch((err: unknown) => setError((err as Error).message))
   }
 
+  const copyText = async (text: string) => {
+    try {
+      await navigator.clipboard.writeText(text)
+      if (!mountedRef.current) return
+      setCopied(true)
+      clearTimeout(copyFeedbackTimer.current)
+      copyFeedbackTimer.current = setTimeout(() => setCopied(false), 1500)
+    } catch (err) {
+      if (mountedRef.current) setError((err as Error).message)
+    }
+  }
+
   const handleCopyCode = () => {
-    if (!pendingDeviceCode) return
-    void navigator.clipboard
-      .writeText(pendingDeviceCode.user_code)
-      .then(() => {
-        setCopied(true)
-        setTimeout(() => setCopied(false), 1500)
-      })
-      .catch((err: unknown) => setError((err as Error).message))
+    if (pendingDeviceCode) void copyText(pendingDeviceCode.user_code)
   }
 
   const handleSaveToken = async () => {
@@ -429,15 +446,7 @@ export default function AuthPage({ onBack, onSuccess }: AuthPageProps) {
     }
   }
 
-  const handleCopyCodexUrl = async () => {
-    try {
-      await navigator.clipboard.writeText(codexAuthUrl)
-      setCopied(true)
-      setTimeout(() => setCopied(false), 1500)
-    } catch (err) {
-      setError((err as Error).message)
-    }
-  }
+  const handleCopyCodexUrl = () => copyText(codexAuthUrl)
 
   const handleOpenCodexUrl = async () => {
     try {
@@ -567,7 +576,11 @@ export default function AuthPage({ onBack, onSuccess }: AuthPageProps) {
               onClick={onBack}
               className="inline-flex h-8 items-center rounded-md border border-line bg-surface px-2.5 text-[13px] font-medium text-ink-soft shadow-sm transition-colors hover:bg-sunken hover:text-ink"
             >
-              {t('auth.backToHome')}
+              {t(
+                backTarget === 'providers' ?
+                  'auth.backToProviders'
+                : 'auth.backToHome',
+              )}
             </button>
           </div>
         )}

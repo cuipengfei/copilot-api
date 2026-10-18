@@ -27,7 +27,7 @@ plan_mode_reasoning_effort = "max"
 # 上下文窗口和自动压缩阈值（单位：token）可自行调整。
 # 按 OpenAI API 定价，GPT 模型（如 gpt-6.1-sol）输入超过 272000 token 时，
 # 输入及缓存费用翻倍，输出费用为 1.5 倍。
-model_context_window = 300000
+model_context_window = 400000
 # 沙箱策略。可改用 "workspace-write" 以启用限制。
 sandbox_mode = "danger-full-access"
 approvals_reviewer = "auto_review"
@@ -60,6 +60,7 @@ daemon_auto_start = false
 apps = false
 prevent_idle_sleep = true
 defer_mailbox_preemption = true
+instant_interrupt = false
 
 [desktop]
 enabled-reasoning-efforts = ["low", "medium", "high", "xhigh", "ultra", "max"]
@@ -116,8 +117,6 @@ sh docs/generate-model-catalog.sh
 Codex 模型选择界面会展示网关已配置 provider 提供的模型：
 
 <img src="../../screenshots/codex-models.png" alt="Codex 模型选择界面展示网关提供的模型列表" width="900" />
-
-> **模型切换：** 在 DeepSeek 与 Responses Lite 模型之间切换时，请新建 Codex 会话。
 
 ### Codex provider 价格估算
 

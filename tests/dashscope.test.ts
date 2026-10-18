@@ -1,9 +1,6 @@
 import { describe, expect, test } from "bun:test"
 
-import {
-  applyOpenAICompatibleContextCache,
-  normalizeDashScopeAssistantTextContent,
-} from "~/lib/dashscope"
+import { applyOpenAICompatibleContextCache } from "~/lib/dashscope"
 import type { Message } from "~/lib/types/chat-completions"
 
 const buildPayload = (model: string) => ({
@@ -54,42 +51,5 @@ describe("applyOpenAICompatibleContextCache model restriction", () => {
     applyOpenAICompatibleContextCache(payload)
     expect(collectCacheControls(payload.messages)).toEqual([])
     expect(payload.messages[0]?.content).toBe("system prompt")
-  })
-})
-
-describe("normalizeDashScopeAssistantTextContent", () => {
-  test("only converts assistant arrays made entirely of text", () => {
-    const messages: Array<Message> = [
-      { role: "assistant", content: [{ type: "text", text: "single" }] },
-      {
-        role: "assistant",
-        content: [
-          { type: "text", text: "before" },
-          {
-            type: "image_url",
-            image_url: { url: "https://example.com/a.png" },
-          },
-        ],
-      },
-      {
-        role: "user",
-        content: [
-          { type: "text", text: "first" },
-          { type: "text", text: "second" },
-        ],
-      },
-    ]
-
-    normalizeDashScopeAssistantTextContent(messages)
-
-    expect(messages[0]?.content).toBe("single")
-    expect(messages[1]?.content).toEqual([
-      { type: "text", text: "before" },
-      { type: "image_url", image_url: { url: "https://example.com/a.png" } },
-    ])
-    expect(messages[2]?.content).toEqual([
-      { type: "text", text: "first" },
-      { type: "text", text: "second" },
-    ])
   })
 })

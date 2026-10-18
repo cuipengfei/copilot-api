@@ -25,7 +25,7 @@ plan_mode_reasoning_effort = "max"
 # Adjust the context window and auto-compaction threshold (in tokens) as needed.
 # Under OpenAI API pricing, GPT models such as gpt-6.1-sol charge 2x input and
 # cache rates and 1.5x output rates when input exceeds 272000 tokens.
-model_context_window = 300000
+model_context_window = 400000
 # Sandbox policy. Use "workspace-write" to restrict it.
 sandbox_mode = "danger-full-access"
 approvals_reviewer = "auto_review"
@@ -58,6 +58,7 @@ daemon_auto_start = false
 apps = false
 prevent_idle_sleep = true
 defer_mailbox_preemption = true
+instant_interrupt = false
 
 [desktop]
 enabled-reasoning-efforts = ["low", "medium", "high", "xhigh", "ultra", "max"]
@@ -114,8 +115,6 @@ The catalog response adapts to the client version: Codex `0.160.0` and newer rec
 Codex's model picker includes models from the gateway's configured providers:
 
 <img src="../../screenshots/codex-models.png" alt="Codex model picker showing models provided by the gateway" width="900" />
-
-> **Model switching:** Start a new Codex session when switching between DeepSeek and Responses Lite models.
 
 ### Codex Provider Price Estimates
 

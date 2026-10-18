@@ -15,6 +15,12 @@ const createTracingApp = () => {
     return c.json({ traceId })
   })
 
+  app.get("/root-session", (c) =>
+    c.json({
+      rootSessionId: requestContext.getStore()?.rootSessionId ?? null,
+    }),
+  )
+
   app.get("/trace-stream", (c) => {
     return streamSSE(c, async (stream) => {
       const traceId = requestContext.getStore()?.traceId ?? null
@@ -42,6 +48,21 @@ describe("traceIdMiddleware", () => {
     expect(response.status).toBe(200)
     expect(response.headers.get("x-trace-id")).toBe("trace-123_ABC")
     expect(await response.json()).toEqual({ traceId: "trace-123_ABC" })
+  })
+
+  test("derives the root session id from session headers, skipping blank values", async () => {
+    const app = createTracingApp()
+
+    const response = await app.request("/root-session", {
+      headers: {
+        "session-id": " ",
+        "x-root-session-id": " root-1 ",
+        "x-session-id": "leaf-1",
+      },
+    })
+
+    expect(response.status).toBe(200)
+    expect(await response.json()).toEqual({ rootSessionId: "root-1" })
   })
 
   test("falls back to a generated trace id for invalid input and preserves it in SSE", async () => {

@@ -125,6 +125,7 @@ const en: Locale = {
     waitingAuth: 'Waiting for GitHub authorization…',
     back: '← Back',
     backToHome: '← Home',
+    backToProviders: '← Providers',
     verifying: 'Verifying…',
     confirmAdd: 'Confirm',
     authFailed: 'Authorization failed, please try again',
@@ -151,14 +152,18 @@ const en: Locale = {
     overviewPort: 'Port',
     overviewModels: 'Models',
     overviewLastRefresh: 'Last refresh',
-    premiumUsed: 'Premium used',
-    quotaReset: 'Quota reset',
     serviceAddress: 'Service address',
     authHeader: 'Auth header',
     copy: 'Copy',
-    quotaUsage: 'Quota usage',
+    quotaUsage: 'GitHub Copilot Quota',
+    quotaResetsOn: 'resets {{date}}',
+    quotaUnavailable: 'No quota details reported.',
     quotaUsedPercent: '{{percent}}% used',
     quotaRemainingPercent: '{{percent}}% remaining',
+    providerOverview: 'Providers',
+    providerOverviewSummary: '{{enabled}} / {{total}} enabled',
+    providerOverviewManage: 'Manage',
+    providerOverviewModels: '{{n}} models',
     refreshing: 'Refreshing…',
     refresh: 'Refresh',
     tokenUsage: 'Token usage',
@@ -184,6 +189,10 @@ const en: Locale = {
     tokenUsageProvider: 'Provider',
     tokenUsageRequests: 'Requests',
     tokenUsageSession: 'Session',
+    tokenUsageSessionBreakdown: 'Session breakdown',
+    tokenUsageSessionsCount: '{{n}} sessions',
+    tokenUsageSessionsLoadFailed:
+      'Failed to load session usage. Click Refresh to retry.',
     tokenUsageSource: 'Source',
     tokenUsageTime: 'Time',
     tokenUsageTotal: 'Total',
@@ -210,7 +219,7 @@ const en: Locale = {
     logout: 'Log out',
     settings: 'Settings',
     appSettings: 'App settings',
-    advancedConfig: 'Model mappings',
+    advancedConfig: 'Advanced config',
     changeAuth: 'Auth config',
     restart: 'Restart',
     restarting: 'Restarting…',
@@ -235,6 +244,10 @@ const en: Locale = {
     helpDocs: 'Documentation',
   },
   server: {
+    bunFallback:
+      'Bun >= 1.4.0 was not found; using the bundled Node.js runtime. Install or upgrade Bun to enable it.',
+    runtime: 'Server runtime: {{runtime}}',
+    spawnFailed: 'Failed to launch the server process: {{message}}',
     tokenNotFound: 'Token not found',
     authRequired:
       'No usable authorization found. Configure a GitHub token or at least one provider first',
@@ -284,7 +297,7 @@ const en: Locale = {
       'Address the API server binds to; leave empty for 127.0.0.1. Saving automatically restarts the running service',
     hostInvalid: 'Invalid listening host, for example 127.0.0.1 or 0.0.0.0',
     proxySystemNote:
-      'System proxy is used by default. With a custom proxy, Electron and local services use the settings below; with no proxy, requests connect directly. Saving automatically restarts the running service.',
+      'Electron uses the system proxy by default. Bun services require a custom proxy when needed. Custom proxy settings apply to both runtimes; No proxy connects directly. Saving restarts the running service.',
     proxyMode: 'Proxy mode',
     proxyModeSystem: 'System proxy',
     proxyModeCustom: 'Custom proxy',
@@ -295,6 +308,19 @@ const en: Locale = {
     noProxyDesc:
       'Separate multiple rules with commas, for example localhost,127.0.0.1.',
     sectionStartup: 'Startup',
+    serverRuntime: 'Server runtime',
+    serverRuntimeDesc:
+      'Prefer Bun >= 1.4.0 when installed; otherwise use bundled Node.js. Saving restarts the running server.',
+    runtimeBun: 'Bun (recommended)',
+    runtimeNode: 'Node.js (bundled)',
+    bunDetecting: 'Checking for local Bun…',
+    bunAvailable: 'Bun {{version}} detected.',
+    bunUnsupported:
+      'Bun {{version}} is unsupported. Install Bun >= 1.4.0; bundled Node.js will be used until then.',
+    bunUnavailable:
+      'Bun >= 1.4.0 was not found. Bundled Node.js will be used until Bun is installed.',
+    bunProxyNote:
+      'Bun does not use Electron’s system proxy. Select a custom proxy in Network if needed, or use Node.js for the system proxy.',
     oauthApp: 'OAuth App',
     oauthAppDefault: 'Default GitHub',
     oauthAppDesc:
@@ -322,6 +348,171 @@ const en: Locale = {
     cancel: 'Cancel',
     save: 'Save',
     saving: 'Saving…',
+  },
+  configEditor: {
+    title: 'Advanced configuration',
+    editMode: 'Configuration editor mode',
+    form: 'Visual',
+    json: 'JSON',
+    groupsLabel: 'Configuration groups',
+    resetGroup: 'Reset group to defaults',
+    useDefault: 'Reset to default',
+    inherited: 'Inherit default',
+    explicit: 'Explicit value',
+    defaultValue: 'Default value',
+    explicitValue: 'Explicit value: {{value}}',
+    reload: 'Reload',
+    reloadDiscard: 'Reload and discard changes',
+    mergeLatest: 'Reload and keep changes',
+    mergeConflicts:
+      'Both the draft and file changed these fields: {{fields}}. Choose which values to keep for these fields; other edits will be preserved.',
+    keepMine: 'Use my values for conflicts',
+    keepDisk: 'Use file values for conflicts',
+    merged: 'Merged with the latest file. Review the draft before saving.',
+    legacyWarning:
+      'Unchanged legacy values are preserved: {{fields}}. The service will use its existing normalization rules.',
+    errors: {
+      conflict:
+        'Configuration changed on disk. Reload and keep your changes, or discard them.',
+      validation: 'Check the configuration values and try again.',
+      readFailed:
+        'Could not read the configuration. Check file access and try again.',
+      saveFailed:
+        'Could not save the configuration. Check file access and try again.',
+      applyFailed: 'Could not apply the configuration. Try again.',
+    },
+    discard: 'Discard changes',
+    review: 'Review changes',
+    close: 'Close',
+    saveApply: 'Save and apply',
+    save: 'Save configuration',
+    synced: 'Configuration synchronized',
+    unsaved: '{{count}} unsaved changes',
+    unsavedOther: 'Unsaved changes',
+    offline:
+      'The service is stopped. You can edit and save configuration for the next start.',
+    invalid: 'Invalid configuration',
+    savedApplied: 'Configuration saved and applied to subsequent requests.',
+    savedOffline:
+      'Configuration saved; it will apply on the next service start.',
+    savedNotApplied: 'Configuration saved, but applying it failed',
+    retryApply: 'Retry apply',
+    showSecrets: 'Show sensitive values and edit',
+    format: 'Format',
+    jsonContent: 'Full config.json content',
+    sharedDraft: 'Shares the visual editor draft; validated before saving.',
+    maskedReadOnly: 'Sensitive values are hidden; the preview is read-only.',
+    maskedUnavailable:
+      'Invalid JSON. Enable “Show sensitive values and edit” to repair it.',
+    mappingDefaults:
+      'Built-in mappings are restored automatically; map a model to itself to disable its default rewrite.',
+    autoModelDefault: 'Inherit default (automatic)',
+    autoModelOff: 'Disable model replacement',
+    autoModelCustom: 'Specify a model',
+    groups: {
+      general: 'Request settings',
+      mappings: 'Model mappings',
+      models: 'Model rules',
+      search: 'Search and images',
+      transport: 'Upstream transport',
+    },
+    fields: {
+      useMessagesApi: {
+        label: 'Messages API',
+        description:
+          'Prefer the native Messages endpoint declared by the model.',
+      },
+      useResponsesApiWebSocket: {
+        label: 'Responses WebSocket',
+        description:
+          'Use WebSocket for supported streaming Responses requests.',
+      },
+      opencodeModelContextWindow: {
+        label: 'OpenCode context limit',
+        description:
+          'Limit context tokens shown in the OpenCode model catalog.',
+      },
+      claudeTokenMultiplier: {
+        label: 'Claude token multiplier',
+        description: 'Used only for local Claude count_tokens estimation.',
+      },
+      anthropicApiKey: {
+        label: 'Anthropic token-counting key',
+        description:
+          'Enable exact counting; the default can use ANTHROPIC_API_KEY from the environment.',
+      },
+      smallModels: {
+        label: 'Title and warm-up models',
+        description:
+          'Set a model per provider; an empty string disables switching.',
+      },
+      claudeAutoModel: {
+        label: 'Claude Code review model',
+        description:
+          'Inherit the dynamic default, disable replacement, or specify a model.',
+      },
+      modelReasoningEfforts: {
+        label: 'Default reasoning effort',
+        description:
+          'Override effort per model; an explicit request value takes precedence.',
+      },
+      extraPrompts: {
+        label: 'Extra model prompts',
+        description: 'Append system prompts per model using a JSON object.',
+      },
+      useResponsesApiWebSearch: {
+        label: 'Responses web search',
+        description: 'Keep and forward web_search tools.',
+      },
+      alphaSearchCodexPriority: {
+        label: 'Prefer Codex search',
+        description: 'Control the routing priority for alpha-search.',
+      },
+      alphaSearchModel: {
+        label: 'Alpha Search fallback model',
+        description: 'An empty string disables the fallback search model.',
+      },
+      messageApiWebSearchModel: {
+        label: 'Messages web-search model',
+        description:
+          'Used for search-only Messages requests; an empty string disables it.',
+      },
+      imageGenerationModel: {
+        label: 'Image generation model',
+        description: 'Leave empty for the default route, or use xai/model.',
+      },
+      imageEditModel: {
+        label: 'Image edit model',
+        description: 'Leave empty for the default route, or use xai/model.',
+      },
+      headersTimeoutMs: {
+        label: 'Response headers timeout',
+        description:
+          'Time from connection establishment to response headers, in milliseconds.',
+      },
+      streamInactivityTimeoutMs: {
+        label: 'Stream inactivity timeout',
+        description: 'Reset whenever data arrives, in milliseconds.',
+      },
+      websocketOpenTimeoutMs: {
+        label: 'WebSocket handshake timeout',
+        description: 'Wait for the upstream handshake, in milliseconds.',
+      },
+      websocketPoolIdleTimeoutMs: {
+        label: 'WebSocket idle timeout',
+        description:
+          'Recycle completed, idle reusable connections, in milliseconds.',
+      },
+      websocketMaxBufferedBytes: {
+        label: 'WebSocket buffered bytes',
+        description:
+          'Applied together with the message limit; exceeding it terminates the stream.',
+      },
+      websocketMaxBufferedMessages: {
+        label: 'WebSocket buffered messages',
+        description: 'Applied together with the byte limit.',
+      },
+    },
   },
   advancedConfig: {
     title: 'Model mappings',

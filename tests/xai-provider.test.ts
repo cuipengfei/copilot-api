@@ -33,13 +33,14 @@ if (process.env.COPILOT_API_XAI_TEST_PROCESS !== "1") {
           + new TextDecoder().decode(result.stderr),
       )
     expect(result.exitCode).toBe(0)
-  })
+  }, 30_000)
 } else {
   const { default: consola } = await import("consola")
   const { Hono } = await import("hono")
   const { runAuthLogin, runAuthAccounts } = await import("~/auth")
   const { modelRoutes } = await import("~/routes/models/route")
   const { providerModelRoutes } = await import("~/routes/provider/models/route")
+  const { imageRoutes } = await import("~/routes/images/route")
   const {
     getProviderConfig,
     getRawProviderConfig,
@@ -192,6 +193,73 @@ if (process.env.COPILOT_API_XAI_TEST_PROCESS !== "1") {
       )
       expect(fs.existsSync(PATHS.XAI_CREDENTIAL_PATH)).toBe(false)
     })
+
+    test.each(["oauth2", "authorization"] as const)(
+      "routes configured image generation with real %s provider resolution",
+      async (authType) => {
+        if (authType === "oauth2") await persistXaiCredentials(credentials)
+        fs.writeFileSync(
+          PATHS.CONFIG_PATH,
+          JSON.stringify({
+            imageGenerationModel: "xai/grok-imagine-image-2.0",
+            providers: {
+              xai: {
+                apiKey:
+                  authType === "authorization" ? "xai-api-key" : undefined,
+                authType,
+                baseUrl: "https://api.x.ai",
+                type: "openai-responses",
+              },
+            },
+          }),
+        )
+        invalidateConfigCache()
+        const requests: Array<{ url: string; init?: RequestInit }> = []
+        setFetch((input, init) => {
+          requests.push({
+            url: input instanceof Request ? input.url : input.toString(),
+            init,
+          })
+          return Promise.resolve(
+            Response.json({
+              created: null,
+              data: [{ b64_json: "image-bytes" }],
+            }),
+          )
+        })
+        const app = new Hono()
+        app.route("/v1/images", imageRoutes)
+        const response = await app.request("/v1/images/generations", {
+          body: JSON.stringify({
+            model: "gpt-image-1",
+            prompt: "ok",
+            quality: "high",
+          }),
+          headers: {
+            authorization: "Bearer gateway-key",
+            "content-type": "application/json",
+          },
+          method: "POST",
+        })
+        expect(response.status).toBe(200)
+        expect(requests).toHaveLength(1)
+        const { url, init } = requests[0]
+        expect(url).toBe(
+          authType === "oauth2" ?
+            "https://cli-chat-proxy.grok.com/v1/images/generations"
+          : "https://api.x.ai/v1/images/generations",
+        )
+        expect(new Headers(init?.headers).get("authorization")).toBe(
+          authType === "oauth2" ? "Bearer access-token" : "Bearer xai-api-key",
+        )
+        expect(await new Response(init?.body).json()).toEqual({
+          model: "grok-imagine-image-2.0",
+          prompt: "ok",
+          quality: "medium",
+          response_format: "b64_json",
+        })
+      },
+    )
 
     test.each([
       ["https://api.x.ai/", "https://cli-chat-proxy.grok.com"],

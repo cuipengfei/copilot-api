@@ -61,7 +61,9 @@ import {
 import { readSettings, writeSettings } from './settings-store'
 import { runSettingsTransaction } from './settings-transaction'
 import { createConfigRefresher } from './config-refresh'
+import { configEditorReply, createAppConfigEditor } from './config-editor'
 import { shouldRestartServerForSettings } from './settings-runtime'
+import { detectBunRuntime } from './bun-runtime'
 import {
   readServerKeysConfig,
   writeServerKeysConfig,
@@ -249,6 +251,10 @@ function saveCredentialsAndRefresh(save: () => Promise<void>): Promise<void> {
     },
   })
 }
+
+const appConfigEditor = createAppConfigEditor({
+  saveAndRefresh: saveAndRefreshConfig,
+})
 
 export function registerIpcHandlers(
   mainWindow: BrowserWindow,
@@ -483,6 +489,7 @@ export function registerIpcHandlers(
       }
 
       const serverOptions = {
+        runtime: settings.serverRuntime,
         verbose: settings.verbose,
         showToken: settings.showToken,
         host: effectiveHost,
@@ -531,6 +538,7 @@ export function registerIpcHandlers(
 
   // Settings
   ipcMain.handle('settings:get', async () => readSettings())
+  ipcMain.handle('settings:get-bun-runtime', () => detectBunRuntime())
   ipcMain.handle('settings:save', async (_event, settings: DesktopSettings) => {
     if (!isValidServerHost(settings?.host ?? '')) {
       throw new Error(await tMain('server.invalidHost'))
@@ -547,6 +555,7 @@ export function registerIpcHandlers(
       }
       if (isRunning() && shouldRestartServerForSettings(prev, settings)) {
         const status = await startServer(getPort(), {
+          runtime: settings.serverRuntime,
           host: settings.host,
           verbose: settings.verbose,
           showToken: settings.showToken,
@@ -562,6 +571,15 @@ export function registerIpcHandlers(
   })
   ipcMain.handle('config:get-model-mappings', async () =>
     fetchModelMappingsConfig(),
+  )
+  ipcMain.handle('config:get-document', () =>
+    configEditorReply(() => appConfigEditor.read(), 'readFailed'),
+  )
+  ipcMain.handle('config:save-document', (_event, input: unknown) =>
+    configEditorReply(() => appConfigEditor.save(input), 'saveFailed'),
+  )
+  ipcMain.handle('config:apply-document', (_event, revision: unknown) =>
+    configEditorReply(() => appConfigEditor.apply(revision), 'applyFailed'),
   )
   ipcMain.handle('config:get-provider-management', () => {
     invalidateConfigCache()
@@ -695,6 +713,38 @@ export function registerIpcHandlers(
         const headers = await getServerRequestHeaders()
         const res = await fetch(
           `${baseUrl}/token-usage/events?${params.toString()}`,
+          {
+            headers,
+            signal: AbortSignal.timeout(5000),
+          },
+        )
+        if (!res.ok) return null
+        return (await res.json()) as unknown
+      } catch {
+        return null
+      }
+    },
+  )
+
+  ipcMain.handle(
+    'server:fetch-token-usage-sessions',
+    async (_event, period: string, page: number, pageSize: number) => {
+      const baseUrl = getServerBaseUrl()
+      const normalizedPeriod =
+        TOKEN_USAGE_PERIODS.has(period) ? period : 'today'
+      const normalizedPage =
+        Number.isFinite(page) && page > 0 ? Math.floor(page) : 1
+      const normalizedPageSize =
+        Number.isFinite(pageSize) && pageSize > 0 ? Math.floor(pageSize) : 5
+      const params = new URLSearchParams({
+        page: String(normalizedPage),
+        page_size: String(normalizedPageSize),
+        period: normalizedPeriod,
+      })
+      try {
+        const headers = await getServerRequestHeaders()
+        const res = await fetch(
+          `${baseUrl}/token-usage/sessions?${params.toString()}`,
           {
             headers,
             signal: AbortSignal.timeout(5000),

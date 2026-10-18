@@ -9,6 +9,7 @@
     "electron.vite.config.*",
     "electron/**/*",
     "tests/**/*",
+    "src/App.tsx",
     "src/lib/auto-start-server.ts",
     "src/lib/server-url.ts",
     "src/locales/**/*",

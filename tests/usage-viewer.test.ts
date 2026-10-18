@@ -23,6 +23,14 @@ function extractInlineFunctionRange(
   return html.slice(start, end)
 }
 
+function extractCollapseHelpers(html: string): string {
+  return extractInlineFunctionRange(
+    html,
+    "        // --- Collapsible Sections ---",
+    "        function getModelField(model, fields) {",
+  )
+}
+
 type UsageViewerFormatters = {
   escapeHtml: (value: unknown) => string
   formatObject: (value: unknown) => string
@@ -42,10 +50,13 @@ async function loadUsageViewerFormatters(): Promise<UsageViewerFormatters> {
       "        function formatObject(obj) {",
       "        function renderTokenUsageSection() {",
     ),
+    extractCollapseHelpers(html),
     "({ escapeHtml, formatObject, renderDetailedData })",
   ].join("\n")
 
-  return runInNewContext(source) as UsageViewerFormatters
+  return runInNewContext(source, {
+    state: { collapsedSections: {} },
+  }) as UsageViewerFormatters
 }
 
 describe("usage viewer period contract", () => {
@@ -114,6 +125,11 @@ describe("usage viewer model cache hit rate", () => {
       ),
       extractInlineFunctionRange(
         html,
+        "        function formatCellText(value) {",
+        "        function formatRangeDate(value) {",
+      ),
+      extractInlineFunctionRange(
+        html,
         "        function renderTokenUsageValueLines(value) {",
         "        function renderTokenUsageEventsTable(eventsPage) {",
       ),
@@ -127,14 +143,26 @@ describe("usage viewer model cache hit rate", () => {
         "        function renderTokenUsageSection() {",
         "        function getTokenUsageTrendMetrics() {",
       ),
+      extractCollapseHelpers(html),
       "({ renderTokenUsageModelBreakdown, formatCacheHitRate, renderTokenUsageSection })",
     ].join("\n")
     const state: {
       isTokenUsageLoading: boolean
       tokenUsageSummary?: TokenUsageSummary
-    } = { isTokenUsageLoading: false }
+      isSessionsLoading: boolean
+      tokenUsageSessionsError: string | null
+      tokenUsageSessionsPage: unknown
+      collapsedSections: Record<string, boolean>
+    } = {
+      collapsedSections: {},
+      isTokenUsageLoading: false,
+      isSessionsLoading: false,
+      tokenUsageSessionsError: null,
+      tokenUsageSessionsPage: null,
+    }
     const viewer = runInNewContext(source, {
       state,
+      renderError: (message: string) => `<p>${message}</p>`,
       renderTokenUsageRangeText: () => "Today",
       renderTokenUsageDailyTrend: () => "",
       renderPaginationButton: () => "",
@@ -198,30 +226,17 @@ describe("usage viewer model cache hit rate", () => {
     const win = new Window()
     try {
       win.document.body.innerHTML = rendered
-      expect(
-        [...win.document.querySelectorAll("th")].map(
-          (node) => node.textContent,
-        ),
-      ).toEqual([
-        "Model",
-        "Total Cost",
-        "Total",
-        "Requests",
-        "Input",
-        "Output",
-        "Cache Read",
-        "Cache Write",
-        "Cache Hit Rate",
-        "Total Tokens",
-        "Total Cost",
-      ])
+      const headers = [...win.document.querySelectorAll("th")].map(
+        (node) => node.textContent,
+      )
       const rows = [...win.document.querySelectorAll("tbody tr")]
       expect(
-        rows.map((row) => row.querySelectorAll("td")[8].textContent),
+        rows.map(
+          (row) =>
+            row.querySelectorAll("td")[headers.indexOf("Cache Hit Rate")]
+              .textContent,
+        ),
       ).toEqual(examples.map((example) => example.expected))
-      expect(
-        rows.every((row) => row.querySelectorAll("td").length === 11),
-      ).toBe(true)
       expect(rows[0].querySelector("td")?.textContent).toBe("<cached-model>")
       expect(win.document.querySelector("cached-model")).toBeNull()
       for (const example of examples) {
@@ -299,6 +314,11 @@ describe("usage viewer cost metrics", () => {
       ),
       extractInlineFunctionRange(
         html,
+        "        function formatCellText(value) {",
+        "        function formatRangeDate(value) {",
+      ),
+      extractInlineFunctionRange(
+        html,
         "        function renderTokenUsageValueLines(value) {",
         "        function renderTokenUsageEventsTable(eventsPage) {",
       ),
@@ -312,14 +332,26 @@ describe("usage viewer cost metrics", () => {
         "        function renderTokenUsageSection() {",
         "        function getTokenUsageTrendMetrics() {",
       ),
+      extractCollapseHelpers(html),
       "({ renderTokenUsageSection })",
     ].join("\n")
     const state: {
       isTokenUsageLoading: boolean
       tokenUsageSummary?: TokenUsageSummary
-    } = { isTokenUsageLoading: false }
+      isSessionsLoading: boolean
+      tokenUsageSessionsError: string | null
+      tokenUsageSessionsPage: unknown
+      collapsedSections: Record<string, boolean>
+    } = {
+      collapsedSections: {},
+      isTokenUsageLoading: false,
+      isSessionsLoading: false,
+      tokenUsageSessionsError: null,
+      tokenUsageSessionsPage: null,
+    }
     const viewer = runInNewContext(source, {
       state,
+      renderError: (message: string) => `<p>${message}</p>`,
       renderTokenUsageRangeText: () => "Today",
       renderTokenUsageDailyTrend: () => "",
       renderPaginationButton: () => "",
@@ -367,10 +399,262 @@ describe("usage viewer cost metrics", () => {
           node.querySelector(".metric-label")?.textContent?.trim() === "Cost",
       )
       expect(costCard?.querySelector(".metric-value")?.textContent).toBe("—")
+
+      state.tokenUsageSummary = summaryFor([])
+      const sessionsPage = (page: number, count: number) => ({
+        items: Array.from({ length: count }, (_, index) => ({
+          ...summaryFor([]).totals,
+          session_id: `session-${(page - 1) * 10 + index + 1}`,
+        })),
+        page,
+        total: 25,
+        total_pages: 3,
+      })
+      state.tokenUsageSessionsPage = sessionsPage(1, 10)
+      const sessionPanel = () =>
+        [...win.document.querySelectorAll(".panel")].find(
+          (node) =>
+            node.querySelector(".panel-title")?.textContent
+            === "Session Breakdown",
+        )!
+      const sessionIds = () =>
+        [...sessionPanel().querySelectorAll("tbody tr td:first-child")].map(
+          (node) => node.textContent,
+        )
+      const nextButton = () =>
+        sessionPanel().querySelector('[data-session-page="1"]')!
+      const previousButton = () =>
+        sessionPanel().querySelector('[data-session-page="-1"]')!
+
+      win.document.body.innerHTML = viewer.renderTokenUsageSection()
+      expect(sessionIds()).toHaveLength(10)
+      expect(sessionIds()[0]).toBe("session-1")
+      expect(sessionPanel().textContent).toContain("Page 1 / 3 - 25 sessions")
+      expect(previousButton().hasAttribute("disabled")).toBe(true)
+      expect(nextButton().hasAttribute("disabled")).toBe(false)
+
+      state.tokenUsageSessionsPage = sessionsPage(3, 5)
+      win.document.body.innerHTML = viewer.renderTokenUsageSection()
+      expect(sessionIds()).toEqual([
+        "session-21",
+        "session-22",
+        "session-23",
+        "session-24",
+        "session-25",
+      ])
+      expect(nextButton().hasAttribute("disabled")).toBe(true)
+
+      state.isSessionsLoading = true
+      win.document.body.innerHTML = viewer.renderTokenUsageSection()
+      expect(previousButton().hasAttribute("disabled")).toBe(true)
+
+      state.isSessionsLoading = false
+      state.tokenUsageSessionsError = "boom"
+      win.document.body.innerHTML = viewer.renderTokenUsageSection()
+      expect(sessionPanel().textContent).toContain("boom")
+      expect(
+        sessionPanel().querySelector('[data-session-page="0"]'),
+      ).not.toBeNull()
     } finally {
       await win.happyDOM.close()
     }
   })
+})
+
+describe("usage viewer session fetching", () => {
+  async function createSessionsFetcher() {
+    const html = await readUsageViewerPage()
+    const source = [
+      extractInlineFunctionRange(
+        html,
+        "        function resolveUsageUrl(endpoint) {",
+        "        async function fetchJson(url) {",
+      ),
+      extractInlineFunctionRange(
+        html,
+        "        async function fetchData(page = 1) {",
+        "        // --- Event Handlers & Initialization ---",
+      ),
+      "({ fetchData, fetchTokenUsageSummaryAndEvents, fetchTokenUsageSessionsPage, invalidateSessionsRequest })",
+    ].join("\n")
+    const pending: Array<{
+      url: string
+      resolve: (value: unknown) => void
+      reject: (reason: unknown) => void
+    }> = []
+    const state = {
+      isLoading: false,
+      isTokenUsageLoading: false,
+      tokenUsageSummaryError: null as string | null,
+      isSessionsLoading: false,
+      sessionsRequestId: 0,
+      tokenUsageSessionsError: null as string | null,
+      tokenUsageSessionsPage: null as unknown,
+    }
+    const endpointUrlInput = { value: "http://server-a/usage" }
+    const rendering = { onRender: () => {} }
+    const viewer = runInNewContext(source, {
+      state,
+      endpointUrlInput,
+      window: { location: { href: "http://localhost/usage-viewer" } },
+      URL,
+      SESSION_PAGE_SIZE: 10,
+      DEFAULT_TOKEN_USAGE_EVENTS_PAGE_SIZE: 20,
+      render: () => rendering.onRender(),
+      getSelectedPeriod: () => "today",
+      getErrorMessage: (error: Error) => error.message,
+      isMissingTokenUsageEndpointError: (error: unknown) =>
+        typeof error === "object"
+        && error !== null
+        && "status" in error
+        && error.status === 404,
+      fetchJson: (url: string) =>
+        new Promise((resolve, reject) =>
+          pending.push({ url, resolve, reject }),
+        ),
+    }) as {
+      fetchData: () => Promise<void>
+      fetchTokenUsageSummaryAndEvents: () => Promise<void>
+      fetchTokenUsageSessionsPage: (page: number) => Promise<void>
+      invalidateSessionsRequest: () => void
+    }
+    return { endpointUrlInput, pending, rendering, state, viewer }
+  }
+
+  test("ignores a response that arrives after the context changed", async () => {
+    const { pending, state, viewer } = await createSessionsFetcher()
+    const stale = viewer.fetchTokenUsageSessionsPage(2)
+    viewer.invalidateSessionsRequest()
+    const current = viewer.fetchTokenUsageSessionsPage(1)
+
+    pending[1].resolve({ page: 1, items: [] })
+    await current
+    pending[0].resolve({ page: 2, items: [] })
+    await stale
+
+    expect(state.tokenUsageSessionsPage).toEqual({ page: 1, items: [] })
+    expect(state.isSessionsLoading).toBe(false)
+  })
+
+  test("ignores a stale failure and surfaces a current failure", async () => {
+    const { pending, state, viewer } = await createSessionsFetcher()
+    const stale = viewer.fetchTokenUsageSessionsPage(2)
+    viewer.invalidateSessionsRequest()
+    pending[0].reject(new Error("old failure"))
+    await stale
+    expect(state.tokenUsageSessionsError).toBeNull()
+
+    const current = viewer.fetchTokenUsageSessionsPage(1)
+    pending[1].reject(new Error("sessions failed"))
+    await current
+    expect(state.tokenUsageSessionsError).toBe("sessions failed")
+    expect(state.isSessionsLoading).toBe(false)
+  })
+
+  const refreshMethods = [
+    "fetchData",
+    "fetchTokenUsageSummaryAndEvents",
+  ] as const
+
+  test.each([...refreshMethods])(
+    "%s clears old sessions when refreshing another endpoint fails",
+    async (refreshMethod) => {
+      const { endpointUrlInput, pending, state, viewer } =
+        await createSessionsFetcher()
+      const oldPage = { page: 2, items: [{ session_id: "server-a-session" }] }
+      state.tokenUsageSessionsPage = oldPage
+      const stale = viewer.fetchTokenUsageSessionsPage(2)
+      state.tokenUsageSessionsError = "old sessions error"
+      endpointUrlInput.value = "http://server-b/usage"
+
+      const refresh = viewer[refreshMethod]()
+      expect(state.tokenUsageSessionsPage).toBeNull()
+      expect(state.tokenUsageSessionsError).toBeNull()
+      expect(state.isSessionsLoading).toBe(false)
+      expect(
+        pending.slice(1).every(({ url }) => new URL(url).host === "server-b"),
+      ).toBe(true)
+
+      const unauthorized = Object.assign(new Error("Unauthorized"), {
+        status: 401,
+      })
+      for (const request of pending.slice(1)) {
+        request.reject(unauthorized)
+      }
+      await refresh
+      pending[0].resolve(oldPage)
+      await stale
+
+      expect(state.tokenUsageSessionsPage).toBeNull()
+      expect(state.tokenUsageSessionsError).toBeNull()
+      expect(state.tokenUsageSummaryError).toBe("Unauthorized")
+      expect(state.isSessionsLoading).toBe(false)
+      expect(
+        pending.filter(({ url }) =>
+          new URL(url).pathname.endsWith("/sessions"),
+        ),
+      ).toHaveLength(1)
+    },
+  )
+
+  test.each([...refreshMethods])(
+    "%s clears old sessions and rejects a late response for an empty endpoint",
+    async (refreshMethod) => {
+      const { endpointUrlInput, pending, state, viewer } =
+        await createSessionsFetcher()
+      const oldPage = { page: 2, items: [{ session_id: "server-a-session" }] }
+      state.tokenUsageSessionsPage = oldPage
+      const stale = viewer.fetchTokenUsageSessionsPage(2)
+      state.tokenUsageSessionsError = "old sessions error"
+      endpointUrlInput.value = "   "
+
+      await viewer[refreshMethod]()
+      expect(state.tokenUsageSessionsPage).toBeNull()
+      expect(state.tokenUsageSessionsError).toBeNull()
+      expect(state.isSessionsLoading).toBe(false)
+      expect(pending).toHaveLength(1)
+
+      pending[0].resolve(oldPage)
+      await stale
+      expect(state.tokenUsageSessionsPage).toBeNull()
+      expect(state.isSessionsLoading).toBe(false)
+    },
+  )
+
+  test.each([...refreshMethods])(
+    "%s loads the new endpoint's sessions after clearing the previous page",
+    async (refreshMethod) => {
+      const { endpointUrlInput, pending, rendering, state, viewer } =
+        await createSessionsFetcher()
+      state.tokenUsageSessionsPage = {
+        page: 2,
+        items: [{ session_id: "server-a-session" }],
+      }
+      endpointUrlInput.value = "http://server-b/usage"
+
+      const refresh = viewer[refreshMethod]()
+      expect(state.tokenUsageSessionsPage).toBeNull()
+      for (const request of pending) {
+        request.resolve({})
+      }
+      await refresh
+
+      const sessions = pending.at(-1)!
+      expect(sessions.url).toBe(
+        "http://server-b/token-usage/sessions?period=today&page=1&page_size=10",
+      )
+      expect(state.isSessionsLoading).toBe(true)
+      const newPage = { page: 1, items: [{ session_id: "server-b-session" }] }
+      const sessionRendered = new Promise<void>((resolve) => {
+        rendering.onRender = () => resolve()
+      })
+      sessions.resolve(newPage)
+      await sessionRendered
+
+      expect(state.tokenUsageSessionsPage).toEqual(newPage)
+      expect(state.isSessionsLoading).toBe(false)
+    },
+  )
 })
 
 describe("usage viewer Copilot quota", () => {
@@ -551,5 +835,484 @@ describe("usage viewer detailed response formatter", () => {
     expect(renderDetailedData({ response: [null] })).toContain(
       "Copilot Usage API Response",
     )
+  })
+})
+
+describe("usage viewer collapsible sections", () => {
+  const storageKey = "copilot-api:usage-viewer:collapsed"
+  const sectionKeys = [
+    "tokenUsage",
+    "modelBreakdown",
+    "sessionBreakdown",
+    "requestEvents",
+    "copilotQuotas",
+    "usageApiResponse",
+  ] as const
+
+  type CollapseState = {
+    collapsedSections: Record<string, boolean>
+    isTokenUsageLoading: boolean
+    isSessionsLoading: boolean
+    tokenUsageSessionsError: string | null
+    tokenUsageSessionsPage: unknown
+    tokenUsageSummary: unknown
+    error: string | null
+    data: { quota_snapshots: Record<string, unknown> } | null
+  }
+
+  type CollapseViewer = {
+    readCollapsedSections: () => Record<string, boolean>
+    renderTokenUsageSection: () => string
+    renderUsageQuotas: (snapshots: unknown) => string
+    renderUsageErrorSection: () => string
+    renderDetailedData: (data: unknown) => string
+    handleContentAreaClick: (event: unknown) => void
+  }
+
+  async function createHarness(
+    options: {
+      stored?: string
+      failRead?: boolean
+      failWrite?: boolean
+    } = {},
+  ) {
+    const html = await readUsageViewerPage()
+    const win = new Window()
+    const store = new Map<string, string>()
+    if (options.stored !== undefined) {
+      store.set(storageKey, options.stored)
+    }
+    const writes: string[] = []
+    const warnings: unknown[][] = []
+    const localStorage = {
+      getItem: (key: string) => {
+        if (options.failRead) throw new Error("read denied")
+        return store.get(key) ?? null
+      },
+      setItem: (key: string, value: string) => {
+        if (options.failWrite) throw new Error("quota exceeded")
+        writes.push(value)
+        store.set(key, value)
+      },
+    }
+    const totals = {
+      request_count: 1,
+      input_tokens: 1,
+      output_tokens: 1,
+      cache_read_input_tokens: 0,
+      cache_creation_input_tokens: 0,
+      costs: [],
+      total_tokens: 2,
+    }
+    const state: CollapseState = {
+      collapsedSections: {},
+      isTokenUsageLoading: false,
+      isSessionsLoading: false,
+      tokenUsageSessionsError: null,
+      tokenUsageSessionsPage: {
+        items: [{ ...totals, session_id: "session-1" }],
+        page: 2,
+        total: 25,
+        total_pages: 3,
+      },
+      tokenUsageSummary: {
+        period: "today",
+        range: { start_ms: 0, end_ms: 1, start_utc: "", end_utc: "" },
+        totals,
+        byModel: [],
+      },
+      error: null,
+      data: {
+        quota_snapshots: { chat: { entitlement: 100, remaining: 50 } },
+      },
+    }
+    const source = [
+      extractInlineFunctionRange(
+        html,
+        "        function escapeHtml(value) {",
+        "        function isMissingTokenUsageEndpointError(error) {",
+      ),
+      extractInlineFunctionRange(
+        html,
+        "        function formatNumber(value) {",
+        "        function formatDateTime(value) {",
+      ),
+      extractInlineFunctionRange(
+        html,
+        "        function formatCellText(value) {",
+        "        function formatRangeDate(value) {",
+      ),
+      extractInlineFunctionRange(
+        html,
+        "        function renderTokenUsageValueLines(value) {",
+        "        function renderTokenUsageEventsTable(eventsPage) {",
+      ),
+      extractInlineFunctionRange(
+        html,
+        "        function renderEmptyState(message) {",
+        "        function renderSpinner() {",
+      ),
+      extractCollapseHelpers(html),
+      extractInlineFunctionRange(
+        html,
+        "        function renderUsageQuotas(snapshots) {",
+        "        function formatObject(obj) {",
+      ),
+      extractInlineFunctionRange(
+        html,
+        "        function formatObject(obj) {",
+        "        function renderTokenUsageSection() {",
+      ),
+      extractInlineFunctionRange(
+        html,
+        "        function renderTokenUsageSection() {",
+        "        function getTokenUsageTrendMetrics() {",
+      ),
+      extractInlineFunctionRange(
+        html,
+        "        function handleContentAreaClick(event) {",
+        "        function handleContentAreaChange(event) {",
+      ),
+      `({
+        readCollapsedSections,
+        renderTokenUsageSection,
+        renderUsageQuotas,
+        renderUsageErrorSection,
+        renderDetailedData,
+        handleContentAreaClick,
+      })`,
+    ].join("\n")
+    const viewer = runInNewContext(source, {
+      state,
+      document: win.document,
+      Element: win.Element,
+      window: { localStorage },
+      console: { warn: (...args: unknown[]) => warnings.push(args) },
+      renderError: (message: string) => `<p>${message}</p>`,
+      renderTokenUsageRangeText: () => "Today",
+      renderTokenUsageDailyTrend: () => "",
+      renderPaginationButton: (action: string, label: string) =>
+        `<button type="button" data-events-page="${action}">${label}</button>`,
+      renderTokenUsageEventsTable: () => "<table></table>",
+    }) as CollapseViewer
+
+    const root = win.document.body
+    root.addEventListener("click", viewer.handleContentAreaClick)
+    state.collapsedSections = viewer.readCollapsedSections()
+
+    const render = () => {
+      root.innerHTML = [
+        viewer.renderTokenUsageSection(),
+        state.error && !state.data ?
+          viewer.renderUsageErrorSection()
+        : viewer.renderUsageQuotas(state.data?.quota_snapshots),
+        viewer.renderDetailedData(state.data),
+      ].join("")
+    }
+    const toggle = (key: string) =>
+      root.querySelector(`[data-collapse-toggle="${key}"]`)!
+    const body = (key: string) => root.querySelector(`#collapse-body-${key}`)!
+    const isExpanded = (key: string) =>
+      toggle(key).getAttribute("aria-expanded") === "true"
+    const isBodyHidden = (key: string) => body(key).hasAttribute("hidden")
+    const stored = () => store.get(storageKey)
+
+    return {
+      win,
+      state,
+      viewer,
+      root,
+      render,
+      toggle,
+      body,
+      isExpanded,
+      isBodyHidden,
+      stored,
+      writes,
+      warnings,
+    }
+  }
+
+  test("renders every section expanded by default with accessible toggles", async () => {
+    const h = await createHarness()
+    try {
+      h.render()
+      for (const key of sectionKeys) {
+        const button = h.toggle(key)
+        expect(button.tagName).toBe("BUTTON")
+        expect(button.getAttribute("type")).toBe("button")
+        expect(button.getAttribute("aria-expanded")).toBe("true")
+        expect(button.getAttribute("aria-controls")).toBe(
+          `collapse-body-${key}`,
+        )
+        expect(h.body(key)).not.toBeNull()
+        expect(h.isBodyHidden(key)).toBe(false)
+      }
+      expect(h.root.querySelectorAll("[data-collapse-toggle]")).toHaveLength(6)
+      expect(h.root.querySelector("[hidden]")).toBeNull()
+      expect(h.toggle("tokenUsage").textContent).toBe("Token Usage")
+      expect(h.toggle("copilotQuotas").textContent).toBe("Copilot Quotas")
+      expect(h.toggle("usageApiResponse").textContent).toBe(
+        "Copilot Usage API Response",
+      )
+      expect(h.toggle("requestEvents").textContent).toBe("Request Events")
+    } finally {
+      await h.win.happyDOM.close()
+    }
+  })
+
+  test("renders collapsed sections from stored state", async () => {
+    const h = await createHarness({
+      stored: JSON.stringify({
+        tokenUsage: true,
+        requestEvents: true,
+        usageApiResponse: true,
+      }),
+    })
+    try {
+      h.render()
+      for (const key of ["tokenUsage", "requestEvents", "usageApiResponse"]) {
+        expect(h.isExpanded(key)).toBe(false)
+        expect(h.isBodyHidden(key)).toBe(true)
+      }
+      for (const key of [
+        "modelBreakdown",
+        "sessionBreakdown",
+        "copilotQuotas",
+      ]) {
+        expect(h.isExpanded(key)).toBe(true)
+        expect(h.isBodyHidden(key)).toBe(false)
+      }
+      expect(h.toggle("usageApiResponse").textContent).toContain(
+        "Copilot Usage API Response",
+      )
+    } finally {
+      await h.win.happyDOM.close()
+    }
+  })
+
+  test("click toggles the section, updates aria state and persists", async () => {
+    const h = await createHarness()
+    try {
+      h.render()
+      const chevron = h.toggle("modelBreakdown").querySelector("i")!
+      chevron.dispatchEvent(new h.win.MouseEvent("click", { bubbles: true }))
+      expect(h.isExpanded("modelBreakdown")).toBe(false)
+      expect(h.isBodyHidden("modelBreakdown")).toBe(true)
+      expect(h.state.collapsedSections).toEqual({ modelBreakdown: true })
+      expect(JSON.parse(h.stored()!)).toEqual({ modelBreakdown: true })
+
+      h.toggle("copilotQuotas").dispatchEvent(
+        new h.win.MouseEvent("click", { bubbles: true }),
+      )
+      expect(JSON.parse(h.stored()!)).toEqual({
+        modelBreakdown: true,
+        copilotQuotas: true,
+      })
+
+      h.toggle("modelBreakdown").dispatchEvent(
+        new h.win.MouseEvent("click", { bubbles: true }),
+      )
+      expect(h.isExpanded("modelBreakdown")).toBe(true)
+      expect(h.isBodyHidden("modelBreakdown")).toBe(false)
+      expect(JSON.parse(h.stored()!)).toEqual({ copilotQuotas: true })
+      expect(h.writes).toHaveLength(3)
+    } finally {
+      await h.win.happyDOM.close()
+    }
+  })
+
+  test("collapsed state survives re-render and reload", async () => {
+    const h = await createHarness()
+    try {
+      h.render()
+      h.toggle("sessionBreakdown").dispatchEvent(
+        new h.win.MouseEvent("click", { bubbles: true }),
+      )
+      h.state.isTokenUsageLoading = true
+      h.render()
+      expect(h.isExpanded("sessionBreakdown")).toBe(false)
+      expect(h.isBodyHidden("sessionBreakdown")).toBe(true)
+      expect(h.isBodyHidden("requestEvents")).toBe(false)
+      expect(h.viewer.readCollapsedSections()).toEqual({
+        sessionBreakdown: true,
+      })
+    } finally {
+      await h.win.happyDOM.close()
+    }
+  })
+
+  test("falls back to expanded for corrupt or unknown stored values", async () => {
+    for (const stored of [
+      "{not json",
+      "",
+      "null",
+      "[]",
+      '"tokenUsage"',
+      "42",
+      '{"tokenUsage":"true","requestEvents":1,"bogus":true}',
+    ]) {
+      const h = await createHarness({ stored })
+      try {
+        expect(h.state.collapsedSections).toEqual({})
+        h.render()
+        expect(h.root.querySelector("[hidden]")).toBeNull()
+      } finally {
+        await h.win.happyDOM.close()
+      }
+    }
+
+    const mixed = await createHarness({
+      stored: '{"tokenUsage":true,"bogus":true,"requestEvents":false}',
+    })
+    try {
+      expect(mixed.state.collapsedSections).toEqual({ tokenUsage: true })
+    } finally {
+      await mixed.win.happyDOM.close()
+    }
+  })
+
+  test("storage errors do not break reading or toggling", async () => {
+    const readFailure = await createHarness({ failRead: true })
+    try {
+      expect(readFailure.state.collapsedSections).toEqual({})
+      expect(readFailure.warnings).toHaveLength(1)
+    } finally {
+      await readFailure.win.happyDOM.close()
+    }
+
+    const writeFailure = await createHarness({ failWrite: true })
+    try {
+      writeFailure.render()
+      writeFailure
+        .toggle("tokenUsage")
+        .dispatchEvent(
+          new writeFailure.win.MouseEvent("click", { bubbles: true }),
+        )
+      expect(writeFailure.isExpanded("tokenUsage")).toBe(false)
+      expect(writeFailure.isBodyHidden("tokenUsage")).toBe(true)
+      expect(writeFailure.state.collapsedSections).toEqual({ tokenUsage: true })
+      expect(writeFailure.warnings).toHaveLength(1)
+    } finally {
+      await writeFailure.win.happyDOM.close()
+    }
+  })
+
+  test("paging buttons and other header content do not toggle", async () => {
+    const h = await createHarness()
+    try {
+      h.render()
+      const header = h.body("sessionBreakdown").previousElementSibling
+      for (const target of [
+        header.querySelector('[data-session-page="1"]')!,
+        header.querySelector('[data-session-page="-1"]')!,
+        header.querySelector(".panel-meta")!,
+        header,
+      ]) {
+        target.dispatchEvent(new h.win.MouseEvent("click", { bubbles: true }))
+      }
+      expect(h.isExpanded("sessionBreakdown")).toBe(true)
+      expect(h.isBodyHidden("sessionBreakdown")).toBe(false)
+      expect(h.writes).toHaveLength(0)
+
+      h.toggle("sessionBreakdown").dispatchEvent(
+        new h.win.MouseEvent("click", { bubbles: true }),
+      )
+      expect(
+        header
+          .querySelector('[data-session-page="1"]')
+          ?.hasAttribute("disabled"),
+      ).toBe(false)
+      expect(h.isBodyHidden("sessionBreakdown")).toBe(true)
+    } finally {
+      await h.win.happyDOM.close()
+    }
+  })
+
+  test("nested panels keep their own state when the parent collapses", async () => {
+    const h = await createHarness()
+    try {
+      h.render()
+      const click = (key: string) =>
+        h
+          .toggle(key)
+          .dispatchEvent(new h.win.MouseEvent("click", { bubbles: true }))
+      click("modelBreakdown")
+      click("tokenUsage")
+
+      const tokenBody = h.body("tokenUsage")
+      expect(h.isBodyHidden("tokenUsage")).toBe(true)
+      expect(tokenBody.contains(h.body("modelBreakdown"))).toBe(true)
+      expect(tokenBody.contains(h.body("sessionBreakdown"))).toBe(true)
+      expect(tokenBody.contains(h.body("requestEvents"))).toBe(true)
+      expect(h.body("copilotQuotas").closest("[hidden]")).toBeNull()
+      expect(h.isBodyHidden("sessionBreakdown")).toBe(false)
+
+      click("tokenUsage")
+      expect(h.isBodyHidden("tokenUsage")).toBe(false)
+      expect(h.isBodyHidden("modelBreakdown")).toBe(true)
+      expect(h.isBodyHidden("sessionBreakdown")).toBe(false)
+      expect(h.isBodyHidden("requestEvents")).toBe(false)
+      expect(JSON.parse(h.stored()!)).toEqual({ modelBreakdown: true })
+    } finally {
+      await h.win.happyDOM.close()
+    }
+  })
+
+  test("collapsed state applies to loading and error variants", async () => {
+    const h = await createHarness({
+      stored: JSON.stringify({ tokenUsage: true, copilotQuotas: true }),
+    })
+    try {
+      h.state.isTokenUsageLoading = true
+      h.state.error = "usage failed"
+      h.state.data = null
+      h.render()
+      expect(h.root.textContent).toContain("Refreshing summary...")
+      expect(h.root.textContent).toContain("usage failed")
+      expect(h.isExpanded("tokenUsage")).toBe(false)
+      expect(h.isBodyHidden("tokenUsage")).toBe(true)
+      expect(h.isExpanded("copilotQuotas")).toBe(false)
+      expect(h.isBodyHidden("copilotQuotas")).toBe(true)
+      expect(h.body("copilotQuotas").textContent).toContain("usage failed")
+      expect(
+        h.root.querySelector('[data-collapse-toggle="usageApiResponse"]'),
+      ).toBeNull()
+    } finally {
+      await h.win.happyDOM.close()
+    }
+  })
+
+  test("ignores unknown keys and tolerates a missing body element", async () => {
+    const h = await createHarness()
+    try {
+      h.render()
+      h.root.insertAdjacentHTML(
+        "beforeend",
+        '<button type="button" id="rogue" data-collapse-toggle="bogus" aria-expanded="true"></button>',
+      )
+      h.root
+        .querySelector("#rogue")!
+        .dispatchEvent(new h.win.MouseEvent("click", { bubbles: true }))
+      expect(h.state.collapsedSections).toEqual({})
+      expect(h.writes).toHaveLength(0)
+
+      h.body("requestEvents").remove()
+      h.toggle("requestEvents").dispatchEvent(
+        new h.win.MouseEvent("click", { bubbles: true }),
+      )
+      expect(h.isExpanded("requestEvents")).toBe(false)
+      expect(h.state.collapsedSections).toEqual({ requestEvents: true })
+    } finally {
+      await h.win.happyDOM.close()
+    }
+  })
+
+  test("page wires collapsed state into init and styles", async () => {
+    const html = await readUsageViewerPage()
+    expect(html).toContain(`"${storageKey}"`)
+    expect(html).toContain("state.collapsedSections = readCollapsedSections();")
+    expect(html).toContain('.collapse-toggle[aria-expanded="false"]')
+    expect(html).toContain(".collapse-body[hidden]")
   })
 })

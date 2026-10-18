@@ -491,7 +491,7 @@ describe("model routes", () => {
     const { data } = (await response.json()) as { data: Array<OpencodeModel> }
     expect(data[0]).toMatchObject({
       id: "kimi/openai/gpt-5.1-codex",
-      limit: { context: 300_000, output: 128_000 },
+      limit: { context: 400_000, output: 128_000 },
     })
     expect(fetchMock).not.toHaveBeenCalled()
   })
@@ -606,14 +606,14 @@ describe("model routes", () => {
       name: "both limits above the default",
       context: 1_000_000,
       input: 900_000,
-      expectedContext: 300_000,
-      expectedInput: 300_000,
+      expectedContext: 400_000,
+      expectedInput: 400_000,
     },
     {
       name: "only context above the default",
-      context: 400_000,
+      context: 500_000,
       input: 250_000,
-      expectedContext: 300_000,
+      expectedContext: 400_000,
       expectedInput: 250_000,
     },
     {
@@ -625,15 +625,22 @@ describe("model routes", () => {
     },
     {
       name: "both limits equal to the default",
-      context: 300_000,
-      input: 300_000,
-      expectedContext: 300_000,
-      expectedInput: 300_000,
+      context: 400_000,
+      input: 400_000,
+      expectedContext: 400_000,
+      expectedInput: 400_000,
+    },
+    {
+      name: "limits between the old and new defaults",
+      context: 350_000,
+      input: 320_000,
+      expectedContext: 350_000,
+      expectedInput: 320_000,
     },
     {
       name: "missing input stays omitted",
       context: 1_000_000,
-      expectedContext: 300_000,
+      expectedContext: 400_000,
     },
     {
       name: "input still cannot exceed the original context",
@@ -649,6 +656,14 @@ describe("model routes", () => {
       input: 250_000,
       expectedContext: 150_000,
       expectedInput: 150_000,
+    },
+    {
+      name: "an explicitly configured old default",
+      configured: 300_000,
+      context: 1_000_000,
+      input: 900_000,
+      expectedContext: 300_000,
+      expectedInput: 300_000,
     },
     {
       name: "a higher configured ceiling",
@@ -687,8 +702,8 @@ describe("model routes", () => {
       configured,
       context: 1_000_000,
       input: 900_000,
-      expectedContext: 300_000,
-      expectedInput: 300_000,
+      expectedContext: 400_000,
+      expectedInput: 400_000,
     })),
   ])(
     "applies the OpenCode context window ceiling: $name",
@@ -1145,7 +1160,7 @@ describe("model routes", () => {
       id: "openrouter/openai/gpt-5.1-codex",
       modelID: "openrouter/openai/gpt-5.1-codex",
       capabilities: { input: ["text", "image"] },
-      limit: { context: 300_000, output: 128_000 },
+      limit: { context: 400_000, output: 128_000 },
     })
     expect(fetchMock).not.toHaveBeenCalled()
   })
@@ -1159,7 +1174,7 @@ describe("model routes", () => {
     expect(data.find((model) => model.id === "codex/gpt-6-luna")).toMatchObject(
       {
         capabilities: { input: ["text", "image", "pdf"] },
-        limit: { context: 300_000, input: 300_000, output: 128_000 },
+        limit: { context: 400_000, input: 400_000, output: 128_000 },
         cost: [
           { input: 0.1, output: 0.5, cache: { read: 0.01, write: 0.125 } },
           {
@@ -2360,6 +2375,8 @@ describe("model routes", () => {
       input_modalities: ["text", "image"],
       max_output_tokens: 393_216,
       shell_type: "shell_command",
+      tool_mode: "code_mode_only",
+      use_responses_lite: true,
     })
     expect(body.models.find((model) => model.slug === "kimi/k3")).toMatchObject(
       {
@@ -2718,14 +2735,60 @@ describe("model routes", () => {
     expect(
       body.models.find((model) => model.slug === "gpt-responses-http")
         ?.description,
-    ).toBe("gpt-responses-http through the Copilot Responses API.")
+    ).toBe("gpt-responses-http")
     expect(
       body.models.find((model) => model.slug === "gpt-responses-websocket")
         ?.description,
-    ).toBe("gpt-responses-websocket through the Copilot Responses API.")
+    ).toBe("gpt-responses-websocket")
   })
 
-  test("describes non-GPT Responses-capable Copilot models as adapter-backed", async () => {
+  test("discovers native Google models in both the regular list and Codex Messages catalog", async () => {
+    enabledProviders = ["google"]
+    providerConfigs.google = {
+      name: "google",
+      type: "google",
+      baseUrl: "https://google.example/v1beta",
+      apiKey: "google-key",
+      authType: "x-goog-api-key",
+    }
+    fetchMock.mockImplementation(() =>
+      Promise.resolve(
+        Response.json({
+          models: [
+            {
+              name: "models/gemini-3.8-flash",
+              displayName: "Gemini Flash",
+              inputTokenLimit: 1048576,
+              outputTokenLimit: 65536,
+              supportedGenerationMethods: ["generateContent"],
+            },
+          ],
+        }),
+      ),
+    )
+    const app = createApp()
+    const regular = await app.request("/v1/models")
+    expect(await regular.json()).toHaveProperty(
+      "data",
+      expect.arrayContaining([
+        expect.objectContaining({ id: "google/gemini-3.8-flash" }),
+      ]),
+    )
+    const response = await app.request("/v1/models?client=codex", {
+      headers: { "user-agent": "codex-cli/1.0.0" },
+    })
+    expect(response.status).toBe(200)
+    const body = (await response.json()) as CodexModelsResponse
+    expect(
+      body.models.find((model) => model.slug === "google/gemini-3.8-flash"),
+    ).toMatchObject({
+      description: "Gemini Flash",
+      use_responses_lite: true,
+      context_window: 1048576,
+    })
+  })
+
+  test("uses model names for Copilot model descriptions", async () => {
     const copilotModels = createCopilotModels([
       "claude-sonnet-4.6",
       "gemini-3-pro",
@@ -2748,10 +2811,10 @@ describe("model routes", () => {
     expect(
       body.models.find((model) => model.slug === "claude-sonnet-4-6")
         ?.description,
-    ).toBe("claude-sonnet-4.6 through the Copilot Messages adapter.")
+    ).toBe("claude-sonnet-4.6")
     expect(
       body.models.find((model) => model.slug === "gemini-3-pro")?.description,
-    ).toBe("gemini-3-pro through the Copilot Messages-to-Responses adapter.")
+    ).toBe("gemini-3-pro")
   })
 
   test("uses the bundled Codex catalog when the Codex provider is missing", async () => {
@@ -2804,7 +2867,7 @@ describe("model routes", () => {
     )
   })
 
-  test("copies matching Codex catalog models for provider-prefixed aliases", async () => {
+  test("copies matching Codex catalog models with provider suffixes", async () => {
     const solCatalogModel = {
       slug: "gpt-5.6-sol",
       display_name: "GPT-5.6 Sol",
@@ -2898,7 +2961,7 @@ describe("model routes", () => {
     ).toEqual({
       ...expectedSol,
       slug: "codex/gpt-5.6-sol",
-      display_name: "codex GPT-5.6 Sol",
+      display_name: "GPT-5.6 Sol (codex)",
       priority: 1_000,
     })
     expect(
@@ -2906,7 +2969,7 @@ describe("model routes", () => {
     ).toEqual({
       ...expectedLuna,
       slug: "opencode-go/gpt-5.6-luna",
-      display_name: "opencode-go GPT-5.6 Luna",
+      display_name: "GPT-5.6 Luna (opencode-go)",
       priority: expect.any(Number),
     })
     expect(
@@ -2915,7 +2978,7 @@ describe("model routes", () => {
       ...remoteOnlyCatalogModel,
       model_messages: bundledCodexCatalogJson.models[0].model_messages,
       slug: "codex/gpt-remote-only",
-      display_name: "codex GPT Remote Only",
+      display_name: "GPT Remote Only (codex)",
       priority: 1_002,
     })
     expect(

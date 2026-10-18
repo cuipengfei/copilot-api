@@ -106,6 +106,7 @@ const createMessagesResponse = (
 
 const { state } = await import("~/lib/state")
 const { closeUsageStore } = await import("~/lib/token-usage")
+const { traceIdMiddleware } = await import("~/lib/trace")
 const { tokenUsageRoute } = await import("~/routes/token-usage/route")
 const { responsesHandlerDependencies } =
   await import("~/routes/responses/handler")
@@ -143,6 +144,7 @@ const originalState = {
 
 function createApp(): Hono {
   const app = new Hono()
+  app.use(traceIdMiddleware)
   app.route("/v1/responses", responsesRoutes)
   app.route("/token-usage", tokenUsageRoute)
   return app
@@ -573,6 +575,24 @@ describe("responses handler token usage", () => {
           vendor: "anthropic",
           version: "test",
         },
+        {
+          capabilities: {
+            family: "deepseek",
+            limits: { max_prompt_tokens: 128000 },
+            object: "model_capabilities",
+            supports: { tool_calls: true },
+            tokenizer: "o200k_base",
+            type: "chat",
+          },
+          id: "deepseek-v4.1-flash",
+          model_picker_enabled: true,
+          name: "DeepSeek V4.1 Flash",
+          object: "model",
+          preview: false,
+          supported_endpoints: ["/v1/messages"],
+          vendor: "deepseek",
+          version: "test",
+        },
       ],
     }
     const handleMessages = mock(
@@ -703,7 +723,7 @@ describe("responses handler token usage", () => {
     expect(dispatchOptions?.subagentMarker).toEqual({
       agent_id: "child-thread",
       agent_type: "collab_spawn",
-      session_id: "child-thread",
+      session_id: "root-session",
     })
   })
 
@@ -981,6 +1001,18 @@ describe("responses handler token usage", () => {
       },
       method: "POST",
     })
+    const codexDeepSeekResponse = await app.request("/v1/responses", {
+      body: JSON.stringify({
+        model: "deepseek-v4.1-flash",
+        instructions: "Base instructions",
+        input: "hello",
+      }),
+      headers: {
+        "content-type": "application/json",
+        "user-agent": "codex-cli/1.0.0",
+      },
+      method: "POST",
+    })
     const otherResponse = await app.request("/v1/responses", {
       body: JSON.stringify({
         model: "claude-tips",
@@ -992,8 +1024,9 @@ describe("responses handler token usage", () => {
     })
 
     expect(codexResponse.status).toBe(200)
+    expect(codexDeepSeekResponse.status).toBe(200)
     expect(otherResponse.status).toBe(200)
-    expect(handleMessages).toHaveBeenCalledTimes(2)
+    expect(handleMessages).toHaveBeenCalledTimes(3)
     expect(handleMessages.mock.calls[0]?.[1].system).toEqual([
       {
         type: "text",
@@ -1002,6 +1035,13 @@ describe("responses handler token usage", () => {
       },
     ])
     expect(handleMessages.mock.calls[1]?.[1].system).toEqual([
+      {
+        type: "text",
+        text: `Base instructions\n\n${MESSAGES_TOOL_CALL_TIPS}`,
+        cache_control: { type: "ephemeral" },
+      },
+    ])
+    expect(handleMessages.mock.calls[2]?.[1].system).toEqual([
       {
         type: "text",
         text: "Base instructions",
@@ -1663,7 +1703,7 @@ describe("responses handler token usage", () => {
     expect(options?.subagentMarker).toEqual({
       agent_id: "child-thread",
       agent_type: "collab_spawn",
-      session_id: "child-thread",
+      session_id: "root-session",
     })
   })
 
@@ -1700,7 +1740,7 @@ describe("responses handler token usage", () => {
 
     const options = createResponses.mock.calls[0][1]
     const expectedSessionId = getUUID("root-session")
-    expect(options?.initiator).toBe("agent")
+    expect(options?.initiator).toBe("user")
     expect(options?.sessionId).toBe(expectedSessionId)
     expect(options?.requestId).toBe(
       generateRequestIdFromPayload(
@@ -1708,11 +1748,40 @@ describe("responses handler token usage", () => {
         expectedSessionId,
       ),
     )
-    expect(options?.subagentMarker).toEqual({
-      agent_id: "parent-thread",
-      agent_type: "collab_spawn",
-      session_id: "root-session",
+    expect(options?.subagentMarker).toBeNull()
+  })
+
+  test("uses session affinity for the Responses request id before the codex thread", async () => {
+    createResponses.mockImplementation((payload) =>
+      Promise.resolve(createResponsesResult(payload.model)),
+    )
+
+    const app = createApp()
+    const response = await app.request("/v1/responses", {
+      body: JSON.stringify({
+        input: [
+          {
+            content: [{ text: "hello", type: "input_text" }],
+            role: "user",
+          },
+        ],
+        model: "gpt-responses-test",
+      }),
+      headers: {
+        "content-type": "application/json",
+        "session-id": "root-session",
+        "x-opencode-session-id": " affinity-1 ",
+        "thread-id": "child-thread",
+      },
+      method: "POST",
     })
+
+    expect(response.status).toBe(200)
+    expect(createResponses).toHaveBeenCalledTimes(1)
+
+    const options = createResponses.mock.calls[0][1]
+    expect(options?.sessionId).toBe(getUUID("root-session"))
+    expect(options?.requestId).toBe(getUUID("affinity-1_"))
   })
 
   test.each([
@@ -1807,9 +1876,14 @@ describe("responses handler token usage", () => {
     expect(createResponses.mock.calls[0][1]?.subagentMarker).toBeNull()
   })
 
-  test("accepts known Codex subagent header values", async () => {
-    for (const agentType of ["compact", "memory_consolidation", "review"]) {
-      createResponses.mockReset()
+  test.each(
+    ["collab_spawn", "compact", "memory_consolidation", "review"].flatMap(
+      (agentType) =>
+        [false, true].map((withParent) => ({ agentType, withParent })),
+    ),
+  )(
+    "recognizes $agentType Codex subagents with parent header=$withParent",
+    async ({ agentType, withParent }) => {
       createResponses.mockImplementation((payload) =>
         Promise.resolve(createResponsesResult(payload.model)),
       )
@@ -1829,6 +1903,9 @@ describe("responses handler token usage", () => {
           "content-type": "application/json",
           "session-id": "root-session",
           "thread-id": "child-thread",
+          ...(withParent ?
+            { "x-codex-parent-thread-id": "parent-thread" }
+          : {}),
           "x-openai-subagent": agentType,
         },
         method: "POST",
@@ -1840,10 +1917,10 @@ describe("responses handler token usage", () => {
       expect(createResponses.mock.calls[0][1]?.subagentMarker).toEqual({
         agent_id: "child-thread",
         agent_type: agentType,
-        session_id: "child-thread",
+        session_id: "root-session",
       })
-    }
-  })
+    },
+  )
 
   test("omits oversized input images before forwarding to Copilot Responses", async () => {
     state.models = {

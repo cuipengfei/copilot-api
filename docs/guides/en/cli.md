@@ -54,7 +54,7 @@ Use `copilot-api auth login --provider deepseek`, `--provider dashscope`, `--pro
 
 OpenCode Go model listings (`/opencode-go/v1/models` and its entries in `/v1/models`) use the `opencode-go.models` section of [models.dev/api.json](https://models.dev/api.json). At startup the server loads `models-dev-api.json` from `COPILOT_API_HOME` (or the default app data directory). If a valid cache exists, the server starts listening and refreshes the catalog in the background every five minutes. Without a valid cache, startup waits for the first download and fails if it cannot obtain a catalog. Refreshes use `ETag` or `Last-Modified` when available; both validators are saved in `models-dev-api.meta.json` with a checksum of the JSON. A `304` keeps the existing cache, and a failed background refresh keeps the last valid disk or memory catalog. Models marked `status: deprecated` are excluded.
 
-Use `copilot-api auth login --provider custom` to add or update another third-party provider from the CLI. Choose manual entry or search the existing models.dev catalog. The catalog selection includes providers with an HTTP API URL using Anthropic Messages, OpenAI-compatible Chat Completions, or OpenAI Responses; `openrouter`, `github-copilot`, and `opencode-go` are excluded. The selected provider ID, protocol, and API URL prefill editable fields, and models.dev model prices are used for token cost estimates in USD unless a model has explicit pricing in `config.json`. The command then prompts for masked `apiKey` and `authType`; `authType` may be left as the type default or set to `x-api-key` / `authorization`. The desktop custom-provider form offers the same catalog selection and manual entry.
+Use `copilot-api auth login --provider custom` to add or update another third-party provider from the CLI. Choose manual entry or search the existing models.dev catalog. The catalog selection includes providers with an HTTP API URL using Anthropic Messages, OpenAI-compatible Chat Completions, OpenAI Responses, or Google Gemini; `openrouter`, `github-copilot`, and `opencode-go` are excluded. The selected provider ID, protocol, and API URL prefill editable fields, and models.dev model prices are used for token cost estimates in USD unless a model has explicit pricing in `config.json`. The command then prompts for masked `apiKey` and `authType`; `authType` may be left as the type default or set to `x-api-key` / `x-goog-api-key` / `authorization`. The desktop custom-provider form offers the same catalog selection and manual entry.
 
 Gateway API keys live under `auth.apiKeys` in `config.json`. Manage them with `copilot-api auth keys` (one operation per invocation): add a key with `--add <key>`, remove one with `--remove <key>`, list all with `--list`, or clear them all with `--clear`. Clients authenticate with any configured key via `x-api-key` or `Authorization: Bearer`. Without keys, loopback listeners start with authentication bypassed and print an info message; non-loopback listeners refuse to start.
 
@@ -66,27 +66,28 @@ Gateway API keys live under `auth.apiKeys` in `config.json`. Manage them with `c
 
 ## Example Usage
 
-Common `npx` commands:
+Common commands for the npm package (Bun >= 1.4.0 recommended):
 
 ```sh
 # Start the gateway
-npx @jeffreycao/copilot-api@latest start
+bunx --bun @jeffreycao/copilot-api start
 
 # Start on a custom port with verbose logging
-npx @jeffreycao/copilot-api@latest start --port 8080 --verbose
+bunx --bun @jeffreycao/copilot-api start --port 8080 --verbose
 
 # Run the auth flow
-npx @jeffreycao/copilot-api@latest auth login
+bunx --bun @jeffreycao/copilot-api auth login
 
 # Configure a third-party provider, then run without GitHub Copilot
-npx @jeffreycao/copilot-api@latest auth login --provider dashscope
-npx @jeffreycao/copilot-api@latest start
+bunx --bun @jeffreycao/copilot-api auth login --provider dashscope
+bunx --bun @jeffreycao/copilot-api start
 
 # Print debug information as JSON
-npx @jeffreycao/copilot-api@latest debug --json
+bunx --bun @jeffreycao/copilot-api debug --json
 
-# Run the published CLI with Bun instead of Node.js
-bunx --bun @jeffreycao/copilot-api@latest start
+# Or install globally, then force the installed CLI to use Bun
+bun add --global @jeffreycao/copilot-api
+bun run --bun copilot-api start
 ```
 
 OpenAI-compatible provider examples after configuring `dashscope`:
@@ -100,3 +101,5 @@ curl http://localhost:4141/dashscope/v1/messages \
   -H "content-type: application/json" \
   -d '{"model":"qwen3.6-plus","max_tokens":1024,"messages":[{"role":"user","content":"hello"}]}'
 ```
+
+For cache behavior, upgrades, and the Node.js alternative, see [Installation and Startup](getting-started.md#using-with-bun).

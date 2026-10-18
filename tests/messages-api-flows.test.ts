@@ -139,6 +139,30 @@ afterEach(async () => {
   Object.assign(responsesUtilsDependencies, defaultResponsesUtilsDependencies)
 })
 
+test("messages Chat Completions flow shares the main cache key with dispatched subagents", async () => {
+  const response = await handleWithChatCompletions(
+    createContext(),
+    {
+      model: "gpt-test",
+      max_tokens: 128,
+      metadata: { user_id: JSON.stringify({ session_id: "root" }) },
+      messages: [{ role: "user", content: "hello" }],
+    },
+    {
+      logger,
+      requestId: "request-subagent",
+      subagentMarker: {
+        session_id: "child",
+        agent_id: "agent-a",
+        agent_type: "collab_spawn",
+      },
+    },
+  )
+
+  expect(response.status).toBe(200)
+  expect(capturedPayload?.prompt_cache_key).toBe("root")
+})
+
 test.each(["catalog", "live"])(
   "messages Chat Completions flow preserves PDFs supported by %s metadata",
   async (source) => {

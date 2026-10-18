@@ -84,27 +84,6 @@ function isCopilotCodexCandidate(model: Model): boolean {
   )
 }
 
-function describeCopilotAdapter(model: Model): string {
-  const supportsResponses = model.supported_endpoints?.some((endpoint) =>
-    RESPONSES_ENDPOINTS.has(endpoint),
-  )
-  // Codex clients only use the native Responses API for gpt-* models; other
-  // models fall back to the Messages route even when they advertise native
-  // /responses support (see shouldFallbackToMessages).
-  if (model.id.startsWith("gpt") && supportsResponses) {
-    return `${model.name} through the Copilot Responses API.`
-  }
-  // Mirrors the Messages route dispatch order: native Messages first, then
-  // the Messages-to-Responses translation, then Messages-to-Chat.
-  if (model.supported_endpoints?.includes(MESSAGES_ENDPOINT)) {
-    return `${model.name} through the Copilot Messages adapter.`
-  }
-  if (supportsResponses) {
-    return `${model.name} through the Copilot Messages-to-Responses adapter.`
-  }
-  return `${model.name} through the Copilot Messages-to-Chat adapter.`
-}
-
 function createCopilotCodexCandidate(
   model: Model,
 ): SyntheticCodexModelCandidate {
@@ -115,7 +94,7 @@ function createCopilotCodexCandidate(
     slug: toClientModelId(model.id),
     catalogSlug: model.id,
     displayName: model.name,
-    description: describeCopilotAdapter(model),
+    description: model.name,
     contextWindow: positiveNumber(
       model.capabilities.limits.max_prompt_tokens,
       256_000,
@@ -179,13 +158,9 @@ async function getProviderCodexCandidates(
 }
 
 function isMessagesFallbackProviderType(type: ProviderType): boolean {
-  return type === "anthropic" || type === "openai-compatible"
-}
-
-function describeProviderAdapter(type: ProviderType): string {
-  if (type === "anthropic") return "Messages"
-  if (type === "openai-responses") return "Messages-to-Responses"
-  return "Messages-to-Chat"
+  return (
+    type === "anthropic" || type === "openai-compatible" || type === "google"
+  )
 }
 
 function createProviderCodexCandidate(
@@ -205,7 +180,6 @@ function createProviderCodexCandidate(
     getStringField(remoteModel ?? {}, "display_name")
     ?? getStringField(remoteModel ?? {}, "name")
     ?? modelId
-  const adapterName = describeProviderAdapter(effectiveType)
   // Codex clients only drive gpt-* models through the native Responses API;
   // other Responses-capable models fall back to the Messages adapter (see
   // shouldFallbackToMessages), so only gpt-* models require upstream catalog
@@ -219,7 +193,7 @@ function createProviderCodexCandidate(
     catalogMatchRequired: requiresCatalogMatch,
     providerName: providerConfig.name,
     displayName: `${displayName} (${providerConfig.name})`,
-    description: `${displayName} through the ${providerConfig.name} ${adapterName} adapter.`,
+    description: displayName,
     contextWindow: metadata.contextWindow ?? 256_000,
     maxOutputTokens: metadata.maxOutputTokens ?? 32_000,
     inputModalities: normalizeInputModalities(metadata.inputModalities),

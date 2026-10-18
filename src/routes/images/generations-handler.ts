@@ -4,11 +4,16 @@ import { forwardError } from "~/lib/error"
 import {
   createForwardRequest,
   handleCodexImages,
+  imageRouteDependencies,
   logger,
   routeImagesRequest,
   snapshotRequestHeaders,
   type ParsedImagesRequest,
 } from "~/routes/images/shared"
+import {
+  handleXaiImageGeneration,
+  xaiImagesRequestErrorResponse,
+} from "~/routes/images/xai-handler"
 
 function createJsonImagesRequest(
   request: Request,
@@ -72,6 +77,22 @@ async function parseGenerationsRequest(
 
 export async function handleImagesGenerations(c: Context): Promise<Response> {
   try {
+    const configuredModel = imageRouteDependencies.getImageGenerationModel()
+    if (configuredModel.status === "invalid") {
+      return c.json(
+        {
+          error: {
+            message: configuredModel.message,
+            type: "invalid_request_error",
+          },
+        },
+        400,
+      )
+    }
+    if (configuredModel.status === "xai") {
+      return await handleXaiImageGeneration(c, configuredModel.model)
+    }
+
     const parsed = await parseGenerationsRequest(c.req.raw)
     if (parsed instanceof Request) {
       return await handleCodexImages(c, "generations", undefined, parsed)
@@ -79,6 +100,9 @@ export async function handleImagesGenerations(c: Context): Promise<Response> {
 
     return await routeImagesRequest(c, "generations", parsed)
   } catch (error) {
+    const invalidRequest = xaiImagesRequestErrorResponse(c, error)
+    if (invalidRequest) return invalidRequest
+
     logger.error("images.generations.error", { error })
     return await forwardError(c, error)
   }

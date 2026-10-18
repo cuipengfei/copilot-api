@@ -33,7 +33,6 @@ import {
   applyDashScopePreserveThinkingDefault,
   applyOpenAICompatibleContextCache,
   isDashScopeAliyunProvider,
-  normalizeDashScopeAssistantTextContent,
 } from "~/lib/dashscope"
 import { HTTPError } from "~/lib/error"
 import { createHandlerLogger, debugJson, debugLazy } from "~/lib/logger"
@@ -54,12 +53,12 @@ import { isResponsesStream, parseUserIdMetadata } from "~/lib/utils"
 import {
   translateToAnthropic,
   translateToOpenAI,
-} from "~/routes/messages/non-stream-translation"
+} from "~/routes/messages/completions-translation"
 import {
   flushPendingAnthropicStreamEvents,
   translateChunkToAnthropicEvents,
   translateErrorToAnthropicErrorEvent,
-} from "~/routes/messages/stream-translation"
+} from "~/routes/messages/completions-stream-translation"
 import {
   buildErrorEvent,
   createResponsesStreamState,
@@ -112,6 +111,7 @@ import {
   logReasoningTextOpaqueDrops,
 } from "./local-behavior"
 import consola from "consola"
+import { handleGoogleProviderMessages } from "./google-handler"
 
 const logger = createHandlerLogger("provider-messages-handler")
 
@@ -177,6 +177,16 @@ export async function handleProviderMessagesForProvider(
 
     applyModelDefaults(payload, modelConfig)
     appendClaudeContinuationMessage(payload)
+
+    if (effectiveType === "google") {
+      stripWebSearchServerTool(payload)
+      return await handleGoogleProviderMessages(
+        c,
+        payload,
+        providerConfig,
+        usageEndpoint,
+      )
+    }
 
     if (effectiveType === "openai-responses") {
       if (hasWebSearchServerTool(payload)) {
@@ -682,10 +692,6 @@ const createOpenAICompatiblePayload = (
 
   if (!Object.hasOwn(openAIPayload, "parallel_tool_calls")) {
     openAIPayload.parallel_tool_calls = true
-  }
-
-  if (isDashScopeProvider) {
-    normalizeDashScopeAssistantTextContent(openAIPayload.messages)
   }
 
   const contextCacheEnabled = modelConfig?.contextCache ?? isDashScopeProvider

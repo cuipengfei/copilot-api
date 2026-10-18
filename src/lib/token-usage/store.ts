@@ -108,6 +108,10 @@ export interface TokenUsageModelSummary extends TokenUsageTotals {
   model: string
 }
 
+export interface TokenUsageSessionSummary extends TokenUsageTotals {
+  session_id: string
+}
+
 export interface TokenUsageEventRecord {
   cache_creation_input_tokens: number
   cache_read_input_tokens: number
@@ -165,8 +169,8 @@ export interface TokenUsageDailySummary {
   totals: TokenUsageTotals
 }
 
-export interface TokenUsageEventsPage {
-  items: Array<TokenUsageEventRecord>
+interface TokenUsagePage<T> {
+  items: Array<T>
   page: number
   page_size: number
   period: TokenUsagePeriod
@@ -179,6 +183,9 @@ export interface TokenUsageEventsPage {
   total: number
   total_pages: number
 }
+
+export type TokenUsageEventsPage = TokenUsagePage<TokenUsageEventRecord>
+export type TokenUsageSessionsPage = TokenUsagePage<TokenUsageSessionSummary>
 
 const DB_PATH_ENV = "COPILOT_API_SQLITE_DB_PATH"
 const DEFAULT_DB_FILENAME = "copilot-api.sqlite"
@@ -909,6 +916,74 @@ function getModelCostMap(
   return costMap
 }
 
+function getSessionSummaries(
+  db: SqliteDatabase,
+  range: { endMs: number; startMs: number },
+  limit: number,
+  offset: number,
+): Array<TokenUsageSessionSummary> {
+  const rows = db
+    .prepare(
+      `
+    SELECT
+      session_id,
+      COUNT(*) AS request_count,
+      COALESCE(SUM(input_tokens), 0) AS input_tokens,
+      COALESCE(SUM(output_tokens), 0) AS output_tokens,
+      COALESCE(SUM(cache_read_input_tokens), 0) AS cache_read_input_tokens,
+      COALESCE(SUM(cache_creation_input_tokens), 0) AS cache_creation_input_tokens,
+      SUM(total_nano_aiu) AS total_nano_aiu,
+      COALESCE(SUM(total_tokens), 0) AS total_tokens
+    FROM token_usage_events
+    WHERE created_at_ms >= ? AND created_at_ms < ?
+    GROUP BY session_id
+    ORDER BY total_tokens DESC, session_id ASC
+    LIMIT ? OFFSET ?
+  `,
+    )
+    .all(range.startMs, range.endMs, limit, offset) as Array<
+    Record<string, unknown>
+  >
+  const sessionIds = rows.map((row) => stringFromRow(row, "session_id"))
+  const costRows = db
+    .prepare(
+      `
+    SELECT
+      session_id,
+      cost_currency,
+      COALESCE(SUM(total_cost_nanos), 0) AS total_cost_nanos
+    FROM token_usage_events
+    WHERE
+      created_at_ms >= ?
+      AND created_at_ms < ?
+      AND session_id IN (${sessionIds.map(() => "?").join(", ")})
+      AND cost_currency IS NOT NULL
+      AND total_cost_nanos IS NOT NULL
+    GROUP BY session_id, cost_currency
+    ORDER BY session_id ASC, cost_currency ASC
+  `,
+    )
+    .all(range.startMs, range.endMs, ...sessionIds) as Array<
+    Record<string, unknown>
+  >
+  const costMap = new Map<string, Array<TokenUsageCost>>()
+  for (const row of costRows) {
+    const cost = costFromRow(row)
+    if (cost) {
+      const id = stringFromRow(row, "session_id")
+      costMap.set(id, [...(costMap.get(id) ?? []), cost])
+    }
+  }
+
+  return rows.map((row) => {
+    const session_id = stringFromRow(row, "session_id")
+    return {
+      ...totalsFromRow(row, costMap.get(session_id) ?? []),
+      session_id,
+    }
+  })
+}
+
 function getModelSummaries(
   db: SqliteDatabase,
   range: { endMs: number; startMs: number },
@@ -1158,6 +1233,42 @@ export async function getTokenUsageEventsPage(input: {
       start_ms: range.startMs,
       start_utc: new Date(range.startMs).toISOString(),
     },
+    total,
+    total_pages: Math.max(1, Math.ceil(total / pageSize)),
+  }
+}
+
+export async function getTokenUsageSessionsPage(input: {
+  page: number
+  pageSize: number
+  period: TokenUsagePeriod
+}): Promise<TokenUsageSessionsPage> {
+  const page = Math.max(1, Math.floor(input.page))
+  const pageSize = Math.min(100, Math.max(1, Math.floor(input.pageSize)))
+  if (!isTokenUsageStorageEnabled()) {
+    return { ...createEmptyEventsPage(input), items: [] }
+  }
+
+  await flushTokenUsageEvents()
+  const db = await getDb()
+  const range = getPeriodRangeFromDb(db, input.period)
+  const totalRow = db
+    .prepare(
+      `
+    SELECT COUNT(DISTINCT session_id) AS total
+    FROM token_usage_events
+    WHERE created_at_ms >= ? AND created_at_ms < ?
+  `,
+    )
+    .get(range.startMs, range.endMs) as Record<string, unknown> | undefined
+  const total = numberFromRow(totalRow, "total")
+
+  return {
+    items: getSessionSummaries(db, range, pageSize, (page - 1) * pageSize),
+    page,
+    page_size: pageSize,
+    period: input.period,
+    range: rangePayload(range),
     total,
     total_pages: Math.max(1, Math.ceil(total / pageSize)),
   }

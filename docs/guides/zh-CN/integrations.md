@@ -108,6 +108,6 @@ cp plugin/opencode/agent-context.js ~/.config/opencode/plugins/
 - v1 在子会话首条聊天消息前添加 marker system reminder（`__SUBAGENT_MARKER__...`），让这个 AI gateway 识别 subagent 请求
 - v2 使用原生的 `x-parent-session-id`，插件只处理根会话 ID，保留原生的子会话和会话 affinity 请求头
 
-v1 使用 `session.created`、`session.deleted`、`chat.message` 和 `chat.headers` 钩子；v2 使用 `session.hook("model.request", ...)` 修改请求头。原生的 `x-session-id` 保留为当前会话 ID。Messages API 保留 `metadata.user_id` 的解析优先级；没有该值时，先读取 `x-root-session-id`，再回退到 `x-session-id`。遇到父会话缺失、查询失败或循环引用时，保留已有请求头。
+v1 使用 `session.created`、`session.deleted`、`chat.message` 和 `chat.headers` 钩子；v2 使用 `session.hook("model.request", ...)` 修改请求头。原生的 `x-session-id` 保留为当前会话 ID。Messages API 保留 `metadata.user_id` 的解析优先级；没有该值时，先读取 `x-root-session-id`，再回退到 `x-session-id`。prompt cache key 的优先级相反：`session-id`、`x-root-session-id`、`x-session-id` 优先于 `metadata.user_id`，最后回退到会话 affinity，让同一根会话下的子代理共享缓存分组。遇到父会话缺失、查询失败或循环引用时，保留已有请求头。
 
 Responses API 按 `session-id`、`x-root-session-id`、`x-session-id` 的顺序读取会话 ID，跳过空白值。

@@ -41,6 +41,10 @@ export interface AppConfig {
   // via /responses. Leave unset to disable (the tool is then stripped).
   // Mixing web_search with other tools is not supported.
   messageApiWebSearchModel?: string
+  // Top-level image routes stay on the OpenAI/Codex path until these are set
+  // to an xai/model alias. Only the xAI Imagine API is supported.
+  imageGenerationModel?: string
+  imageEditModel?: string
   // Model used for Claude Code background security-monitor requests on
   // /v1/messages and provider message APIs: requests without tools, with
   // `stop_sequences: ["</block>"]` and a system block starting with
@@ -111,11 +115,12 @@ export type CodexReasoningEffort =
   "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra"
 
 export type ProviderAuthType =
-  "authorization" | "azure-entra" | "oauth2" | "x-api-key"
+  "authorization" | "azure-entra" | "oauth2" | "x-api-key" | "x-goog-api-key"
 export const SUPPORTED_PROVIDER_TYPES = [
   "anthropic",
   "openai-compatible",
   "openai-responses",
+  "google",
 ] as const
 export type ProviderType = (typeof SUPPORTED_PROVIDER_TYPES)[number]
 export type ToolContentSupportType = "array" | "image" | "pdf"
@@ -143,7 +148,7 @@ export const defaultContextManagement = {
   responses: false,
 } satisfies Required<ContextManagementConfig>
 
-export const defaultOpencodeModelContextWindow = 300_000
+export const defaultOpencodeModelContextWindow = 400_000
 
 export const defaultConfig: AppConfig = {
   auth: {
@@ -375,6 +380,13 @@ function mergeDefaultConfig(inputConfig: AppConfig): {
         ...modelMappings,
       },
       contextManagement: {
+        ...((
+          config.contextManagement
+          && typeof config.contextManagement === "object"
+          && !Array.isArray(config.contextManagement)
+        ) ?
+          config.contextManagement
+        : {}),
         ...defaultContextManagementConfig,
         ...contextManagement,
       },
@@ -391,7 +403,10 @@ function mergeDefaultConfig(inputConfig: AppConfig): {
         ...defaultModelReasoningEfforts,
         ...modelReasoningEfforts,
       },
-      upstreamTransport,
+      upstreamTransport: {
+        ...migratedUpstreamTransport,
+        ...upstreamTransport,
+      },
     },
     changed: true,
   }

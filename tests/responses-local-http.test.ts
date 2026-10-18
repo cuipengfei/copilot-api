@@ -22,6 +22,7 @@ import { invalidateAutoSession } from "~/lib/auto-session"
 import { shutdownLoggerRuntime } from "~/lib/logger"
 import { state } from "~/lib/state"
 import { closeUsageStore, getTokenUsageEventsPage } from "~/lib/token-usage"
+import { traceIdMiddleware } from "~/lib/trace"
 import type { ResponsesResult } from "~/lib/types/responses"
 import { getUUID } from "~/lib/utils"
 import { responsesRoutes } from "~/routes/responses/route"
@@ -91,6 +92,7 @@ const server = Bun.serve({
 const serverUrl = `http://127.0.0.1:${server.port}`
 
 const app = new Hono()
+app.use(traceIdMiddleware)
 app.route("/v1/responses", responsesRoutes)
 
 let tempDir: string

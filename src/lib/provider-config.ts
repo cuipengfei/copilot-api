@@ -37,7 +37,13 @@ export interface ResolvedProviderConfig {
 }
 
 export function normalizeProviderBaseUrl(url: string): string {
-  return url.trim().replace(/\/+$/u, "")
+  return url
+    .trim()
+    .replace(/\/+$/u, "")
+    .replace(
+      /^https:\/\/opencode\.ai\/zen\/go(?=\/|$)/u,
+      "https://opencode.ai/inference/go",
+    )
 }
 
 export function isSupportedProviderType(value: string): value is ProviderType {
@@ -47,6 +53,7 @@ export function isSupportedProviderType(value: string): value is ProviderType {
 function getDefaultProviderAuthType(
   providerType: ProviderType,
 ): ProviderAuthType {
+  if (providerType === "google") return "x-goog-api-key"
   return providerType === "anthropic" ? "x-api-key" : "authorization"
 }
 
@@ -60,8 +67,8 @@ export function resolveProviderAuthType(
     return defaultAuthType
   }
 
-  if (authType === "x-api-key") {
-    return "x-api-key"
+  if (authType === "x-api-key" || authType === "x-goog-api-key") {
+    return authType
   }
 
   if (authType === "oauth2") {

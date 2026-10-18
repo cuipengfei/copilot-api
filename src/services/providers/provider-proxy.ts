@@ -7,6 +7,7 @@ import {
 
 import {
   getUpstreamTransportConfig,
+  normalizeProviderBaseUrl,
   type ResolvedProviderConfig,
 } from "~/lib/config"
 import { getGrokBuildVersion } from "~/lib/grok-build"
@@ -16,8 +17,12 @@ import { createTimeoutDispatcher } from "~/lib/timeout-dispatcher"
 import type { AnthropicMessagesPayload } from "~/lib/types/anthropic"
 import type { ChatCompletionsPayload } from "~/lib/types/chat-completions"
 import type { ResponsesPayload } from "~/lib/types/responses"
+import type { GoogleModelsResponse } from "~/lib/types/google"
 import { parseUserIdMetadata } from "~/lib/utils"
 import { fetchUpstreamWithLifecycle } from "~/services/upstream-http"
+
+const OPENCODE_GO_PROVIDER_NAME = "opencode-go"
+const OPENCODE_SESSION_HEADER = "x-opencode-session"
 
 const SHARED_FORWARDABLE_HEADERS = ["accept", "user-agent"] as const
 
@@ -43,6 +48,17 @@ export function resolveProviderEndpointUrl(
   providerConfig: ResolvedProviderConfig,
   endpoint: string,
 ): string {
+  if (providerConfig.name === OPENCODE_GO_PROVIDER_NAME) {
+    const base = normalizeProviderBaseUrl(providerConfig.baseUrl)
+    const apiBase = /\/v\d+(?:alpha|beta)?$/u.test(base) ? base : `${base}/v1`
+    return `${apiBase}/${endpoint}`
+  }
+  if (providerConfig.type === "google") {
+    const base = providerConfig.baseUrl.replace(/\/+$/u, "")
+    const apiBase =
+      /\/v\d+(?:alpha|beta)?$/u.test(base) ? base : `${base}/v1beta`
+    return `${apiBase}/${endpoint}`
+  }
   const apiBaseUrl =
     providerConfig.modelsDevProviderId ?
       providerConfig.baseUrl.replace(/\/(?:chat\/completions|responses)$/u, "")
@@ -55,8 +71,11 @@ export function buildProviderUpstreamHeaders(
   requestHeaders: Headers,
 ): Record<string, string> {
   const authHeaders: Record<string, string> = {}
-  if (providerConfig.authType === "x-api-key") {
-    authHeaders["x-api-key"] = providerConfig.apiKey
+  if (
+    providerConfig.authType === "x-api-key"
+    || providerConfig.authType === "x-goog-api-key"
+  ) {
+    authHeaders[providerConfig.authType] = providerConfig.apiKey
   } else {
     authHeaders.authorization = `Bearer ${providerConfig.apiKey}`
   }
@@ -92,13 +111,18 @@ export function buildProviderUpstreamHeaders(
   return headers
 }
 
-const OPENCODE_GO_PROVIDER_NAME = "opencode-go"
-const OPENCODE_SESSION_HEADER = "x-opencode-session"
-
-const resolveOpencodeMessagesSession = (
+export const resolveOpencodeMessagesSession = (
   payload: AnthropicMessagesPayload,
 ): string | undefined => {
-  const sessionAffinity = requestContext.getStore()?.sessionAffinity?.trim()
+  const store = requestContext.getStore()
+  // Keep sibling subagents on the root session so opencode-go routes them to the
+  // same prompt cache group, matching the chat completions/responses flows.
+  const rootSessionId = store?.rootSessionId?.trim()
+  if (rootSessionId) {
+    return rootSessionId
+  }
+
+  const sessionAffinity = store?.sessionAffinity?.trim()
   if (sessionAffinity) {
     return sessionAffinity
   }
@@ -112,7 +136,7 @@ const resolveOpencodeMessagesSession = (
   return sessionId ?? userId
 }
 
-const applyOpencodeSessionHeader = (
+export const applyOpencodeSessionHeader = (
   providerConfig: ResolvedProviderConfig,
   headers: Record<string, string>,
   session: string | undefined,
@@ -274,11 +298,54 @@ export async function forwardProviderModels(
   providerConfig: ResolvedProviderConfig,
   requestHeaders: Headers,
 ): Promise<Response> {
+  if (providerConfig.type === "google") {
+    return await forwardGoogleModels(providerConfig, requestHeaders)
+  }
   return await fetch(resolveProviderEndpointUrl(providerConfig, "models"), {
     method: "GET",
     headers: buildProviderUpstreamHeaders(providerConfig, requestHeaders),
     signal: AbortSignal.timeout(PROVIDER_MODELS_TIMEOUT_MS),
   })
+}
+
+async function forwardGoogleModels(
+  provider: ResolvedProviderConfig,
+  requestHeaders: Headers,
+): Promise<Response> {
+  const data: Array<Record<string, unknown>> = []
+  const pageTokens = new Set<string>()
+  let pageToken: string | undefined
+  const signal = AbortSignal.timeout(PROVIDER_MODELS_TIMEOUT_MS)
+  do {
+    const url = new URL(resolveProviderEndpointUrl(provider, "models"))
+    url.searchParams.set("pageSize", "1000")
+    if (pageToken) url.searchParams.set("pageToken", pageToken)
+    const upstream = await fetch(url, {
+      headers: buildProviderUpstreamHeaders(provider, requestHeaders),
+      signal,
+    })
+    if (!upstream.ok) return upstream
+    const body = (await upstream.json()) as GoogleModelsResponse
+    for (const model of body.models ?? []) {
+      if (!model.supportedGenerationMethods?.includes("generateContent"))
+        continue
+      data.push({
+        id: model.name.replace(/^models\//u, ""),
+        object: "model",
+        owned_by: provider.name,
+        name: model.displayName,
+        display_name: model.displayName,
+        description: model.description,
+        context_window: model.inputTokenLimit,
+        max_output_tokens: model.outputTokenLimit,
+      })
+    }
+    pageToken = body.nextPageToken
+    if (pageToken && pageTokens.has(pageToken))
+      throw new Error("Google models returned a repeated page token")
+    if (pageToken) pageTokens.add(pageToken)
+  } while (pageToken)
+  return Response.json({ object: "list", data, has_more: false })
 }
 
 /** Align with Codex images: long-running generation/edits need a generous cap. */
@@ -342,7 +409,10 @@ export async function forwardProviderImages(
     headers,
     body: request.body,
     duplex: "half",
-    signal: AbortSignal.timeout(PROVIDER_IMAGES_TIMEOUT_MS),
+    signal: AbortSignal.any([
+      request.signal,
+      AbortSignal.timeout(PROVIDER_IMAGES_TIMEOUT_MS),
+    ]),
   }
 
   const upstreamUrl = resolveProviderRequestUrl(

@@ -1,3 +1,4 @@
+import type { ConfigFieldId, ConfigSection } from '../lib/config-fields'
 import en from './en'
 import zh from './zh'
 
@@ -112,6 +113,7 @@ export interface Locale {
     waitingAuth: string
     back: string
     backToHome: string
+    backToProviders: string
     verifying: string
     confirmAdd: string
     authFailed: string
@@ -137,14 +139,18 @@ export interface Locale {
     overviewPort: string
     overviewModels: string
     overviewLastRefresh: string
-    premiumUsed: string
-    quotaReset: string
     serviceAddress: string
     authHeader: string
     copy: string
     quotaUsage: string
+    quotaResetsOn: string
+    quotaUnavailable: string
     quotaUsedPercent: string
     quotaRemainingPercent: string
+    providerOverview: string
+    providerOverviewSummary: string
+    providerOverviewManage: string
+    providerOverviewModels: string
     refreshing: string
     refresh: string
     tokenUsage: string
@@ -170,6 +176,9 @@ export interface Locale {
     tokenUsageProvider: string
     tokenUsageRequests: string
     tokenUsageSession: string
+    tokenUsageSessionBreakdown: string
+    tokenUsageSessionsCount: string
+    tokenUsageSessionsLoadFailed: string
     tokenUsageSource: string
     tokenUsageTime: string
     tokenUsageTotal: string
@@ -221,6 +230,9 @@ export interface Locale {
     helpDocs: string
   }
   server: {
+    bunFallback: string
+    runtime: string
+    spawnFailed: string
     tokenNotFound: string
     authRequired: string
     portInUse: string
@@ -264,6 +276,15 @@ export interface Locale {
     noProxy: string
     noProxyDesc: string
     sectionStartup: string
+    serverRuntime: string
+    serverRuntimeDesc: string
+    runtimeBun: string
+    runtimeNode: string
+    bunDetecting: string
+    bunAvailable: string
+    bunUnsupported: string
+    bunUnavailable: string
+    bunProxyNote: string
     oauthApp: string
     oauthAppDefault: string
     oauthAppDesc: string
@@ -288,6 +309,60 @@ export interface Locale {
     cancel: string
     save: string
     saving: string
+  }
+  configEditor: {
+    title: string
+    editMode: string
+    form: string
+    json: string
+    groupsLabel: string
+    resetGroup: string
+    useDefault: string
+    inherited: string
+    explicit: string
+    defaultValue: string
+    explicitValue: string
+    reload: string
+    reloadDiscard: string
+    mergeLatest: string
+    mergeConflicts: string
+    keepMine: string
+    keepDisk: string
+    merged: string
+    legacyWarning: string
+    errors: {
+      conflict: string
+      validation: string
+      readFailed: string
+      saveFailed: string
+      applyFailed: string
+    }
+    discard: string
+    review: string
+    close: string
+    saveApply: string
+    save: string
+    synced: string
+    unsaved: string
+    unsavedOther: string
+    offline: string
+    invalid: string
+    savedApplied: string
+    savedOffline: string
+    savedNotApplied: string
+    retryApply: string
+    showSecrets: string
+    format: string
+    jsonContent: string
+    sharedDraft: string
+    maskedReadOnly: string
+    maskedUnavailable: string
+    mappingDefaults: string
+    autoModelDefault: string
+    autoModelOff: string
+    autoModelCustom: string
+    groups: Record<ConfigSection, string>
+    fields: Record<ConfigFieldId, { label: string; description: string }>
   }
   advancedConfig: {
     title: string
@@ -357,7 +432,8 @@ function interpolate(template: string, vars?: LocaleVars): string {
 
   let result = template
   for (const [key, value] of Object.entries(vars)) {
-    result = result.replace(`{{${key}}}`, String(value))
+    // A function replacer keeps $&, $$, $` and $' literal in the value.
+    result = result.replace(`{{${key}}}`, () => String(value))
   }
   return result
 }
