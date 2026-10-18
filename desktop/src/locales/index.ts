@@ -320,6 +320,8 @@ export interface Locale {
     useDefault: string
     inherited: string
     explicit: string
+    defaultValue: string
+    explicitValue: string
     reload: string
     reloadDiscard: string
     mergeLatest: string
@@ -430,7 +432,8 @@ function interpolate(template: string, vars?: LocaleVars): string {
 
   let result = template
   for (const [key, value] of Object.entries(vars)) {
-    result = result.replace(`{{${key}}}`, String(value))
+    // A function replacer keeps $&, $$, $` and $' literal in the value.
+    result = result.replace(`{{${key}}}`, () => String(value))
   }
   return result
 }

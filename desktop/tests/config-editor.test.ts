@@ -538,6 +538,36 @@ describe('configuration validation and editing helpers', () => {
     expect(Object.hasOwn(Object.prototype, 'flag')).toBe(false)
   })
 
+  test('does not create or replace parents when removing missing nested values', () => {
+    for (const config of [
+      {},
+      { upstreamTransport: {} },
+      { upstreamTransport: false },
+      { upstreamTransport: null },
+      { upstreamTransport: [] },
+      { upstreamTransport: { future: { keep: true } } },
+    ]) {
+      expect(
+        setConfigValue(config, 'upstreamTransport.headersTimeoutMs', undefined),
+      ).toEqual(config)
+    }
+  })
+
+  test('removes empty ancestors after deleting a nested override while preserving siblings', () => {
+    const config = { outer: { inner: { value: 1 } }, keep: true }
+    expect(setConfigValue(config, 'outer.inner.value', undefined)).toEqual({
+      keep: true,
+    })
+    expect(config.outer.inner.value).toBe(1)
+    expect(
+      setConfigValue(
+        { upstreamTransport: { headersTimeoutMs: 5000, future: true } },
+        'upstreamTransport.headersTimeoutMs',
+        undefined,
+      ),
+    ).toEqual({ upstreamTransport: { future: true } })
+  })
+
   test('masks nested and future credential fields, including arrays and secret removal diffs', () => {
     const before = {
       auth: { apiKeys: ['secret'], adminApiKey: 'admin' },

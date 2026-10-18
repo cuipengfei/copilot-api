@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { useLanguage } from '../contexts/LanguageContext'
+import { equalConfigValue } from '../lib/config-editor'
 import type { ConfigField } from '../lib/config-fields'
 
 const inputClass =
@@ -20,7 +21,11 @@ export default function ConfigFieldEditor({
 }) {
   const { t } = useLanguage()
   const inherited = value === undefined
-  const sourceClass = `inline-flex rounded-md px-1.5 py-0.5 text-[10px] font-medium ring-1 ring-inset ${inherited ? 'bg-sunken text-ink-soft ring-line' : 'bg-slate-100 text-slate-600 ring-slate-200/80 dark:bg-slate-500/10 dark:text-slate-300 dark:ring-slate-500/20'}`
+  const isDefault = inherited || equalConfigValue(value, defaultValue)
+  const sourceLabel = t(
+    isDefault ? 'configEditor.defaultValue' : 'configEditor.explicit',
+  )
+  const sourceClass = `inline-flex rounded-md px-1.5 py-0.5 text-[10px] font-medium ring-1 ring-inset ${isDefault ? 'bg-sunken text-ink-soft ring-line' : 'bg-slate-100 text-slate-600 ring-slate-200/80 dark:bg-slate-500/10 dark:text-slate-300 dark:ring-slate-500/20'}`
   const effective = inherited ? defaultValue : value
   const [editing, setEditing] = useState<string | null>(null)
   const emitted = useRef<string>()
@@ -56,11 +61,7 @@ export default function ConfigFieldEditor({
       <div className="min-w-0">
         {field.type === 'boolean' ?
           <div className="flex items-center justify-between gap-2 sm:justify-end">
-            <span className={sourceClass}>
-              {inherited ?
-                t('configEditor.inherited')
-              : t('configEditor.explicit')}
-            </span>
+            <span className={sourceClass}>{sourceLabel}</span>
             <label className="relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center">
               <input
                 id={id}
@@ -177,14 +178,10 @@ export default function ConfigFieldEditor({
         }
         {field.type !== 'boolean' && (
           <div className="mt-1.5">
-            <span className={sourceClass}>
-              {inherited ?
-                t('configEditor.inherited')
-              : t('configEditor.explicit')}
-            </span>
+            <span className={sourceClass}>{sourceLabel}</span>
           </div>
         )}
-        {!inherited && (
+        {!isDefault && (
           <button
             type="button"
             disabled={disabled}

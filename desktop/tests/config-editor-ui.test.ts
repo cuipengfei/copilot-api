@@ -310,10 +310,13 @@ describe('Desktop config editor', () => {
         '#config-panel-form section input',
       ),
     ]
-    await change(inputs()[4], 'alias.model')
+    // The new row is inserted right under the add button, not after the list.
+    expect(inputs()[0].value).toBe('')
+    expect(inputs()[2].value).toBe('codex-auto-review')
+    await change(inputs()[0], 'alias.model')
     expect(button('JSON').disabled).toBe(true)
     expect(button('Save configuration').disabled).toBe(true)
-    await change(inputs()[5], 'custom/model.1')
+    await change(inputs()[1], 'custom/model.1')
     await click('JSON')
     await reveal()
     expect(
@@ -324,18 +327,18 @@ describe('Desktop config editor', () => {
       ).modelMappings['alias.model'],
     ).toBe('custom/model.1')
     await click('Visual')
-    await change(inputs()[4], 'codex-auto-review')
+    await change(inputs()[0], 'codex-auto-review')
     expect(container.textContent).toContain('Duplicate requested model')
     // Clicking the already-selected Visual tab must preserve the invalid row.
     await click('Visual')
-    expect(inputs()[4].value).toBe('codex-auto-review')
+    expect(inputs()[0].value).toBe('codex-auto-review')
     await act(async () =>
       [
         ...container.querySelectorAll<HTMLButtonElement>(
           '#config-panel-form section button',
         ),
       ]
-        .filter((el) => el.textContent === 'Remove')[2]
+        .filter((el) => el.textContent === 'Remove')[0]
         .click(),
     )
     expect(button('JSON').disabled).toBe(false)
@@ -414,6 +417,239 @@ describe('Desktop config editor', () => {
     expect(field('headersTimeoutMs').value).toBe('300000')
   })
 
+  test('keeps inherited group resets clean without reformatting the document', async () => {
+    documentFixture.content =
+      '{"future":{"keep":true},"anthropicApiKey":"test-key"}'
+    await render()
+    for (const group of [
+      'Request settings',
+      'Model rules',
+      'Search and images',
+      'Upstream transport',
+      'Model mappings',
+    ]) {
+      await click(group)
+      await click('Reset group to defaults')
+      await click('Reset group to defaults')
+      expect(button('Save configuration').disabled).toBe(true)
+      expect(button('Review changes').disabled).toBe(true)
+      expect(container.textContent).not.toContain('Unsaved changes')
+    }
+    await click('JSON')
+    await reveal()
+    expect(jsonEditor().value).toBe(documentFixture.content)
+    expect(save).not.toHaveBeenCalled()
+  })
+
+  test('keeps default-valued resets clean while recording explicit JSON inheritance changes', async () => {
+    documentFixture.content = JSON.stringify({
+      opencodeModelContextWindow: 400000,
+      future: { keep: true },
+    })
+    await render()
+    expect(
+      field('opencodeModelContextWindow').closest('div.grid')!.textContent,
+    ).toContain('Default value')
+    expect(
+      [...container.querySelectorAll('button')].some(
+        (element) => element.textContent === 'Reset to default',
+      ),
+    ).toBe(false)
+    expect(field('opencodeModelContextWindow').value).toBe('400000')
+    await click('Reset group to defaults')
+    expect(field('opencodeModelContextWindow').value).toBe('400000')
+    expect(button('Save configuration').disabled).toBe(true)
+    expect(button('Review changes').disabled).toBe(true)
+    await click('JSON')
+    await reveal()
+    expect(jsonEditor().value).toBe(documentFixture.content)
+    await change(jsonEditor(), '{"future":{"keep":true}}')
+    expect(container.textContent).toContain('1 unsaved changes')
+    await click('Review changes')
+    const review = container.querySelector(
+      'section[aria-label="Review changes"]',
+    )!
+    expect(review.textContent).toContain('Explicit value: 400000')
+    expect(review.textContent).toContain('Inherit default')
+    await click('Save configuration')
+    expect(JSON.parse(save.mock.calls[0][0].content)).toEqual({
+      future: { keep: true },
+    })
+  })
+
+  test.each([
+    'Request settings',
+    'Model rules',
+    'Search and images',
+    'Upstream transport',
+    'Model mappings',
+  ])(
+    'keeps explicitly stored defaults unchanged when resetting %s',
+    async (group) => {
+      documentFixture.content = JSON.stringify({
+        ...defaultConfig,
+        claudeTokenMultiplier: 1.15,
+      })
+      await render()
+      await click(group)
+      await click('Reset group to defaults')
+      await click('Reset group to defaults')
+      expect(button('Save configuration').disabled).toBe(true)
+      expect(button('Review changes').disabled).toBe(true)
+      await click('JSON')
+      await reveal()
+      expect(jsonEditor().value).toBe(documentFixture.content)
+    },
+  )
+
+  test('offers reset only for a value that differs from the default', async () => {
+    documentFixture.content = '{"opencodeModelContextWindow":300000}'
+    await render()
+    expect(
+      field('opencodeModelContextWindow').closest('div.grid')!.textContent,
+    ).toContain('Explicit value')
+    await click('Reset to default')
+    expect(field('opencodeModelContextWindow').value).toBe('400000')
+    expect(
+      [...container.querySelectorAll('button')].some(
+        (element) => element.textContent === 'Reset to default',
+      ),
+    ).toBe(false)
+    await click('Save configuration')
+    expect(JSON.parse(save.mock.calls[0][0].content)).toEqual({})
+  })
+
+  test('clears changes when resetting back to an explicitly stored default', async () => {
+    documentFixture.content = '{"opencodeModelContextWindow":400000}'
+    await render()
+    await change(field('opencodeModelContextWindow'), '300000')
+    await click('Reset group to defaults')
+    expect(field('opencodeModelContextWindow').value).toBe('400000')
+    expect(button('Save configuration').disabled).toBe(true)
+    expect(button('Review changes').disabled).toBe(true)
+    await click('JSON')
+    await reveal()
+    expect(jsonEditor().value).toBe(documentFixture.content)
+  })
+
+  test.each([
+    ['{"opencodeModelContextWindow":400000}', '{}', 'Request settings'],
+    ['{}', '{"upstreamTransport":{}}', 'Upstream transport'],
+    ['{"upstreamTransport":{}}', '{}', 'Upstream transport'],
+  ])(
+    'restores the saved representation of %s when resetting a source-only draft',
+    async (saved, draft, group) => {
+      documentFixture.content = saved
+      await render()
+      await click('JSON')
+      await reveal()
+      await change(jsonEditor(), draft)
+      await click('Visual')
+      await click(group)
+      expect(button('Save configuration').disabled).toBe(false)
+      await click('Reset group to defaults')
+      expect(button('Save configuration').disabled).toBe(true)
+      await click('JSON')
+      expect(jsonEditor().value).toBe(documentFixture.content)
+    },
+  )
+
+  test('clears changes when a visual edit returns to an inherited default', async () => {
+    documentFixture.content = '{}'
+    await render()
+    await change(field('opencodeModelContextWindow'), '300000')
+    await change(field('opencodeModelContextWindow'), '400000')
+    expect(button('Save configuration').disabled).toBe(true)
+    await click('JSON')
+    await reveal()
+    expect(jsonEditor().value).toBe('{}')
+  })
+
+  test.each([
+    '{"future":{"keep":true}}',
+    '{"future":{"keep":true},"upstreamTransport":{}}',
+  ])(
+    'restores the original document when resetting a nested override in %s',
+    async (content) => {
+      documentFixture.content = content
+      await render()
+      await click('Upstream transport')
+      await change(field('headersTimeoutMs'), '5000')
+      expect(button('Save configuration').disabled).toBe(false)
+      await click('Reset group to defaults')
+      expect(field('headersTimeoutMs').value).toBe('300000')
+      expect(button('Save configuration').disabled).toBe(true)
+      await click('JSON')
+      await reveal()
+      expect(jsonEditor().value).toBe(documentFixture.content)
+    },
+  )
+
+  test('preserves deliberate JSON formatting when resetting an inherited group', async () => {
+    documentFixture.content = '{"future":{"keep":true}}'
+    await render()
+    await click('JSON')
+    await reveal()
+    await click('Format')
+    const formatted = jsonEditor().value
+    expect(formatted).not.toBe(documentFixture.content)
+    await click('Visual')
+    await click('Reset group to defaults')
+    expect(button('Save configuration').disabled).toBe(false)
+    await click('Save configuration')
+    expect(save.mock.calls[0][0].content).toBe(formatted)
+  })
+
+  test('recognizes explicit object defaults regardless of key order', async () => {
+    documentFixture.content = JSON.stringify({
+      smallModels: {
+        copilot: defaultConfig.smallModels!.copilot,
+        codex: defaultConfig.smallModels!.codex,
+      },
+    })
+    await render()
+    await click('Model rules')
+    expect(field('smallModels').closest('div.grid')!.textContent).toContain(
+      'Default value',
+    )
+    expect(
+      [...container.querySelectorAll('button')].some(
+        (element) => element.textContent === 'Reset to default',
+      ),
+    ).toBe(false)
+    expect(button('Save configuration').disabled).toBe(true)
+  })
+
+  test('explains resetting a custom value in Chinese', async () => {
+    Object.defineProperty(win.navigator, 'language', { value: 'zh-CN' })
+    documentFixture.content = '{"opencodeModelContextWindow":300000}'
+    await render()
+    expect(
+      field('opencodeModelContextWindow').closest('div.grid')!.textContent,
+    ).toContain('显式配置')
+    await click('恢复默认值')
+    expect(field('opencodeModelContextWindow').value).toBe('400000')
+    expect(
+      field('opencodeModelContextWindow').closest('div.grid')!.textContent,
+    ).toContain('默认值')
+    await click('查看变更')
+    const review = container.querySelector('section[aria-label="查看变更"]')!
+    expect(review.textContent).toContain('显式配置：300000')
+    expect(review.textContent).toContain('继承默认')
+  })
+
+  test('shows dollar replacement sequences literally in change previews', async () => {
+    await render()
+    await click('Search and images')
+    await change(field('alphaSearchModel'), 'model$&name$$')
+    await click('Review changes')
+    const review = container.querySelector(
+      'section[aria-label="Review changes"]',
+    )!
+    expect(review.textContent).toContain('Explicit value: "model$&name$$"')
+    expect(review.textContent).not.toContain('{{value}}')
+  })
+
   test('redacts change previews and discards changes without leaking values', async () => {
     await render()
     await click('JSON')
@@ -437,6 +673,7 @@ describe('Desktop config editor', () => {
   })
 
   test('can persist JSON-only formatting and remove an explicit field override', async () => {
+    documentFixture.content = '{"useMessagesApi":false}'
     await render()
     await click('JSON')
     await reveal()
@@ -446,7 +683,7 @@ describe('Desktop config editor', () => {
     await click('Save configuration')
     expect(save.mock.calls[0][0].content).toContain('\n')
     await click('Visual')
-    await click('Use default')
+    await click('Reset to default')
     await click('Save configuration')
     expect(JSON.parse(save.mock.calls[1][0].content)).not.toHaveProperty(
       'useMessagesApi',
@@ -475,7 +712,7 @@ describe('Desktop config editor', () => {
     expect(JSON.parse(save.mock.calls[0][0].content)).toEqual({
       anthropicApiKey: 'test-replaced-key',
     })
-    await click('Use default')
+    await click('Reset to default')
     await click('Save configuration')
     expect(JSON.parse(save.mock.calls[1][0].content)).not.toHaveProperty(
       'anthropicApiKey',

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import ConfigFieldEditor from '../components/ConfigFieldEditor'
 import { useLanguage } from '../contexts/LanguageContext'
 import {
+  equalConfigValue,
   getConfigChanges,
   getConfigValidation,
   getConfigValue,
@@ -203,9 +204,55 @@ export default function AdvancedConfigPage({
     setPendingMerge(null)
     setMerged(false)
   }
+  const updateFormConfig = (next: ConfigObject) => {
+    if (!draft.config || equalConfigValue(draft.config, next)) return
+    // Visual edits should not turn formatting-only differences into changes.
+    updateContent(
+      document && equalConfigValue(baseline.config, next) ?
+        document.content
+      : serializeConfig(next),
+    )
+  }
+  const setFormField = (
+    config: ConfigObject,
+    path: string,
+    value: unknown,
+  ): ConfigObject => {
+    const original =
+      baseline.config ? getConfigValue(baseline.config, path) : undefined
+    const fallback = getConfigValue(defaults, path)
+    const matchesOriginal =
+      baseline.config
+      && equalConfigValue(
+        original === undefined ? fallback : original,
+        value === undefined ? fallback : value,
+      )
+    // Returning to the saved value must also restore its explicit/inherited form.
+    let next = setConfigValue(config, path, matchesOriginal ? original : value)
+    if (baseline.config) {
+      const keys = path.split('.')
+      for (let index = 1; index < keys.length; index++) {
+        const parentPath = keys.slice(0, index).join('.')
+        const parent = getConfigValue(baseline.config, parentPath)
+        const nextParent = getConfigValue(next, parentPath)
+        if (
+          parent === undefined
+          && isConfigObject(nextParent)
+          && Object.keys(nextParent).length === 0
+        )
+          next = setConfigValue(next, parentPath, undefined)
+        else if (
+          nextParent === undefined
+          && isConfigObject(parent)
+          && Object.keys(parent).length === 0
+        )
+          next = setConfigValue(next, parentPath, {})
+      }
+    }
+    return next
+  }
   const updateField = (path: string, value: unknown) => {
-    if (draft.config)
-      updateContent(serializeConfig(setConfigValue(draft.config, path, value)))
+    if (draft.config) updateFormConfig(setFormField(draft.config, path, value))
   }
   const changeMappings = (nextRows: ModelMappingRow[]) => {
     setRows(nextRows)
@@ -225,16 +272,16 @@ export default function AdvancedConfigPage({
     if (!draft.config) return
     let next = draft.config
     if (section === 'mappings') {
-      next = setConfigValue(next, 'modelMappings', undefined)
+      next = setFormField(next, 'modelMappings', undefined)
       setRows(mappingRows(next, defaults))
       setMappingError('')
     } else {
       for (const field of configFields.filter(
         (item) => item.section === section && item.type !== 'secret',
       ))
-        next = setConfigValue(next, field.path, undefined)
+        next = setFormField(next, field.path, undefined)
     }
-    updateContent(serializeConfig(next))
+    updateFormConfig(next)
   }
   const acceptMerge = (latest: AppConfigDocument, config: ConfigObject) => {
     acceptDocument(latest)
@@ -296,19 +343,18 @@ export default function AdvancedConfigPage({
       JSON.stringify(maskConfigValue(draft.config), null, 2)
     : t('configEditor.maskedUnavailable')
   const displayChange = (value: unknown) =>
-    value === undefined ? t('configEditor.inherited') : JSON.stringify(value)
+    value === undefined ?
+      t('configEditor.inherited')
+    : t('configEditor.explicitValue', { value: JSON.stringify(value) })
 
   return (
     <div
-      className="flex min-h-full flex-col bg-canvas p-4"
+      className="flex min-h-full flex-col bg-canvas px-5 pb-5 pt-3 sm:px-6 sm:pb-6"
       aria-label={t('configEditor.title')}
     >
-      <div className="mb-4">
+      <div className="mb-5">
         <div className="flex flex-wrap items-center gap-2">
-          <h2 className="mr-auto inline-flex items-center gap-2.5 text-[16px] font-semibold text-ink">
-            <span className="text-ink-soft">
-              <ConfigSectionIcon section="general" />
-            </span>
+          <h2 className="mr-auto text-xl font-semibold tracking-tight text-ink">
             {t('configEditor.title')}
           </h2>
           <span

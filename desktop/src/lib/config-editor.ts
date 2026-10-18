@@ -268,10 +268,12 @@ export function setConfigValue(
   const next = structuredClone(config)
   const keys = path.split('.')
   const leaf = keys.pop()!
+  const parents: [ConfigObject, string][] = []
   let target = next
   for (const key of keys) {
     const existing: unknown =
       Object.hasOwn(target, key) ? target[key] : undefined
+    if (value === undefined && !isConfigObject(existing)) return config
     const child = isConfigObject(existing) ? existing : {}
     Object.defineProperty(target, key, {
       value: child,
@@ -279,10 +281,19 @@ export function setConfigValue(
       enumerable: true,
       configurable: true,
     })
+    parents.push([target, key])
     target = child
   }
-  if (value === undefined) delete target[leaf]
-  else
+  if (value === undefined) {
+    if (!Object.hasOwn(target, leaf)) return config
+    delete target[leaf]
+    // Removing the last override must not leave empty parent objects behind.
+    for (const [parent, key] of parents.reverse()) {
+      if (Object.keys(target).length) break
+      delete parent[key]
+      target = parent
+    }
+  } else
     Object.defineProperty(target, leaf, {
       value,
       writable: true,
@@ -379,7 +390,7 @@ export function getConfigChanges(
   return changes
 }
 
-function equalConfigValue(left: unknown, right: unknown): boolean {
+export function equalConfigValue(left: unknown, right: unknown): boolean {
   if (isConfigObject(left) && isConfigObject(right)) {
     const keys = Object.keys(left)
     return (

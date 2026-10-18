@@ -32,7 +32,7 @@ export default function ModelMappingsPage({
         <button
           type="button"
           disabled={disabled}
-          onClick={() => onChange([...rows, createModelMappingRow()])}
+          onClick={() => onChange([createModelMappingRow(), ...rows])}
           className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-line bg-surface px-3 py-1.5 text-[13px] font-medium text-ink-soft transition-colors hover:bg-sunken hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/20 disabled:opacity-50"
         >
           <svg
