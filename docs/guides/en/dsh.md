@@ -32,6 +32,6 @@ Override the inserted entry only when a default is wrong. Keep the id `copilot-a
     modelRefreshInterval: 120000
 ```
 
-`apiKey` is a credential reference. `apiKeyEnv` is the same kind of name; when both are set, they must match. `headers` can be set to custom request headers. `modelRefreshInterval` is milliseconds; the default `0` disables periodic refresh, while the example value `120000` refreshes every 2 minutes.
+`apiKey` is a credential reference. `apiKeyEnv` is the same kind of name; when both are set, they must match. `headers` can be set to custom request headers. `modelRefreshInterval` is in milliseconds and defaults to `120000` (automatic refresh every 2 minutes); set it to `0` to disable periodic refresh.
 
 Model mapping, headers, and development notes are in the [plugin repository](https://github.com/caozhiyuan/dsh-copilot-api).
