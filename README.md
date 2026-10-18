@@ -67,7 +67,7 @@ curl http://localhost:4141/v1/models
 > [!NOTE]
 > Token usage storage requires Node.js >= 22.13.0 or Bun. See [Using with npx](docs/guides/en/getting-started.md#using-with-npx) for details.
 
-From here, jump to the guide for your client: [Claude Code](docs/guides/en/claude-code.md#using-with-claude-code), [OpenCode](docs/guides/en/opencode.md#using-with-opencode), [Codex](docs/guides/en/codex.md#using-with-codex), or run it with [Docker](docs/guides/en/docker.md#using-with-docker).
+From here, jump to the guide for your client: [Claude Code](docs/guides/en/claude-code.md#using-with-claude-code), [OpenCode](docs/guides/en/opencode.md#using-with-opencode), [Codex](docs/guides/en/codex.md#using-with-codex), [DeepSeek Harness](docs/guides/en/dsh.md#using-with-deepseek-harness), or run it with [Docker](docs/guides/en/docker.md#using-with-docker).
 
 ## Compatibility
 
@@ -80,6 +80,7 @@ Every client talks to the same local endpoint. The gateway routes each request t
 | Claude Code | — | — | ✅ Native / Adapter | Anthropic Messages |
 | OpenCode | ✅ Native | ✅ Native / Adapter | ✅ Native / Adapter via `@ai-sdk/anthropic` | Anthropic Messages |
 | Codex | — | ✅ Native / Adapter | — | Responses |
+| DeepSeek Harness | — | ✅ via `dsh-copilot-api` | ✅ via `dsh-copilot-api` | Responses |
 | OpenAI-compatible clients | ✅ Native | ✅ Native / Adapter | — | Chat Completions |
 | Anthropic-compatible clients | — | — | ✅ Native / Adapter | Anthropic Messages |
 
@@ -103,6 +104,7 @@ Windows x64 (`.exe`), macOS Apple Silicon (`.dmg`), and Linux x64 (`.AppImage`) 
 | [Installation and Startup](docs/guides/en/getting-started.md) | Prerequisites, project overview, `npx` and source runs, provider-only mode without Copilot, and gateway API key setup |
 | [Claude Code](docs/guides/en/claude-code.md) | settings.json, gateway model discovery, model mappings, auto-compact window, and WebSearch behavior |
 | [OpenCode](docs/guides/en/opencode.md) | v2 Responses plugin and automatic model discovery, native compaction, model capabilities and pricing, context limits, and v1 Anthropic SDK setup |
+| [DeepSeek Harness](docs/guides/en/dsh.md) | Install `dsh-copilot-api`, save the gateway API key, and choose Responses or Messages |
 | [Codex](docs/guides/en/codex.md) | A full `config.toml` provider block, `GITHUB_COPILOT_API_KEY` environment variable setup, auto-review model mapping, generating `model_catalog.json`, and the merged model picker catalog with protocol adapters |
 | [Docker](docs/guides/en/docker.md) | Docker Compose quick start, the `/data` persistent mount and its ownership repair, supported environment variables, and host interface binding |
 | [Desktop App](docs/guides/en/desktop.md) | Copilot sign-in, Codex OAuth account switching, API-key providers, one-click start / stop, shared model mappings, advanced settings, and per-platform installers |

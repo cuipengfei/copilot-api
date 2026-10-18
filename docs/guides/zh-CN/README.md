@@ -10,6 +10,7 @@
 | [Claude Code](claude-code.md) | settings.json、网关模型发现与模型映射 |
 | [OpenCode](opencode.md) | v2 Responses 插件、自动模型发现与 v1 Anthropic SDK 配置 |
 | [Codex](codex.md) | config.toml、`GITHUB_COPILOT_API_KEY` 设置、模型目录与自动审核映射 |
+| [DeepSeek Harness](dsh.md) | 安装 `dsh-copilot-api` 并接入本地网关 |
 | [Docker](docker.md) | Docker Compose、持久化存储与网络设置 |
 | [桌面应用](desktop.md) | 安装、账号管理与高级设置 |
 | [插件与工具搜索](integrations.md) | Claude Code / OpenCode 插件与 MCP 工具搜索桥接 |
