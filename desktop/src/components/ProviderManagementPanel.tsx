@@ -132,6 +132,9 @@ export default function ProviderManagementPanel({
   }
 
   const current = drafts.find((draft) => draft.name === activeName)
+  const orderedDrafts = [...drafts].sort(
+    (left, right) => Number(right.enabled) - Number(left.enabled),
+  )
   const modeDescriptions: Record<ModelSelectionMode, string> = {
     auto: t('providers.autoDescription'),
     selected: t('providers.selectedDescription'),
@@ -232,7 +235,7 @@ export default function ProviderManagementPanel({
             <p className="px-3 pb-2 pt-2 text-[11px] font-semibold uppercase tracking-wider text-ink-faint">
               {t('providers.configured')}
             </p>
-            {drafts.map((draft) => (
+            {orderedDrafts.map((draft) => (
               <button
                 key={draft.name}
                 type="button"

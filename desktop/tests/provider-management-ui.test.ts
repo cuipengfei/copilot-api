@@ -1089,6 +1089,46 @@ describe('provider management UI', () => {
       providers: { dashscope: { agentsModels: ['qwen-plus'] } },
     })
   })
+
+  test('lists enabled providers before disabled ones', async () => {
+    getConfig.mockImplementation(() =>
+      Promise.resolve({
+        configPath: 'config.json',
+        providers: [
+          {
+            name: 'codex',
+            type: 'openai-responses',
+            enabled: false,
+            agentsModels: [],
+          },
+          { name: 'dashscope', type: 'openai-compatible', enabled: true },
+          { name: 'gemini', type: 'google', enabled: false },
+        ],
+      }),
+    )
+    await act(async () => {
+      root.render(
+        createElement(LanguageProvider, {
+          children: createElement(ProviderManagementPanel, {}),
+        }),
+      )
+    })
+    const names = () =>
+      [...container.querySelectorAll('nav button')].map((node) =>
+        node.getAttribute('aria-label'),
+      )
+    expect(names()).toEqual(['dashscope', 'codex', 'gemini'])
+    await act(async () => {
+      container
+        .querySelector<HTMLButtonElement>('nav button[aria-label="gemini"]')!
+        .click()
+    })
+    await act(async () => {
+      container.querySelector<HTMLInputElement>('[role="switch"]')!.click()
+    })
+    expect(names()).toEqual(['dashscope', 'gemini', 'codex'])
+  })
+
   test('keeps selected models first while searching and preserves unknown selections', async () => {
     getConfig.mockImplementation(() =>
       Promise.resolve({
