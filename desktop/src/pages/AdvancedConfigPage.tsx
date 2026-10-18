@@ -100,7 +100,7 @@ export default function AdvancedConfigPage({
   const { t } = useLanguage()
   const [document, setDocument] = useState<AppConfigDocument | null>(null)
   const [content, setContent] = useState('{}\n')
-  const [section, setSection] = useState<ConfigSection>('general')
+  const [section, setSection] = useState<ConfigSection>('mappings')
   const [mode, setMode] = useState<'form' | 'json'>('form')
   const [showSecrets, setShowSecrets] = useState(false)
   const [rows, setRows] = useState<ModelMappingRow[]>([])

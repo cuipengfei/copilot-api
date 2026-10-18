@@ -151,6 +151,7 @@ async function reveal() {
 describe('Desktop config editor', () => {
   test('saves while offline, preserving hidden credentials and unknown fields without displaying the config path', async () => {
     await render()
+    await click('Request settings')
     expect(container.textContent).not.toContain('/custom-api-home/config.json')
     expect(container.textContent).toContain('The service is stopped')
     expect(container.textContent).not.toContain('contextManagement')
@@ -175,6 +176,7 @@ describe('Desktop config editor', () => {
 
   test('synchronizes form and JSON changes without saving masked placeholders', async () => {
     await render(true)
+    await click('Request settings')
     await act(async () => field('useMessagesApi').click())
     await click('JSON')
     expect(jsonEditor().readOnly).toBe(true)
@@ -196,6 +198,7 @@ describe('Desktop config editor', () => {
 
   test('validates JSON syntax, root shape and field types, keeping invalid drafts editable', async () => {
     await render()
+    await click('Request settings')
     await click('JSON')
     await reveal()
     await change(jsonEditor(), '{invalid')
@@ -231,6 +234,7 @@ describe('Desktop config editor', () => {
 
   test('preserves a conflict draft and explicitly reloads the new disk version', async () => {
     await render()
+    await click('Request settings')
     save.mockResolvedValueOnce({ error: { code: 'conflict' } })
     await act(async () => field('useMessagesApi').click())
     await click('Save configuration')
@@ -252,6 +256,7 @@ describe('Desktop config editor', () => {
 
   test('separates saved state from refresh failure and retries without another write', async () => {
     await render(true)
+    await click('Request settings')
     save.mockImplementationOnce((input) => {
       documentFixture = {
         ...documentFixture,
@@ -280,6 +285,7 @@ describe('Desktop config editor', () => {
   test('reports load and apply errors without discarding edits', async () => {
     read.mockResolvedValueOnce({ error: { code: 'readFailed' } })
     await render(true)
+    await click('Request settings')
     expect(container.textContent).toContain('Could not read the configuration')
     expect(button('Save and apply').disabled).toBe(true)
     await click('Reload')
@@ -303,7 +309,7 @@ describe('Desktop config editor', () => {
 
   test('uses one draft for model mapping rows and the full JSON document', async () => {
     await render()
-    await click('Model mappings')
+    expect(button('Model mappings').getAttribute('aria-current')).toBe('page')
     await click('Add mapping')
     const inputs = () => [
       ...container.querySelectorAll<HTMLInputElement>(
@@ -447,6 +453,7 @@ describe('Desktop config editor', () => {
       future: { keep: true },
     })
     await render()
+    await click('Request settings')
     expect(
       field('opencodeModelContextWindow').closest('div.grid')!.textContent,
     ).toContain('Default value')
@@ -505,6 +512,7 @@ describe('Desktop config editor', () => {
   test('offers reset only for a value that differs from the default', async () => {
     documentFixture.content = '{"opencodeModelContextWindow":300000}'
     await render()
+    await click('Request settings')
     expect(
       field('opencodeModelContextWindow').closest('div.grid')!.textContent,
     ).toContain('Explicit value')
@@ -522,6 +530,7 @@ describe('Desktop config editor', () => {
   test('clears changes when resetting back to an explicitly stored default', async () => {
     documentFixture.content = '{"opencodeModelContextWindow":400000}'
     await render()
+    await click('Request settings')
     await change(field('opencodeModelContextWindow'), '300000')
     await click('Reset group to defaults')
     expect(field('opencodeModelContextWindow').value).toBe('400000')
@@ -557,6 +566,7 @@ describe('Desktop config editor', () => {
   test('clears changes when a visual edit returns to an inherited default', async () => {
     documentFixture.content = '{}'
     await render()
+    await click('Request settings')
     await change(field('opencodeModelContextWindow'), '300000')
     await change(field('opencodeModelContextWindow'), '400000')
     expect(button('Save configuration').disabled).toBe(true)
@@ -624,6 +634,7 @@ describe('Desktop config editor', () => {
     Object.defineProperty(win.navigator, 'language', { value: 'zh-CN' })
     documentFixture.content = '{"opencodeModelContextWindow":300000}'
     await render()
+    await click('请求设置')
     expect(
       field('opencodeModelContextWindow').closest('div.grid')!.textContent,
     ).toContain('显式配置')
@@ -675,6 +686,7 @@ describe('Desktop config editor', () => {
   test('can persist JSON-only formatting and remove an explicit field override', async () => {
     documentFixture.content = '{"useMessagesApi":false}'
     await render()
+    await click('Request settings')
     await click('JSON')
     await reveal()
     await click('Format')
@@ -705,6 +717,7 @@ describe('Desktop config editor', () => {
       useMessagesApi: false,
     })
     await render()
+    await click('Request settings')
     await change(field('anthropicApiKey'), 'test-replaced-key')
     await click('Reset group to defaults')
     expect(field('anthropicApiKey').value).toBe('test-replaced-key')
@@ -723,6 +736,7 @@ describe('Desktop config editor', () => {
     await render(false, false)
     expect(read).not.toHaveBeenCalled()
     await render()
+    await click('Request settings')
     expect(read).toHaveBeenCalledTimes(1)
     await render(false, false)
     documentFixture = {
@@ -744,6 +758,7 @@ describe('Desktop config editor', () => {
   test('rebases a conflict draft onto the latest raw document without losing rotated credentials', async () => {
     const initial = JSON.parse(documentFixture.content) as AppConfig
     await render()
+    await click('Request settings')
     await act(async () => field('useMessagesApi').click())
     save.mockResolvedValueOnce({ error: { code: 'conflict' } })
     await click('Save configuration')
@@ -780,6 +795,7 @@ describe('Desktop config editor', () => {
       const baseline = { alphaSearchModel: 'old', useMessagesApi: true }
       documentFixture.content = JSON.stringify(baseline)
       await render()
+      await click('Request settings')
       await act(async () => field('useMessagesApi').click())
       await click('Search and images')
       await change(field('alphaSearchModel'), 'mine')
@@ -811,6 +827,7 @@ describe('Desktop config editor', () => {
 
   test('keeps a conflict draft when loading the latest file fails', async () => {
     await render()
+    await click('Request settings')
     await act(async () => field('useMessagesApi').click())
     save.mockResolvedValueOnce({ error: { code: 'conflict' } })
     await click('Save configuration')
@@ -824,6 +841,7 @@ describe('Desktop config editor', () => {
     documentFixture.content =
       '{"auth":{"apiKeys":[""]},"opencodeModelContextWindow":0,"useMessagesApi":true}'
     await render()
+    await click('Request settings')
     expect(container.textContent).toContain(
       'Unchanged legacy values are preserved',
     )
@@ -841,6 +859,7 @@ describe('Desktop config editor', () => {
   test('treats blank numbers as inherited and preserves JSON text while typing', async () => {
     documentFixture.content = '{"opencodeModelContextWindow":320000}'
     await render()
+    await click('Request settings')
     await change(field('opencodeModelContextWindow'), '')
     expect(field('opencodeModelContextWindow').value).toBe('')
     expect(button('Save configuration').disabled).toBe(false)
@@ -908,6 +927,7 @@ describe('Desktop config editor', () => {
 
   test('shows validation details and localized generic errors without raw IPC prefixes', async () => {
     await render()
+    await click('Request settings')
     await act(async () => field('useMessagesApi').click())
     save.mockResolvedValueOnce({
       error: { code: 'validation', message: 'test field is invalid' },
