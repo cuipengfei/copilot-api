@@ -32,9 +32,8 @@ dsh plugin --profile web add dsh-copilot-api
     apiKey: GITHUB_COPILOT_API_KEY
     protocol: openai-responses
     modelRefreshInterval: 120000
-    sessionAffinity: true
 ```
 
-`apiKey` 是凭据引用名。`apiKeyEnv` 也是引用名；两者同时填写时必须相同。`headers` 可以填写自定义请求头。`modelRefreshInterval` 单位是毫秒，`0` 表示关闭定时刷新。
+`apiKey` 是凭据引用名。`apiKeyEnv` 也是引用名；两者同时填写时必须相同。`headers` 可以填写自定义请求头。`modelRefreshInterval` 单位是毫秒，默认 `0` 表示关闭定时刷新；示例中的 `120000` 表示每 2 分钟刷新。
 
 模型映射、Header 和开发说明见[插件仓库](https://github.com/caozhiyuan/dsh-copilot-api)。

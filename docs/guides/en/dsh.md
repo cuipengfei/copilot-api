@@ -30,9 +30,8 @@ Override the inserted entry only when a default is wrong. Keep the id `copilot-a
     apiKey: GITHUB_COPILOT_API_KEY
     protocol: openai-responses
     modelRefreshInterval: 120000
-    sessionAffinity: true
 ```
 
-`apiKey` is a credential reference. `apiKeyEnv` is the same kind of name; when both are set, they must match. `headers` can be set to custom request headers. `modelRefreshInterval` is milliseconds, and `0` disables periodic refresh.
+`apiKey` is a credential reference. `apiKeyEnv` is the same kind of name; when both are set, they must match. `headers` can be set to custom request headers. `modelRefreshInterval` is milliseconds; the default `0` disables periodic refresh, while the example value `120000` refreshes every 2 minutes.
 
 Model mapping, headers, and development notes are in the [plugin repository](https://github.com/caozhiyuan/dsh-copilot-api).
