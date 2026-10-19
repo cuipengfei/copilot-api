@@ -328,7 +328,7 @@ export default function MediaStudioPage({
           </div>
           <fieldset
             disabled={busy}
-            className="min-h-0 min-w-0 flex-1 space-y-3 overflow-y-auto disabled:opacity-70"
+            className={`min-h-0 min-w-0 flex-1 overflow-y-auto disabled:opacity-70 ${mode === 'video' ? 'space-y-2.5' : 'space-y-3'}`}
           >
             {mode !== 'video' ?
               <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1.2fr)] gap-3">
