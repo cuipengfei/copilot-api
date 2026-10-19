@@ -23,6 +23,7 @@ import {
 import { getProviderTypeLabel } from '../lib/provider-type-labels'
 import { buildServerBaseUrl } from '../lib/server-url'
 import AdvancedConfigPage from './AdvancedConfigPage'
+import MediaStudioPage from './MediaStudioPage'
 import ProviderManagementPanel from '../components/ProviderManagementPanel'
 import type {
   DesktopAuthMode,
@@ -69,7 +70,12 @@ interface Model {
 
 type TranslateFn = ReturnType<typeof useLanguage>['t']
 type DashboardTab =
-  'dashboard' | 'tokenUsage' | 'providers' | 'advancedConfig' | 'logs'
+  | 'dashboard'
+  | 'tokenUsage'
+  | 'providers'
+  | 'advancedConfig'
+  | 'studio'
+  | 'logs'
 
 const numberFormatter = new Intl.NumberFormat()
 const TOKEN_USAGE_EVENTS_PAGE_SIZE = 10
@@ -313,9 +319,30 @@ export default function DashboardPage({
 
   const [tab, setTab] = useState<DashboardTab>(initialTab)
   const [advancedConfigOpened, setAdvancedConfigOpened] = useState(false)
+  const [studioOpened, setStudioOpened] = useState(false)
+  const [showCreate, setShowCreate] = useState(false)
   useEffect(() => {
     if (tab === 'advancedConfig') setAdvancedConfigOpened(true)
+    if (tab === 'studio') setStudioOpened(true)
   }, [tab])
+  useEffect(() => {
+    let active = true
+    void window.electronAPI
+      .getSettings()
+      .then((saved) => {
+        if (active) setShowCreate(saved.showCreate === true)
+      })
+      .catch(() => {})
+    return () => {
+      active = false
+    }
+  }, [])
+  useEffect(() => {
+    if (!showCreate) {
+      if (tab === 'studio') setTab('dashboard')
+      setStudioOpened(false)
+    }
+  }, [showCreate, tab])
   const [usage, setUsage] = useState<UsageInfo | null>(null)
   const [tokenUsage, setTokenUsage] = useState<TokenUsageSummary | null>(null)
   const [tokenUsageDaily, setTokenUsageDaily] =
@@ -609,6 +636,7 @@ export default function DashboardPage({
       .getSettings()
       .then((saved) => {
         if (saved.host !== undefined) setHost(saved.host)
+        setShowCreate(saved.showCreate === true)
       })
       .catch(() => {})
   }
@@ -901,6 +929,7 @@ export default function DashboardPage({
       key: 'providers',
       label: t('providers.title'),
     },
+    { icon: <IconLaunch />, key: 'studio', label: t('studio.title') },
     {
       icon: <IconAdvancedConfig />,
       key: 'advancedConfig',
@@ -908,8 +937,13 @@ export default function DashboardPage({
     },
     { icon: <IconLogs />, key: 'logs', label: t('dashboard.tabLogs') },
   ]
+  const visibleTabs = dashboardTabs.filter(
+    (tabItem) => showCreate || tabItem.key !== 'studio',
+  )
   const showRefreshButton =
-    started && tab !== 'providers' && tab !== 'advancedConfig' && tab !== 'logs'
+    started && (tab === 'dashboard' || tab === 'tokenUsage')
+  const showStartForm =
+    !started && !['providers', 'advancedConfig', 'studio'].includes(tab)
 
   return (
     <div className="flex flex-col h-screen bg-canvas">
@@ -936,7 +970,7 @@ export default function DashboardPage({
           role="tablist"
           className="flex min-w-0 h-full items-stretch gap-1 overflow-x-auto sm:gap-3"
         >
-          {dashboardTabs.map((tabItem) => (
+          {visibleTabs.map((tabItem) => (
             <button
               key={tabItem.key}
               role="tab"
@@ -946,6 +980,7 @@ export default function DashboardPage({
                 && tabItem.key !== 'dashboard'
                 && tabItem.key !== 'providers'
                 && tabItem.key !== 'advancedConfig'
+                && tabItem.key !== 'studio'
               }
               onClick={() => setTab(tabItem.key)}
               className={`inline-flex items-center gap-1.5 px-2 sm:px-3 text-[13px] whitespace-nowrap border-b-2 transition-colors disabled:cursor-not-allowed disabled:opacity-35 ${
@@ -976,13 +1011,13 @@ export default function DashboardPage({
       {/* Content area */}
       <div
         className={
-          tab === 'providers' ?
+          tab === 'providers' || tab === 'studio' ?
             'min-h-0 flex-1 overflow-hidden'
           : 'min-h-0 flex-1 overflow-auto'
         }
       >
         {/* Empty state: start form */}
-        {!started && tab !== 'providers' && tab !== 'advancedConfig' && (
+        {showStartForm && (
           <div className="h-full flex flex-col items-center justify-center gap-4 px-6">
             <div className="w-11 h-11 bg-sunken rounded-xl flex items-center justify-center text-ink-soft dark:bg-[#4f94f8] dark:text-white">
               <IconLaunch />
@@ -1320,6 +1355,14 @@ export default function DashboardPage({
             serverRunning={started && !stopping}
             onOpenAuthConfig={handleChangeAuth}
           />
+        )}
+
+        {showCreate && (tab === 'studio' || studioOpened) && (
+          <div className={tab === 'studio' ? 'h-full' : 'hidden'}>
+            <MediaStudioPage
+              serverRunning={started && !stopping && !restarting}
+            />
+          </div>
         )}
 
         {/* Keep the editor mounted after opening it to preserve unsaved drafts. */}

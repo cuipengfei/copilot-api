@@ -1,4 +1,11 @@
 import type { LangPreference } from '../locales'
+import type {
+  CreatedImage,
+  ImageCreationInput,
+  SaveMediaInput,
+  VideoCreationInput,
+  VideoCreationResult,
+} from './media'
 import type { ConfigEditorReply } from '../lib/config-editor-errors'
 import type {
   XaiAuthInfo,
@@ -299,6 +306,7 @@ export interface DesktopSettings {
   accountType: 'individual' | 'business' | 'enterprise'
   verbose: boolean
   showToken: boolean
+  showCreate: boolean
   language: LangPreference
   theme: ThemePreference
   proxy: DesktopProxySettings
@@ -363,6 +371,17 @@ declare global {
       openUrl: (url: string) => Promise<void>
       fetchUsage: () => Promise<unknown>
       fetchModels: () => Promise<unknown>
+      createImages: (
+        id: string,
+        input: ImageCreationInput,
+      ) => Promise<CreatedImage[]>
+      createVideo: (
+        id: string,
+        input: VideoCreationInput,
+      ) => Promise<VideoCreationResult>
+      getVideo: (id: string, requestId: string) => Promise<VideoCreationResult>
+      cancelMediaRequest: (id: string) => Promise<void>
+      saveMedia: (input: SaveMediaInput) => Promise<boolean>
       getProviderModelOptions: () => Promise<ProviderModelOptions>
       fetchTokenUsage: (period: TokenUsagePeriod) => Promise<unknown>
       fetchTokenUsageDaily: (period: TokenUsagePeriod) => Promise<unknown>
