@@ -28,7 +28,7 @@ curl http://localhost:4141/admin/config/model-mappings \
 
 ## API Endpoints
 
-The server exposes several OpenAI- and Anthropic-compatible endpoints. Requests can target GitHub Copilot, the built-in `codex` provider, or configured providers depending on the selected model and `provider/model` alias. Every `/v1/...` endpoint below also supports a provider-scoped path in the form `/:provider/v1/...`; those variants are omitted from the tables.
+The server exposes several OpenAI- and Anthropic-compatible endpoints. Requests can target GitHub Copilot, the built-in `codex` provider, or configured providers depending on the selected model and `provider/model` alias. Provider-scoped paths use the form `/:provider/v1/...` where supported; video endpoints are available only at the top level.
 
 ### OpenAI Compatible Endpoints
 
@@ -64,6 +64,33 @@ These endpoints implement Codex backend APIs. Image requests routed to Codex req
 When `imageGenerationModel` or `imageEditModel` is an `xai/model` alias, that top-level route translates the OpenAI image request and sends it to the enabled `xai` provider's Imagine API. The alias selects the upstream model. An empty setting keeps the OpenAI forwarding path described above. Other providers are not accepted in these two settings.
 
 For requests routed to the Codex backend, the gateway replaces client authorization and account headers with the active Codex login and preserves compatible request metadata. Responses-backed alpha search instead follows the selected Copilot or provider route.
+
+### xAI Video Endpoints
+
+| Endpoint | Method | Description |
+| --- | --- | --- |
+| `/v1/videos/generations` | `POST` | Submit a native asynchronous video request. Send `model: "xai/grok-imagine-video-1.5"` or a model mapping that resolves to it. Returns the upstream `request_id`. |
+| `/v1/videos/{request_id}` | `GET` | Query the xAI job status and video URL using the same account and upstream address as submission. |
+
+Both endpoints also work without `/v1` and use regular gateway authentication. The enabled `xai` provider supplies API-key or OAuth credentials. There is no default model; an absent or unsupported `model` returns `400`, and an unavailable provider returns `404`. Other native generation fields are passed through for upstream validation, including image and reference inputs. Native response bodies, status codes, and metadata are preserved.
+
+Submit a generation request:
+
+```sh
+curl http://localhost:4141/v1/videos/generations \
+  -H 'Authorization: Bearer your_gateway_key' \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"xai/grok-imagine-video-1.5","prompt":"A paper boat on a lake","duration":5}'
+```
+
+The response contains an upstream `request_id`. Poll for the result using that ID:
+
+```sh
+curl http://localhost:4141/v1/videos/YOUR_REQUEST_ID \
+  -H 'Authorization: Bearer your_gateway_key'
+```
+
+The gateway does not wait for generation, retry submissions, or store jobs. Keep the same xAI account and base URL while querying. Clients handle native statuses such as `pending`, `done`, and `failed`, and access the returned `video.url` directly. Default xAI video URLs are temporary. See the [xAI video documentation](https://docs.x.ai/developers/model-capabilities/video/generation).
 
 ### Anthropic Compatible Endpoints
 

@@ -32,7 +32,7 @@ curl http://localhost:4141/admin/config/model-mappings \
 
 ## API 端点
 
-服务端提供多个 OpenAI / Anthropic 兼容端点。请求会根据所选模型和 `provider/model` 别名路由到 GitHub Copilot、内置 `codex` provider 或已配置的 provider。下列每个 `/v1/...` 端点也都支持 `/:provider/v1/...` 形式的 provider 级路径，表格中不再重复列出。
+服务端提供多个 OpenAI / Anthropic 兼容端点。请求会根据所选模型和 `provider/model` 别名路由到 GitHub Copilot、内置 `codex` provider 或已配置的 provider。支持 provider 级路径的端点使用 `/:provider/v1/...` 形式；视频端点仅提供顶层路由。
 
 ### OpenAI 兼容端点
 
@@ -68,6 +68,33 @@ Codex model catalog、Copilot 模型缓存和其他自定义 provider 的远程�
 当 `imageGenerationModel` 或 `imageEditModel` 配置为 `xai/model` 别名时，对应的顶层图片路由会把 OpenAI 图片请求翻译后发到已启用的 `xai` provider 的 Imagine 接口，上游模型由该别名决定。配置为空时仍走上面的 OpenAI 转发路径。这两项目前不接受其他 provider。
 
 对于路由到 Codex 后端的请求，网关会使用当前 Codex 登录态覆盖客户端的 authorization 和 account header，并保留兼容的请求元数据。基于 Responses 的 alpha-search 则遵循所选 Copilot 或 provider 的路由。
+
+### xAI 视频端点
+
+| 端点 | 方法 | 说明 |
+| --- | --- | --- |
+| `/v1/videos/generations` | `POST` | 提交 xAI 原生异步视频生成请求。`model` 使用 `xai/grok-imagine-video-1.5`，或映射到该模型的 model mapping 名称，返回上游 `request_id`。 |
+| `/v1/videos/{request_id}` | `GET` | 查询任务状态和视频 URL，使用与提交时相同的 xAI 账号及上游地址。 |
+
+两个端点也支持省略 `/v1`，沿用普通网关鉴权，使用已启用 `xai` provider 的 API key 或 OAuth 凭据。`model` 没有默认值，缺失或不支持的模型返回 `400`，provider 不可用返回 `404`。其余原生生成字段交由上游校验，图片和参考素材输入会原样转发。上游响应体、状态码及元数据保持不变。
+
+提交生成请求：
+
+```sh
+curl http://localhost:4141/v1/videos/generations \
+  -H 'Authorization: Bearer your_gateway_key' \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"xai/grok-imagine-video-1.5","prompt":"A paper boat on a lake","duration":5}'
+```
+
+响应包含上游 `request_id`，使用该 ID 轮询结果：
+
+```sh
+curl http://localhost:4141/v1/videos/YOUR_REQUEST_ID \
+  -H 'Authorization: Bearer your_gateway_key'
+```
+
+网关不等待生成完成、不重试提交，也不保存任务。查询期间需保持同一 xAI 账号和上游地址。客户端处理 `pending`、`done`、`failed` 等原生状态，并直接访问返回的 `video.url`。xAI 默认视频 URL 为临时地址，详见 [xAI 视频文档](https://docs.x.ai/developers/model-capabilities/video/generation)。
 
 ### Anthropic 兼容端点
 

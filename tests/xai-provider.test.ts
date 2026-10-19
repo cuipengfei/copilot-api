@@ -41,6 +41,7 @@ if (process.env.COPILOT_API_XAI_TEST_PROCESS !== "1") {
   const { modelRoutes } = await import("~/routes/models/route")
   const { providerModelRoutes } = await import("~/routes/provider/models/route")
   const { imageRoutes } = await import("~/routes/images/route")
+  const { videoRoutes } = await import("~/routes/videos/route")
   const {
     getProviderConfig,
     getRawProviderConfig,
@@ -258,6 +259,89 @@ if (process.env.COPILOT_API_XAI_TEST_PROCESS !== "1") {
           quality: "medium",
           response_format: "b64_json",
         })
+      },
+    )
+
+    test.each(["oauth2", "authorization"] as const)(
+      "routes video submissions and results with real %s provider resolution",
+      async (authType) => {
+        if (authType === "oauth2") await persistXaiCredentials(credentials)
+        fs.writeFileSync(
+          PATHS.CONFIG_PATH,
+          JSON.stringify({
+            modelMappings: { "my-video": "xai/grok-imagine-video-1.5" },
+            providers: {
+              xai: {
+                apiKey:
+                  authType === "authorization" ? "xai-api-key" : undefined,
+                authType,
+                baseUrl: "https://api.x.ai",
+                type: "openai-responses",
+              },
+            },
+          }),
+        )
+        invalidateConfigCache()
+        const resultBody = {
+          status: "done",
+          model: "grok-imagine-video-1.5",
+          video: { url: "https://vidgen.x.ai/clip.mp4", duration: 5 },
+        }
+        const requests: Array<{ url: string; init?: RequestInit }> = []
+        setFetch((input, init) => {
+          requests.push({
+            url: input instanceof Request ? input.url : input.toString(),
+            init,
+          })
+          return Promise.resolve(
+            Response.json(
+              init?.method === "POST" ?
+                { request_id: "video-job" }
+              : resultBody,
+            ),
+          )
+        })
+        const app = new Hono()
+        app.route("/v1/videos", videoRoutes)
+        const submitted = await app.request("/v1/videos/generations", {
+          method: "POST",
+          headers: { authorization: "Bearer gateway-key" },
+          body: JSON.stringify({
+            model: "my-video",
+            prompt: "A boat",
+            duration: 5,
+          }),
+        })
+        expect(submitted.status).toBe(200)
+        expect(await submitted.json()).toEqual({ request_id: "video-job" })
+        const result = await app.request("/v1/videos/video-job", {
+          headers: { authorization: "Bearer gateway-key" },
+        })
+        expect(result.status).toBe(200)
+        expect(await result.json()).toEqual(resultBody)
+        expect(requests).toHaveLength(2)
+        const baseUrl =
+          authType === "oauth2" ?
+            "https://cli-chat-proxy.grok.com"
+          : "https://api.x.ai"
+        expect(requests.map(({ url }) => url)).toEqual([
+          `${baseUrl}/v1/videos/generations`,
+          `${baseUrl}/v1/videos/video-job`,
+        ])
+        for (const { init } of requests) {
+          expect(new Headers(init?.headers).get("authorization")).toBe(
+            authType === "oauth2" ?
+              "Bearer access-token"
+            : "Bearer xai-api-key",
+          )
+        }
+        expect(await new Response(requests[0].init?.body).json()).toEqual({
+          model: "grok-imagine-video-1.5",
+          prompt: "A boat",
+          duration: 5,
+        })
+        expect(requests[1].init?.method).toBe("GET")
+        expect(requests[1].init?.body).toBeUndefined()
       },
     )
 
