@@ -30,6 +30,7 @@ Here is an example `.claude/settings.json` file:
     "ANTHROPIC_DEFAULT_HAIKU_MODEL": "gpt-6-luna[1m]",
     "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "400000",
     "CLAUDE_CODE_AUTO_MODE_SERVER": "0",
+    "CLAUDE_CODE_AUTO_MODE_MODEL": "codex-auto-review",
     "CLAUDE_CODE_USE_VERTEX": "0",
     "CLAUDE_CODE_USE_BEDROCK": "0",
     "DISABLE_NON_ESSENTIAL_MODEL_CALLS": "1",
@@ -51,6 +52,7 @@ Here is an example `.claude/settings.json` file:
 - The desktop's **Models shown in Coding Agent** selection applies to both Codex and Claude Code discovery through `agentsModels`; selections use original upstream model IDs without `my-claude-`, `[1m]`, or the gateway provider prefix.
 - Model display names identify their provider, for example `GLM-5.3-Flash (opencode-go)`. Existing labels are used as the base; a matching provider prefix or suffix is not repeated. Copilot entries use `github-copilot`.
 - Replace `ANTHROPIC_DEFAULT_FABLE_MODEL`, `ANTHROPIC_DEFAULT_OPUS_MODEL`, `ANTHROPIC_DEFAULT_SONNET_MODEL`, and `ANTHROPIC_DEFAULT_HAIKU_MODEL` according to your needs. After configuration, please install the claude code plugin [Plugin Integrations](integrations.md#plugin-integrations).  
+- `CLAUDE_CODE_AUTO_MODE_MODEL` (Claude Code v2.1.302+) selects the model for the client-side auto mode classifier; it does not change the server-side auto mode model. Keep `CLAUDE_CODE_AUTO_MODE_SERVER: "0"` to use the client-side classifier. The example uses `codex-auto-review`, which requires an enabled Codex provider and uses the gateway's default model mapping; replace it with another available model as needed. The gateway's `claudeAutoModel` override takes priority over the requested model: explicitly set `"claudeAutoModel": ""` in the gateway's [config.json](configuration.md#configuration-configjson) to disable this override, then restart the gateway or apply the change through the desktop app. Omitting `claudeAutoModel` restores the gateway's dynamic default override. Other routing rules still apply, including the `smallModels.copilot` warmup override on non-token-based-billing Copilot accounts.
 - `CLAUDE_CODE_TOTAL_TOKENS_REMINDER: "off"` disables Claude Code's total-tokens reminder, which injects a `<total_tokens>N tokens left</total_tokens>` block into the conversation to pace the model against a remaining token budget. The default budget is 15,000,000 (15M) tokens, which is not very meaningful, so it is turned off here.
 - Setting CLAUDE_CODE_ATTRIBUTION_HEADER to 0 can prevent Claude code from adding billing and version information in system prompts, thereby avoiding prompt cache invalidation.
 - Turning off CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION and CLAUDE_CODE_ENABLE_AWAY_SUMMARY can prevent quota from being consumed unnecessarily.
