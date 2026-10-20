@@ -1043,10 +1043,21 @@ describe('provider management UI', () => {
     expect(providersTab.disabled).toBe(false)
     expect(configTab.disabled).toBe(false)
     expect(studioTab.disabled).toBe(false)
+    const selectedTabLabel = () =>
+      container.querySelector<HTMLButtonElement>(
+        '[role="tab"][aria-selected="true"]',
+      )?.textContent
     await act(async () => {
       studioTab.click()
     })
-    expect(container.querySelector('h1')?.textContent).toBe('Create')
+    // The stopped-service reset must not bounce the studio back to the
+    // dashboard: a hidden-but-mounted studio subtree would still satisfy
+    // text queries, so assert the selected tab and the visible panel.
+    expect(selectedTabLabel()).toBe('Create')
+    const studioPanel = [...container.querySelectorAll('h1')].find(
+      (heading) => heading.textContent === 'Create',
+    )
+    expect(studioPanel?.closest('.hidden')).toBeNull()
     expect(container.textContent).toContain('Start the server to create media')
     const prompt = container.querySelector('textarea')!
     await act(async () => {
@@ -1067,6 +1078,7 @@ describe('provider management UI', () => {
       ),
     ).toHaveLength(1)
     await act(async () => studioTab.click())
+    expect(selectedTabLabel()).toBe('Create')
     expect(container.querySelector('textarea')?.value).toBe('Keep this draft')
   })
   test('renders as a page and preserves edits when switching between providers', async () => {

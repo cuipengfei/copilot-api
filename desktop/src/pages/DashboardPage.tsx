@@ -77,6 +77,21 @@ type DashboardTab =
   | 'studio'
   | 'logs'
 
+/**
+ * Tabs whose panel works without a running service and replaces the start form.
+ * The tab reset, the start form and tab enablement all derive from these two
+ * lists so a new tab cannot become visible-but-unclickable.
+ */
+const TABS_WITHOUT_START_FORM: ReadonlyArray<DashboardTab> = [
+  'providers',
+  'advancedConfig',
+  'studio',
+]
+const TABS_REACHABLE_WHILE_STOPPED: ReadonlyArray<DashboardTab> = [
+  'dashboard',
+  ...TABS_WITHOUT_START_FORM,
+]
+
 const numberFormatter = new Intl.NumberFormat()
 const TOKEN_USAGE_EVENTS_PAGE_SIZE = 10
 const TOKEN_USAGE_SESSIONS_PAGE_SIZE = 5
@@ -377,12 +392,7 @@ export default function DashboardPage({
   const logEndRef = useRef<HTMLDivElement>(null)
   const intentionalStop = useRef(false)
   useEffect(() => {
-    if (
-      !started
-      && tab !== 'dashboard'
-      && tab !== 'providers'
-      && tab !== 'advancedConfig'
-    )
+    if (!started && !TABS_REACHABLE_WHILE_STOPPED.includes(tab))
       setTab('dashboard')
   }, [started, tab])
   const tokenUsageRequestId = useRef(0)
@@ -942,8 +952,7 @@ export default function DashboardPage({
   )
   const showRefreshButton =
     started && (tab === 'dashboard' || tab === 'tokenUsage')
-  const showStartForm =
-    !started && !['providers', 'advancedConfig', 'studio'].includes(tab)
+  const showStartForm = !started && !TABS_WITHOUT_START_FORM.includes(tab)
 
   return (
     <div className="flex flex-col h-screen bg-canvas">
@@ -964,7 +973,7 @@ export default function DashboardPage({
         </div>
       )}
 
-      {/* Providers and config remain editable while the server is stopped. */}
+      {/* Providers, config and the create studio stay reachable while stopped. */}
       <div className="flex items-center justify-between gap-3 px-4 h-[52px] bg-surface border-b border-line-soft shrink-0">
         <div
           role="tablist"
@@ -976,11 +985,7 @@ export default function DashboardPage({
               role="tab"
               aria-selected={tab === tabItem.key}
               disabled={
-                !started
-                && tabItem.key !== 'dashboard'
-                && tabItem.key !== 'providers'
-                && tabItem.key !== 'advancedConfig'
-                && tabItem.key !== 'studio'
+                !started && !TABS_REACHABLE_WHILE_STOPPED.includes(tabItem.key)
               }
               onClick={() => setTab(tabItem.key)}
               className={`inline-flex items-center gap-1.5 px-2 sm:px-3 text-[13px] whitespace-nowrap border-b-2 transition-colors disabled:cursor-not-allowed disabled:opacity-35 ${
