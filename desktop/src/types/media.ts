@@ -19,6 +19,7 @@ export const VIDEO_RATIOS = [
 export const VIDEO_RESOLUTIONS = ['480p', '720p', '1080p'] as const
 export const MAX_UPLOAD_BYTES = 20 * 1024 * 1024
 export const MAX_TOTAL_UPLOAD_BYTES = 40 * 1024 * 1024
+export const VIDEO_IMAGE_MAX_BYTES = 1024 * 1024
 export const UPLOAD_MIME_TYPES = ['image/png', 'image/jpeg', 'image/webp']
 export const VIDEO_MODEL = 'xai/grok-imagine-video-1.5'
 

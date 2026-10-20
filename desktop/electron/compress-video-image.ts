@@ -1,7 +1,7 @@
-import type { MediaUpload } from '../src/types/media'
+import { VIDEO_IMAGE_MAX_BYTES, type MediaUpload } from '../src/types/media'
 
 /** xAI's media proxy rejects larger base64 image-to-video bodies. */
-export const VIDEO_IMAGE_MAX_BYTES = 1024 * 1024
+export { VIDEO_IMAGE_MAX_BYTES } from '../src/types/media'
 
 export interface CompressibleImage {
   isEmpty(): boolean

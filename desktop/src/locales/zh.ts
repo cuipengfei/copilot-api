@@ -27,7 +27,8 @@ const zh: Locale = {
       '请选择 PNG、JPEG 或 WebP 图片，每张不超过 20 MiB，总计不超过 40 MiB；修改图片最多 5 张，视频首帧最多 1 张。',
     remove: '移除',
     firstFrame: '首帧图片（可选）',
-    firstFrameHint: '添加一张图片，让画面动起来。视频沿用图片比例。',
+    firstFrameHint:
+      '添加一张图片，让画面动起来。选择图片后可不填提示词，视频沿用图片比例。',
     duration: '时长（秒）',
     ratio: '画面比例',
     resolution: '分辨率',
@@ -53,7 +54,8 @@ const zh: Locale = {
     stopped: '请先启动服务，再生成内容或查询进度。',
     gatewayHint:
       '沿用图片路由设置与模型映射。指定提供商时，请先启用对应提供商。',
-    videoHint: '需启用 xAI 提供商。视频链接有有效期，生成后请及时保存。',
+    videoHint:
+      '需启用 xAI 提供商。可填写提示词、添加首帧图片，或同时使用两者。视频链接有有效期，生成后请及时保存。',
   },
   updates: {
     title: '应用更新',

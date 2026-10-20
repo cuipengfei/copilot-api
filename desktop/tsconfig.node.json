@@ -36,6 +36,7 @@
     "../src/lib/internal-headers.ts",
     "src/lib/provider-management-editor.ts",
     "src/lib/provider-management-auth.ts",
+    "src/lib/media-upload.ts",
     "src/lib/copilot-usage-display.ts",
     "src/lib/provider-type-labels.ts",
     "src/lib/token-usage-format.ts",

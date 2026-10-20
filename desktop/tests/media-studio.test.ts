@@ -199,6 +199,24 @@ describe('media requests', () => {
     )
     expect(payload).not.toHaveProperty('aspect_ratio')
   })
+  test('allows a first-frame video without a prompt', async () => {
+    response = () => Response.json({ request_id: 'job' })
+    expect(
+      await client().createVideo('one', {
+        ...videoInput,
+        prompt: '  ',
+        image,
+      }),
+    ).toMatchObject({ status: 'pending', requestId: 'job' })
+    const payload: unknown = JSON.parse(
+      fetchMock.mock.calls[0][1]?.body as string,
+    )
+    expect(payload).not.toHaveProperty('prompt')
+    expect(payload).toHaveProperty(
+      'image.url',
+      'data:image/png;base64,iVBORw==',
+    )
+  })
   test.each([
     { duration: 0 },
     { duration: 16 },

@@ -29,7 +29,7 @@ const en: Locale = {
     remove: 'Remove',
     firstFrame: 'First frame (optional)',
     firstFrameHint:
-      'Add one image to animate. The video follows the image’s aspect ratio.',
+      'Add one image to animate. A prompt is optional when an image is selected, and the video follows the image’s aspect ratio.',
     duration: 'Duration (seconds)',
     ratio: 'Aspect ratio',
     resolution: 'Resolution',
@@ -56,7 +56,7 @@ const en: Locale = {
     gatewayHint:
       'Uses image route settings and model mappings. An explicit provider must be enabled.',
     videoHint:
-      'Requires an enabled xAI provider. Video links are temporary; save completed videos promptly.',
+      'Requires an enabled xAI provider. Use a prompt, a first-frame image, or both. Video links are temporary; save completed videos promptly.',
   },
   updates: {
     title: 'Updates',

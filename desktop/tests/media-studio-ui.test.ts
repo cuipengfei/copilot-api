@@ -325,6 +325,17 @@ describe('media creation page', () => {
     await click('Edit image')
     expect(container.querySelector('img')?.getAttribute('alt')).toBe('edit.png')
   })
+  test('allows a first-frame video without a prompt', async () => {
+    await render()
+    await click('Generate video')
+    await upload([file('frame.png')])
+    expect(button('Create').disabled).toBe(false)
+    await click('Create')
+    expect(createVideo.mock.calls[0][1]).toMatchObject({
+      prompt: '',
+      image: { name: 'frame.png' },
+    })
+  })
   test('polls asynchronous video, previews completion and saves the video', async () => {
     await render()
     await click('Generate video')

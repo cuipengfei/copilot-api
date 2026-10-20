@@ -56,6 +56,17 @@ function validatePrompt(prompt: string): string {
   return prompt.trim()
 }
 
+function validateVideoPrompt(
+  prompt: unknown,
+  hasImage: boolean,
+): string | undefined {
+  if (typeof prompt !== 'string') throw new Error('Invalid video options')
+  const normalized = prompt.trim()
+  if (!normalized && !hasImage)
+    throw new Error('A prompt or first-frame image is required')
+  return normalized || undefined
+}
+
 function validateUploads(images: MediaUpload[], max: number): void {
   if (!Array.isArray(images) || images.length > max)
     throw new Error(`At most ${max} images are supported`)
@@ -285,7 +296,8 @@ export function createMediaStudioClient(options: MediaClientOptions) {
       id: string,
       input: VideoCreationInput,
     ): Promise<VideoCreationResult> {
-      const prompt = validatePrompt(input.prompt)
+      const hasImage = Boolean(input.image)
+      const prompt = validateVideoPrompt(input.prompt, hasImage)
       if (
         !Number.isInteger(input.duration)
         || input.duration < 1
@@ -295,14 +307,14 @@ export function createMediaStudioClient(options: MediaClientOptions) {
         || typeof input.generateAudio !== 'boolean'
       )
         throw new Error('Invalid video options')
-      validateUploads(input.image ? [input.image] : [], 1)
+      validateUploads(hasImage && input.image ? [input.image] : [], 1)
       const result = parseVideoResult(
         await request(id, '/v1/videos/generations', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({
             model: VIDEO_MODEL,
-            prompt,
+            ...(prompt ? { prompt } : {}),
             duration: input.duration,
             resolution: input.resolution,
             generate_audio: input.generateAudio,

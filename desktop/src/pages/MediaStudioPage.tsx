@@ -8,6 +8,10 @@ import {
 } from 'react'
 import { useLanguage } from '../contexts/LanguageContext'
 import {
+  serializeMediaFile,
+  serializeVideoMediaFile,
+} from '../lib/media-upload'
+import {
   IMAGE_QUALITIES,
   IMAGE_SIZES,
   MAX_TOTAL_UPLOAD_BYTES,
@@ -18,7 +22,6 @@ import {
   VIDEO_RESOLUTIONS,
   type CreatedImage,
   type ImageCreationInput,
-  type MediaUpload,
   type VideoCreationInput,
   type VideoCreationResult,
 } from '../types/media'
@@ -70,14 +73,6 @@ function UploadPreview({
   )
 }
 
-async function serializeFile(file: File): Promise<MediaUpload> {
-  return {
-    name: file.name,
-    type: file.type,
-    bytes: new Uint8Array(await file.arrayBuffer()),
-  }
-}
-
 export default function MediaStudioPage({
   serverRunning,
 }: {
@@ -120,6 +115,9 @@ export default function MediaStudioPage({
   const pollRequest = useRef<string | null>(null)
   const uploadInput = useRef<HTMLInputElement>(null)
   const files = mode === 'video' ? firstFrame : editFiles
+  const hasFirstFrame = mode === 'video' && firstFrame.length > 0
+  const promptRequired = !hasFirstFrame
+  const promptMissing = !prompt.trim() && !hasFirstFrame
 
   function stopWaiting() {
     const id = generationRequest.current
@@ -211,7 +209,7 @@ export default function MediaStudioPage({
     if (
       busy
       || !serverRunning
-      || !prompt.trim()
+      || promptMissing
       || (mode === 'edit' && !editFiles.length)
       || (mode === 'video' && video?.status === 'pending')
     )
@@ -224,7 +222,9 @@ export default function MediaStudioPage({
     setSaved(null)
     try {
       const uploads = await Promise.all(
-        (mode === 'generate' ? [] : files).map(serializeFile),
+        (mode === 'generate' ? [] : files).map(
+          mode === 'video' ? serializeVideoMediaFile : serializeMediaFile,
+        ),
       )
       if (generationRequest.current !== id) return
       if (mode === 'video') {
@@ -550,7 +550,7 @@ export default function MediaStudioPage({
                 disabled={
                   busy
                   || !serverRunning
-                  || !prompt.trim()
+                  || promptMissing
                   || (mode !== 'video' && !model.trim())
                   || (mode === 'edit' && !editFiles.length)
                   || (mode === 'video' && video?.status === 'pending')
@@ -584,7 +584,7 @@ export default function MediaStudioPage({
               <textarea
                 key={mode}
                 form={formId}
-                required
+                required={promptRequired}
                 disabled={busy}
                 rows={6}
                 value={prompt}

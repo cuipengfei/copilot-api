@@ -6,7 +6,7 @@
 
 Start the local service and open **Create** to generate images from prompts, edit uploaded images, or generate videos. Images support the default gateway route, Codex, or xAI, with editable model, size, quality, and output count (1–4). The default route uses `imageGenerationModel`, `imageEditModel`, and model mappings; explicit Codex or xAI selections use the corresponding enabled provider directly. Image edits accept up to 5 PNG, JPEG, or WebP files, at most 20 MiB each and 40 MiB total.
 
-Video creation uses `xai/grok-imagine-video-1.5` and requires an enabled xAI provider. Use text or one first-frame image, choose 1–15 seconds, 480p/720p/1080p, and audio. The page checks progress every 5 seconds and offers pause, resume, and stop tracking. Switching tabs preserves drafts, results, and tasks; closing or reloading the app clears this temporary state. **Stop waiting** and **Stop tracking** only stop local waiting or polling; they do not cancel an upstream generation task.
+Video creation uses `xai/grok-imagine-video-1.5` and requires an enabled xAI provider. Use a prompt, one first-frame image, or both; choose 1–15 seconds, 480p/720p/1080p, and audio. The page checks progress every 5 seconds and offers pause, resume, and stop tracking. Switching tabs preserves drafts, results, and tasks; closing or reloading the app clears this temporary state. **Stop waiting** and **Stop tracking** only stop local waiting or polling; they do not cancel an upstream generation task.
 
 Preview results in the page and save them through the system file dialog. Video URLs are temporary, so save finished videos promptly.
 
