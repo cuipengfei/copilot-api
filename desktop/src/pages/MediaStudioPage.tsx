@@ -27,8 +27,12 @@ import {
 } from '../types/media'
 
 type Mode = 'generate' | 'edit' | 'video'
+type StudioResult =
+  | { kind: 'images'; images: CreatedImage[]; prompt: string }
+  | { kind: 'video'; video: VideoCreationResult; prompt: string }
 const fieldClass =
-  'w-full rounded-lg border border-line bg-surface px-3 py-1.5 text-[13px] text-ink focus:outline-none focus:ring-2 focus:ring-accent/30 disabled:opacity-50'
+  'w-full rounded-lg border border-line bg-surface px-3 py-1.5 text-[13px] text-ink focus:outline-none focus:ring-2 focus:ring-accent/30 focus:ring-inset disabled:opacity-50'
+const selectClass = `${fieldClass} text-left [text-align-last:left]`
 const buttonClass =
   'rounded-lg border border-line px-3 py-2 text-[13px] text-ink-soft hover:bg-sunken disabled:opacity-40'
 
@@ -104,9 +108,7 @@ export default function MediaStudioPage({
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
-  const [images, setImages] = useState<CreatedImage[]>([])
-  const [resultPrompt, setResultPrompt] = useState('')
-  const [video, setVideo] = useState<VideoCreationResult | null>(null)
+  const [result, setResult] = useState<StudioResult | null>(null)
   const [polling, setPolling] = useState(false)
   const [pollError, setPollError] = useState('')
   const [saving, setSaving] = useState<string | null>(null)
@@ -119,7 +121,11 @@ export default function MediaStudioPage({
   const hasFirstFrame = mode === 'video' && firstFrame.length > 0
   const promptRequired = !hasFirstFrame
   const promptMissing = !prompt.trim() && !hasFirstFrame
-  const hasResults = images.length > 0 || video !== null
+  const images = result?.kind === 'images' ? result.images : []
+  const video = result?.kind === 'video' ? result.video : null
+  const resultPrompt = result?.prompt ?? ''
+  const videoPending = video?.status === 'pending'
+  const hasResults = result !== null
 
   function stopWaiting() {
     const id = generationRequest.current
@@ -166,7 +172,15 @@ export default function MediaStudioPage({
       try {
         const result = await window.electronAPI.getVideo(id, requestId)
         if (!active) return
-        setVideo({ ...result, requestId })
+        setResult((current) =>
+          current?.kind === 'video' && current.video.requestId === requestId ?
+            {
+              kind: 'video',
+              video: { ...result, requestId },
+              prompt: current.prompt,
+            }
+          : current,
+        )
         setPollError('')
         if (result.status !== 'pending') {
           setPolling(false)
@@ -222,7 +236,7 @@ export default function MediaStudioPage({
       || !serverRunning
       || promptMissing
       || (mode === 'edit' && !editFiles.length)
-      || (mode === 'video' && video?.status === 'pending')
+      || videoPending
     )
       return
     const id = crypto.randomUUID()
@@ -248,9 +262,9 @@ export default function MediaStudioPage({
           image: uploads[0],
         })
         if (generationRequest.current !== id) return
-        setVideo(result)
         setPollError('')
         setPolling(result.status === 'pending')
+        setResult({ kind: 'video', video: result, prompt })
       } else {
         const result = await window.electronAPI.createImages(id, {
           mode,
@@ -263,8 +277,9 @@ export default function MediaStudioPage({
           images: uploads,
         })
         if (generationRequest.current !== id) return
-        setImages(result)
-        setResultPrompt(prompt)
+        setPollError('')
+        setPolling(false)
+        setResult({ kind: 'images', images: result, prompt })
       }
     } catch (cause) {
       if (generationRequest.current === id)
@@ -346,7 +361,7 @@ export default function MediaStudioPage({
                 <Field label={t('studio.provider')}>
                   <select
                     aria-label={t('studio.provider')}
-                    className={fieldClass}
+                    className={selectClass}
                     value={provider}
                     onChange={(e) => {
                       const next = e.target
@@ -439,7 +454,7 @@ export default function MediaStudioPage({
               <div className="grid grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)_minmax(0,0.7fr)] gap-2">
                 <Field label={t('studio.size')}>
                   <select
-                    className={fieldClass}
+                    className={selectClass}
                     value={size}
                     onChange={(e) =>
                       setSize(e.target.value as ImageCreationInput['size'])
@@ -454,7 +469,7 @@ export default function MediaStudioPage({
                 </Field>
                 <Field label={t('studio.quality')}>
                   <select
-                    className={fieldClass}
+                    className={selectClass}
                     value={quality}
                     onChange={(e) =>
                       setQuality(
@@ -496,7 +511,7 @@ export default function MediaStudioPage({
                   </Field>
                   <Field label={t('studio.resolution')}>
                     <select
-                      className={fieldClass}
+                      className={selectClass}
                       value={resolution}
                       onChange={(e) =>
                         setResolution(
@@ -513,7 +528,7 @@ export default function MediaStudioPage({
                 {!firstFrame.length && (
                   <Field label={t('studio.ratio')}>
                     <select
-                      className={fieldClass}
+                      className={selectClass}
                       value={aspectRatio}
                       onChange={(e) =>
                         setAspectRatio(
@@ -564,7 +579,7 @@ export default function MediaStudioPage({
                   || promptMissing
                   || (mode !== 'video' && !model.trim())
                   || (mode === 'edit' && !editFiles.length)
-                  || (mode === 'video' && video?.status === 'pending')
+                  || videoPending
                 }
                 className="flex-1 rounded-lg bg-accent-strong px-4 py-2.5 text-[13px] font-semibold text-white disabled:cursor-not-allowed disabled:opacity-40"
               >
@@ -585,13 +600,7 @@ export default function MediaStudioPage({
             </div>
           </div>
         </form>
-        <div
-          className={`grid min-h-0 min-w-0 flex-1 gap-3 ${
-            hasResults ?
-              'grid-rows-[minmax(0,0.8fr)_minmax(0,1.2fr)] min-[960px]:grid-cols-[minmax(0,1fr)_minmax(0,1.25fr)] min-[960px]:grid-rows-1'
-            : ''
-          }`}
-        >
+        <div className="grid min-h-0 min-w-0 flex-1 grid-rows-[minmax(0,0.8fr)_minmax(0,1.2fr)] gap-5 min-[960px]:grid-cols-[minmax(0,0.75fr)_minmax(0,1.25fr)] min-[960px]:grid-rows-1">
           <section
             className="flex min-h-0 min-w-0 flex-col rounded-2xl border border-line-soft bg-surface p-4 shadow-sm"
             aria-label={t('studio.prompt')}
@@ -612,6 +621,16 @@ export default function MediaStudioPage({
                     [mode]: value,
                   }))
                 }}
+                onKeyDown={(event) => {
+                  if (
+                    event.key !== 'Enter'
+                    || event.shiftKey
+                    || event.nativeEvent.isComposing
+                  )
+                    return
+                  event.preventDefault()
+                  event.currentTarget.form?.requestSubmit()
+                }}
                 placeholder={t(
                   mode === 'generate' ? 'studio.imagePrompt'
                   : mode === 'edit' ? 'studio.editPrompt'
@@ -621,129 +640,129 @@ export default function MediaStudioPage({
               />
             </label>
           </section>
-          {hasResults && (
-            <section
-              className="flex min-h-0 min-w-0 flex-col overflow-y-auto rounded-2xl border border-line-soft bg-surface p-4 shadow-sm"
-              aria-label={t('studio.results')}
-            >
-              <h2 className="mb-4 shrink-0 text-sm font-semibold text-ink">
-                {t('studio.results')}
-              </h2>
-              {video && (
-                <div className="mb-4 shrink-0 space-y-3 rounded-lg border border-line bg-sunken p-3">
-                  {video.requestId && (
-                    <p className="break-all font-mono text-[11px] text-ink-soft">
-                      {t('studio.requestId')}: {video.requestId}
+          <section
+            className="flex min-h-0 min-w-0 flex-col overflow-y-auto rounded-2xl border border-line-soft bg-surface p-4 shadow-sm"
+            aria-label={t('studio.results')}
+          >
+            <h2 className="mb-4 shrink-0 text-sm font-semibold text-ink">
+              {t('studio.results')}
+            </h2>
+            {!hasResults && (
+              <p className="text-[13px] text-ink-faint">{t('studio.empty')}</p>
+            )}
+            {video && (
+              <div className="mb-4 shrink-0 space-y-3 rounded-lg border border-line bg-sunken p-3">
+                {video.requestId && (
+                  <p className="break-all font-mono text-[11px] text-ink-soft">
+                    {t('studio.requestId')}: {video.requestId}
+                  </p>
+                )}
+                {video.status === 'pending' && (
+                  <>
+                    <p role="status" className="text-[13px] text-ink-soft">
+                      {t(polling ? 'studio.pending' : 'studio.paused')}
                     </p>
-                  )}
-                  {video.status === 'pending' && (
-                    <>
-                      <p role="status" className="text-[13px] text-ink-soft">
-                        {t(polling ? 'studio.pending' : 'studio.paused')}
+                    {pollError && (
+                      <p role="alert" className="text-xs text-red-500">
+                        {pollError}
                       </p>
-                      {pollError && (
-                        <p role="alert" className="text-xs text-red-500">
-                          {pollError}
-                        </p>
-                      )}
+                    )}
+                    <button
+                      type="button"
+                      className={buttonClass}
+                      disabled={!serverRunning}
+                      onClick={() => {
+                        setPollError('')
+                        setPolling(!polling)
+                      }}
+                    >
+                      {t(polling ? 'studio.pause' : 'studio.resume')}
+                    </button>
+                    <button
+                      type="button"
+                      className={`${buttonClass} ml-2`}
+                      onClick={() => {
+                        setPolling(false)
+                        setResult(null)
+                        setPollError('')
+                      }}
+                    >
+                      {t('studio.discard')}
+                    </button>
+                  </>
+                )}
+                {(video.status === 'failed' || video.status === 'expired') && (
+                  <p role="alert" className="text-xs text-red-500">
+                    {video.error ?? t('studio.videoFailed')}
+                  </p>
+                )}
+                {video.status === 'done' && video.url && (
+                  <>
+                    <video
+                      src={video.url}
+                      controls
+                      preload="metadata"
+                      className="max-h-[420px] w-full rounded-lg bg-black"
+                    />
+                    <button
+                      type="button"
+                      className={buttonClass}
+                      disabled={saving !== null}
+                      onClick={() => void save(video.url!, 'video')}
+                    >
+                      {saving === video.url ?
+                        t('studio.saving')
+                      : saved === video.url ?
+                        t('studio.saved')
+                      : t('studio.save')}
+                    </button>
+                  </>
+                )}
+              </div>
+            )}
+            <div className="grid shrink-0 grid-cols-[repeat(auto-fit,minmax(320px,1fr))] gap-4">
+              {images.map((image, index) => (
+                <figure
+                  key={index}
+                  className="min-w-0 overflow-hidden rounded-lg border border-line bg-sunken"
+                >
+                  <img
+                    src={image.url}
+                    alt={resultPrompt}
+                    className="h-auto w-full"
+                  />
+                  <figcaption className="flex flex-col gap-2 p-3">
+                    <div className="flex flex-wrap gap-2">
                       <button
                         type="button"
-                        className={buttonClass}
-                        disabled={!serverRunning}
-                        onClick={() => {
-                          setPollError('')
-                          setPolling(!polling)
-                        }}
-                      >
-                        {t(polling ? 'studio.pause' : 'studio.resume')}
-                      </button>
-                      <button
-                        type="button"
-                        className={`${buttonClass} ml-2`}
-                        onClick={() => {
-                          setPolling(false)
-                          setVideo(null)
-                          setPollError('')
-                        }}
-                      >
-                        {t('studio.discard')}
-                      </button>
-                    </>
-                  )}
-                  {(video.status === 'failed'
-                    || video.status === 'expired') && (
-                    <p role="alert" className="text-xs text-red-500">
-                      {video.error ?? t('studio.videoFailed')}
-                    </p>
-                  )}
-                  {video.status === 'done' && video.url && (
-                    <>
-                      <video
-                        src={video.url}
-                        controls
-                        preload="metadata"
-                        className="max-h-[420px] w-full rounded-lg bg-black"
-                      />
-                      <button
-                        type="button"
-                        className={buttonClass}
                         disabled={saving !== null}
-                        onClick={() => void save(video.url!, 'video')}
+                        className={buttonClass}
+                        onClick={() => void save(image.url, 'image')}
                       >
-                        {saving === video.url ?
+                        {saving === image.url ?
                           t('studio.saving')
-                        : saved === video.url ?
+                        : saved === image.url ?
                           t('studio.saved')
                         : t('studio.save')}
                       </button>
-                    </>
-                  )}
-                </div>
-              )}
-              <div className="grid shrink-0 grid-cols-[repeat(auto-fit,minmax(320px,1fr))] gap-4">
-                {images.map((image, index) => (
-                  <figure
-                    key={index}
-                    className="min-w-0 overflow-hidden rounded-lg border border-line bg-sunken"
-                  >
-                    <img
-                      src={image.url}
-                      alt={resultPrompt}
-                      className="h-auto w-full"
-                    />
-                    <figcaption className="flex flex-col gap-2 p-3">
-                      <div className="flex flex-wrap gap-2">
-                        <button
-                          type="button"
-                          disabled={saving !== null}
-                          className={buttonClass}
-                          onClick={() => void save(image.url, 'image')}
-                        >
-                          {saving === image.url ?
-                            t('studio.saving')
-                          : saved === image.url ?
-                            t('studio.saved')
-                          : t('studio.save')}
-                        </button>
-                        <button
-                          type="button"
-                          className={buttonClass}
-                          onClick={() => setPreview(image.url)}
-                        >
-                          {t('studio.viewOriginal')}
-                        </button>
-                      </div>
-                      {image.revisedPrompt && (
-                        <p className="line-clamp-3 text-xs text-ink-soft">
-                          {image.revisedPrompt}
-                        </p>
-                      )}
-                    </figcaption>
-                  </figure>
-                ))}
-              </div>
-            </section>
-          )}
+                      <button
+                        type="button"
+                        className={buttonClass}
+                        onClick={() => setPreview(image.url)}
+                      >
+                        {t('studio.viewOriginal')}
+                      </button>
+                    </div>
+                    {image.revisedPrompt && (
+                      <p className="line-clamp-3 text-xs text-ink-soft">
+                        {image.revisedPrompt}
+                      </p>
+                    )}
+                  </figcaption>
+                </figure>
+              ))}
+            </div>
+          </section>
         </div>
       </div>
       {preview && (

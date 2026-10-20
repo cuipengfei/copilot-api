@@ -54,6 +54,7 @@ beforeEach(async () => {
     HTMLInputElement: win.HTMLInputElement,
     HTMLTextAreaElement: win.HTMLTextAreaElement,
     Event: win.Event,
+    KeyboardEvent: win.KeyboardEvent,
     MouseEvent: win.MouseEvent,
     IS_REACT_ACT_ENVIRONMENT: true,
   })) {
@@ -218,6 +219,14 @@ describe('media creation page', () => {
     await prompt(' ')
     expect(button('Create').disabled).toBe(true)
   })
+  test('shows the empty results panel before the first generation', async () => {
+    await render()
+    const results = container.querySelector('section[aria-label="Results"]')
+    expect(results).not.toBeNull()
+    expect(results?.textContent).toContain(
+      'Your images and videos will appear here.',
+    )
+  })
   test('generates, previews and saves images with the selected options', async () => {
     await render()
     await prompt()
@@ -244,6 +253,66 @@ describe('media creation page', () => {
       url: 'data:image/png;base64,iVBORw==',
     })
     expect(container.textContent).toContain('Saved')
+  })
+  test('submits with Enter and keeps Shift+Enter for a newline', async () => {
+    await render()
+    await prompt()
+    const editor = container.querySelector('textarea')!
+    await act(async () =>
+      editor.dispatchEvent(
+        new KeyboardEvent('keydown', {
+          key: 'Enter',
+          shiftKey: true,
+          bubbles: true,
+          cancelable: true,
+        }),
+      ),
+    )
+    expect(createImages).not.toHaveBeenCalled()
+    await act(async () => {
+      editor.dispatchEvent(
+        new KeyboardEvent('keydown', {
+          key: 'Enter',
+          bubbles: true,
+          cancelable: true,
+        }),
+      )
+      await Promise.resolve()
+    })
+    expect(createImages).toHaveBeenCalledTimes(1)
+  })
+  test('replaces image results when a video request is accepted', async () => {
+    await render()
+    await prompt()
+    await click('Create')
+    expect(container.querySelectorAll('figure')).toHaveLength(1)
+    await click('Generate video')
+    await prompt()
+    await click('Create')
+    expect(container.querySelectorAll('figure')).toHaveLength(0)
+    expect(container.textContent).toContain('video-job')
+  })
+  test('replaces a completed video when a new image result arrives', async () => {
+    await render()
+    await click('Generate video')
+    await prompt()
+    await click('Create')
+    await checkProgress()
+    expect(container.querySelector('video')).not.toBeNull()
+    await click('Generate image')
+    await prompt()
+    await click('Create')
+    expect(container.querySelector('video')).toBeNull()
+    expect(container.querySelectorAll('figure')).toHaveLength(1)
+  })
+  test('blocks submissions from another mode while a video is pending', async () => {
+    await render()
+    await click('Generate video')
+    await prompt()
+    await click('Create')
+    await click('Generate image')
+    await prompt('A replacement image')
+    expect(button('Create').disabled).toBe(true)
   })
   test('previews the original image and closes the viewer', async () => {
     await render()
