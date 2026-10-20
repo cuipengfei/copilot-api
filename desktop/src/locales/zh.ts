@@ -27,8 +27,7 @@ const zh: Locale = {
       '请选择 PNG、JPEG 或 WebP 图片，每张不超过 20 MiB，总计不超过 40 MiB；修改图片最多 5 张，视频首帧最多 1 张。',
     remove: '移除',
     firstFrame: '首帧图片（可选）',
-    firstFrameHint:
-      '添加一张图片，让画面动起来。选择图片后可不填提示词，视频沿用图片比例。',
+    firstFrameHint: '添加一张图片即可生成，提示词可选。',
     duration: '时长（秒）',
     ratio: '画面比例',
     resolution: '分辨率',

@@ -118,6 +118,7 @@ export default function MediaStudioPage({
   const hasFirstFrame = mode === 'video' && firstFrame.length > 0
   const promptRequired = !hasFirstFrame
   const promptMissing = !prompt.trim() && !hasFirstFrame
+  const hasResults = images.length > 0 || video !== null
 
   function stopWaiting() {
     const id = generationRequest.current
@@ -574,9 +575,15 @@ export default function MediaStudioPage({
             </div>
           </div>
         </form>
-        <div className="flex min-h-0 min-w-0 flex-col gap-3">
+        <div
+          className={`grid min-h-0 min-w-0 flex-1 gap-3 ${
+            hasResults ?
+              'grid-rows-[minmax(0,0.8fr)_minmax(0,1.2fr)] min-[960px]:grid-cols-[minmax(0,1fr)_minmax(0,1.25fr)] min-[960px]:grid-rows-1'
+            : ''
+          }`}
+        >
           <section
-            className={`flex min-h-0 flex-col rounded-2xl border border-line-soft bg-surface p-4 shadow-sm ${images.length || video ? 'flex-[2]' : 'flex-1'}`}
+            className="flex min-h-0 min-w-0 flex-col rounded-2xl border border-line-soft bg-surface p-4 shadow-sm"
             aria-label={t('studio.prompt')}
           >
             <label className="flex min-h-0 flex-1 flex-col gap-2 text-sm font-semibold text-ink">
@@ -604,9 +611,9 @@ export default function MediaStudioPage({
               />
             </label>
           </section>
-          {(images.length > 0 || video) && (
+          {hasResults && (
             <section
-              className="flex min-h-0 min-w-0 flex-[3] flex-col overflow-y-auto rounded-2xl border border-line-soft bg-surface p-4 shadow-sm"
+              className="flex min-h-0 min-w-0 flex-col overflow-y-auto rounded-2xl border border-line-soft bg-surface p-4 shadow-sm"
               aria-label={t('studio.results')}
             >
               <h2 className="mb-4 shrink-0 text-sm font-semibold text-ink">
@@ -683,7 +690,7 @@ export default function MediaStudioPage({
                   )}
                 </div>
               )}
-              <div className="grid shrink-0 gap-4 sm:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2">
+              <div className="grid shrink-0 grid-cols-1 gap-4 2xl:grid-cols-2">
                 {images.map((image, index) => (
                   <figure
                     key={index}

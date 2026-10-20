@@ -28,8 +28,7 @@ const en: Locale = {
       'Choose PNG, JPEG or WebP images. Maximum 20 MiB per image, 40 MiB total; 5 images for editing or 1 first frame.',
     remove: 'Remove',
     firstFrame: 'First frame (optional)',
-    firstFrameHint:
-      'Add one image to animate. A prompt is optional when an image is selected, and the video follows the image’s aspect ratio.',
+    firstFrameHint: 'Add one image to animate. The prompt is optional.',
     duration: 'Duration (seconds)',
     ratio: 'Aspect ratio',
     resolution: 'Resolution',
