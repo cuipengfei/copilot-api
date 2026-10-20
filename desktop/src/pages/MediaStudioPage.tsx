@@ -111,6 +111,7 @@ export default function MediaStudioPage({
   const [pollError, setPollError] = useState('')
   const [saving, setSaving] = useState<string | null>(null)
   const [saved, setSaved] = useState<string | null>(null)
+  const [preview, setPreview] = useState<string | null>(null)
   const generationRequest = useRef<string | null>(null)
   const pollRequest = useRef<string | null>(null)
   const uploadInput = useRef<HTMLInputElement>(null)
@@ -143,6 +144,15 @@ export default function MediaStudioPage({
     },
     [],
   )
+
+  useEffect(() => {
+    if (!preview) return
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setPreview(null)
+    }
+    document.addEventListener('keydown', handleEscape)
+    return () => document.removeEventListener('keydown', handleEscape)
+  }, [preview])
 
   useEffect(() => {
     const requestId = video?.requestId
@@ -690,7 +700,7 @@ export default function MediaStudioPage({
                   )}
                 </div>
               )}
-              <div className="grid shrink-0 grid-cols-1 gap-4 2xl:grid-cols-2">
+              <div className="grid shrink-0 grid-cols-[repeat(auto-fit,minmax(320px,1fr))] gap-4">
                 {images.map((image, index) => (
                   <figure
                     key={index}
@@ -699,21 +709,30 @@ export default function MediaStudioPage({
                     <img
                       src={image.url}
                       alt={resultPrompt}
-                      className="max-h-[520px] w-full object-contain"
+                      className="h-auto w-full"
                     />
                     <figcaption className="flex flex-col gap-2 p-3">
-                      <button
-                        type="button"
-                        disabled={saving !== null}
-                        className={buttonClass}
-                        onClick={() => void save(image.url, 'image')}
-                      >
-                        {saving === image.url ?
-                          t('studio.saving')
-                        : saved === image.url ?
-                          t('studio.saved')
-                        : t('studio.save')}
-                      </button>
+                      <div className="flex flex-wrap gap-2">
+                        <button
+                          type="button"
+                          disabled={saving !== null}
+                          className={buttonClass}
+                          onClick={() => void save(image.url, 'image')}
+                        >
+                          {saving === image.url ?
+                            t('studio.saving')
+                          : saved === image.url ?
+                            t('studio.saved')
+                          : t('studio.save')}
+                        </button>
+                        <button
+                          type="button"
+                          className={buttonClass}
+                          onClick={() => setPreview(image.url)}
+                        >
+                          {t('studio.viewOriginal')}
+                        </button>
+                      </div>
                       {image.revisedPrompt && (
                         <p className="line-clamp-3 text-xs text-ink-soft">
                           {image.revisedPrompt}
@@ -727,6 +746,33 @@ export default function MediaStudioPage({
           )}
         </div>
       </div>
+      {preview && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-6"
+          onClick={() => setPreview(null)}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-label={t('studio.viewOriginal')}
+            onClick={(event) => event.stopPropagation()}
+          >
+            <img
+              src={preview}
+              alt={resultPrompt}
+              className="max-h-[calc(100vh-3rem)] max-w-[calc(100vw-3rem)] rounded-lg object-contain shadow-2xl"
+            />
+          </div>
+          <button
+            type="button"
+            aria-label={t('studio.closePreview')}
+            onClick={() => setPreview(null)}
+            className="absolute right-4 top-4 flex h-8 w-8 items-center justify-center rounded-lg bg-white/15 text-lg leading-none text-white transition-colors hover:bg-white/25"
+          >
+            ×
+          </button>
+        </div>
+      )}
     </div>
   )
 }

@@ -245,6 +245,29 @@ describe('media creation page', () => {
     })
     expect(container.textContent).toContain('Saved')
   })
+  test('previews the original image and closes the viewer', async () => {
+    await render()
+    await prompt()
+    await click('Create')
+    await click('View original')
+    const dialog = container.querySelector('[role=dialog]')!
+    expect(dialog.querySelector('img')?.getAttribute('src')).toBe(
+      'data:image/png;base64,iVBORw==',
+    )
+    await act(async () =>
+      container
+        .querySelector<HTMLButtonElement>('button[aria-label="Close preview"]')!
+        .click(),
+    )
+    expect(container.querySelector('[role=dialog]')).toBeNull()
+    await click('View original')
+    await act(async () =>
+      win.document.dispatchEvent(
+        new win.KeyboardEvent('keydown', { key: 'Escape' }),
+      ),
+    )
+    expect(container.querySelector('[role=dialog]')).toBeNull()
+  })
   test('changes the provider default model and permits a custom model alias', async () => {
     await render()
     await prompt()

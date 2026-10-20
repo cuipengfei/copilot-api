@@ -42,6 +42,8 @@ const en: Locale = {
     save: 'Save',
     saving: 'Saving…',
     saved: 'Saved',
+    viewOriginal: 'View original',
+    closePreview: 'Close preview',
     useAsInput: 'Edit this image',
     failed: 'Request failed. Try again.',
     videoFailed: 'Video generation failed or expired.',

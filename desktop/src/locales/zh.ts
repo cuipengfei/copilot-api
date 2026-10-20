@@ -41,6 +41,8 @@ const zh: Locale = {
     save: '保存',
     saving: '保存中…',
     saved: '已保存',
+    viewOriginal: '查看原图',
+    closePreview: '关闭预览',
     useAsInput: '继续修改',
     failed: '请求失败，请重试。',
     videoFailed: '视频生成失败或任务已过期。',

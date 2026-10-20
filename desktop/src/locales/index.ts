@@ -42,6 +42,8 @@ export interface Locale {
     save: string
     saving: string
     saved: string
+    viewOriginal: string
+    closePreview: string
     useAsInput: string
     failed: string
     videoFailed: string
