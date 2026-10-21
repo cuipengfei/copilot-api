@@ -279,8 +279,11 @@ const createPooledWebSocketEntry = <TPayload, TChunk>(
         removePooledWebSocketEntry(request.poolKey, entry)
       })
     })
-    .catch(() => {
+    .catch((error: unknown) => {
       removePooledWebSocketEntry(request.poolKey, entry)
+      if (!request.signal?.aborted) {
+        consola.warn("", error)
+      }
     })
 
   return entry
