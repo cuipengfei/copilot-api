@@ -319,25 +319,54 @@ afterEach(() => {
 })
 
 describe("model routes", () => {
-  test.each([
-    ["/dashscope/v1/models", "curl/8.0"],
-    ["/v1/models", "curl/8.0"],
-    ["/v1/models", "opencode/2.0"],
-    ["/v1/models", "claude-cli/2.1"],
-    ["/v1/models", "codex/1.0"],
-  ])(
-    "filters old DashScope releases on %s for %s including explicit selections",
-    async (endpoint, userAgent) => {
+  test.each(
+    ["dashscope", "alibaba"].flatMap((provider) =>
+      [
+        [`/${provider}/v1/models`, "curl/8.0"],
+        ["/models", "curl/8.0"],
+        ["/v1/models", "curl/8.0"],
+        ["/v1/models", "opencode/2.0"],
+        ["/v1/models", "claude-cli/2.1"],
+        ["/v1/models", "codex/1.0"],
+      ].map(([endpoint, userAgent]) => ({ provider, endpoint, userAgent })),
+    ),
+  )(
+    "filters old $provider releases on $endpoint for $userAgent including explicit selections",
+    async ({ provider, endpoint, userAgent }) => {
       installModelsDevCatalog({
         ...modelsDevProviderCatalogFixture,
-        "alibaba-cn": { models: modelsDevReleaseModelsFixture },
+        "alibaba-cn": {
+          models: {
+            ...modelsDevReleaseModelsFixture,
+            deprecated: {
+              id: "deprecated",
+              status: "deprecated",
+              release_date: "2026-05-02",
+            },
+          },
+        },
       })
-      enabledProviders = ["dashscope"]
-      providerConfigs.dashscope = {
-        ...createProviderConfig("dashscope", "https://gateway.example"),
-        agentsModels: Object.keys(modelsDevReleaseModelsFixture),
+      enabledProviders = [provider]
+      providerConfigs[provider] = {
+        ...createProviderConfig(provider, "https://gateway.example"),
+        modelsDevProviderId: provider === "alibaba" ? "alibaba-cn" : undefined,
+        agentsModels: [
+          ...Object.keys(modelsDevReleaseModelsFixture),
+          "deprecated",
+        ],
         models: { "before-cutoff": {}, "qwen-plus": {} },
       }
+      fetchMock.mockImplementation(() =>
+        Promise.resolve(
+          Response.json({
+            data: [
+              { id: "upstream-only-model" },
+              { id: "before-cutoff" },
+              { id: "after-cutoff" },
+            ],
+          }),
+        ),
+      )
       const response = await createApp().request(endpoint, {
         headers: { "user-agent": userAgent },
       })
@@ -350,11 +379,11 @@ describe("model routes", () => {
         body.models?.map((model) => model.slug)
         ?? body.data?.map((model) => model.id)
         ?? []
-      const dashScopeIds =
-        endpoint.startsWith("/dashscope/") ? ids : (
+      const providerIds =
+        endpoint.startsWith(`/${provider}/`) ? ids : (
           ids
-            .filter((id) => id.startsWith("dashscope/"))
-            .map((id) => id.slice("dashscope/".length))
+            .filter((id) => id.startsWith(`${provider}/`))
+            .map((id) => id.slice(`${provider}/`.length))
         )
       const visibleIds = [
         "after-cutoff",
@@ -362,7 +391,7 @@ describe("model routes", () => {
         "on-cutoff",
         "unknown-date",
       ]
-      expect(dashScopeIds.sort()).toEqual(
+      expect(providerIds.sort()).toEqual(
         userAgent.startsWith("claude") ?
           visibleIds.map((id) => `my-claude-${id}[1m]`)
         : visibleIds,
@@ -409,15 +438,15 @@ describe("model routes", () => {
     },
   )
 
-  test.each(["xai", "openrouter", "deepseek", "kimi", "dashscope"])(
+  test.each(["xai", "openrouter", "deepseek", "kimi", "dashscope", "alibaba"])(
     "returns a local catalog error for missing %s records without remote fallback",
     async (provider) => {
       installModelsDevCatalog(modelsDevCatalogFixture)
       enabledProviders = [provider]
-      providerConfigs[provider] = createProviderConfig(
-        provider,
-        "https://reject.example",
-      )
+      providerConfigs[provider] = {
+        ...createProviderConfig(provider, "https://reject.example"),
+        modelsDevProviderId: provider === "alibaba" ? "alibaba-cn" : undefined,
+      }
       const raw = await createApp().request(`/${provider}/v1/models`)
       expect(raw.status).toBe(503)
       expect(await raw.json()).toMatchObject({
@@ -429,22 +458,25 @@ describe("model routes", () => {
     },
   )
 
-  test("honors explicit models.dev provider mappings while keeping the gateway provider name", async () => {
-    enabledProviders = ["kimi"]
-    providerConfigs.kimi = {
-      ...createProviderConfig("kimi", "https://reject.example"),
-      modelsDevProviderId: "openrouter",
-    }
-    const response = await createApp().request("/v1/models", {
-      headers: { "user-agent": "opencode" },
-    })
-    const { data } = (await response.json()) as { data: Array<OpencodeModel> }
-    expect(data[0]).toMatchObject({
-      id: "kimi/openai/gpt-5.1-codex",
-      limit: { context: 400_000, output: 128_000 },
-    })
-    expect(fetchMock).not.toHaveBeenCalled()
-  })
+  test.each(["kimi", "alibaba", "custom"])(
+    "honors explicit models.dev mappings for %s while keeping the gateway provider name",
+    async (provider) => {
+      enabledProviders = [provider]
+      providerConfigs[provider] = {
+        ...createProviderConfig(provider, "https://reject.example"),
+        modelsDevProviderId: "openrouter",
+      }
+      const response = await createApp().request("/v1/models", {
+        headers: { "user-agent": "opencode" },
+      })
+      const { data } = (await response.json()) as { data: Array<OpencodeModel> }
+      expect(data[0]).toMatchObject({
+        id: `${provider}/openai/gpt-5.1-codex`,
+        limit: { context: 400_000, output: 128_000 },
+      })
+      expect(fetchMock).not.toHaveBeenCalled()
+    },
+  )
 
   test("keeps Codex catalog discovery remote and Copilot records intact while other providers stay local", async () => {
     enableCodexCatalog()
@@ -2445,7 +2477,12 @@ describe("model routes", () => {
       installModelsDevCatalog({
         ...modelsDevCatalogFixture,
         [modelsDevProviderId ?? "custom"]: {
-          models: { "org/claude-model": { limit: { output: 65_536 } } },
+          models: {
+            "org/claude-model": {
+              id: "org/claude-model",
+              limit: { output: 65_536 },
+            },
+          },
         },
       })
       enabledProviders = ["custom"]
@@ -2465,10 +2502,16 @@ describe("model routes", () => {
         body.models.find((model) => model.slug === "custom/org/claude-model")
           ?.max_output_tokens,
       ).toBe(65_536)
-      expect(
-        body.models.find((model) => model.slug === "custom/qwen-plus")
-          ?.max_output_tokens,
-      ).toBe(32_000)
+      const upstreamModel = body.models.find(
+        (model) => model.slug === "custom/qwen-plus",
+      )
+      if (modelsDevProviderId) {
+        expect(upstreamModel).toBeUndefined()
+        expect(fetchMock).not.toHaveBeenCalled()
+      } else {
+        expect(upstreamModel?.max_output_tokens).toBe(32_000)
+        expect(fetchMock).toHaveBeenCalledTimes(1)
+      }
     },
   )
 

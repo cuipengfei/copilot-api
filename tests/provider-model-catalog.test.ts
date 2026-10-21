@@ -119,6 +119,8 @@ describe("provider model catalogs", () => {
       { baseUrl: "https://dashscope-intl.aliyuncs.com/compatible-mode" },
     ],
     ["dashscope", { modelsDevProviderId: "custom-catalog" }],
+    ["alibaba", { modelsDevProviderId: "alibaba-cn" }],
+    ["custom", { modelsDevProviderId: "custom-catalog" }],
     ["xai", undefined],
     ["openrouter", undefined],
     ["deepseek", undefined],
@@ -160,6 +162,11 @@ describe("provider model catalogs", () => {
     expect(getLocalProviderModelRecords("github-copilot")).toBeUndefined()
     expect(
       getLocalProviderModelRecords("kimi", { modelsDevProviderId: "missing" }),
+    ).toEqual([])
+    expect(
+      getLocalProviderModelRecords("alibaba", {
+        modelsDevProviderId: "missing",
+      }),
     ).toEqual([])
   })
 
