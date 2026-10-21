@@ -78,9 +78,9 @@ Every client talks to the same local endpoint. The gateway routes each request t
 | Client | Chat Completions | Responses | Anthropic Messages | Recommended |
 |---|:---:|:---:|:---:|---|
 | Claude Code | — | — | ✅ Native / Adapter | Anthropic Messages |
-| OpenCode | ✅ Native | ✅ Native / Adapter | ✅ Native / Adapter via `@ai-sdk/anthropic` | Anthropic Messages |
+| OpenCode | ✅ Native | ✅ Native / Adapter | ✅ Native / Adapter | Anthropic Messages |
 | Codex | — | ✅ Native / Adapter | — | Responses |
-| DeepSeek Harness | — | ✅ via `dsh-copilot-api` | ✅ via `dsh-copilot-api` | Responses |
+| DeepSeek Harness | — | ✅ Native / Adapter | ✅ Native / Adapter | Responses |
 | OpenAI-compatible clients | ✅ Native | ✅ Native / Adapter | — | Chat Completions |
 | Anthropic-compatible clients | — | — | ✅ Native / Adapter | Anthropic Messages |
 
@@ -104,8 +104,8 @@ Windows x64 (`.exe`), macOS Apple Silicon (`.dmg`), and Linux x64 (`.AppImage`) 
 | [Installation and Startup](docs/guides/en/getting-started.md) | Prerequisites, project overview, `npx` and source runs, provider-only mode without Copilot, and gateway API key setup |
 | [Claude Code](docs/guides/en/claude-code.md) | settings.json, gateway model discovery, model mappings, auto-compact window, and WebSearch behavior |
 | [OpenCode](docs/guides/en/opencode.md) | v2 Responses plugin and automatic model discovery, native compaction, model capabilities and pricing, context limits, and v1 Anthropic SDK setup |
-| [DeepSeek Harness](docs/guides/en/dsh.md) | Install `dsh-copilot-api`, save the gateway API key, and choose Responses or Messages |
 | [Codex](docs/guides/en/codex.md) | A full `config.toml` provider block, `GITHUB_COPILOT_API_KEY` environment variable setup, auto-review model mapping, generating `model_catalog.json`, and the merged model picker catalog with protocol adapters |
+| [DeepSeek Harness](docs/guides/en/dsh.md) | Install `dsh-copilot-api`, save the gateway API key, and choose Responses or Messages |
 | [Docker](docs/guides/en/docker.md) | Docker Compose quick start, the `/data` persistent mount and its ownership repair, supported environment variables, and host interface binding |
 | [Desktop App](docs/guides/en/desktop.md) | Copilot sign-in, Codex OAuth account switching, API-key providers, one-click start / stop, shared model mappings, advanced settings, and per-platform installers |
 | [Plugins and Tool Search](docs/guides/en/integrations.md) | The Responses `tool_search` MCP bridge (not needed on opencode v2, which already defers tools through Code Mode), Claude Code `agent-inject` and `tool-search` marketplace plugins, and the opencode subagent marker plugin |
