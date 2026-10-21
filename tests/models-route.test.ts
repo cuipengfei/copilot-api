@@ -967,6 +967,119 @@ describe("model routes", () => {
     })
   })
 
+  test.each(
+    ["/models", "/v1/models"].flatMap((endpoint) =>
+      [
+        { userAgent: "deepseek/1.0", selected: true },
+        { userAgent: "DeepSeek-Code/1.0", selected: true },
+        { userAgent: "curl/8.0", selected: false },
+        { userAgent: "client-deepseek/1.0", selected: false },
+        { userAgent: undefined, selected: false },
+      ].map((client) => ({ endpoint, ...client })),
+    ),
+  )(
+    "filters default model discovery for DeepSeek prefixes on $endpoint with userAgent=$userAgent",
+    async ({ endpoint, userAgent, selected }) => {
+      state.models = createCopilotModels(["copilot-visible", "copilot-hidden"])
+      enabledProviders = ["alibaba", "hidden"]
+      providerConfigs = {
+        "github-copilot": {
+          ...createProviderConfig("github-copilot", "https://copilot.example"),
+          agentsModels: ["copilot-visible"],
+        },
+        alibaba: {
+          ...createProviderConfig("alibaba", "https://reject.example"),
+          modelsDevProviderId: "alibaba-cn",
+          agentsModels: ["deepseek-v4.1-flash-1017", "deepseek-v4.1-flash"],
+        },
+        hidden: {
+          ...createProviderConfig("hidden", "https://reject.example"),
+          modelsDevProviderId: "alibaba-cn",
+          agentsModels: [],
+        },
+      }
+      const cachedIds = [
+        "deepseek-v4.1-flash",
+        "glm-5.3",
+        "kimi-k3",
+        "qwen3.7-plus",
+        "qwen3.8-flash",
+        "qwen3.8-max",
+      ]
+
+      const response = await createApp().request(endpoint, {
+        headers: userAgent === undefined ? {} : { "user-agent": userAgent },
+      })
+
+      expect(response.status).toBe(200)
+      const body = (await response.json()) as {
+        object: string
+        data: Array<{ id: string; object: string }>
+        has_more: boolean
+      }
+      expect(body.object).toBe("list")
+      expect(body.has_more).toBe(false)
+      expect(body.data.every((model) => model.object === "model")).toBe(true)
+      expect(body.data.map((model) => model.id)).toEqual(
+        selected ?
+          [
+            "copilot-visible",
+            "alibaba/deepseek-v4.1-flash-1017",
+            "alibaba/deepseek-v4.1-flash",
+          ]
+        : [
+            "copilot-visible",
+            "copilot-hidden",
+            ...cachedIds.map((id) => `alibaba/${id}`),
+            ...cachedIds.map((id) => `hidden/${id}`),
+          ],
+      )
+      expect(fetchMock).not.toHaveBeenCalled()
+    },
+  )
+
+  test.each(
+    ["/models", "/v1/models"].flatMap((endpoint) =>
+      [false, true].map((fullCatalog) => ({ endpoint, fullCatalog })),
+    ),
+  )(
+    "includes manually selected models absent from models.dev on $endpoint with fullCatalog=$fullCatalog",
+    async ({ endpoint, fullCatalog }) => {
+      setCatalogLimit(1)
+      enabledProviders = ["alibaba"]
+      providerConfigs.alibaba = {
+        ...createProviderConfig("alibaba", "https://reject.example"),
+        modelsDevProviderId: "alibaba-cn",
+        agentsModels: ["deepseek-v4.1-flash-1017", "deepseek-v4.1-flash"],
+      }
+
+      const response = await createApp(fullCatalog).request(endpoint, {
+        headers: { "user-agent": "codex-cli/0.160.0" },
+      })
+
+      expect(response.status).toBe(200)
+      const body = (await response.json()) as CodexModelsResponse
+      const models = body.models.filter((model) =>
+        model.slug.startsWith("alibaba/"),
+      )
+      expect(models.map((model) => model.slug).sort()).toEqual([
+        "alibaba/deepseek-v4.1-flash",
+        "alibaba/deepseek-v4.1-flash-1017",
+      ])
+      expect(
+        models.find(
+          (model) => model.slug === "alibaba/deepseek-v4.1-flash-1017",
+        ),
+      ).toMatchObject({
+        display_name: "deepseek-v4.1-flash-1017 (alibaba)",
+        supported_in_api: true,
+        visibility: "list",
+        use_responses_lite: true,
+      })
+      expect(fetchMock).not.toHaveBeenCalled()
+    },
+  )
+
   test.each(["USD", "CNY"])(
     "converts %s pricing overrides to USD",
     async (pricingCurrency) => {

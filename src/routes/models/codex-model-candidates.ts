@@ -7,6 +7,7 @@ import {
 import { createHandlerLogger } from "~/lib/logger"
 import { toClientModelId } from "~/lib/models"
 import { isProviderModelVisible } from "~/lib/provider-model-catalog"
+import { getProviderAgentModels } from "~/lib/provider-management"
 import { resolveProviderConfig } from "~/lib/provider-resolver"
 import type { Model } from "~/lib/types/models"
 import type { SyntheticCodexModelCandidate } from "~/routes/models/codex-models-types"
@@ -128,6 +129,7 @@ async function getProviderCodexCandidates(
     const modelIds = new Set([
       ...modelsById.keys(),
       ...Object.keys(providerConfig.models ?? {}),
+      ...(getProviderAgentModels(providerConfig) ?? []),
     ])
 
     const candidates: Array<SyntheticCodexModelCandidate> = []
