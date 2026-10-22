@@ -14,7 +14,7 @@
   <a href="https://www.npmjs.com/package/@jeffreycao/copilot-api"><img src="https://img.shields.io/npm/v/@jeffreycao/copilot-api.svg" alt="npm version"></a>
   <a href="https://github.com/caozhiyuan/copilot-api/blob/dev/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License"></a>
   <a href="https://github.com/caozhiyuan/copilot-api/stargazers"><img src="https://img.shields.io/github/stars/caozhiyuan/copilot-api.svg" alt="GitHub stars"></a>
-  <a href="https://bun.sh"><img src="https://img.shields.io/badge/Bun-%3E%3D1.4.0-orange.svg" alt="Bun >= 1.4.0"></a>
+  <a href="https://bun.sh"><img src="https://img.shields.io/badge/Bun-%3E%3D1.4.4-orange.svg" alt="Bun >= 1.4.4"></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/Node-%3E%3D22.13.0-green.svg" alt="Node >= 22.13.0"></a>
 </p>
 
@@ -34,7 +34,7 @@ Copilot API is a local AI gateway that connects Claude Code, OpenCode, Codex, an
 
 ## Quick Start
 
-Requires **Node.js >= 22.13.0** (npx) or **Bun >= 1.4.0**. A Copilot subscription is needed only for the GitHub Copilot provider; other configured providers can run independently.
+Requires **Node.js >= 22.13.0** (npx) or **Bun >= 1.4.4**. A Copilot subscription is needed only for the GitHub Copilot provider; other configured providers can run independently.
 
 ```sh
 npx @jeffreycao/copilot-api@latest start
@@ -46,7 +46,7 @@ The server listens on `http://localhost:4141` by default. Optionally authenticat
 npx @jeffreycao/copilot-api@latest auth login
 ```
 
-Alternatively, run with Bun >= 1.4.0, which can offer better performance:
+Alternatively, run with Bun >= 1.4.4, which can offer better performance:
 
 ```sh
 bunx --bun @jeffreycao/copilot-api start
@@ -55,7 +55,7 @@ bunx --bun @jeffreycao/copilot-api start
 Use `--bun` to select the Bun runtime and omit `@latest` for routine starts to reuse the cache. See [Bun setup](docs/guides/en/getting-started.md#using-with-bun) for global installation and upgrades.
 
 > [!NOTE]
-> To trust system-installed CA certificates (for example, behind a corporate HTTPS proxy), `npx` needs no extra configuration: Node.js >= 22.19.0 merges the system CA store at startup through [`tls.setDefaultCACertificates()`](https://nodejs.org/api/tls.html#tlssetdefaultcacertificatescerts). Only Bun requires `NODE_USE_SYSTEM_CA=1` before `bunx --bun`: `export NODE_USE_SYSTEM_CA=1` in bash/zsh, or `$env:NODE_USE_SYSTEM_CA="1"` in PowerShell (Bun >= 1.4.0).
+> To trust system-installed CA certificates (for example, behind a corporate HTTPS proxy), `npx` needs no extra configuration: Node.js >= 22.19.0 merges the system CA store at startup through [`tls.setDefaultCACertificates()`](https://nodejs.org/api/tls.html#tlssetdefaultcacertificatescerts). Only Bun requires `NODE_USE_SYSTEM_CA=1` before `bunx --bun`: `export NODE_USE_SYSTEM_CA=1` in bash/zsh, or `$env:NODE_USE_SYSTEM_CA="1"` in PowerShell (Bun >= 1.4.4).
 > Desktop enables the variable for server subprocesses by default, preserving explicit environment settings.
 
 Verify the gateway is up:
