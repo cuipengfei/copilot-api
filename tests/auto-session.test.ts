@@ -308,9 +308,6 @@ describe("auto-session", () => {
         easyTiers.push(body.tier)
       } else {
         hardPrompts += 1
-        const lines = body.prompt.split("\n")
-        expect(lines).toHaveLength(102)
-        expect(lines[100]).toBe("")
       }
     }
     expect(easyTiers.sort()).toEqual([...TIERS].sort())

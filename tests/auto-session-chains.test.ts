@@ -8,6 +8,7 @@ import {
   invalidateAutoSession,
   prewarmAutoSession,
 } from "../src/lib/auto-session"
+import { getConfig } from "../src/lib/config-store"
 import { HTTPError } from "../src/lib/error"
 import { state } from "../src/lib/state"
 import { createChatCompletions } from "../src/services/copilot/create-chat-completions"
@@ -17,6 +18,7 @@ import type { AutoSelectionResponse } from "../src/services/copilot/get-auto-sel
 
 const originalGithubToken = state.githubToken
 const originalTelemetryEnabled = state.copilotTelemetryEnabled
+const originalAutoDiscovery = getConfig().autoDiscovery
 const createMessagesPayload: AnthropicMessagesPayload = {
   model: "gpt-5.3-codex",
   max_tokens: 256,
@@ -191,6 +193,7 @@ const createMessagesSuccess = (id: string) =>
 
 beforeEach(() => {
   invalidateAutoSession()
+  getConfig().autoDiscovery = undefined
   const queue: Array<AutoSelectionResponse> = []
   ;(
     globalThis as unknown as {
@@ -217,6 +220,7 @@ afterEach(() => {
   state.githubToken = originalGithubToken
   state.copilotTelemetryEnabled = originalTelemetryEnabled
   invalidateAutoSession()
+  getConfig().autoDiscovery = originalAutoDiscovery
   mock.restore()
 })
 

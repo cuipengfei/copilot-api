@@ -10,6 +10,7 @@ import {
 } from "~/services/copilot/get-auto-selection"
 
 import {
+  getIntelligenceProbePrompt,
   HARD_QUESTION,
   PREWARM_PROMPT,
   TARGET_CODE_PROMPT,
@@ -34,6 +35,12 @@ const STARTUP_TIERS: Array<AutoSelectionTier> = [
   "efficiency",
   "balance",
   "intelligence",
+  "fast",
+]
+const TARGET_TIERS: Array<AutoSelectionTier> = [
+  "intelligence",
+  "efficiency",
+  "balance",
   "fast",
 ]
 const TARGET_PROBE_INTERVAL_MS = 3_000
@@ -654,7 +661,7 @@ export const runProbePoint = (
 // 同一轮请求服务所有缺失模型，避免为每个目标重复发送相同的 /auto 请求。
 const discoverTargets = async (models: Array<string>): Promise<void> => {
   for (let attempt = 0; attempt < TARGET_ATTEMPTS_PER_TIER; attempt++) {
-    for (const tier of STARTUP_TIERS) {
+    for (const tier of TARGET_TIERS) {
       if (probeSchedulerStopped) return
       const missing = getMissingAutoDiscoveryModels(models)
       if (missing.length === 0) return
@@ -668,7 +675,10 @@ const discoverTargets = async (models: Array<string>): Promise<void> => {
         await probeSleep(TARGET_PROBE_INTERVAL_MS)
         continue
       }
-      const prompt = attempt % 2 === 0 ? PREWARM_PROMPT : TARGET_CODE_PROMPT
+      const prompt =
+        tier === "intelligence" ? getIntelligenceProbePrompt(attempt)
+        : attempt % 2 === 0 ? PREWARM_PROMPT
+        : TARGET_CODE_PROMPT
       await runProbePoint(tier, "target", prompt, false, 1)
       const remaining = getMissingAutoDiscoveryModels(models).length
       if (remaining === 0) {
@@ -775,20 +785,31 @@ export const prewarmAutoSession = async ({
   const probeTierPair = async (tier: AutoSelectionTier): Promise<void> => {
     // 简单题先发起、不等源码采样：采样挂起或失败不得阻断登记
     const easyPromise = runProbePoint(tier, "easy", PREWARM_PROMPT)
-    // 每档难题独立取样：各档随机取样仍可能偶然相同；重采仅排除本档第一次片段
-    const snippet = await sampleHardSnippet(sourceRoot)
+    // intelligence 使用固定实验样本，其他档位仍独立采样真实源码。
+    const snippet =
+      tier === "intelligence" ? undefined : await sampleHardSnippet(sourceRoot)
     const hardPrompt =
-      snippet === undefined ? undefined : `${snippet.text}\n\n${HARD_QUESTION}`
+      tier === "intelligence" ? getIntelligenceProbePrompt()
+      : snippet === undefined ? undefined
+      : `${snippet.text}\n\n${HARD_QUESTION}`
     const hardPromise =
       hardPrompt === undefined ?
         Promise.resolve(undefined)
       : runProbePoint(tier, "hard", hardPrompt)
     const [easyModel, hardModel] = await Promise.all([easyPromise, hardPromise])
+    const retryIntelligence =
+      tier === "intelligence"
+      && getMissingAutoDiscoveryModels(targetModels).length > 0
     if (
-      easyModel === undefined
-      || hardModel === undefined
-      || easyModel !== hardModel
+      !retryIntelligence
+      && (easyModel === undefined
+        || hardModel === undefined
+        || easyModel !== hardModel)
     ) {
+      return
+    }
+    if (tier === "intelligence") {
+      await runProbePoint(tier, "hard", getIntelligenceProbePrompt(1))
       return
     }
     // 同档两题选中同一模型：重采难题一次，无替代源码段则结束该点

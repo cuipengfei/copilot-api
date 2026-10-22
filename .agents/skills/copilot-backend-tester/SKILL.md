@@ -45,10 +45,11 @@ description: "Use when testing GitHub Copilot upstream APIs directly, probing Au
 `--variety` 的约定：
 
 - 12 个题目一次顺序请求 `/auto`，无重试，全程 AbortSignal，总预算最多 60 秒（含一次 token exchange 认证）。12 是请求预算上限，不是发现成功的标准：12 条全部成功也不等于发现了全部可选模型，只报告本次观测到的并集。
-- 题目来自脚本内置的固定探测题（`src/lib/auto-probe-prompts.ts`）和运行仓库源码的真实 100 行片段（`sampleHardSnippet()`，源码 root、窗口行数等常量与 `src/lib/auto-session.ts` 运行时一致）：仅内存组合，无 SQLite/题库文件/多轮生成。
-- 12 题顺序：`task-correctness`（intelligence）第 1，随后 hello（efficiency）、极短 hi（fast）、URL 任务（balance、fast 各一）、真实 100 行源码 + HARD_QUESTION 四档每档独立取样，最后行为说明（intelligence）、功能修改（balance）、并发调查（intelligence）。优先探测 Astra 的历史有效条件：P6 完整跨文件上下文、端到端正确性分析任务与 `intelligence`。该条件曾选中 Astra，另一个时间窗口未选中；实际选模随时间变化。
+- 题目包含 `src/lib/auto-probe-prompts.ts` 的固定完整输入，以及当前仓库的真实 100 行片段（`sampleHardSnippet()`）；固定输入使用 `src/lib/auto-probe-sample.json` 保存的源码快照，其余 hard 题每档独立采样。题面在内存中组合。
+- 12 题顺序：`intelligence-verified`（intelligence）最先，随后 `task-correctness`（intelligence）、hello（efficiency）、URL 任务（balance、fast 各一）、真实 100 行源码 + HARD_QUESTION 四档每档独立取样，最后行为说明（intelligence）、功能修改（balance）、并发调查（intelligence）。固定完整输入与运行时 `intelligence` 预热共用 `getIntelligenceProbePrompt()`；它包含具体故障时序、完整实现、工具验证和正确性证明要求。实际结果始终以本轮响应为准。
 - 四个 task 题共用同一完整跨文件上下文：`src/lib/request-auth.ts`、`src/server.ts`、`src/lib/config.ts`、`tests/request-auth.test.ts`（前三个相对探测用 `sourceRoot` 读取，tests 从 `sourceRoot` 的兄弟目录 `tests` 读取；完整读入并保留末尾换行）。任务措辞与文件集保持稳定以便跨轮比较；每轮从当前文件重新构造，内容随源码变化；保留历史任务与文件集，不声明精确重放旧字节。
 - 出处与追溯：hard 题只记录 `source`（`file`/`startLine`/`lineCount`，`lineCount` 恒为 100）；跨文件 task 题记录 `sources` 数组（每文件 `file`/`startLine: 0`/`lineCount` 为文件实际行数，路径统一相对 `REPO_ROOT`，repo 外 fixture 呈 `../` 前缀）。所有题带 `prompt_sha256`（题目正文的 SHA-256 hex）供跨轮比对；不打印题目正文与源码内容。
+- `intelligence-verified` 是固定探测数据，记录 `prompt_sha256`；源码快照的原始文件与零起点行号由 `auto-probe-sample.json` 保存，不附加表示本轮实时采样的 `source` 或 `sources`。修改题面或源码快照后，应重新观察四项 `hydra_scores`、实际模型及重复请求表现；旧评分或命中率不代表新输入的结果。
 - 不预设选中模型；目标是尽可能发现本次可选模型。不声称观察到的是完整 available 名单；某模型本次未出现不等于已下架或不可用。
 
 结果 JSON 形状：
@@ -64,6 +65,14 @@ description: "Use when testing GitHub Copilot upstream APIs directly, probing Au
   "stop_reason": null,
   "auto_requests": 12,
   "results": [
+    {
+      "prompt_id": "intelligence-verified",
+      "tier": "intelligence",
+      "status": 200,
+      "selected_model": "<模型 ID>",
+      "supported_endpoints": ["<端点>"],
+      "prompt_sha256": "<题目正文的 SHA-256 hex>"
+    },
     {
       "prompt_id": "task-correctness",
       "tier": "intelligence",

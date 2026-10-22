@@ -151,7 +151,7 @@ afterEach(() => {
   getConfig().autoDiscovery = originalAutoDiscovery
 })
 
-test("startup discovery probes four tiers with hello easy and 100-line source hard prompt", async () => {
+test("startup probes fixed intelligence input and sampled hard inputs for the other tiers", async () => {
   const mod = await loadAutoSessionModule()
   const tokens = new Map<string, string>()
   const { calls } = installRouter((body) => {
@@ -181,7 +181,9 @@ test("startup discovery probes four tiers with hello easy and 100-line source ha
 
   // 难题：恰好 100 行真实源码 + 空行 + 固定问题句
   const hardCall = calls.find(
-    (call) => requestBody(call).prompt !== "hello",
+    (call) =>
+      requestBody(call).tier !== "intelligence"
+      && requestBody(call).prompt !== "hello",
   ) as RecordedCall
   const lines = requestBody(hardCall).prompt.split("\n")
   expect(lines).toHaveLength(102)
@@ -413,41 +415,47 @@ test("sampleHardSnippet ignores the trailing-newline pseudo-line", async () => {
   }
 })
 
-test("each tier samples its own hard snippet independently", async () => {
-  const dir = await mkdtemp(path.join(os.tmpdir(), "auto-snippet-per-tier-"))
-  try {
-    await writeFile(
-      path.join(dir, "wide.ts"),
-      Array.from({ length: 150 }, (_, i) => `export const w${i} = ${i}`).join(
-        "\n",
-      ),
-    )
-    const mod = await loadAutoSessionModule()
-    const hardPrompts: Array<string> = []
-    installRouter((body) => {
-      if (body.prompt !== "hello") hardPrompts.push(body.prompt)
-      // 各档两题不同模型，避免触发重采干扰取样次数统计
-      return okSelection(
-        `${body.prompt === "hello" ? "easy" : "hard"}-${body.tier}`,
+test("efficiency balance and fast send independently sampled source windows", async () => {
+  const mod = await loadAutoSessionModule()
+  const dir = await mkdtemp(path.join(os.tmpdir(), "auto-tier-source-"))
+  const sourceLines = Array.from(
+    { length: 1100 },
+    (_, index) => `export const fixtureRow${index} = ${index}`,
+  )
+  const fixtureLines = new Set(sourceLines)
+  const sampledTiers = ["efficiency", "balance", "fast"]
+  const sourceWindows = new Map<string, Array<string>>()
+  let randomStep = 0
+  const random = spyOn(Math, "random").mockImplementation(() => {
+    randomStep = (randomStep + 1) % 1000
+    return randomStep / 1000
+  })
+  installRouter((body) => {
+    if (sampledTiers.includes(body.tier) && body.prompt !== "hello") {
+      sourceWindows.set(
+        body.tier,
+        body.prompt.split("\n").filter((line) => fixtureLines.has(line)),
       )
-    })
-
-    // 每次取样恰好消耗两次 Math.random：文件选择（仅 1 文件）与起点选择（51 窗）。
-    // 并发下各档取样调用顺序不定，但任意两次调用的起点都不同即证非共享片段。
-    const script = [0.1, 0.02, 0.1, 0.3, 0.1, 0.6, 0.1, 0.85]
-    let i = 0
-    const randomSpy = spyOn(Math, "random").mockImplementation(
-      () => script[i++ % script.length],
-    )
-    try {
-      await mod.prewarmAutoSession({ sourceRoot: dir })
-    } finally {
-      randomSpy.mockRestore()
     }
-
-    expect(hardPrompts).toHaveLength(4)
-    expect(new Set(hardPrompts).size).toBeGreaterThanOrEqual(2)
+    return okSelection(
+      `${body.prompt === "hello" ? "easy" : "hard"}-${body.tier}`,
+    )
+  })
+  try {
+    await writeFile(path.join(dir, "fixture.ts"), sourceLines.join("\n"))
+    await mod.prewarmAutoSession({ sourceRoot: dir })
+    expect([...sourceWindows.keys()].sort()).toEqual([...sampledTiers].sort())
+    for (const tier of sampledTiers) {
+      expect(sourceWindows.get(tier)).toHaveLength(100)
+    }
+    expect(
+      new Set([...sourceWindows.values()].map((lines) => lines.join("\n")))
+        .size,
+    ).toBe(sampledTiers.length)
   } finally {
+    mod.stopProbeScheduler()
+    await mod.whenProbeSchedulerIdle()
+    random.mockRestore()
     await rm(dir, { recursive: true, force: true })
   }
 })
@@ -523,17 +531,22 @@ test("insufficient source still reports acquired models and keeps requests usabl
   try {
     await mod.prewarmAutoSession({ sourceRoot: emptyDir })
 
-    // 难题跳过：每档仅简单题一次
-    expect(calls).toHaveLength(4)
+    // 固定 intelligence 难题在没有磁盘源码时仍可取得配对。
+    expect(calls).toHaveLength(5)
     expect(mod.isModelAutoCovered("only-easy")).toBe(true)
-    expect(mod.isModelAutoCovered("only-hard")).toBe(false)
+    expect(mod.isModelAutoCovered("only-hard")).toBe(true)
     const line = discoveryLogLine(infoSpy)
-    expect(line).toContain('obtained=["only-easy"]')
+    expect(line).toContain('obtained=["only-easy","only-hard"]')
     // 请求路径仍可用（命中已注册配对）
     expect(
       await mod.getAutoSessionTokenForModel("only-easy", "/responses"),
     ).toBe("token-only-easy")
+    expect(
+      await mod.getAutoSessionTokenForModel("only-hard", "/responses"),
+    ).toBe("token-only-hard")
   } finally {
+    mod.stopProbeScheduler()
+    await mod.whenProbeSchedulerIdle()
     await rm(emptyDir, { recursive: true, force: true })
   }
 })
@@ -1750,5 +1763,68 @@ test("exhausted target discovery resumes on a miss after 90 seconds", async () =
     await mod.whenProbeSchedulerIdle()
     clock.mockRestore()
     await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test("intelligence changes its hard question when distinct startup models still miss a target", async () => {
+  const mod = await loadAutoSessionModule()
+  const dir = await mkdtemp(
+    path.join(os.tmpdir(), "auto-intelligence-variant-"),
+  )
+  getConfig().autoDiscovery = { models: ["wanted-model"] }
+  const hardPrompts: Array<string> = []
+  installRouter((body) => {
+    if (body.tier !== "intelligence" || body.prompt === "hello") {
+      return okSelection(`other-${body.tier}`)
+    }
+    hardPrompts.push(body.prompt)
+    return new Set(hardPrompts).size > 1 ?
+        okSelection("wanted-model", "wanted-session")
+      : okSelection("first-hard-model")
+  })
+  try {
+    await mod.prewarmAutoSession({ sourceRoot: dir })
+    await mod.whenProbeSchedulerIdle()
+    expect(hardPrompts).toHaveLength(2)
+    expect(hardPrompts[1]).not.toBe(hardPrompts[0])
+    expect(await mod.getAutoSessionTokenForModel("wanted-model")).toBe(
+      "wanted-session",
+    )
+    expect(mod.isModelAutoCovered("first-hard-model")).toBe(true)
+  } finally {
+    mod.stopProbeScheduler()
+    await mod.whenProbeSchedulerIdle()
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test("shared target discovery starts with intelligence and changes its question after a miss", async () => {
+  const mod = await loadAutoSessionModule()
+  let now = Date.now()
+  const clock = spyOn(Date, "now").mockImplementation(() => (now += 4_000))
+  getConfig().autoDiscovery = { models: ["wanted-model"] }
+  const intelligencePrompts = new Set<string>()
+  const { calls } = installRouter((body) => {
+    if (body.tier === "intelligence") intelligencePrompts.add(body.prompt)
+    return intelligencePrompts.size > 1 ?
+        okSelection("wanted-model", "wanted-session")
+      : okSelection("other-model", "other-session")
+  })
+  try {
+    mod.resumeAutoSessionDiscoveryAfterRotation()
+    await mod.getAutoSessionTokenForModel("wanted-model")
+    await mod.whenProbeSchedulerIdle()
+    expect(requestBody(calls[0]).tier).toBe("intelligence")
+    expect(intelligencePrompts.size).toBe(2)
+    expect(await mod.getAutoSessionTokenForModel("wanted-model")).toBe(
+      "wanted-session",
+    )
+    expect(await mod.getAutoSessionTokenForModel("other-model")).toBe(
+      "other-session",
+    )
+  } finally {
+    mod.stopProbeScheduler()
+    await mod.whenProbeSchedulerIdle()
+    clock.mockRestore()
   }
 })

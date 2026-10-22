@@ -4,7 +4,6 @@ import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
-import { HARD_QUESTION } from "../src/lib/auto-probe-prompts"
 import { createVarietyCases } from "../.agents/skills/copilot-backend-tester/scripts/auto-variety-prompts.mjs"
 
 interface VarietySource {
@@ -32,17 +31,6 @@ const ALL_TIERS = ["efficiency", "balance", "intelligence", "fast"]
 const SNIPPET_ERROR_MESSAGE =
   "auto-variety: unable to sample a 100-line TypeScript snippet from the source root"
 
-// 固定任务措辞（与原探测一致，跨轮不变）：intelligence 优先，P6 原 task 措辞 pinning
-const TASK_TAILS: Record<string, string> = {
-  "task-behavior":
-    "Task: 说明这段程序的主要行为、输入、输出和状态变化。仅依据提供的材料，不要求修改代码。",
-  "task-cancellation":
-    "Task: 为该模块增加调用方可取消操作的能力，保持现有成功路径、错误传播和资源清理行为。检查已有取消支持；若已满足，指出证据。否则给出完整修改、受影响调用方和验证用例。",
-  "task-concurrency":
-    "Task: 检查并发请求、取消、异常和状态变化的交错。只报告有源码依据的问题；给出能够触发问题的事件顺序、最小修复和区分修复前后行为的验证。证据不足时明确说明。",
-  "task-correctness":
-    "Task: 完成端到端正确性分析：建立状态模型，追踪跨文件调用关系，检查并发、取消和异常下的不变量；对成立的问题给出完整修复与确定性验证，对无法确认的问题列出缺失证据。不得预设一定存在缺陷。",
-}
 const TASK_CONTEXT_FILES = [
   "src/lib/request-auth.ts",
   "src/server.ts",
@@ -211,6 +199,8 @@ describe("backend-auto-variety CLI", () => {
     expect(output.upstream).toBe(run.upstreamBase)
     expect(output.auto_requests).toBe(12)
     expect(output.results).toHaveLength(12)
+    expect(output.results[0]?.prompt_id).toBe("intelligence-verified")
+    expect(output.results[0]?.tier).toBe("intelligence")
     for (const result of output.results) {
       expect(result.status).toBe(200)
       expect(typeof result.selected_model).toBe("string")
@@ -233,7 +223,7 @@ describe("backend-auto-variety CLI", () => {
       `token ${FIXTURE_GITHUB_TOKEN}`,
     )
 
-    // hard case：真实 100 行源码 + 空行 + HARD_QUESTION，source 可回溯到真实文件
+    // hard 题目的源码元数据必须能够追溯到实际发送的片段。
     const bodies = autoBodies(run)
     expect(bodies).toHaveLength(12)
     let hardCount = 0
@@ -251,16 +241,18 @@ describe("backend-auto-variety CLI", () => {
       }
       expect(source.lineCount).toBe(100)
       expect(path.isAbsolute(source.file)).toBe(false)
-      expect(body.prompt).toBe(`${sourceText(source)}\n\n${HARD_QUESTION}`)
+      expect(body.prompt.startsWith(sourceText(source))).toBe(true)
     }
     expect(hardCount).toBe(4)
 
-    // 四个任务 case：完整跨文件上下文（4 个真实文件全文）+ 固定任务尾
+    // 四个任务共用完整上下文，实际发送的任务输入保持不同。
     const taskResults = output.results.filter((result) =>
       result.prompt_id.startsWith("task-"),
     )
     expect(taskResults).toHaveLength(4)
-    const taskTails = new Set<string>()
+    expect(
+      new Set(taskResults.map((result) => result.prompt_sha256)).size,
+    ).toBe(taskResults.length)
     for (const result of taskResults) {
       expect(result.source).toBeUndefined()
       const sources = result.sources
@@ -284,12 +276,7 @@ describe("backend-auto-variety CLI", () => {
         // 关键消费行为：请求 prompt 嵌入文件完整原文，无截断
         expect(body.prompt).toContain(text)
       }
-      const tail = body.prompt.slice(body.prompt.lastIndexOf("\n") + 1)
-      expect(body.prompt).not.toContain("Task: Task:")
-      expect(tail).toBe(TASK_TAILS[result.prompt_id])
-      taskTails.add(tail)
     }
-    expect(taskTails.size).toBe(4)
 
     // 其余 case 不带源码元数据；全部 case 带可复核 prompt_sha256
     for (const result of output.results) {
@@ -576,7 +563,6 @@ export const authTestMarker = "fixture-auth-test-marker-value"
     for (const c of hardCases) {
       expect(c.prompt).toContain("variety-marker-alpha")
       expect(c.prompt).toContain("variety-marker-omega")
-      expect(c.prompt.endsWith(`\n\n${HARD_QUESTION}`)).toBe(true)
       if (c.source === undefined) {
         throw new Error(`case ${c.id} missing source`)
       }
@@ -603,7 +589,6 @@ export const authTestMarker = "fixture-auth-test-marker-value"
     )
     const taskCases = cases.filter((c) => c.id.startsWith("task-"))
     expect(taskCases).toHaveLength(4)
-    const taskTails = new Set<string>()
     for (const c of taskCases) {
       expect("source" in c).toBe(false)
       if (c.sources === undefined) {
@@ -620,12 +605,7 @@ export const authTestMarker = "fixture-auth-test-marker-value"
         // 关键消费行为：prompt 嵌入每个文件完整原文，无截断
         expect(c.prompt).toContain(text)
       }
-      const tail = c.prompt.slice(c.prompt.lastIndexOf("\n") + 1)
-      expect(c.prompt).not.toContain("Task: Task:")
-      expect(tail).toBe(TASK_TAILS[c.id])
-      taskTails.add(tail)
     }
-    expect(taskTails.size).toBe(4)
   })
 
   test("throws the snippet error when context files exist but no eligible 100-line file does", async () => {

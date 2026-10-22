@@ -19,7 +19,8 @@
 - [auto-session-retry.test.ts](../tests/auto-session-retry.test.ts)：附带 token 的 `400`/`401` 单次重试、迟到 `401` 与失效后裸重试语义；系统实际调用 `/auto` 重新取得且重取失败时传出刷新错误并停止本次请求（不发第二次推理），旧 401 迟到且配对已被并发清除时仍为原模型无 token 重试一次。
 - 仅当模型命中 `/auto` 配对且该配对支持请求端点时附加 `Copilot-Session-Token`；Responses WebSocket 分支不附加。
 - Auto 会话令牌失效后的重试属于首次请求链；后续协议兼容重试只调用 HTTP/TLS 发送层。
-- 启动 `/auto` 八个探测点（四档×简单题 `hello` 与随机连续 100 行真实 TS 难题），互不阻断、同点单飞；启动等待上限 30 秒，未完成点在服务运行期后台补采。
+- 启动 `/auto` 八个探测点（四档×简单题与难题），互不阻断、同点单飞；简单题使用 `hello`。`intelligence` 难题使用已验证的完整题面与冻结的 100 行真实 TypeScript 源码样本，其余三档独立采样当前仓库源码。启动等待上限 30 秒，未完成点在服务运行期后台补采。
+- `intelligence` 首次难题仍未覆盖配置目标，或同档两题选中相同模型时，最多追加一次题面变体。目标补充探测优先 `intelligence` 并轮换三个已验证题面，其余档位沿用简单题与代码任务交替；每档最多十次，全部目标取得后结束。固定输入及变体由 `getIntelligenceProbePrompt()` 统一提供，成功配对的刷新重放实际成功文本。
 - 探测失败按类别处理：429 优先 `Retry-After`，网络失败与 5xx 按 1 秒起步 30 秒封顶随机退避，401/403 暂停相同凭据探测待凭据变化恢复，持续请求格式类 400 记为待处理。
 - 每条配对按上游 `expires_at` 在到期前 5 分钟刷新（同点共享在途）；Copilot 凭据变化立即使旧配对失效，并在 token 与账号元数据全部落位后重新补采；Auto 查表与 `state.forceAgent` 内部标志无关。
 
@@ -28,6 +29,7 @@
 - [request.ts](../src/services/copilot/request.ts)：HTTP/TLS 发送与 Auto 会话令牌失效后的首次重试的公共入口。
 - [auto-session-retry.ts](../src/services/copilot/auto-session-retry.ts)：会话 header 附加、失效判定与刷新。
 - [auto-session.ts](../src/lib/auto-session.ts)：会话配对表、启动探测、到期刷新与凭据轮换失效；[get-auto-selection.ts](../src/services/copilot/get-auto-selection.ts)：`/auto` 选模请求。
+- [auto-probe-prompts.ts](../src/lib/auto-probe-prompts.ts)：固定探测题面与验证要求变体；[auto-probe-sample.json](../src/lib/auto-probe-sample.json)：冻结源码样本及其原始文件、零起点行号和行数。固定样本用于保持输入可复现，不表示当前源码存在题面所描述的故障，也不保证上游始终返回某个模型。
 - [tls-retry.ts](../src/services/tls-retry.ts)：既有 TLS 错误判定、等待与单次重试。
 
 **必要的上游接入**：三个 `create-*` service 的发送位置；启动和 token 更新位置保留会话预热、失效处理。上游 [upstream-http.ts](../src/services/upstream-http.ts) 的实现保持不变。

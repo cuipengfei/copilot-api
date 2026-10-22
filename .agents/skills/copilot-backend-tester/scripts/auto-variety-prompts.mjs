@@ -1,11 +1,12 @@
 // Fixed 12-case prompt set for `--variety` probing of POST /auto selection.
-// P6 first: the full 4-file request-auth context x intelligence once selected Astra in a validation window (cannot be forced); task cases re-read those files fresh each run, hard cases carry sampled real 100-line snippets.
+// 固定 intelligence 输入优先；task 保留完整跨文件上下文，hard 仍采样真实 100 行源码。
 
 import { createHash } from "node:crypto"
 import { readFile } from "node:fs/promises"
 import { relative, resolve, sep } from "node:path"
 
 import {
+  getIntelligenceProbePrompt,
   HARD_QUESTION,
   PREWARM_PROMPT,
   TARGET_CODE_PROMPT,
@@ -14,8 +15,6 @@ import { sampleHardSnippet } from "../../../../src/lib/auto-session.ts"
 
 const REPO_ROOT = resolve(import.meta.dirname, "../../../..")
 const DEFAULT_SOURCE_ROOT = resolve(REPO_ROOT, "src")
-
-const TINY_PROMPT = "Reply with exactly: hi."
 
 // 四个 task case 共用的完整跨文件上下文（相对 sourceRoot；tests 在 sourceRoot 的兄弟目录）
 const TASK_CONTEXT_FILES = [
@@ -109,7 +108,7 @@ const mustSample = async (sourceRoot) => {
 
 /**
  * 返回固定 12 条探测条件；任何片段/文件缺失即抛错，绝不退回裸 HARD_QUESTION
- * 顺序：task-correctness（历史 P6 命中条件）最先，随后 prewarm/tiny/target/hard
+ * 顺序：固定 intelligence 输入、task-correctness、prewarm/target/hard
  * 四档，其余三个 task 按既有稳定 id 收尾
  * @param {{sourceRoot?: string}=} options sourceRoot 缺省为 repo 的 src 绝对路径
  * @returns {Promise<Array<VarietyCase>>} 固定顺序的 12 条 case，每条带 prompt_sha256
@@ -142,9 +141,13 @@ export const createVarietyCases = async ({
     })
 
   const cases = [
+    withHash({
+      id: "intelligence-verified",
+      tier: "intelligence",
+      prompt: getIntelligenceProbePrompt(),
+    }),
     taskCase(FIRST_TASK_CASE),
     withHash({ id: "prewarm", tier: "efficiency", prompt: PREWARM_PROMPT }),
-    withHash({ id: "tiny", tier: "fast", prompt: TINY_PROMPT }),
     withHash({ id: "target-balance", tier: "balance", prompt: TARGET_CODE_PROMPT }),
     withHash({ id: "target-fast", tier: "fast", prompt: TARGET_CODE_PROMPT }),
   ]
