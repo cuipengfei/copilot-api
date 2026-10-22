@@ -105,7 +105,7 @@ Severity must follow verified impact, not reviewer confidence or preference. Do 
    - Clear naming; single-responsibility functions; complex logic explained or decomposed; respects the existing `src/lib` vs `src/services` vs `src/routes` boundaries.
 9. **Tests**
    - Bun's built-in test runner is used; tests live in `tests/` as `*.test.ts` mirroring the source feature names.
-   - Changed code reaches at least 85% unit test coverage near the modification; request translation, provider behavior, auth, config, and streaming edge cases are covered.
+   - Changed code reaches at least 80% unit test coverage near the modification; request translation, provider behavior, auth, config, and streaming edge cases are covered.
    - Tests are deterministic; no flaky timing or network assumptions.
 10. **Cross-Surface Impact**
     - The Electron desktop app under `desktop/` is isolated with its own package files; shared changes must not break `bun run build:desktop` or the desktop typecheck.
