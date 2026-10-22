@@ -1587,6 +1587,9 @@ function TokenUsagePanel({
   tokenUsage: TokenUsageSummary | null
 }) {
   const [trendModel, setTrendModel] = useState(ALL_MODELS_VALUE)
+  const [breakdownTab, setBreakdownTab] = useState<'models' | 'sessions'>(
+    'models',
+  )
   const totals = tokenUsage?.totals ?? EMPTY_TOKEN_USAGE_TOTALS
   const periods = TOKEN_USAGE_PERIODS.map((key) => ({
     key,
@@ -1643,12 +1646,48 @@ function TokenUsagePanel({
         />
       )}
 
-      <div className="mt-3 overflow-hidden rounded-lg border border-line-soft">
-        <div className="flex items-center justify-between bg-sunken px-2.5 py-1.5">
-          <span className="text-[13px] font-semibold text-ink-soft">
-            {t('dashboard.tokenUsageModelBreakdown')}
-          </span>
-          {tokenUsage && (
+      <div
+        id="token-usage-breakdown"
+        className="mt-3 overflow-hidden rounded-lg border border-line-soft"
+      >
+        <div className="flex flex-col gap-1.5 bg-sunken px-2.5 py-1.5 sm:flex-row sm:items-center sm:justify-between">
+          <div
+            role="tablist"
+            aria-label={t('dashboard.tokenUsage')}
+            className="flex items-center gap-1"
+          >
+            <button
+              id="token-usage-model-tab"
+              type="button"
+              role="tab"
+              aria-controls="token-usage-breakdown-panel"
+              aria-selected={breakdownTab === 'models'}
+              onClick={() => setBreakdownTab('models')}
+              className={`rounded-md px-2 py-1 text-[13px] transition-colors ${
+                breakdownTab === 'models' ?
+                  'bg-surface font-semibold text-ink shadow-sm'
+                : 'text-ink-faint hover:bg-surface/60 hover:text-ink-soft'
+              }`}
+            >
+              {t('dashboard.tokenUsageModelBreakdown')}
+            </button>
+            <button
+              id="token-usage-session-tab"
+              type="button"
+              role="tab"
+              aria-controls="token-usage-breakdown-panel"
+              aria-selected={breakdownTab === 'sessions'}
+              onClick={() => setBreakdownTab('sessions')}
+              className={`rounded-md px-2 py-1 text-[13px] transition-colors ${
+                breakdownTab === 'sessions' ?
+                  'bg-surface font-semibold text-ink shadow-sm'
+                : 'text-ink-faint hover:bg-surface/60 hover:text-ink-soft'
+              }`}
+            >
+              {t('dashboard.tokenUsageSessionBreakdown')}
+            </button>
+          </div>
+          {breakdownTab === 'models' && tokenUsage && (
             <div className="flex items-center gap-2 text-[13px] text-ink-faint">
               <span>
                 {t('dashboard.modelsCount', { n: tokenUsage.byModel.length })}
@@ -1658,68 +1697,7 @@ function TokenUsagePanel({
               )}
             </div>
           )}
-        </div>
-        <div className="min-h-44">
-          {loading && !tokenUsage ?
-            <div className="flex h-44 items-start px-2.5 py-2 text-[13px] text-ink-faint animate-pulse">
-              {t('dashboard.loading')}
-            </div>
-          : hasModelRows && tokenUsage ?
-            <div
-              className={`h-44 overflow-auto [scrollbar-gutter:stable] ${loading ? 'opacity-60' : ''}`}
-            >
-              <table className="w-full min-w-[960px] table-fixed text-left text-[13px]">
-                <thead className="sticky top-0 bg-surface text-ink-faint">
-                  <tr className="border-b border-line-soft">
-                    <th className="w-[280px] px-2.5 py-1.5 font-semibold">
-                      {t('dashboard.tokenUsageModel')}
-                    </th>
-                    <th className="px-2.5 py-1.5 text-right font-semibold">
-                      {t('dashboard.tokenUsageRequests')}
-                    </th>
-                    <th className="px-2.5 py-1.5 text-right font-semibold">
-                      {t('dashboard.tokenUsageInput')}
-                    </th>
-                    <th className="px-2.5 py-1.5 text-right font-semibold">
-                      {t('dashboard.tokenUsageOutput')}
-                    </th>
-                    <th className="px-2.5 py-1.5 text-right font-semibold">
-                      {t('dashboard.tokenUsageCacheRead')}
-                    </th>
-                    <th className="px-2.5 py-1.5 text-right font-semibold">
-                      {t('dashboard.tokenUsageCacheWrite')}
-                    </th>
-                    <th className="px-2.5 py-1.5 text-right font-semibold">
-                      {t('dashboard.tokenUsageCacheHitRate')}
-                    </th>
-                    <th className="px-2.5 py-1.5 text-right font-semibold">
-                      {t('dashboard.tokenUsageTotalTokens')}
-                    </th>
-                    <th className="px-2.5 py-1.5 text-right font-semibold">
-                      {t('dashboard.tokenUsageTotalCost')}
-                    </th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {tokenUsage.byModel.map((model) => (
-                    <TokenUsageModelRow key={model.model} model={model} />
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          : <div className="px-2.5 py-2 text-[13px] text-ink-faint">
-              {t('dashboard.noTokenUsage')}
-            </div>
-          }
-        </div>
-      </div>
-
-      <div className="mt-3 overflow-hidden rounded-lg border border-line-soft">
-        <div className="flex flex-col gap-1.5 bg-sunken px-2.5 py-1.5 sm:flex-row sm:items-center sm:justify-between">
-          <span className="text-[13px] font-semibold text-ink-soft">
-            {t('dashboard.tokenUsageSessionBreakdown')}
-          </span>
-          {sessionsPage && (
+          {breakdownTab === 'sessions' && sessionsPage && (
             <div className="flex items-center gap-2 text-[13px] text-ink-faint">
               <span>
                 {t('dashboard.tokenUsagePage', {
@@ -1761,71 +1739,130 @@ function TokenUsagePanel({
             </div>
           )}
         </div>
-        <div className="min-h-32">
-          {sessionsLoading && !sessionsPage ?
-            <div className="flex h-32 items-start px-2.5 py-2 text-[13px] text-ink-faint animate-pulse">
-              {t('dashboard.loading')}
-            </div>
-          : sessionsError ?
-            <div
-              role="alert"
-              className="px-2.5 py-2 text-[13px] text-red-600 dark:text-red-400"
-            >
-              {t('dashboard.tokenUsageSessionsLoadFailed')}
-            </div>
-          : hasSessionRows && sessionsPage ?
-            <div
-              className={`overflow-auto [scrollbar-gutter:stable] ${sessionsLoading ? 'opacity-60' : ''}`}
-            >
-              <table className="w-full min-w-[960px] table-fixed text-left text-[13px]">
-                <thead className="sticky top-0 bg-surface text-ink-faint">
-                  <tr className="border-b border-line-soft">
-                    <th className="w-[280px] px-2.5 py-1.5 font-semibold">
-                      {t('dashboard.tokenUsageSession')}
-                    </th>
-                    <th className="px-2.5 py-1.5 text-right font-semibold">
-                      {t('dashboard.tokenUsageRequests')}
-                    </th>
-                    <th className="px-2.5 py-1.5 text-right font-semibold">
-                      {t('dashboard.tokenUsageInput')}
-                    </th>
-                    <th className="px-2.5 py-1.5 text-right font-semibold">
-                      {t('dashboard.tokenUsageOutput')}
-                    </th>
-                    <th className="px-2.5 py-1.5 text-right font-semibold">
-                      {t('dashboard.tokenUsageCacheRead')}
-                    </th>
-                    <th className="px-2.5 py-1.5 text-right font-semibold">
-                      {t('dashboard.tokenUsageCacheWrite')}
-                    </th>
-                    <th className="px-2.5 py-1.5 text-right font-semibold">
-                      {t('dashboard.tokenUsageCacheHitRate')}
-                    </th>
-                    <th className="px-2.5 py-1.5 text-right font-semibold">
-                      {t('dashboard.tokenUsageTotalTokens')}
-                    </th>
-                    <th className="px-2.5 py-1.5 text-right font-semibold">
-                      {t('dashboard.tokenUsageTotalCost')}
-                    </th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {sessionsPage.items.map((session) => (
-                    <TokenUsageSessionRow
-                      key={session.session_id}
-                      session={session}
-                    />
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          : <div className="px-2.5 py-2 text-[13px] text-ink-faint">
-              {t('dashboard.noTokenUsage')}
-            </div>
+        <div
+          id="token-usage-breakdown-panel"
+          role="tabpanel"
+          aria-labelledby={
+            breakdownTab === 'models' ?
+              'token-usage-model-tab'
+            : 'token-usage-session-tab'
           }
+          className="min-h-44"
+        >
+          {breakdownTab === 'models'
+            && (loading && !tokenUsage ?
+              <div className="flex h-[194px] items-start px-2.5 py-2 text-[13px] text-ink-faint animate-pulse">
+                {t('dashboard.loading')}
+              </div>
+            : hasModelRows && tokenUsage ?
+              <div
+                className={`h-[194px] overflow-auto [scrollbar-gutter:stable] ${loading ? 'opacity-60' : ''}`}
+              >
+                <table className="w-full min-w-[960px] table-fixed text-left text-[13px]">
+                  <thead className="sticky top-0 bg-surface text-ink-faint">
+                    <tr className="border-b border-line-soft">
+                      <th className="w-[280px] px-2.5 py-1.5 font-semibold">
+                        {t('dashboard.tokenUsageModel')}
+                      </th>
+                      <th className="px-2.5 py-1.5 text-right font-semibold">
+                        {t('dashboard.tokenUsageRequests')}
+                      </th>
+                      <th className="px-2.5 py-1.5 text-right font-semibold">
+                        {t('dashboard.tokenUsageInput')}
+                      </th>
+                      <th className="px-2.5 py-1.5 text-right font-semibold">
+                        {t('dashboard.tokenUsageOutput')}
+                      </th>
+                      <th className="px-2.5 py-1.5 text-right font-semibold">
+                        {t('dashboard.tokenUsageCacheRead')}
+                      </th>
+                      <th className="px-2.5 py-1.5 text-right font-semibold">
+                        {t('dashboard.tokenUsageCacheWrite')}
+                      </th>
+                      <th className="px-2.5 py-1.5 text-right font-semibold">
+                        {t('dashboard.tokenUsageCacheHitRate')}
+                      </th>
+                      <th className="px-2.5 py-1.5 text-right font-semibold">
+                        {t('dashboard.tokenUsageTotalTokens')}
+                      </th>
+                      <th className="px-2.5 py-1.5 text-right font-semibold">
+                        {t('dashboard.tokenUsageTotalCost')}
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {tokenUsage.byModel.map((model) => (
+                      <TokenUsageModelRow key={model.model} model={model} />
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            : <div className="px-2.5 py-2 text-[13px] text-ink-faint">
+                {t('dashboard.noTokenUsage')}
+              </div>)}
+          {breakdownTab === 'sessions'
+            && (sessionsLoading && !sessionsPage ?
+              <div className="flex h-[194px] items-start px-2.5 py-2 text-[13px] text-ink-faint animate-pulse">
+                {t('dashboard.loading')}
+              </div>
+            : sessionsError ?
+              <div
+                role="alert"
+                className="px-2.5 py-2 text-[13px] text-red-600 dark:text-red-400"
+              >
+                {t('dashboard.tokenUsageSessionsLoadFailed')}
+              </div>
+            : hasSessionRows && sessionsPage ?
+              <div
+                className={`h-[194px] overflow-auto [scrollbar-gutter:stable] ${sessionsLoading ? 'opacity-60' : ''}`}
+              >
+                <table className="w-full min-w-[960px] table-fixed text-left text-[13px]">
+                  <thead className="sticky top-0 bg-surface text-ink-faint">
+                    <tr className="border-b border-line-soft">
+                      <th className="w-[280px] px-2.5 py-1.5 font-semibold">
+                        {t('dashboard.tokenUsageSession')}
+                      </th>
+                      <th className="px-2.5 py-1.5 text-right font-semibold">
+                        {t('dashboard.tokenUsageRequests')}
+                      </th>
+                      <th className="px-2.5 py-1.5 text-right font-semibold">
+                        {t('dashboard.tokenUsageInput')}
+                      </th>
+                      <th className="px-2.5 py-1.5 text-right font-semibold">
+                        {t('dashboard.tokenUsageOutput')}
+                      </th>
+                      <th className="px-2.5 py-1.5 text-right font-semibold">
+                        {t('dashboard.tokenUsageCacheRead')}
+                      </th>
+                      <th className="px-2.5 py-1.5 text-right font-semibold">
+                        {t('dashboard.tokenUsageCacheWrite')}
+                      </th>
+                      <th className="px-2.5 py-1.5 text-right font-semibold">
+                        {t('dashboard.tokenUsageCacheHitRate')}
+                      </th>
+                      <th className="px-2.5 py-1.5 text-right font-semibold">
+                        {t('dashboard.tokenUsageTotalTokens')}
+                      </th>
+                      <th className="px-2.5 py-1.5 text-right font-semibold">
+                        {t('dashboard.tokenUsageTotalCost')}
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {sessionsPage.items.map((session) => (
+                      <TokenUsageSessionRow
+                        key={session.session_id}
+                        session={session}
+                      />
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            : <div className="px-2.5 py-2 text-[13px] text-ink-faint">
+                {t('dashboard.noTokenUsage')}
+              </div>)}
         </div>
       </div>
-
       <div className="mt-3 overflow-hidden rounded-lg border border-line-soft">
         <div className="flex flex-col gap-1.5 bg-sunken px-2.5 py-1.5 sm:flex-row sm:items-center sm:justify-between">
           <span className="text-[13px] font-semibold text-ink-soft">

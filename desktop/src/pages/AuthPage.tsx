@@ -631,14 +631,14 @@ export default function AuthPage({
               <button
                 onClick={() => void handleOpenOAuthAccounts('codex')}
                 disabled={loading}
-                className="w-full py-2.5 bg-surface border border-line text-ink-soft text-[13px] font-semibold rounded-lg hover:bg-sunken hover:border-line disabled:opacity-50 transition-all mb-4"
+                className="w-full py-2.5 bg-surface border border-line text-ink-soft text-[13px] font-semibold rounded-lg hover:bg-sunken hover:border-line disabled:opacity-50 transition-all mb-2"
               >
                 {t('auth.codexAuth')}
               </button>
               <button
                 onClick={() => void handleOpenOAuthAccounts('xai')}
                 disabled={loading}
-                className="w-full py-2.5 bg-surface border border-line text-ink-soft text-[13px] font-semibold rounded-lg hover:bg-sunken disabled:opacity-50 transition-all mb-4"
+                className="w-full py-2.5 bg-surface border border-line text-ink-soft text-[13px] font-semibold rounded-lg hover:bg-sunken disabled:opacity-50 transition-all mb-2"
               >
                 {t('auth.xaiAuth')}
               </button>

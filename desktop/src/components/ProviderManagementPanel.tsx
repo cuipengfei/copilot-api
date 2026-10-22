@@ -23,6 +23,14 @@ interface Props {
   onSavingChange?: (saving: boolean) => void
 }
 
+function getDefaultProviderName(
+  providers: ProviderManagementConfig['providers'],
+): string {
+  return (
+    (providers.find((provider) => provider.enabled) ?? providers[0])?.name ?? ''
+  )
+}
+
 export default function ProviderManagementPanel({
   serverRunning,
   onOpenAuthConfig,
@@ -48,7 +56,7 @@ export default function ProviderManagementPanel({
         if (!active) return
         setConfig(result)
         setDrafts(createProviderDrafts(result))
-        setActiveName(result.providers[0]?.name ?? '')
+        setActiveName(getDefaultProviderName(result.providers))
       })
       .catch((reason: unknown) => {
         if (active) setError(String(reason))
@@ -116,11 +124,14 @@ export default function ProviderManagementPanel({
       )
       setConfig(result)
       setDrafts(createProviderDrafts(result))
-      setActiveName((name) =>
-        result.providers.some((provider) => provider.name === name) ?
-          name
-        : (result.providers[0]?.name ?? ''),
-      )
+      setActiveName((name) => {
+        const previous = result.providers.find(
+          (provider) => provider.name === name,
+        )
+        return previous?.enabled ?
+            previous.name
+          : getDefaultProviderName(result.providers)
+      })
       setDirty(false)
       setSaved(true)
     } catch (reason) {
