@@ -473,7 +473,7 @@ const zh: Locale = {
         description: '按 provider 配置模型；空字符串表示禁用切换。',
       },
       claudeAutoModel: {
-        label: 'Claude Code 审核模型',
+        label: 'Claude Code 安全审核模型',
         description: '支持继承动态默认值、禁用替换或指定模型。',
       },
       modelReasoningEfforts: {

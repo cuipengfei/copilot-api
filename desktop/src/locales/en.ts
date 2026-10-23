@@ -507,7 +507,7 @@ const en: Locale = {
           'Set a model per provider; an empty string disables switching.',
       },
       claudeAutoModel: {
-        label: 'Claude Code review model',
+        label: 'Claude Code Auto Model',
         description:
           'Inherit the dynamic default, disable replacement, or specify a model.',
       },
