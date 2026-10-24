@@ -1,8 +1,8 @@
 # 网关事件插件
 
-本文对应 `feat/request-event-plugins` 开发分支，尚未发布到 npm。
-
 插件是一个本地 `.mjs` 文件，通过事件获取请求状态和用量。网关负责提供统一事件，插件负责输出 JSONL、运行中请求快照或对接其他监控系统。模型信息复用 handler 已经解析的 payload，插件接口不包含请求正文、响应内容和鉴权 Header。
+
+这些插件运行在网关服务端，与 Claude Code 和 OpenCode 客户端集成分开。
 
 ## 最简示例
 
@@ -46,21 +46,25 @@ export default function setup({ version, server, on, log }) {
 }
 ```
 
-在这个开发分支的仓库根目录执行。Windows PowerShell：
+设置插件路径后启动网关。Windows PowerShell：
 
 ```powershell
 $env:COPILOT_API_PLUGINS = '["D:/copilot-plugins/simple-monitor.mjs"]'
-bun run start start --port 5000
+copilot-api start --port 5000
 ```
 
 macOS / Linux：
 
 ```sh
 export COPILOT_API_PLUGINS='["/absolute/path/simple-monitor.mjs"]'
-bun run start start --port 5000
+copilot-api start --port 5000
 ```
 
+以上命令使用 `copilot-api` CLI；从源码运行时，在仓库根目录将启动命令替换为 `bun run start start --port 5000`。
+
 `COPILOT_API_PLUGINS` 是 JSON 数组，可以配置多个插件。绝对路径直接使用；相对路径按 API home 目录解析，即 `COPILOT_API_HOME`，未设置时使用现有应用数据目录，不按终端当前目录解析。修改插件列表或插件代码后需重启服务。配置不是合法 JSON 路径数组时启动会报错；单个插件导入或 setup 失败时会记录日志并跳过该插件。
+
+Node.js 和 Bun 使用相同的 `.mjs` 格式，插件不需要单独的 npm 包。
 
 ## 插件 API
 
@@ -82,6 +86,8 @@ const unsubscribe = on("request.end", (event) => {
 // 不再需要订阅时：
 unsubscribe()
 ```
+
+事件以不可变快照交给 handler。handler 报错会记录日志，不会导致请求失败。
 
 ## 七类事件
 
@@ -122,6 +128,8 @@ unsubscribe()
 }
 ```
 
+`id` 由网关生成，与客户端传入的 trace ID 独立。`port` 是配置的监听端口，不从客户端 Host Header 推断。
+
 `durationMs` 从鉴权后的请求开始计时，持续到响应体结束，包含读取请求体、解压和生成过程。持续时间采用单调时钟，单位为毫秒。响应头返回前中断时，`status` 为 `0`。
 
 `model` 保留原始请求模型，`actualModel` 记录模型映射、provider 别名解析、自动选模和端点模型归一化之后，实际发给上游的目标模型（Google 取模型 URL 中的 ID）。例如请求 `my-alias` 最终调用 `gpt-5.4`，事件中分别为 `model: "my-alias"`、`actualModel: "gpt-5.4"`。
@@ -146,17 +154,17 @@ on("request.actual_model", (event) => {
 
 ## 完整监控插件示例
 
-仓库中的 [monitor.mjs](../../../plugin/gateway/monitor.mjs) 可以实现两个 PR 对应的文件输出：
+仓库中的 [monitor.mjs](../../../plugin/gateway/monitor.mjs) 可以输出以下文件：
 
 - `inflight-<port>-<pid>.json`：当前运行中的请求，包含开始时间和模型。
 - `timings-YYYY-MM.jsonl`：请求总耗时、首 token 延迟、HTTP 状态和结束原因。
 
-将这个文件保存到 `D:/copilot-plugins/monitor.mjs`，然后在开发分支仓库根目录运行：
+将这个文件保存到 `D:/copilot-plugins/monitor.mjs`，设置输出目录后启动网关：
 
 ```powershell
 $env:COPILOT_API_PLUGINS = '["D:/copilot-plugins/monitor.mjs"]'
 $env:COPILOT_API_MONITOR_DIR = 'D:/copilot-monitor'
-bun run start start --port 5000
+copilot-api start --port 5000
 ```
 
 运行中快照示例：
