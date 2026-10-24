@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import ConfigFieldEditor from '../components/ConfigFieldEditor'
 import { useLanguage } from '../contexts/LanguageContext'
+import { primaryButtonClass } from '../lib/button-styles'
 import {
   equalConfigValue,
   getConfigChanges,
@@ -34,8 +35,6 @@ import ModelMappingsPage from './ModelMappingsPage'
 
 const buttonClass =
   'rounded-lg border border-line bg-surface px-3 py-1.5 text-[13px] text-ink-soft transition-colors hover:bg-sunken hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/20 disabled:cursor-not-allowed disabled:opacity-40'
-const primaryClass =
-  'inline-flex h-8 items-center rounded-lg bg-accent-strong px-4 text-[13px] font-semibold text-white shadow-sm transition-colors hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/20 focus-visible:ring-offset-2 focus-visible:ring-offset-surface disabled:cursor-not-allowed disabled:opacity-40 disabled:shadow-none dark:bg-blue-500'
 
 const sectionIconPaths: Record<ConfigSection, string> = {
   mappings: 'M4 7h15m-4-4 4 4-4 4M20 17H5m4-4-4 4 4 4',
@@ -432,7 +431,7 @@ export default function AdvancedConfigPage({
               busy || !dirty || !document || !!validationError || !!pendingMerge
             }
             onClick={() => void save()}
-            className={primaryClass}
+            className={`inline-flex h-8 items-center px-4 ${primaryButtonClass}`}
           >
             {busy && document ?
               t('settings.saving')

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useLanguage } from '../contexts/LanguageContext'
+import { primaryButtonClass } from '../lib/button-styles'
 import type {
   ProviderManagementConfig,
   ProviderModelOptions,
@@ -191,7 +192,7 @@ export default function ProviderManagementPanel({
             onClick={() => {
               void save()
             }}
-            className="inline-flex h-9 items-center justify-center gap-2 rounded-lg bg-accent-strong px-4 text-[13px] font-semibold text-white shadow-sm transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40 dark:bg-blue-500"
+            className={`inline-flex h-9 items-center justify-center gap-2 px-4 ${primaryButtonClass}`}
           >
             <svg
               width="14"

@@ -7,6 +7,7 @@ import {
   type ReactNode,
 } from 'react'
 import { useLanguage } from '../contexts/LanguageContext'
+import { primaryButtonClass } from '../lib/button-styles'
 import {
   serializeMediaFile,
   serializeVideoMediaFile,
@@ -589,7 +590,7 @@ export default function MediaStudioPage({
                   || (mode === 'edit' && !editFiles.length)
                   || videoPending
                 }
-                className="flex-1 rounded-lg bg-accent-strong px-4 py-2.5 text-[13px] font-semibold text-white disabled:cursor-not-allowed disabled:opacity-40"
+                className={`flex-1 px-4 py-2.5 ${primaryButtonClass}`}
               >
                 {busy ? t('studio.creating') : t('studio.create')}
               </button>
