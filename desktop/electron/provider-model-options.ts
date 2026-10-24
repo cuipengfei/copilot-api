@@ -27,19 +27,28 @@ export function buildProviderModelOptions(
   return Object.fromEntries(
     Object.entries(providers)
       .filter(([name]) => name !== 'copilot')
-      .map(([name, provider]) => [
-        name,
-        [
-          ...new Set([
-            ...Object.keys(provider.models ?? {}),
-            ...(provider.agentsModels ?? []),
-            ...sources.builtin(name),
-            ...sources.catalog(resolveProviderModelsDevId(name, provider)),
-          ]),
+      .map(([name, provider]) => {
+        const configured = [
+          ...Object.keys(provider.models ?? {}),
+          ...(provider.agentsModels ?? []),
         ]
-          .filter((id) => isProviderModelVisible(name, id, provider))
-          .sort(),
-      ]),
+        // Copilot models are discovered from the account, not static catalogs.
+        if (name === 'github-copilot') {
+          return [name, [...new Set(configured)].sort()]
+        }
+        return [
+          name,
+          [
+            ...new Set([
+              ...configured,
+              ...sources.builtin(name),
+              ...sources.catalog(resolveProviderModelsDevId(name, provider)),
+            ]),
+          ]
+            .filter((id) => isProviderModelVisible(name, id, provider))
+            .sort(),
+        ]
+      }),
   )
 }
 

@@ -57,23 +57,6 @@ export class BuiltinProviderModelRegistry {
     codex: {
       "codex-auto-review": { pricing: CODEX_LUNA_PRICING },
       "gpt-reserve": { pricing: CODEX_LUNA_PRICING },
-      "gpt-5.5": {
-        pricing: {
-          tiers: [
-            {
-              cachedInput: 0.5,
-              input: 5,
-              maxInputTokens: 272_000,
-              output: 30,
-            },
-            {
-              cachedInput: 1,
-              input: 10,
-              output: 45,
-            },
-          ],
-        },
-      },
       "gpt-5.6-sol": {
         pricing: {
           tiers: [
