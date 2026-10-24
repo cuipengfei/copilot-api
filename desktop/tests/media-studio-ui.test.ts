@@ -176,6 +176,38 @@ const file = (name = 'source.png') =>
   new File([new Uint8Array([137, 80, 78, 71])], name, { type: 'image/png' })
 
 describe('media creation page', () => {
+  test.each([
+    ['Generate image', '1', '2'],
+    ['Edit image', '1', '3'],
+    ['Generate video', '8', '12'],
+  ])(
+    'allows clearing and retyping numeric options in %s',
+    async (mode, initial, value) => {
+      await render()
+      await click(mode)
+      const input = number(0)
+      expect(input.value).toBe(initial)
+
+      await act(async () => input.focus())
+      await change(input, '')
+      expect(input.value).toBe('')
+      await act(async () => input.blur())
+      expect(input.value).toBe('')
+      expect(input.checkValidity()).toBe(false)
+
+      await act(async () => input.focus())
+      for (const digit of value) await change(input, input.value + digit)
+      expect(input.value).toBe(value)
+      await act(async () => input.blur())
+      expect(input.checkValidity()).toBe(true)
+
+      await act(async () => input.focus())
+      await change(input, `0${value}`)
+      await act(async () => input.blur())
+      expect(input.value).toBe(value)
+    },
+  )
+
   test('keeps separate prompt drafts and submits the active mode from the workspace editor', async () => {
     await render()
     const form = container.querySelector('form')!
