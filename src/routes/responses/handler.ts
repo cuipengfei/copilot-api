@@ -7,9 +7,11 @@ import {
   resolveMappedModel,
 } from "~/lib/config"
 import { createHandlerLogger, debugJson, debugJsonTail } from "~/lib/logger"
+import { recordResponsesFirstToken } from "~/lib/first-token"
 import { findEndpointModel } from "~/lib/models"
 import { resolveConfiguredProviderModelAlias } from "~/lib/provider-resolver"
 import { requestContext } from "~/lib/request-context"
+import { setPluginRequestModel } from "~/lib/request-events"
 import { writeSSEIfConnected } from "~/lib/sse"
 import { isCodexUserAgent } from "~/routes/models/codex-models"
 import {
@@ -64,6 +66,7 @@ export const responsesHandlerDependencies = {
 
 export const handleResponses = async (c: Context) => {
   const payload = await c.req.json<ResponsesPayload>()
+  setPluginRequestModel(payload.model)
   const requestedModel = payload.model
   payload.model = responsesHandlerDependencies.resolveMappedModel(payload.model)
   if (payload.model !== requestedModel) {
@@ -251,6 +254,7 @@ export const handleResponses = async (c: Context) => {
         }) {
           debugJson(logger, "Responses stream chunk:", chunk)
           const parsedEvent = parseResponsesStreamEvent(chunk)
+          recordResponsesFirstToken(parsedEvent)
           if (
             parsedEvent?.type === "response.completed"
             || parsedEvent?.type === "response.failed"

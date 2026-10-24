@@ -215,6 +215,10 @@ export interface Locale {
     tokenUsageCacheHitRate: string
     tokenUsageCost: string
     tokenUsageEndpoint: string
+    tokenUsageAverageFirstToken: string
+    tokenUsageOutputSpeed: string
+    tokenUsageDuration: string
+    tokenUsageTimingHint: string
     tokenUsageEvents: string
     tokenUsageInput: string
     tokenUsageModel: string

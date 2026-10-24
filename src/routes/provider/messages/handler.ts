@@ -35,6 +35,11 @@ import {
   isDashScopeAliyunProvider,
 } from "~/lib/dashscope"
 import { HTTPError } from "~/lib/error"
+import {
+  recordAnthropicFirstToken,
+  recordChatCompletionFirstToken,
+  recordResponsesFirstToken,
+} from "~/lib/first-token"
 import { createHandlerLogger, debugJson, debugLazy } from "~/lib/logger"
 import { getProviderModelPdfSupport } from "~/lib/model-pdf-support"
 import { resolveProviderConfig } from "~/lib/provider-resolver"
@@ -50,6 +55,7 @@ import {
   type UsageTokens,
 } from "~/lib/token-usage"
 import { isResponsesStream, parseUserIdMetadata } from "~/lib/utils"
+import { setPluginRequestModel } from "~/lib/request-events"
 import {
   translateToAnthropic,
   translateToOpenAI,
@@ -115,6 +121,7 @@ export async function handleProviderMessages(
 ): Promise<Response> {
   const provider = c.req.param("provider")
   const payload = await c.req.json<AnthropicMessagesPayload>()
+  setPluginRequestModel(payload.model)
   payload.model = fromClaudeDiscoveryModelId(payload.model)
   applyClaudeNoToolsEffort(payload, c.req.header("user-agent"))
 
@@ -931,6 +938,7 @@ const streamOpenAICompatibleProviderMessages = ({
         }
 
         const parsed = parseOpenAICompatibleStreamChunk(chunk.data)
+        recordChatCompletionFirstToken(parsed)
         if (!parsed) {
           continue
         }
@@ -1043,6 +1051,7 @@ const streamResponsesProviderMessages = ({
         chunk.data,
         providerConfig,
       )
+      recordResponsesFirstToken(parsed)
       if (!parsed) {
         continue
       }
@@ -1128,6 +1137,7 @@ const parseProviderStreamEvent = (
 } | null => {
   try {
     const parsed = JSON.parse(data) as AnthropicStreamEventData
+    recordAnthropicFirstToken(parsed)
     if (parsed.type === "message_start") {
       return {
         data: JSON.stringify(parsed),

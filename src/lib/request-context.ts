@@ -1,4 +1,14 @@
 import { AsyncLocalStorage } from "node:async_hooks"
+import type { RequestEventObserver } from "./types/gateway-plugins"
+
+export interface RequestTiming {
+  id: string
+  firstTokenMs: number | null
+  durationMs: number | null
+  outcome: "completed" | "cancelled" | "error" | null
+  hasUsage: boolean
+  recordFirstToken: () => void
+}
 
 export interface RequestContext {
   traceId: string
@@ -7,6 +17,8 @@ export interface RequestContext {
   sessionAffinity: string | undefined
   rootSessionId?: string
   parentSessionId: string | undefined
+  pluginRequest?: RequestEventObserver
+  requestTiming?: RequestTiming
 }
 
 const TRACE_ID_MAX_LENGTH = 64
@@ -18,6 +30,11 @@ export const requestContext = {
   getStore: () => asyncLocalStorage.getStore(),
   run: <T>(context: RequestContext, callback: () => T) =>
     asyncLocalStorage.run(context, callback),
+}
+
+// Observe the final target at upstream dispatch, after mapping and overrides.
+export function setPluginRequestActualModel(model: string): void {
+  requestContext.getStore()?.pluginRequest?.setActualModel(model)
 }
 
 export function generateTraceId(): string {

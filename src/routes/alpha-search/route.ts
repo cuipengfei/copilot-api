@@ -9,6 +9,8 @@ import {
   type ResolvedProviderConfig,
 } from "~/lib/config"
 import { forwardError } from "~/lib/error"
+import { setPluginRequestModel } from "~/lib/request-events"
+import { setPluginRequestActualModel } from "~/lib/request-context"
 import { createHandlerLogger, debugJsonAsync } from "~/lib/logger"
 import { findEndpointModel } from "~/lib/models"
 import { parseProviderModelAlias } from "~/lib/provider-model"
@@ -49,11 +51,13 @@ function parseDebugBody<T>(body: string): T | string {
 
 async function forwardCodexAlphaSearchRequest(
   request: Request,
+  model?: string,
 ): Promise<Response> {
   await debugJsonAsync(logger, "alpha_search.codex.request", async () => ({
     body: parseDebugBody<AlphaSearchRequest>(await request.clone().text()),
   }))
 
+  if (model) setPluginRequestActualModel(model)
   const upstreamResponse =
     await alphaSearchRouteDependencies.forwardCodexAlphaSearch(request)
   await debugJsonAsync(logger, "alpha_search.codex.response", async () => ({
@@ -85,6 +89,7 @@ async function handleCodexRequest(
   c: Context,
   request: Request,
   resolvedProviderConfig?: ResolvedProviderConfig,
+  model?: string,
 ): Promise<Response> {
   const codexProviderConfig =
     resolvedProviderConfig
@@ -101,7 +106,7 @@ async function handleCodexRequest(
     )
   }
 
-  return await forwardCodexAlphaSearchRequest(request)
+  return await forwardCodexAlphaSearchRequest(request, model)
 }
 
 function invalidRequest(c: Context, message: string): Response {
@@ -133,6 +138,7 @@ async function parseAlphaSearchBody(
       "Invalid alpha search request: model must be a string",
     )
   }
+  setPluginRequestModel(model)
   return body as AlphaSearchRequest
 }
 
@@ -170,6 +176,8 @@ export async function handleAlphaSearchRequest(
       return await handleCodexRequest(
         c,
         createAlphaSearchRequest(c.req.raw, payload),
+        undefined,
+        payload.model,
       )
     }
   }
@@ -183,6 +191,7 @@ export async function handleAlphaSearchRequest(
       }
       return await forwardCodexAlphaSearchRequest(
         createAlphaSearchRequest(c.req.raw, payload),
+        payload.model,
       )
     }
   }
@@ -217,6 +226,8 @@ export async function handleAlphaSearchRequest(
         return await handleCodexRequest(
           c,
           createAlphaSearchRequest(c.req.raw, payload),
+          undefined,
+          payload.model,
         )
       }
     }

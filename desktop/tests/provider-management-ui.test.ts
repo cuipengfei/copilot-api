@@ -197,6 +197,8 @@ function createTokenUsageSummary(
   costs: TokenUsageSummary['totals']['costs'],
 ): TokenUsageSummary {
   const totals = {
+    average_first_token_ms: null,
+    output_tokens_per_second: null,
     request_count: 10,
     input_tokens: 200,
     output_tokens: 9000,
@@ -283,6 +285,8 @@ function leafDivTexts(): Array<string | null> {
 describe('provider management UI', () => {
   test('shows token-weighted cache hit rates in the model breakdown', async () => {
     const totals = {
+      average_first_token_ms: null,
+      output_tokens_per_second: null,
       request_count: 10,
       input_tokens: 200,
       output_tokens: 9000,
@@ -370,6 +374,8 @@ describe('provider management UI', () => {
       'Cache read',
       'Cache write',
       'Cache hit rate',
+      'Avg. TTFT',
+      'Output speed',
       'Total Tokens',
       'Total Cost',
     ])
@@ -377,7 +383,7 @@ describe('provider management UI', () => {
     expect(
       rows.map((row) => row.querySelectorAll('td')[6].textContent),
     ).toEqual(['60.0%', '0.0%', '—'])
-    expect(rows.every((row) => row.querySelectorAll('td').length === 9)).toBe(
+    expect(rows.every((row) => row.querySelectorAll('td').length === 11)).toBe(
       true,
     )
   })
@@ -439,6 +445,8 @@ describe('provider management UI', () => {
 
   test('pages session breakdown five rows at a time', async () => {
     const totals = {
+      average_first_token_ms: null,
+      output_tokens_per_second: null,
       request_count: 2,
       input_tokens: 10,
       output_tokens: 20,

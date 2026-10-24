@@ -17,6 +17,8 @@ import {
 } from '../lib/copilot-usage-display'
 import {
   formatCacheHitRate,
+  formatLatency,
+  formatOutputSpeed,
   formatTokenCost,
   formatTokenCosts,
 } from '../lib/token-usage-format'
@@ -1758,10 +1760,10 @@ function TokenUsagePanel({
               <div
                 className={`h-[194px] overflow-auto [scrollbar-gutter:stable] ${loading ? 'opacity-60' : ''}`}
               >
-                <table className="w-full min-w-[960px] table-fixed text-left text-[13px]">
+                <table className="w-full min-w-[1120px] table-fixed text-left text-[13px]">
                   <thead className="sticky top-0 bg-surface text-ink-faint">
                     <tr className="border-b border-line-soft">
-                      <th className="w-[280px] px-2.5 py-1.5 font-semibold">
+                      <th className="w-[220px] px-2.5 py-1.5 font-semibold">
                         {t('dashboard.tokenUsageModel')}
                       </th>
                       <th className="px-2.5 py-1.5 text-right font-semibold">
@@ -1781,6 +1783,18 @@ function TokenUsagePanel({
                       </th>
                       <th className="px-2.5 py-1.5 text-right font-semibold">
                         {t('dashboard.tokenUsageCacheHitRate')}
+                      </th>
+                      <th
+                        className="px-2.5 py-1.5 text-right font-semibold"
+                        title={t('dashboard.tokenUsageTimingHint')}
+                      >
+                        {t('dashboard.tokenUsageAverageFirstToken')}
+                      </th>
+                      <th
+                        className="px-2.5 py-1.5 text-right font-semibold"
+                        title={t('dashboard.tokenUsageTimingHint')}
+                      >
+                        {t('dashboard.tokenUsageOutputSpeed')}
                       </th>
                       <th className="px-2.5 py-1.5 text-right font-semibold">
                         {t('dashboard.tokenUsageTotalTokens')}
@@ -1913,7 +1927,7 @@ function TokenUsagePanel({
             <div
               className={`h-64 overflow-auto ${eventsLoading ? 'opacity-60' : ''}`}
             >
-              <table className="w-full min-w-[1060px] text-left text-[13px]">
+              <table className="w-full min-w-[1140px] text-left text-[13px]">
                 <thead className="sticky top-0 bg-surface text-ink-faint">
                   <tr className="border-b border-line-soft">
                     <th className="px-2.5 py-1.5 font-semibold">
@@ -1942,6 +1956,9 @@ function TokenUsagePanel({
                     </th>
                     <th className="px-2.5 py-1.5 text-right font-semibold">
                       {t('dashboard.tokenUsageCacheWrite')}
+                    </th>
+                    <th className="px-2.5 py-1.5 text-right font-semibold">
+                      {t('dashboard.tokenUsageDuration')}
                     </th>
                     <th className="px-2.5 py-1.5 text-right font-semibold">
                       {t('dashboard.tokenUsageTotalTokens')}
@@ -2351,6 +2368,12 @@ function TokenUsageModelRow({ model }: { model: TokenUsageModelSummary }) {
       <td className="px-2.5 py-1.5 text-right text-ink-soft">
         {formatCacheHitRate(model)}
       </td>
+      <td className="whitespace-nowrap px-2.5 py-1.5 text-right text-ink-soft">
+        {formatLatency(model.average_first_token_ms)}
+      </td>
+      <td className="whitespace-nowrap px-2.5 py-1.5 text-right text-ink-soft">
+        {formatOutputSpeed(model.output_tokens_per_second)}
+      </td>
       <td className="px-2.5 py-1.5 text-right font-semibold text-ink">
         {formatTokenCount(calcTokenTotal(model))}
       </td>
@@ -2451,6 +2474,9 @@ function TokenUsageEventRow({ event }: { event: TokenUsageEventRecord }) {
       </td>
       <td className="px-2.5 py-1.5 text-right text-ink-soft">
         {formatTokenCount(event.cache_creation_input_tokens)}
+      </td>
+      <td className="whitespace-nowrap px-2.5 py-1.5 text-right text-ink-soft">
+        {formatLatency(event.duration_ms)}
       </td>
       <td className="px-2.5 py-1.5 text-right font-semibold text-ink">
         {formatTokenCount(event.total_tokens)}

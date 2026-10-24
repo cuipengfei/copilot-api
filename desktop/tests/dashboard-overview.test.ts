@@ -168,10 +168,16 @@ function createEventsPage(count: number): TokenUsageEventsPage {
   const items: TokenUsageEventRecord[] = Array.from(
     { length: count },
     (_, index) => ({
+      request_id: null,
+      first_token_ms: null,
+      duration_ms: null,
+      request_outcome: null,
+      output_tokens_per_second: null,
       id: count - index,
       created_at_ms: Date.UTC(2026, 9, 16, 3, 4, index),
       created_at_utc: '2026-10-16T03:04:00Z',
       trace_id: `trace-${index}`,
+      user_agent: '',
       session_id: 'session-1',
       user_id: 'user',
       source: 'provider',
@@ -538,4 +544,78 @@ describe('dashboard overview', () => {
       }
     })
   }
+})
+
+describe('usage timing display', () => {
+  test('shows model timing before Total Tokens and only duration in request events', async () => {
+    fetchUsageSummary.mockResolvedValue({
+      ...summary,
+      byModel: [
+        {
+          ...summary.totals,
+          model: 'timed-model',
+          average_first_token_ms: 1250,
+          output_tokens_per_second: 42.6,
+        },
+      ],
+    })
+    const events = createEventsPage(2)
+    Object.assign(events.items[0], {
+      first_token_ms: 250,
+      duration_ms: 2250,
+      output_tokens_per_second: 10,
+    })
+    window.electronAPI.fetchTokenUsageEvents = mock(() =>
+      Promise.resolve(events),
+    )
+    await render()
+    await clickButton('Token usage')
+    const tables = [...container.querySelectorAll('table')]
+    const models = tables.find((table) =>
+      table.textContent?.includes('timed-model'),
+    )!
+    const details = tables.find((table) =>
+      table.textContent?.includes('trace-0'),
+    )!
+    expect(details.className).toContain('min-w-[1140px]')
+    expect(
+      [...models.querySelectorAll('th')].map((cell) => cell.textContent),
+    ).toEqual([
+      'Model',
+      'Requests',
+      'Input',
+      'Output',
+      'Cache read',
+      'Cache write',
+      'Cache hit rate',
+      'Avg. TTFT',
+      'Output speed',
+      'Total Tokens',
+      'Total Cost',
+    ])
+    expect(models.querySelector('th')?.className).toContain('w-[220px]')
+    expect(models.textContent).toContain('1.25 s')
+    expect(models.textContent).toContain('42.6 tok/s')
+    expect(
+      [...details.querySelectorAll('th')].map((cell) => cell.textContent),
+    ).toEqual([
+      'Time',
+      'User',
+      'Model',
+      'Session',
+      'Trace',
+      'Input',
+      'Output',
+      'Cache read',
+      'Cache write',
+      'Duration',
+      'Total Tokens',
+      'Total Cost',
+    ])
+    const rows = details.querySelectorAll('tbody tr')
+    expect(rows[0].textContent).not.toContain('250 ms')
+    expect(rows[0].textContent).not.toContain('10.0 tok/s')
+    expect(rows[0].textContent).toContain('2.25 s')
+    expect(rows[0].querySelectorAll('td')).toHaveLength(12)
+  })
 })
