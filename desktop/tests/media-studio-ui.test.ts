@@ -168,7 +168,7 @@ async function checkProgress() {
   const result = timers.mock.results[call]
   if (result.type === 'return') clearTimeout(result.value)
   await act(async () => {
-    ;(timers.mock.calls[call][0] as () => void)()
+    timers.mock.calls[call][0]()
     await Promise.resolve()
   })
 }
