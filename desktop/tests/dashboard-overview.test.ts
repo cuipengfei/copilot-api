@@ -237,7 +237,9 @@ function cardByTitle(title: string): HTMLElement {
   const heading = [...container.querySelectorAll('h3')].find(
     (node) => node.textContent === title,
   )
-  const card = heading?.parentElement?.parentElement
+  const card = heading?.closest<HTMLElement>(
+    '.bg-surface.border.border-line.rounded-xl',
+  )
   if (!card) throw new Error(`Missing card: ${title}`)
   return card
 }
@@ -320,7 +322,7 @@ describe('dashboard overview', () => {
     expect(cardByTitle('Available models').textContent).toContain('qwen-plus')
   })
 
-  test('places providers at the top of the dashboard and keeps models in the sidebar', async () => {
+  test('keeps providers and models in separate dashboard columns', async () => {
     await render('provider')
     expect(
       [...container.querySelectorAll('[role="tab"]')].map(
@@ -345,7 +347,7 @@ describe('dashboard overview', () => {
     expect(providerCard.textContent).toContain('Disabled')
 
     const modelsCard = cardByTitle('Available models')
-    expect(providerCard.parentElement?.firstElementChild).toBe(providerCard)
+    expect(providerCard.parentElement?.children[1]).toBe(providerCard)
     expect(modelsCard.parentElement?.firstElementChild).toBe(modelsCard)
     expect(providerCard.parentElement).not.toBe(modelsCard.parentElement)
     expect(
@@ -356,6 +358,59 @@ describe('dashboard overview', () => {
     expect(container.textContent).not.toContain('GitHub Copilot Quota')
     expect(container.textContent).not.toContain('Premium used')
     expect(container.textContent).not.toContain('Quota reset')
+  })
+
+  test('places a usage snapshot above providers and service addresses', async () => {
+    fetchUsageSummary.mockResolvedValue({
+      ...summary,
+      totals: {
+        ...summary.totals,
+        costs: [
+          ...summary.totals.costs,
+          {
+            currency: 'CNY',
+            amount: 9.5,
+            total_cost_nanos: 9_500_000_000,
+          },
+        ],
+      },
+      byModel: [
+        {
+          ...summary.totals,
+          average_first_token_ms: 250,
+          output_tokens_per_second: 40,
+          model: 'qwen-plus',
+        },
+      ],
+    })
+    await render()
+
+    const providerCard = cardByTitle('Providers')
+    const usageCard = cardByTitle('Usage snapshot')
+    expect(
+      [...providerCard.parentElement!.children].map(
+        (node) => node.querySelector('h3')?.textContent,
+      ),
+    ).toEqual(['Usage snapshot', 'Providers', 'Service address'])
+    expect(usageCard.textContent).toContain('Requests')
+    expect(usageCard.textContent).toContain(
+      new Intl.NumberFormat().format(summary.totals.total_tokens),
+    )
+    expect(usageCard.textContent).toContain('60.0%')
+    expect(usageCard.textContent).toContain('$1.250000')
+    expect(usageCard.textContent).toContain('¥9.500000')
+    expect(
+      usageCard.querySelector('[title="$1.250000 ¥9.500000"]')?.textContent,
+    ).toBe('$1.250000 ¥9.500000')
+    expect(usageCard.textContent).toContain('Top model')
+    expect(usageCard.textContent).toContain('qwen-plus')
+    expect(usageCard.firstElementChild?.textContent).toContain('Usage snapshot')
+    expect(usageCard.firstElementChild?.textContent).toContain('qwen-plus')
+    await clickButton('Token usage →')
+    expect(
+      container.querySelector('[role="tab"][aria-selected="true"]')
+        ?.textContent,
+    ).toBe('Token usage')
   })
 
   test('keeps the provider overview visible with Copilot as the only provider', async () => {

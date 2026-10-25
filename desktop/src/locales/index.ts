@@ -193,6 +193,9 @@ export interface Locale {
     overviewPort: string
     overviewModels: string
     overviewLastRefresh: string
+    usageSnapshot: string
+    usageSnapshotTopModel: string
+    usageSnapshotModelRequests: string
     serviceAddress: string
     authHeader: string
     copy: string

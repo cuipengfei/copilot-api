@@ -812,6 +812,16 @@ export default function DashboardPage({
   const sortedProviders = [...providers].sort(
     (left, right) => Number(right.enabled) - Number(left.enabled),
   )
+  const usageTotals = tokenUsage?.totals ?? EMPTY_TOKEN_USAGE_TOTALS
+  const topUsageModel = tokenUsage?.byModel.reduce<
+    TokenUsageModelSummary | undefined
+  >(
+    (top, model) =>
+      top === undefined || model.request_count > top.request_count ?
+        model
+      : top,
+    undefined,
+  )
   const isActiveTabRefreshing =
     tab === 'dashboard' ? loading
     : tab === 'tokenUsage' ?
@@ -1088,6 +1098,89 @@ export default function DashboardPage({
             </div>
             <div className="grid min-h-0 flex-1 items-start gap-3 md:grid-cols-[minmax(0,1fr)_340px] md:grid-rows-[minmax(0,1fr)]">
               <div className="flex min-h-0 min-w-0 flex-col gap-3 overflow-y-auto md:h-full">
+                {/* Usage snapshot */}
+                <div className="shrink-0 bg-surface border border-line rounded-xl p-3">
+                  <div className="flex shrink-0 flex-wrap items-center gap-x-2 gap-y-1">
+                    <h3 className="text-[13px] font-semibold text-ink-faint uppercase tracking-wide">
+                      {t('dashboard.usageSnapshot')}
+                    </h3>
+                    {topUsageModel && (
+                      <div className="flex min-w-0 items-baseline gap-1.5 text-[12px] text-ink-faint">
+                        <span className="shrink-0">
+                          {t('dashboard.usageSnapshotTopModel')}
+                        </span>
+                        <span
+                          className="max-w-[220px] truncate font-medium text-ink"
+                          title={topUsageModel.model}
+                        >
+                          {topUsageModel.model}
+                        </span>
+                        <span className="shrink-0">
+                          ·{' '}
+                          {t('dashboard.usageSnapshotModelRequests', {
+                            n: formatTokenCount(topUsageModel.request_count),
+                          })}
+                        </span>
+                      </div>
+                    )}
+                    <span className="ml-auto shrink-0 text-[12px] text-ink-faint">
+                      {getTokenUsagePeriodLabel(
+                        t,
+                        tokenUsage?.period ?? tokenUsagePeriod,
+                      )}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setTab('tokenUsage')}
+                      className="shrink-0 text-[13px] text-accent transition-opacity hover:opacity-70"
+                    >
+                      {t('dashboard.tabTokenUsage')} →
+                    </button>
+                  </div>
+                  {tokenUsageLoading && !tokenUsage ?
+                    <div
+                      className="mt-2 grid grid-cols-2 content-start gap-2 sm:grid-cols-4"
+                      aria-label={t('dashboard.loading')}
+                    >
+                      {Array.from({ length: 4 }, (_, index) => (
+                        <div
+                          key={index}
+                          className="min-h-[58px] animate-pulse rounded-lg border border-line bg-sunken"
+                        />
+                      ))}
+                    </div>
+                  : tokenUsage ?
+                    <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-4">
+                      <TokenUsageMetric
+                        label={t('dashboard.tokenUsageRequests')}
+                        value={formatTokenCount(usageTotals.request_count)}
+                        loading={false}
+                        tone="violet"
+                      />
+                      <TokenUsageMetric
+                        label={t('dashboard.tokenUsageTotalTokens')}
+                        value={formatTokenCount(calcTokenTotal(usageTotals))}
+                        loading={false}
+                        tone="slate"
+                      />
+                      <TokenUsageMetric
+                        label={t('dashboard.tokenUsageCacheHitRate')}
+                        value={formatCacheHitRate(usageTotals)}
+                        loading={false}
+                        tone="blue"
+                      />
+                      <TokenUsageCostMetric
+                        label={t('dashboard.tokenUsageCost')}
+                        value={formatTokenCosts(usageTotals.costs).join(' ')}
+                        loading={false}
+                      />
+                    </div>
+                  : <div className="mt-2 flex min-h-[52px] items-center text-[13px] text-ink-faint">
+                      {t('dashboard.noTokenUsage')}
+                    </div>
+                  }
+                </div>
+
                 {/* Provider overview */}
                 {shouldShowProviderOverview && (
                   <div className="shrink-0 bg-surface border border-line rounded-xl p-3">
@@ -1149,11 +1242,11 @@ export default function DashboardPage({
                 )}
 
                 {/* Service endpoints */}
-                <div className="shrink-0 bg-surface border border-line rounded-xl p-3">
-                  <h3 className="text-[13px] font-semibold text-ink-faint uppercase tracking-wide mb-2">
+                <div className="shrink-0 bg-surface border border-line rounded-xl px-2.5 py-[15px]">
+                  <h3 className="text-[13px] font-semibold text-ink-faint uppercase tracking-wide mb-1.5">
                     {t('dashboard.serviceAddress')}
                   </h3>
-                  <div className="space-y-1.5">
+                  <div className="space-y-1">
                     {[
                       {
                         label: 'OpenAI',
@@ -1170,7 +1263,7 @@ export default function DashboardPage({
                     ].map(({ label, url, key, color }) => (
                       <div
                         key={key}
-                        className="flex items-center gap-2 px-2.5 py-1.5 bg-sunken rounded-lg"
+                        className="flex items-center gap-2 px-2.5 py-1 bg-sunken rounded-lg"
                       >
                         <span
                           className={`text-[13px] font-semibold text-white ${color} rounded px-1.5 py-0.5 shrink-0`}
@@ -1192,11 +1285,11 @@ export default function DashboardPage({
                   {serverAuthInfo.enabled
                     && serverAuthInfo.headerName
                     && serverAuthInfo.headerValue && (
-                      <div className="mt-3 pt-3 border-t border-line-soft">
-                        <h4 className="text-[13px] font-semibold text-ink-faint uppercase tracking-wide mb-1.5">
+                      <div className="mt-2 pt-2 border-t border-line-soft">
+                        <h4 className="text-[13px] font-semibold text-ink-faint uppercase tracking-wide mb-1">
                           {t('dashboard.authHeader')}
                         </h4>
-                        <div className="flex items-start gap-2 px-2.5 py-1.5 bg-amber-50 dark:bg-amber-500/15 border border-amber-200 dark:border-amber-500/30 rounded-lg">
+                        <div className="flex items-start gap-2 px-2.5 py-1 bg-amber-50 dark:bg-amber-500/15 border border-amber-200 dark:border-amber-500/30 rounded-lg">
                           <span className="text-[13px] font-mono text-amber-900 dark:text-amber-400 break-all flex-1">
                             {maskedServerAuthHeader}
                           </span>
