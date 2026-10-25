@@ -266,7 +266,7 @@ async function clickButton(label: string) {
 }
 
 describe('dashboard overview', () => {
-  test('loads all four subscription providers only inside the subscriptions tab', async () => {
+  test('loads subscriptions on first open and preserves them across tab switches', async () => {
     getProviderConfig.mockResolvedValue({
       configPath: 'config.json',
       providers: [
@@ -305,7 +305,18 @@ describe('dashboard overview', () => {
     await clickButton('Refresh all')
     expect(fetchSubscriptions).toHaveBeenCalledTimes(8)
     await clickButton('Dashboard')
-    expect(container.querySelector('.quota-provider-card')).toBeNull()
+    const hiddenSubscriptionsPage = container.querySelector(
+      '.subscriptions-page',
+    )
+    expect(hiddenSubscriptionsPage).not.toBeNull()
+    expect(hiddenSubscriptionsPage?.closest('.hidden')).not.toBeNull()
+    await clickButton('Subscriptions')
+    expect(fetchSubscriptions).toHaveBeenCalledTimes(8)
+    expect(
+      container.querySelector('.subscriptions-page')?.closest('.hidden'),
+    ).toBeNull()
+    expect(container.textContent).toContain('business')
+    await clickButton('Dashboard')
     expect(cardByTitle('Available models').textContent).toContain('qwen-plus')
   })
 

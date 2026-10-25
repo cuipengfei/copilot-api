@@ -305,10 +305,12 @@ export default function DashboardPage({
   const [tab, setTab] = useState<DashboardTab>(initialTab)
   const [advancedConfigOpened, setAdvancedConfigOpened] = useState(false)
   const [studioOpened, setStudioOpened] = useState(false)
+  const [subscriptionsOpened, setSubscriptionsOpened] = useState(false)
   const [showCreate, setShowCreate] = useState(false)
   useEffect(() => {
     if (tab === 'advancedConfig') setAdvancedConfigOpened(true)
     if (tab === 'studio') setStudioOpened(true)
+    if (tab === 'subscriptions') setSubscriptionsOpened(true)
   }, [tab])
   useEffect(() => {
     let active = true
@@ -1253,11 +1255,15 @@ export default function DashboardPage({
           </div>
         )}
 
-        {started && tab === 'subscriptions' && (
-          <SubscriptionsPage
-            refreshKey={quotaRefreshKey}
-            onManageProviders={() => setTab('providers')}
-          />
+        {(subscriptionsOpened || (started && tab === 'subscriptions')) && (
+          <div
+            className={started && tab === 'subscriptions' ? 'h-full' : 'hidden'}
+          >
+            <SubscriptionsPage
+              refreshKey={quotaRefreshKey}
+              onManageProviders={() => setTab('providers')}
+            />
+          </div>
         )}
 
         {/* Token usage tab */}
