@@ -11,6 +11,54 @@ import {
 } from '../src/lib/provider-model-options'
 
 describe('provider model options', () => {
+  test('discovers Copilot models from the account instead of the public catalog', () => {
+    installModelsDevCatalog({
+      ...modelsDevProviderCatalogFixture,
+      'github-copilot': {
+        models: { 'claude-fable-5.1': { id: 'claude-fable-5.1' } },
+      },
+    })
+    const options = buildProviderModelOptions({})
+    expect(options['github-copilot']).toEqual([])
+    expect(
+      mergeProviderModelOptions(options, {
+        data: [{ id: 'gpt-6-luna' }, { id: 'claude-sonnet-5.5' }],
+      }),
+    ).toEqual({ 'github-copilot': ['claude-sonnet-5.5', 'gpt-6-luna'] })
+  })
+
+  test('preserves explicit Copilot model IDs without importing a catalog override', () => {
+    installModelsDevCatalog({
+      ...modelsDevProviderCatalogFixture,
+      'custom-catalog': {
+        models: {
+          configured: { id: 'configured', release_date: '2026-01-01' },
+          selected: { id: 'selected', status: 'deprecated' },
+        },
+      },
+    })
+    const options = buildProviderModelOptions(
+      {
+        providers: {
+          'github-copilot': {
+            modelsDevProviderId: 'custom-catalog',
+            models: { configured: {} },
+            agentsModels: ['selected'],
+          },
+        },
+      },
+      {
+        builtin: () => ['static-model'],
+        catalog: () => ['claude-fable-5.1'],
+      },
+    )
+    expect(options['github-copilot']).toEqual(['configured', 'selected'])
+    expect(mergeProviderModelOptions(options, null)).toEqual(options)
+    expect(
+      mergeProviderModelOptions(options, { data: [{ id: 'gpt-6-luna' }] }),
+    ).toEqual({ 'github-copilot': ['configured', 'gpt-6-luna', 'selected'] })
+  })
+
   test('filters old releases from all cached, configured and selected models.dev options', () => {
     const catalog = { models: modelsDevReleaseModelsFixture }
     installModelsDevCatalog({
@@ -112,7 +160,7 @@ describe('provider model options', () => {
       },
     )
     expect(options).toEqual({
-      'github-copilot': ['builtin', 'configured'],
+      'github-copilot': [],
       example: ['builtin', 'catalog-model', 'configured', 'selected'],
     })
     expect(JSON.stringify(options)).not.toContain('secret')

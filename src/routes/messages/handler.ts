@@ -5,6 +5,7 @@ import consola from "consola"
 import type { Model } from "~/lib/types/models"
 
 import { COMPACT_REQUEST } from "~/lib/compact"
+import { setPluginRequestModel } from "~/lib/request-events"
 import {
   getClaudeAutoModel,
   getSmallModel,
@@ -69,6 +70,7 @@ export const messagesFlowHandlers = {
 
 export async function handleCompletion(c: Context) {
   const anthropicPayload = await c.req.json<AnthropicMessagesPayload>()
+  setPluginRequestModel(anthropicPayload.model)
   anthropicPayload.model = fromClaudeDiscoveryModelId(anthropicPayload.model)
   applyClaudeNoToolsEffort(anthropicPayload, c.req.header("user-agent"))
 

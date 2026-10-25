@@ -10,6 +10,7 @@ import {
   getMessageApiWebSearchModel,
   getOpencodeModelContextWindow,
   invalidateConfigCache,
+  mergeConfigWithDefaults,
   reloadConfig,
   setConfiguredApiKeys,
   writeConfigToDisk,
@@ -200,6 +201,72 @@ test("small and search model getters use gpt-6-luna when config fields are absen
   expect(getMessageApiWebSearchModel()).toBe("gpt-6-luna")
   expect(getClaudeAutoModel()).toBeUndefined()
 })
+
+test.each([undefined, "existing-admin-key"])(
+  "startup migrates retired role models with admin key %j and persists once",
+  (adminApiKey) => {
+    const configPath = useTempConfigPath()
+    const legacyConfig: AppConfig = {
+      ...defaultConfig,
+      auth: { apiKeys: ["existing-api-key"], adminApiKey },
+      alphaSearchModel: "gpt-5-mini",
+      messageApiWebSearchModel: "gpt-5-mini",
+      claudeAutoModel: "gpt-5-mini",
+      modelMappings: { "gpt-5-mini": "custom/gpt-5-mini" },
+      extraPrompts: { "gpt-5-mini": "custom prompt" },
+      modelReasoningEfforts: { "gpt-5-mini": "low" },
+      providers: { custom: { apiKey: "provider-key" } },
+    }
+    fs.writeFileSync(configPath, JSON.stringify(legacyConfig), "utf8")
+
+    const config = mergeConfigWithDefaults()
+
+    expect(config).toMatchObject({
+      ...legacyConfig,
+      auth: {
+        apiKeys: ["existing-api-key"],
+        ...(adminApiKey ? { adminApiKey } : {}),
+      },
+      alphaSearchModel: "gpt-6-luna",
+      messageApiWebSearchModel: "gpt-6-luna",
+      claudeAutoModel: "gpt-6-luna",
+    })
+    expect(config.auth?.adminApiKey).toBeTruthy()
+    const storedConfig = fs.readFileSync(configPath, "utf8")
+    expect(JSON.parse(storedConfig)).toEqual(config)
+    expect(getAlphaSearchModel()).toBe("gpt-6-luna")
+    expect(getMessageApiWebSearchModel()).toBe("gpt-6-luna")
+    expect(getClaudeAutoModel()).toBe("gpt-6-luna")
+
+    fs.utimesSync(configPath, 1, 1)
+    const modifiedTime = fs.statSync(configPath).mtimeMs
+    expect(mergeConfigWithDefaults()).toEqual(config)
+    expect(fs.readFileSync(configPath, "utf8")).toBe(storedConfig)
+    expect(fs.statSync(configPath).mtimeMs).toBe(modifiedTime)
+  },
+)
+
+test.each(["", "custom/gpt-5-mini", "gpt-5-mini-custom", "gpt-6-luna"])(
+  "startup preserves explicit role model setting %j without rewriting the file",
+  (model) => {
+    const configPath = useTempConfigPath()
+    const config: AppConfig = {
+      ...defaultConfig,
+      auth: { adminApiKey: "existing-admin-key" },
+      alphaSearchModel: model,
+      messageApiWebSearchModel: model,
+      claudeAutoModel: model,
+    }
+    const storedConfig = JSON.stringify(config)
+    fs.writeFileSync(configPath, storedConfig, "utf8")
+    fs.utimesSync(configPath, 1, 1)
+    const modifiedTime = fs.statSync(configPath).mtimeMs
+
+    expect(mergeConfigWithDefaults()).toEqual(config)
+    expect(fs.readFileSync(configPath, "utf8")).toBe(storedConfig)
+    expect(fs.statSync(configPath).mtimeMs).toBe(modifiedTime)
+  },
+)
 
 test.each<{
   name: string

@@ -2,11 +2,21 @@
 
 [项目首页](../../../README.zh-CN.md) · [文档目录](README.md) · [English](../en/desktop.md)
 
+## 图片与视频创作
+
+启动本地服务后，打开 **创作** 标签页，可以输入提示词生成图片、上传图片进行修改，或生成视频。图片可选择网关默认路由、Codex 或 xAI，设置模型、尺寸、质量和数量（1–4 张）。网关默认路由沿用 `imageGenerationModel`、`imageEditModel` 和模型映射；指定 Codex 或 xAI 时直接使用对应提供商，需先启用该提供商。图片修改支持最多 5 张 PNG、JPEG 或 WebP，每张不超过 20 MiB，总计不超过 40 MiB。
+
+视频使用 `xai/grok-imagine-video-1.5`，需启用 xAI 提供商。可填写提示词、添加一张首帧图片，或同时使用两者；时长 1–15 秒，分辨率 480p、720p 或 1080p，以及音频开关。提交后每 5 秒查询一次任务状态；可暂停、继续查询或结束跟踪。切换标签页会保留草稿、结果和任务，关闭或刷新应用会清除这些临时内容。**停止等待**和**结束跟踪**仅停止本地等待或查询，不会撤销已提交到上游的生成任务。
+
+生成结果可在页面预览，并通过系统保存对话框保存到本地。视频链接有有效期，请及时保存。
+
 <a id="electron-desktop-app"></a>
 
 ## Electron 桌面应用
 
-如果你更喜欢图形界面，仓库里还提供了位于 `desktop/` 的 Electron 桌面应用。它支持 GitHub Copilot 登录、OpenAI Codex OAuth 与最多 3 个 Codex 账号的手动切换、移除未在使用的账号，以及 Kimi、DeepSeek、DashScope、OpenRouter 或自定义 provider 的 API Key 配置。Provider 配置、服务 API Key 和账号修改后，会自动刷新运行中的服务，新请求使用更新后的配置。授权或配置 provider 后，可以一键启动或停止本地代理，并在界面里直接查看本地端点、鉴权 Header、可用模型、额度和日志。
+打开**订阅额度**标签页，可集中查看 GitHub Copilot、Codex、xAI 和 OpenCode Go 订阅。卡片展示内置的 models.dev 品牌标识、套餐、剩余额度、额度窗口、重置时间和可用余额，支持单独刷新或**全部刷新**。Copilot 包含 Premium、Chat 和 Completions；Codex 包含个人 / 模型额度窗口和 Business 工作区 Credits、成员上限；xAI 包含 Grok Build 每周 / 每月额度、旧版月度额度、按量付费用量及预付余额。OpenCode Go 使用已配置的 API key，展示滚动 5 小时、每周及每月的用量百分比和重置时间。首次打开时通过 CLI server 加载，之后切换到其他标签页再返回会保留现有结果，直到手动刷新。网页看板也提供相同的订阅额度标签页，Token 用量页专注请求历史和性能统计。
+
+如果你更喜欢图形界面，仓库里还提供了位于 `desktop/` 的 Electron 桌面应用。它支持 GitHub Copilot 登录、OpenAI Codex OAuth 与最多 3 个 Codex 账号的手动切换、移除未在使用的账号，以及 Kimi、DeepSeek、DashScope、OpenRouter 或自定义 provider 的 API Key 配置。Dashboard 顶部会用用量概览汇总所选统计周期的请求数、总 Token、缓存命中率、预估费用和请求量最高的模型。Provider 配置、服务 API Key 和账号修改后，会自动刷新运行中的服务，新请求使用更新后的配置。授权或配置 provider 后，可以一键启动或停止本地代理，并在界面里直接查看本地端点、鉴权 Header、可用模型、额度和日志。
 
 监听地址、代理、详细日志和 Token 日志属于服务启动选项，保存后会自动重启正在运行的服务，进行中的请求可能中断。OAuth App、API Home、SQLite DB Path 和 Enterprise URL 仍需重启桌面应用。服务未运行时只保存设置，不会自动启动。
 

@@ -14,7 +14,7 @@
   <a href="https://www.npmjs.com/package/@jeffreycao/copilot-api"><img src="https://img.shields.io/npm/v/@jeffreycao/copilot-api.svg" alt="npm version"></a>
   <a href="https://github.com/caozhiyuan/copilot-api/blob/dev/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License"></a>
   <a href="https://github.com/caozhiyuan/copilot-api/stargazers"><img src="https://img.shields.io/github/stars/caozhiyuan/copilot-api.svg" alt="GitHub stars"></a>
-  <a href="https://bun.sh"><img src="https://img.shields.io/badge/Bun-%3E%3D1.4.0-orange.svg" alt="Bun >= 1.4.0"></a>
+  <a href="https://bun.sh"><img src="https://img.shields.io/badge/Bun-%3E%3D1.4.4-orange.svg" alt="Bun >= 1.4.4"></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/Node-%3E%3D22.13.0-green.svg" alt="Node >= 22.13.0"></a>
 </p>
 
@@ -38,7 +38,7 @@ Copilot API 是一个本地 AI 网关，让 Claude Code、OpenCode、Codex 等�
 
 ## 快速开始
 
-需要 **Node.js >= 22.13.0**（npx）或 **Bun >= 1.4.0**。使用 GitHub Copilot 时需要相应订阅；也可以配置其他 provider 独立运行。
+需要 **Node.js >= 22.13.0**（npx）或 **Bun >= 1.4.4**。使用 GitHub Copilot 时需要相应订阅；也可以配置其他 provider 独立运行。
 
 ```sh
 npx @jeffreycao/copilot-api@latest start
@@ -50,7 +50,7 @@ npx @jeffreycao/copilot-api@latest start
 npx @jeffreycao/copilot-api@latest auth login
 ```
 
-也可以使用 Bun >= 1.4.0 运行，可获得更好的性能：
+也可以使用 Bun >= 1.4.4 运行，可获得更好的性能：
 
 ```sh
 bunx --bun @jeffreycao/copilot-api start
@@ -59,7 +59,7 @@ bunx --bun @jeffreycao/copilot-api start
 `--bun` 用于选择 Bun 运行时，日常启动省略 `@latest` 以复用缓存。全局安装与升级方式见 [Bun 使用说明](docs/guides/zh-CN/getting-started.md#using-with-bun)。
 
 > [!NOTE]
-> 如需信任系统安装的 CA 证书（例如使用企业 HTTPS 代理时），`npx` 无需额外设置：Node.js >= 22.19.0 启动时会通过 [`tls.setDefaultCACertificates()`](https://nodejs.org/api/tls.html#tlssetdefaultcacertificatescerts) 自动合并系统 CA 证书。只有 Bun 需要在运行 `bunx --bun` 前设置 `NODE_USE_SYSTEM_CA=1`：bash/zsh 使用 `export NODE_USE_SYSTEM_CA=1`，PowerShell 使用 `$env:NODE_USE_SYSTEM_CA="1"`（Bun >= 1.4.0）。
+> 如需信任系统安装的 CA 证书（例如使用企业 HTTPS 代理时），`npx` 无需额外设置：Node.js >= 22.19.0 启动时会通过 [`tls.setDefaultCACertificates()`](https://nodejs.org/api/tls.html#tlssetdefaultcacertificatescerts) 自动合并系统 CA 证书。只有 Bun 需要在运行 `bunx --bun` 前设置 `NODE_USE_SYSTEM_CA=1`：bash/zsh 使用 `export NODE_USE_SYSTEM_CA=1`，PowerShell 使用 `$env:NODE_USE_SYSTEM_CA="1"`（Bun >= 1.4.4）。
 > Desktop 默认对子进程启用此设置，并保留显式配置的环境变量。
 
 验证网关已启动：
@@ -71,7 +71,7 @@ curl http://localhost:4141/v1/models
 > [!NOTE]
 > token usage 存储需要 Node.js >= 22.13.0 或 Bun。详见[通过 npx 使用](docs/guides/zh-CN/getting-started.md#using-with-npx)。
 
-接下来可按你的客户端选择指南：[与 Claude Code 一起使用](docs/guides/zh-CN/claude-code.md#using-with-claude-code)、[与 OpenCode 一起使用](docs/guides/zh-CN/opencode.md#using-with-opencode)、[与 Codex 一起使用](docs/guides/zh-CN/codex.md#using-with-codex)，或通过 [Docker](docs/guides/zh-CN/docker.md#using-with-docker) 运行。
+接下来可按你的客户端选择指南：[与 Claude Code 一起使用](docs/guides/zh-CN/claude-code.md#using-with-claude-code)、[与 OpenCode 一起使用](docs/guides/zh-CN/opencode.md#using-with-opencode)、[与 Codex 一起使用](docs/guides/zh-CN/codex.md#using-with-codex)、[与 DeepSeek Harness 一起使用](docs/guides/zh-CN/dsh.md#using-with-deepseek-harness)，或通过 [Docker](docs/guides/zh-CN/docker.md#using-with-docker) 运行。
 
 <a id="compatibility"></a>
 
@@ -84,8 +84,9 @@ curl http://localhost:4141/v1/models
 | 客户端 | Chat Completions | Responses | Anthropic Messages | 推荐 |
 |---|:---:|:---:|:---:|---|
 | Claude Code | — | — | ✅ 原生 / 适配 | Anthropic Messages |
-| OpenCode | ✅ 原生 | ✅ 原生 / 适配 | ✅ 原生 / 适配（通过 `@ai-sdk/anthropic`） | Anthropic Messages |
+| OpenCode | ✅ 原生 | ✅ 原生 / 适配 | ✅ 原生 / 适配 | Anthropic Messages |
 | Codex | — | ✅ 原生 / 适配 | — | Responses |
+| DeepSeek Harness | — | ✅ 原生 / 适配 | ✅ 原生 / 适配 | Responses |
 | OpenAI 兼容客户端 | ✅ 原生 | ✅ 原生 / 适配 | — | Chat Completions |
 | Anthropic 兼容客户端 | — | — | ✅ 原生 / 适配 | Anthropic Messages |
 
@@ -112,6 +113,7 @@ Windows x64（`.exe`）、macOS Apple Silicon（`.dmg`）和 Linux x64（`.AppIm
 | [Claude Code](docs/guides/zh-CN/claude-code.md) | settings.json、网关模型发现、模型映射、自动压缩窗口与 WebSearch 行为 |
 | [OpenCode](docs/guides/zh-CN/opencode.md) | v2 Responses 插件与自动模型发现、原生压缩、模型能力与价格、上下文上限，以及 v1 Anthropic SDK 配置 |
 | [Codex](docs/guides/zh-CN/codex.md) | 完整的 `config.toml` provider 配置块、`GITHUB_COPILOT_API_KEY` 环境变量设置、自动审核模型映射、生成 `model_catalog.json`，以及合并后的模型选择器目录与协议适配 |
+| [DeepSeek Harness](docs/guides/zh-CN/dsh.md) | 安装 `dsh-copilot-api`、保存网关 API 密钥，并选择 Responses 或 Messages |
 | [Docker](docs/guides/zh-CN/docker.md) | Docker Compose 快速启动、`/data` 持久化挂载与属主修复、支持的环境变量，以及监听所有网卡地址 |
 | [桌面应用](docs/guides/zh-CN/desktop.md) | Copilot 登录、Codex OAuth 账号切换、API Key provider、一键启停、共享模型映射、高级设置与各平台安装包 |
 | [插件与工具搜索](docs/guides/zh-CN/integrations.md) | Responses `tool_search` MCP 桥接（opencode v2 已通过 Code Mode 延迟加载工具，不需要）、Claude Code 的 `agent-inject` 与 `tool-search` 市场插件，以及 opencode 子代理标记插件 |

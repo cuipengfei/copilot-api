@@ -31,34 +31,6 @@ function extractCollapseHelpers(html: string): string {
   )
 }
 
-type UsageViewerFormatters = {
-  escapeHtml: (value: unknown) => string
-  formatObject: (value: unknown) => string
-  renderDetailedData: (value: unknown) => string
-}
-
-async function loadUsageViewerFormatters(): Promise<UsageViewerFormatters> {
-  const html = await readUsageViewerPage()
-  const source = [
-    extractInlineFunctionRange(
-      html,
-      "        function escapeHtml(value) {",
-      "        function getErrorMessage(error) {",
-    ),
-    extractInlineFunctionRange(
-      html,
-      "        function formatObject(obj) {",
-      "        function renderTokenUsageSection() {",
-    ),
-    extractCollapseHelpers(html),
-    "({ escapeHtml, formatObject, renderDetailedData })",
-  ].join("\n")
-
-  return runInNewContext(source, {
-    state: { collapsedSections: {} },
-  }) as UsageViewerFormatters
-}
-
 describe("usage viewer period contract", () => {
   test("supports all periods in the selector and usage requests", async () => {
     const html = await readUsageViewerPage()
@@ -173,6 +145,8 @@ describe("usage viewer model cache hit rate", () => {
       renderTokenUsageSection: () => string
     }
     const totals = {
+      average_first_token_ms: null,
+      output_tokens_per_second: null,
       request_count: 10,
       input_tokens: 200,
       output_tokens: 9000,
@@ -226,9 +200,23 @@ describe("usage viewer model cache hit rate", () => {
     const win = new Window()
     try {
       win.document.body.innerHTML = rendered
-      const headers = [...win.document.querySelectorAll("th")].map(
-        (node) => node.textContent,
+      const headers = [...win.document.querySelectorAll("th")].map((node) =>
+        node.textContent?.trim(),
       )
+      expect(headers).toEqual([
+        "Model",
+        "Copilot AIU Cost",
+        "Requests",
+        "Input",
+        "Output",
+        "Cache Read",
+        "Cache Write",
+        "Cache Hit Rate",
+        "Avg. TTFT",
+        "Output speed",
+        "Total Tokens",
+        "Total Cost",
+      ])
       const rows = [...win.document.querySelectorAll("tbody tr")]
       expect(
         rows.map(
@@ -237,6 +225,11 @@ describe("usage viewer model cache hit rate", () => {
               .textContent,
         ),
       ).toEqual(examples.map((example) => example.expected))
+      expect(
+        rows.every(
+          (row) => row.querySelectorAll("td").length === headers.length,
+        ),
+      ).toBe(true)
       expect(rows[0].querySelector("td")?.textContent).toBe("<cached-model>")
       expect(win.document.querySelector("cached-model")).toBeNull()
       for (const example of examples) {
@@ -501,6 +494,7 @@ describe("usage viewer session fetching", () => {
       SESSION_PAGE_SIZE: 10,
       DEFAULT_TOKEN_USAGE_EVENTS_PAGE_SIZE: 20,
       render: () => rendering.onRender(),
+      fetchSubscriptionQuotas: () => Promise.resolve(),
       getSelectedPeriod: () => "today",
       getErrorMessage: (error: Error) => error.message,
       isMissingTokenUsageEndpointError: (error: unknown) =>
@@ -657,185 +651,11 @@ describe("usage viewer session fetching", () => {
   )
 })
 
-describe("usage viewer Copilot quota", () => {
-  test("uses upstream percentages and supports legacy remaining fields", async () => {
-    const html = await readUsageViewerPage()
-    const source = [
-      extractInlineFunctionRange(
-        html,
-        "        function escapeHtml(value) {",
-        "        function getErrorMessage(error) {",
-      ),
-      extractInlineFunctionRange(
-        html,
-        "        function getCopilotQuotaRemaining(details) {",
-        "        function formatObject(obj) {",
-      ),
-      "({ renderQuotaCard, getCopilotQuotaRemaining, getCopilotQuotaPercentRemaining })",
-    ].join("\n")
-    const viewer = runInNewContext(source) as {
-      renderQuotaCard: (
-        title: string,
-        details: import("../desktop/src/lib/copilot-usage-display").CopilotQuotaDetailLike,
-      ) => string
-      getCopilotQuotaPercentRemaining: (
-        details: import("../desktop/src/lib/copilot-usage-display").CopilotQuotaDetailLike,
-      ) => number
-      getCopilotQuotaRemaining: (
-        details: import("../desktop/src/lib/copilot-usage-display").CopilotQuotaDetailLike,
-      ) => number | null
-    }
-    const quota = {
-      entitlement: 1500,
-      remaining: 1499,
-      quota_remaining: 0,
-      percent_remaining: 99.9,
-      unlimited: false,
-    }
-    const win = new Window()
-    try {
-      win.document.body.innerHTML = viewer.renderQuotaCard(
-        "premium_interactions",
-        quota,
-      )
-      expect(win.document.body.textContent).toContain("0.1% used")
-      expect(win.document.body.textContent).toContain("1 / 1,500")
-      expect(win.document.body.textContent).toContain("1,499 remaining")
-      const bar = win.document.querySelector(".progress-bar-fg")
-      const width = bar?.getAttribute("style")?.match(/width:\s*([\d.]+)%/)?.[1]
-      expect(parseFloat(width ?? "")).toBeCloseTo(0.1)
-      expect(
-        viewer.getCopilotQuotaPercentRemaining({ ...quota, remaining: 1200 }),
-      ).toBe(99.9)
-      expect(
-        viewer.getCopilotQuotaRemaining({
-          remaining: 0,
-          quota_remaining: 1499,
-        }),
-      ).toBe(0)
-      expect(viewer.getCopilotQuotaRemaining({ quota_remaining: 1499 })).toBe(
-        1499,
-      )
-      expect(
-        viewer.getCopilotQuotaPercentRemaining({
-          entitlement: 1500,
-          quota_remaining: 1499,
-        }),
-      ).toBeCloseTo(99.933333)
-      expect(
-        viewer.getCopilotQuotaPercentRemaining({
-          entitlement: 0,
-          remaining: 0,
-        }),
-      ).toBe(100)
-      expect(
-        viewer.getCopilotQuotaRemaining({ remaining: Infinity }),
-      ).toBeNull()
-      expect(
-        viewer.getCopilotQuotaPercentRemaining({ percent_remaining: -10 }),
-      ).toBe(0)
-      expect(
-        viewer.getCopilotQuotaPercentRemaining({ percent_remaining: 110 }),
-      ).toBe(100)
-      expect(
-        viewer.getCopilotQuotaPercentRemaining({
-          unlimited: true,
-          percent_remaining: 0,
-        }),
-      ).toBe(100)
-      win.document.body.innerHTML = viewer.renderQuotaCard("chat", {
-        unlimited: true,
-      })
-      expect(win.document.body.textContent).toContain("Unlimited")
-      expect(
-        win.document.querySelector(".progress-bar-fg")?.getAttribute("style"),
-      ).toContain("width: 100%")
-    } finally {
-      await win.happyDOM.close()
-    }
-  })
-})
-
-describe("usage viewer detailed response formatter", () => {
-  test("escapes HTML in keys and values", async () => {
-    const { escapeHtml, formatObject } = await loadUsageViewerFormatters()
-
-    expect(escapeHtml(`<tag attr="x">&'`)).toBe(
-      "&lt;tag attr=&quot;x&quot;&gt;&amp;&#39;",
-    )
-    const unsafeKey = `unsafe_<key&"'`
-    const value = `<script>&"'`
-    const html = formatObject({ [unsafeKey]: value })
-    expect(html).toContain(escapeHtml(unsafeKey.replace(/_/g, " ")))
-    expect(html).toContain(escapeHtml(JSON.stringify(value)))
-  })
-
-  test("renders every nested array entry and primitive", async () => {
-    const { escapeHtml, formatObject } = await loadUsageViewerFormatters()
-    const arrayValue = `<array & "'>`
-
-    const html = formatObject({
-      values: [
-        "text",
-        17,
-        true,
-        false,
-        null,
-        {},
-        [],
-        arrayValue,
-        ["nested array", null],
-        { nested_array: ["deep", { nested_null: null }] },
-      ],
-      enterprise_list: [{ enterprise_name: "Copilot Engineering" }],
-    })
-
-    for (const value of [
-      "[0]",
-      "[1]",
-      "[2]",
-      "[3]",
-      "[4]",
-      "[5]",
-      "[6]",
-      "[7]",
-      "[8]",
-      "Copilot Engineering",
-      "enterprise name:",
-      "&quot;text&quot;",
-      "17",
-      "true",
-      "false",
-      "null",
-      "{}",
-      "[]",
-      "&quot;nested array&quot;",
-      "&quot;deep&quot;",
-      "nested null:",
-    ]) {
-      expect(html).toContain(value)
-    }
-    expect(html).toContain(escapeHtml(JSON.stringify(arrayValue)))
-    expect(html).toContain("color: var(--color-green)")
-    expect(html).toContain("color: var(--color-red)")
-    expect(html).not.toContain("items]")
-  })
-
-  test("shows empty containers and renders the detailed response section", async () => {
-    const { formatObject, renderDetailedData } =
-      await loadUsageViewerFormatters()
-
-    expect(formatObject({})).toContain("{}")
-    expect(formatObject([])).toContain("[]")
-    expect(formatObject({ empty_object: {}, empty_array: [] })).toContain("{}")
-    expect(formatObject({ empty_object: {}, empty_array: [] })).toContain("[]")
-    expect(renderDetailedData(null)).toBe("")
-    expect(renderDetailedData(undefined)).toBe("")
-    expect(renderDetailedData({})).toContain("{}")
-    expect(renderDetailedData({ response: [null] })).toContain(
-      "Copilot Usage API Response",
-    )
-  })
+test("usage viewer omits the raw Copilot JSON section", async () => {
+  const html = await readUsageViewerPage()
+  expect(html).not.toContain("Copilot Usage API Response")
+  expect(html).not.toContain("renderDetailedData")
+  expect(html).not.toContain("function formatObject")
 })
 
 describe("usage viewer collapsible sections", () => {
@@ -845,8 +665,6 @@ describe("usage viewer collapsible sections", () => {
     "modelBreakdown",
     "sessionBreakdown",
     "requestEvents",
-    "copilotQuotas",
-    "usageApiResponse",
   ] as const
 
   type CollapseState = {
@@ -856,16 +674,12 @@ describe("usage viewer collapsible sections", () => {
     tokenUsageSessionsError: string | null
     tokenUsageSessionsPage: unknown
     tokenUsageSummary: unknown
-    error: string | null
-    data: { quota_snapshots: Record<string, unknown> } | null
+    tokenUsageSummaryError: string | null
   }
 
   type CollapseViewer = {
     readCollapsedSections: () => Record<string, boolean>
     renderTokenUsageSection: () => string
-    renderUsageQuotas: (snapshots: unknown) => string
-    renderUsageErrorSection: () => string
-    renderDetailedData: (data: unknown) => string
     handleContentAreaClick: (event: unknown) => void
   }
 
@@ -921,10 +735,7 @@ describe("usage viewer collapsible sections", () => {
         totals,
         byModel: [],
       },
-      error: null,
-      data: {
-        quota_snapshots: { chat: { entitlement: 100, remaining: 50 } },
-      },
+      tokenUsageSummaryError: null,
     }
     const source = [
       extractInlineFunctionRange(
@@ -955,16 +766,6 @@ describe("usage viewer collapsible sections", () => {
       extractCollapseHelpers(html),
       extractInlineFunctionRange(
         html,
-        "        function renderUsageQuotas(snapshots) {",
-        "        function formatObject(obj) {",
-      ),
-      extractInlineFunctionRange(
-        html,
-        "        function formatObject(obj) {",
-        "        function renderTokenUsageSection() {",
-      ),
-      extractInlineFunctionRange(
-        html,
         "        function renderTokenUsageSection() {",
         "        function getTokenUsageTrendMetrics() {",
       ),
@@ -976,9 +777,6 @@ describe("usage viewer collapsible sections", () => {
       `({
         readCollapsedSections,
         renderTokenUsageSection,
-        renderUsageQuotas,
-        renderUsageErrorSection,
-        renderDetailedData,
         handleContentAreaClick,
       })`,
     ].join("\n")
@@ -1001,13 +799,7 @@ describe("usage viewer collapsible sections", () => {
     state.collapsedSections = viewer.readCollapsedSections()
 
     const render = () => {
-      root.innerHTML = [
-        viewer.renderTokenUsageSection(),
-        state.error && !state.data ?
-          viewer.renderUsageErrorSection()
-        : viewer.renderUsageQuotas(state.data?.quota_snapshots),
-        viewer.renderDetailedData(state.data),
-      ].join("")
+      root.innerHTML = [viewer.renderTokenUsageSection()].join("")
     }
     const toggle = (key: string) =>
       root.querySelector(`[data-collapse-toggle="${key}"]`)!
@@ -1048,13 +840,9 @@ describe("usage viewer collapsible sections", () => {
         expect(h.body(key)).not.toBeNull()
         expect(h.isBodyHidden(key)).toBe(false)
       }
-      expect(h.root.querySelectorAll("[data-collapse-toggle]")).toHaveLength(6)
+      expect(h.root.querySelectorAll("[data-collapse-toggle]")).toHaveLength(4)
       expect(h.root.querySelector("[hidden]")).toBeNull()
       expect(h.toggle("tokenUsage").textContent).toBe("Token Usage")
-      expect(h.toggle("copilotQuotas").textContent).toBe("Copilot Quotas")
-      expect(h.toggle("usageApiResponse").textContent).toBe(
-        "Copilot Usage API Response",
-      )
       expect(h.toggle("requestEvents").textContent).toBe("Request Events")
     } finally {
       await h.win.happyDOM.close()
@@ -1066,26 +854,18 @@ describe("usage viewer collapsible sections", () => {
       stored: JSON.stringify({
         tokenUsage: true,
         requestEvents: true,
-        usageApiResponse: true,
       }),
     })
     try {
       h.render()
-      for (const key of ["tokenUsage", "requestEvents", "usageApiResponse"]) {
+      for (const key of ["tokenUsage", "requestEvents"]) {
         expect(h.isExpanded(key)).toBe(false)
         expect(h.isBodyHidden(key)).toBe(true)
       }
-      for (const key of [
-        "modelBreakdown",
-        "sessionBreakdown",
-        "copilotQuotas",
-      ]) {
+      for (const key of ["modelBreakdown", "sessionBreakdown"]) {
         expect(h.isExpanded(key)).toBe(true)
         expect(h.isBodyHidden(key)).toBe(false)
       }
-      expect(h.toggle("usageApiResponse").textContent).toContain(
-        "Copilot Usage API Response",
-      )
     } finally {
       await h.win.happyDOM.close()
     }
@@ -1102,12 +882,12 @@ describe("usage viewer collapsible sections", () => {
       expect(h.state.collapsedSections).toEqual({ modelBreakdown: true })
       expect(JSON.parse(h.stored()!)).toEqual({ modelBreakdown: true })
 
-      h.toggle("copilotQuotas").dispatchEvent(
+      h.toggle("requestEvents").dispatchEvent(
         new h.win.MouseEvent("click", { bubbles: true }),
       )
       expect(JSON.parse(h.stored()!)).toEqual({
         modelBreakdown: true,
-        copilotQuotas: true,
+        requestEvents: true,
       })
 
       h.toggle("modelBreakdown").dispatchEvent(
@@ -1115,7 +895,7 @@ describe("usage viewer collapsible sections", () => {
       )
       expect(h.isExpanded("modelBreakdown")).toBe(true)
       expect(h.isBodyHidden("modelBreakdown")).toBe(false)
-      expect(JSON.parse(h.stored()!)).toEqual({ copilotQuotas: true })
+      expect(JSON.parse(h.stored()!)).toEqual({ requestEvents: true })
       expect(h.writes).toHaveLength(3)
     } finally {
       await h.win.happyDOM.close()
@@ -1245,7 +1025,6 @@ describe("usage viewer collapsible sections", () => {
       expect(tokenBody.contains(h.body("modelBreakdown"))).toBe(true)
       expect(tokenBody.contains(h.body("sessionBreakdown"))).toBe(true)
       expect(tokenBody.contains(h.body("requestEvents"))).toBe(true)
-      expect(h.body("copilotQuotas").closest("[hidden]")).toBeNull()
       expect(h.isBodyHidden("sessionBreakdown")).toBe(false)
 
       click("tokenUsage")
@@ -1261,20 +1040,19 @@ describe("usage viewer collapsible sections", () => {
 
   test("collapsed state applies to loading and error variants", async () => {
     const h = await createHarness({
-      stored: JSON.stringify({ tokenUsage: true, copilotQuotas: true }),
+      stored: JSON.stringify({ tokenUsage: true, requestEvents: true }),
     })
     try {
       h.state.isTokenUsageLoading = true
-      h.state.error = "usage failed"
-      h.state.data = null
+      h.state.tokenUsageSummaryError = "usage failed"
       h.render()
       expect(h.root.textContent).toContain("Refreshing summary...")
       expect(h.root.textContent).toContain("usage failed")
       expect(h.isExpanded("tokenUsage")).toBe(false)
       expect(h.isBodyHidden("tokenUsage")).toBe(true)
-      expect(h.isExpanded("copilotQuotas")).toBe(false)
-      expect(h.isBodyHidden("copilotQuotas")).toBe(true)
-      expect(h.body("copilotQuotas").textContent).toContain("usage failed")
+      expect(h.isExpanded("requestEvents")).toBe(false)
+      expect(h.isBodyHidden("requestEvents")).toBe(true)
+      expect(h.body("tokenUsage").textContent).toContain("usage failed")
       expect(
         h.root.querySelector('[data-collapse-toggle="usageApiResponse"]'),
       ).toBeNull()
@@ -1314,5 +1092,141 @@ describe("usage viewer collapsible sections", () => {
     expect(html).toContain("state.collapsedSections = readCollapsedSections();")
     expect(html).toContain('.collapse-toggle[aria-expanded="false"]')
     expect(html).toContain(".collapse-body[hidden]")
+  })
+})
+
+describe("usage viewer request/model timing", () => {
+  test("renders model timing, request duration, missing fields and session columns", async () => {
+    const html = await readUsageViewerPage()
+    const source = [
+      extractInlineFunctionRange(
+        html,
+        "        function escapeHtml(value) {",
+        "        function getErrorMessage(error) {",
+      ),
+      extractInlineFunctionRange(
+        html,
+        "        function formatNumber(value) {",
+        "        function formatDateTime(value) {",
+      ),
+      extractInlineFunctionRange(
+        html,
+        "        function formatCellText(value) {",
+        "        function formatRangeDate(value) {",
+      ),
+      extractInlineFunctionRange(
+        html,
+        "        function renderTokenUsageValueLines(value) {",
+        "        function renderPaginationButton(",
+      ),
+      "({ renderTokenUsageModelBreakdown, renderTokenUsageEventsTable, formatLatency, formatOutputSpeed })",
+    ].join("\n")
+    const viewer = runInNewContext(source, {
+      state: {},
+      formatDateTime: () => "now",
+      renderEmptyState: () => "empty",
+    }) as {
+      renderTokenUsageModelBreakdown: (summary: unknown, by?: string) => string
+      renderTokenUsageEventsTable: (page: unknown) => string
+      formatLatency: (value: unknown) => string
+      formatOutputSpeed: (value: unknown) => string
+    }
+    const row = {
+      model: "test",
+      session_id: "session",
+      first_token_ms: 1250,
+      duration_ms: 3250,
+      average_first_token_ms: 750,
+      output_tokens_per_second: 42.6,
+      total_nano_aiu: 1_000_000_000,
+      total_tokens: 137,
+      cost: { currency: "USD", amount: 0.25 },
+    }
+    const win = new Window()
+    try {
+      win.document.body.innerHTML = viewer.renderTokenUsageModelBreakdown({
+        byModel: [row, { model: "old" }],
+      })
+      const modelHeaders = [...win.document.querySelectorAll("th")].map(
+        (node) => node.textContent?.trim(),
+      )
+      expect(modelHeaders).toHaveLength(12)
+      expect(modelHeaders).toContain("Copilot AIU Cost")
+      expect(win.document.querySelector("tbody")?.textContent).toContain(
+        "750 ms",
+      )
+      expect(win.document.querySelector("tbody")?.textContent).toContain(
+        "42.6 tok/s",
+      )
+      const old = win.document
+        .querySelectorAll("tbody tr")[1]
+        .querySelectorAll("td")
+      expect(old[modelHeaders.indexOf("Avg. TTFT")].textContent).toBe("—")
+      expect(old[modelHeaders.indexOf("Output speed")].textContent).toBe("—")
+      win.document.body.innerHTML = viewer.renderTokenUsageModelBreakdown(
+        { bySession: [row] },
+        "session",
+      )
+      const sessionHeaders = [...win.document.querySelectorAll("th")].map(
+        (node) => node.textContent?.trim(),
+      )
+      expect(sessionHeaders).toHaveLength(10)
+      expect(sessionHeaders).toContain("Copilot AIU Cost")
+      const eventsHtml = viewer.renderTokenUsageEventsTable({
+        items: [row, {}],
+      })
+      win.document.body.innerHTML = eventsHtml
+      expect(win.document.querySelectorAll("th").length).toBe(13)
+      expect(
+        [...win.document.querySelectorAll("th")].map((node) =>
+          node.textContent?.trim(),
+        ),
+      ).toEqual([
+        "Time",
+        "User",
+        "Model",
+        "Session",
+        "Trace",
+        "Copilot AIU Cost",
+        "Input",
+        "Output",
+        "Cache Read",
+        "Cache Write",
+        "Duration",
+        "Total Tokens",
+        "Total Cost",
+      ])
+      const eventHeaders = [...win.document.querySelectorAll("th")].map(
+        (node) => node.textContent?.trim(),
+      )
+      const eventCells = win.document
+        .querySelectorAll("tbody tr")[0]
+        .querySelectorAll("td")
+      expect(eventCells).toHaveLength(eventHeaders.length)
+      expect(
+        eventCells[eventHeaders.indexOf("Copilot AIU Cost")].textContent,
+      ).toBe("$0.010000")
+      expect(eventCells[eventHeaders.indexOf("Total Tokens")].textContent).toBe(
+        "137",
+      )
+      expect(
+        eventCells[eventHeaders.indexOf("Total Cost")].textContent?.trim(),
+      ).toBe("$0.250000")
+      expect(eventCells[eventHeaders.indexOf("Duration")].textContent).toBe(
+        "3.25 s",
+      )
+      expect(win.document.body.textContent).not.toContain("TTFT")
+      expect(win.document.body.textContent).not.toContain("Output speed")
+      expect(win.document.body.textContent).toContain("Duration")
+      expect(win.document.body.textContent).toContain("3.25 s")
+      for (const value of [undefined, null, NaN, Infinity, -1, "100"]) {
+        expect(viewer.formatLatency(value)).toBe("—")
+        expect(viewer.formatOutputSpeed(value)).toBe("—")
+      }
+      expect(viewer.formatLatency(0)).toBe("0 ms")
+      expect(viewer.formatOutputSpeed(0)).toBe("0.0 tok/s")
+    } finally {
+      await win.happyDOM.close()
+    }
   })
 })

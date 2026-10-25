@@ -26,6 +26,7 @@ import {
 } from "~/lib/copilot-rate-limit"
 import { HTTPError } from "~/lib/error"
 import { attachPremiumInfo, getPremiumInfoFromHeaders } from "~/lib/logger"
+import { setPluginRequestActualModel } from "~/lib/request-context"
 import { attachResponseHeaders } from "~/lib/response-headers"
 import { resolveInitiatorWithSmartAgent } from "~/lib/smart-agent"
 import { state } from "~/lib/state"
@@ -112,6 +113,7 @@ export const createResponses = async (
   const effectiveTransport =
     compactType === COMPACT_REQUEST ? "http" : transport
 
+  setPluginRequestActualModel(payload.model)
   if (payload.stream === true && effectiveTransport === "websocket") {
     clientSignal?.throwIfAborted()
     const websocketRequest = prepareResponsesWebSocketRequest(

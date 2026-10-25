@@ -1,5 +1,10 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import type { AppUpdateStatus, XaiAuthInfo } from '../src/types/ipc'
+import type {
+  ImageCreationInput,
+  SaveMediaInput,
+  VideoCreationInput,
+} from '../src/types/media'
 
 contextBridge.exposeInMainWorld('electronAPI', {
   getAuthStatus: () => ipcRenderer.invoke('auth:get-status'),
@@ -88,7 +93,18 @@ contextBridge.exposeInMainWorld('electronAPI', {
   openUrl: (url: string) => ipcRenderer.invoke('shell:open-url', url),
 
   fetchUsage: () => ipcRenderer.invoke('server:fetch-usage'),
+  fetchSubscriptionUsage: (
+    provider: 'github-copilot' | 'codex' | 'xai' | 'opencode-go',
+  ) => ipcRenderer.invoke('server:fetch-subscription-usage', provider),
   fetchModels: () => ipcRenderer.invoke('server:fetch-models'),
+  createImages: (id: string, input: ImageCreationInput) =>
+    ipcRenderer.invoke('media:create-images', id, input),
+  createVideo: (id: string, input: VideoCreationInput) =>
+    ipcRenderer.invoke('media:create-video', id, input),
+  getVideo: (id: string, requestId: string) =>
+    ipcRenderer.invoke('media:get-video', id, requestId),
+  cancelMediaRequest: (id: string) => ipcRenderer.invoke('media:cancel', id),
+  saveMedia: (input: SaveMediaInput) => ipcRenderer.invoke('media:save', input),
   fetchTokenUsage: (period: string) =>
     ipcRenderer.invoke('server:fetch-token-usage', period),
   fetchTokenUsageDaily: (period: string) =>

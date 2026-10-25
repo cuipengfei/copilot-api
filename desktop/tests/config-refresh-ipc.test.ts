@@ -12,6 +12,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { PATHS } from '../../src/lib/paths'
+import { VIDEO_IMAGE_MAX_BYTES } from '../electron/compress-video-image'
 
 import * as serverAuth from '../electron/server-auth-config'
 import * as settingsStore from '../electron/settings-store'
@@ -30,6 +31,10 @@ import type {
 type IpcHandler = (event: unknown, ...parameters: unknown[]) => unknown
 const handlers = new Map<string, IpcHandler>()
 const openExternal = mock(() => Promise.resolve())
+let saveDialogResult: { canceled: boolean; filePath?: string } = {
+  canceled: true,
+}
+const showSaveDialog = mock(() => Promise.resolve(saveDialogResult))
 let preloadApi: Window['electronAPI'] | undefined
 type RendererListener = (event: unknown, payload: unknown) => void
 const rendererListeners = new Map<string, Set<RendererListener>>()
@@ -78,7 +83,20 @@ await mock.module('electron', () => ({
     on: () => {},
   },
   shell: { openExternal },
+  dialog: { showSaveDialog },
   BrowserWindow: class {},
+  nativeImage: {
+    createFromBuffer: () => ({
+      isEmpty: () => false,
+      getSize: () => ({ width: 8, height: 8 }),
+      resize: () => ({
+        isEmpty: () => false,
+        getSize: () => ({ width: 8, height: 8 }),
+        toJPEG: () => Buffer.from([0xff, 0xd8, 0xff, 0xd9]),
+      }),
+      toJPEG: () => Buffer.from([0xff, 0xd8, 0xff, 0xd9]),
+    }),
+  },
   app: {
     getAppPath: () => process.cwd(),
     getPath: () => process.cwd(),
@@ -116,6 +134,8 @@ async function invoke(
 beforeEach(async () => {
   handlers.clear()
   openExternal.mockClear()
+  showSaveDialog.mockClear()
+  saveDialogResult = { canceled: true }
   rendererListeners.clear()
   rendererOff.mockClear()
   rendererInvoke.mockClear()
@@ -205,6 +225,204 @@ beforeEach(async () => {
 })
 
 afterEach(() => mock.restore())
+
+describe('desktop subscription quota IPC', () => {
+  test('requests CLI server quotas with gateway auth', async () => {
+    spyOn(fs.promises, 'readFile').mockResolvedValue(
+      JSON.stringify({ auth: { apiKeys: ['quota-key'] } }),
+    )
+    const usage = {
+      provider: 'codex',
+      planType: 'business',
+      windows: [],
+      limitReached: false,
+    }
+    const fetcher = spyOn(globalThis, 'fetch').mockImplementation(
+      Object.assign(() => Promise.resolve(Response.json(usage)), {
+        preconnect: () => {},
+      }),
+    )
+    expect(await invoke('server:fetch-subscription-usage', 'codex')).toEqual(
+      usage,
+    )
+    expect(fetch).toHaveBeenCalledWith(
+      'http://127.0.0.1:4141/usage/codex',
+      expect.objectContaining({
+        headers: { 'x-api-key': 'quota-key' },
+      }),
+    )
+    expect(fetcher.mock.calls[0][1]?.signal).toBeInstanceOf(AbortSignal)
+    expect(await invoke('server:fetch-subscription-usage', 'xai')).toEqual(
+      usage,
+    )
+    expect(fetch).toHaveBeenLastCalledWith(
+      'http://127.0.0.1:4141/usage/xai',
+      expect.anything(),
+    )
+    expect(
+      await invoke('server:fetch-subscription-usage', 'opencode-go'),
+    ).toEqual(usage)
+    expect(fetch).toHaveBeenLastCalledWith(
+      'http://127.0.0.1:4141/usage/opencode-go',
+      expect.objectContaining({ headers: { 'x-api-key': 'quota-key' } }),
+    )
+  })
+
+  test('distinguishes unavailable accounts from failed requests and validates the provider', async () => {
+    spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      new Response(null, { status: 404 }),
+    )
+    expect(await invoke('server:fetch-subscription-usage', 'codex')).toBeNull()
+    spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      new Response('private-upstream-error', { status: 502 }),
+    )
+    await expect(
+      invoke('server:fetch-subscription-usage', 'xai'),
+    ).rejects.toThrow('Failed to fetch subscription usage')
+    await expect(
+      invoke('server:fetch-subscription-usage', '../admin/config'),
+    ).rejects.toThrow('Unsupported subscription provider')
+    spyOn(globalThis, 'fetch').mockRejectedValueOnce(new Error('offline'))
+    await expect(
+      invoke('server:fetch-subscription-usage', 'codex'),
+    ).rejects.toThrow('offline')
+  })
+
+  test('exposes typed quota queries through preload', async () => {
+    await import('../electron/preload')
+    if (!preloadApi) throw new Error('Preload bridge was not exposed')
+    await preloadApi.fetchSubscriptionUsage('codex')
+    expect(rendererInvoke).toHaveBeenCalledWith(
+      'server:fetch-subscription-usage',
+      'codex',
+    )
+    await preloadApi.fetchSubscriptionUsage('xai')
+    expect(rendererInvoke).toHaveBeenLastCalledWith(
+      'server:fetch-subscription-usage',
+      'xai',
+    )
+    await preloadApi.fetchSubscriptionUsage('opencode-go')
+    expect(rendererInvoke).toHaveBeenLastCalledWith(
+      'server:fetch-subscription-usage',
+      'opencode-go',
+    )
+  })
+})
+
+describe('desktop media IPC', () => {
+  const imageInput = {
+    mode: 'generate',
+    provider: 'default',
+    model: 'gpt-image-2',
+    prompt: 'A boat',
+    size: 'auto',
+    quality: 'auto',
+    n: 1,
+    images: [],
+  }
+  test('exposes image, video, cancel and save calls through the preload', async () => {
+    await import('../electron/preload')
+    if (!preloadApi) throw new Error('Preload bridge was not exposed')
+    await preloadApi.createImages('image-call', {
+      ...imageInput,
+      mode: 'generate',
+      provider: 'default',
+      size: 'auto',
+      quality: 'auto',
+    })
+    await preloadApi.createVideo('video-call', {
+      prompt: 'A boat',
+      duration: 8,
+      aspectRatio: '16:9',
+      resolution: '720p',
+      generateAudio: true,
+    })
+    await preloadApi.getVideo('poll-call', 'video-job')
+    await preloadApi.cancelMediaRequest('image-call')
+    await preloadApi.saveMedia({
+      kind: 'image',
+      url: 'data:image/png;base64,iVBORw==',
+    })
+    expect(rendererInvoke.mock.calls.map((call) => call[0])).toEqual([
+      'media:create-images',
+      'media:create-video',
+      'media:get-video',
+      'media:cancel',
+      'media:save',
+    ])
+  })
+  test('runs image and video requests through the main-process client', async () => {
+    const fetchMock = spyOn(globalThis, 'fetch')
+    fetchMock.mockResolvedValueOnce(
+      Response.json({ data: [{ b64_json: 'iVBORw==' }] }),
+    )
+    expect(
+      await invoke('media:create-images', 'image-call', imageInput),
+    ).toEqual([{ url: 'data:image/png;base64,iVBORw==' }])
+    fetchMock.mockResolvedValueOnce(Response.json({ request_id: 'video-job' }))
+    expect(
+      await invoke('media:create-video', 'video-call', {
+        prompt: 'A boat',
+        duration: 8,
+        aspectRatio: '16:9',
+        resolution: '720p',
+        generateAudio: true,
+      }),
+    ).toMatchObject({ requestId: 'video-job', status: 'pending' })
+    fetchMock.mockResolvedValueOnce(Response.json({ request_id: 'compressed' }))
+    await invoke('media:create-video', 'large-video', {
+      prompt: 'A boat',
+      duration: 8,
+      aspectRatio: '16:9',
+      resolution: '720p',
+      generateAudio: true,
+      image: {
+        name: 'frame.png',
+        type: 'image/png',
+        bytes: new Uint8Array(VIDEO_IMAGE_MAX_BYTES + 1),
+      },
+    })
+    expect(
+      JSON.parse(fetchMock.mock.calls.at(-1)?.[1]?.body as string),
+    ).toHaveProperty('image.url', 'data:image/jpeg;base64,/9j/2Q==')
+    fetchMock.mockResolvedValueOnce(
+      Response.json({
+        status: 'done',
+        video: { url: 'https://vidgen.x.ai/a.mp4' },
+      }),
+    )
+    expect(
+      await invoke('media:get-video', 'poll-call', 'video-job'),
+    ).toMatchObject({ status: 'done' })
+    await invoke('media:cancel', 'already-finished')
+    running = false
+    await expect(
+      invoke('media:create-images', 'stopped-call', imageInput),
+    ).rejects.toThrow('Start the server')
+  })
+  test('honors cancelled save dialogs and saves base64 images without a network fetch', async () => {
+    const input = { kind: 'image', url: 'data:image/png;base64,iVBORw==' }
+    expect(await invoke('media:save', input)).toBe(false)
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'media-ipc-'))
+    try {
+      saveDialogResult = {
+        canceled: false,
+        filePath: path.join(directory, 'image.png'),
+      }
+      expect(await invoke('media:save', input)).toBe(true)
+      expect(Array.from(fs.readFileSync(saveDialogResult.filePath!))).toEqual([
+        137, 80, 78, 71,
+      ])
+      expect(showSaveDialog).toHaveBeenCalledTimes(2)
+      await expect(
+        invoke('media:save', { kind: 'image', url: 'file:///etc/passwd' }),
+      ).rejects.toThrow()
+      expect(showSaveDialog).toHaveBeenCalledTimes(2)
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true })
+    }
+  })
+})
 
 describe('desktop Codex login controls', () => {
   test('exposes cancellation and URL subscription through the preload bridge', async () => {

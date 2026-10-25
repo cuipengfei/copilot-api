@@ -10,6 +10,7 @@ import {
 import consola from "consola"
 import { Hono } from "hono"
 
+import { requestEventsMiddleware } from "~/lib/request-events"
 import { state } from "../src/lib/state"
 import {
   closeUsageStore,
@@ -281,7 +282,7 @@ describe("chat completions handler", () => {
     expect(events.items[0]?.total_nano_aiu).toBe(1_612_500)
   })
 
-  test("merges copilot_usage cost breakdown across stream chunks", async () => {
+  test("preserves split Copilot charges while recording stream timing", async () => {
     const usageChunk = {
       id: "chatcmpl-stream-test",
       object: "chat.completion.chunk",
@@ -330,7 +331,7 @@ describe("chat completions handler", () => {
             start(controller) {
               controller.enqueue(
                 new TextEncoder().encode(
-                  `data: ${JSON.stringify(usageChunk)}\n\ndata: ${JSON.stringify(totalChunk)}\n\n`,
+                  `data: ${JSON.stringify({ ...usageChunk, choices: [{ index: 0, delta: { content: "hello" }, finish_reason: null }], copilot_usage: undefined })}\n\ndata: ${JSON.stringify(usageChunk)}\n\ndata: ${JSON.stringify(totalChunk)}\n\n`,
                 ),
               )
               controller.enqueue(new TextEncoder().encode("data: [DONE]\n\n"))
@@ -344,7 +345,10 @@ describe("chat completions handler", () => {
     ;(globalThis as unknown as { fetch: typeof fetch }).fetch =
       streamingFetchMock as unknown as typeof fetch
 
-    const app = createApp()
+    const app = new Hono()
+    app.use(traceIdMiddleware)
+    app.use(requestEventsMiddleware(undefined, 5000))
+    app.route("/v1/chat/completions", completionRoutes)
     const response = await app.request("/v1/chat/completions", {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -356,7 +360,7 @@ describe("chat completions handler", () => {
     })
 
     expect(response.status).toBe(200)
-    await response.text()
+    expect(await response.text()).toContain("hello")
     const events = await fetchUsageEvents()
     expect(events.items).toHaveLength(1)
     expect(events.items[0]?.nano_cost_input).toBe(300_000)
@@ -364,6 +368,12 @@ describe("chat completions handler", () => {
     expect(events.items[0]?.nano_cost_cache_write).toBe(62_500)
     expect(events.items[0]?.nano_cost_output).toBe(1_000_000)
     expect(events.items[0]?.total_nano_aiu).toBe(1_612_500)
+    expect(events.items[0]?.request_id).toBeString()
+    expect(events.items[0]?.first_token_ms).toBeGreaterThanOrEqual(0)
+    expect(events.items[0]?.duration_ms).toBeGreaterThanOrEqual(
+      events.items[0]?.first_token_ms ?? 0,
+    )
+    expect(events.items[0]?.request_outcome).toBe("completed")
   })
 
   test("forwards upstream rate-limit headers on stream success", async () => {

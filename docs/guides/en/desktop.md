@@ -2,9 +2,19 @@
 
 [Home](../../../README.md) · [Documentation](README.md) · [简体中文](../zh-CN/desktop.md)
 
+## Image and video creation
+
+Start the local service and open **Create** to generate images from prompts, edit uploaded images, or generate videos. Images support the default gateway route, Codex, or xAI, with editable model, size, quality, and output count (1–4). The default route uses `imageGenerationModel`, `imageEditModel`, and model mappings; explicit Codex or xAI selections use the corresponding enabled provider directly. Image edits accept up to 5 PNG, JPEG, or WebP files, at most 20 MiB each and 40 MiB total.
+
+Video creation uses `xai/grok-imagine-video-1.5` and requires an enabled xAI provider. Use a prompt, one first-frame image, or both; choose 1–15 seconds, 480p/720p/1080p, and audio. The page checks progress every 5 seconds and offers pause, resume, and stop tracking. Switching tabs preserves drafts, results, and tasks; closing or reloading the app clears this temporary state. **Stop waiting** and **Stop tracking** only stop local waiting or polling; they do not cancel an upstream generation task.
+
+Preview results in the page and save them through the system file dialog. Video URLs are temporary, so save finished videos promptly.
+
 ## Electron Desktop App
 
-If you prefer a GUI, this repository also includes an Electron desktop app in `desktop/`. It supports GitHub Copilot sign-in, OpenAI Codex OAuth with manual switching among up to 3 Codex accounts and removal of accounts that are not in use, and API-key configuration for Kimi, DeepSeek, DashScope, OpenRouter, or a custom provider. Provider configuration, server API keys, and account changes automatically refresh the running service; new requests use the updated configuration. After authorization or provider configuration, it can start and stop the local proxy with one click and shows the local endpoint, auth header, available models, usage, and logs in the app.
+Open **Subscriptions** to view GitHub Copilot, Codex, xAI, and OpenCode Go allowances in one place. Provider cards include bundled models.dev logos, plan names, remaining allowances, usage windows, reset times, and available balances. Refresh providers individually or use **Refresh all**. Copilot includes Premium, Chat, and Completions; Codex includes personal/model windows and Business workspace credits/member limits; xAI includes Grok Build weekly/monthly allowances, legacy monthly budgets, pay-as-you-go usage, and prepaid balances. OpenCode Go includes rolling 5-hour, weekly, and monthly usage percentages and reset times, using the configured API key. Data comes from the CLI server and loads on the first visit; switching away and back keeps the existing results until you refresh them. The web viewer has the same Subscriptions tab; Token Usage is reserved for request history and performance.
+
+If you prefer a GUI, this repository also includes an Electron desktop app in `desktop/`. It supports GitHub Copilot sign-in, OpenAI Codex OAuth with manual switching among up to 3 Codex accounts and removal of accounts that are not in use, and API-key configuration for Kimi, DeepSeek, DashScope, OpenRouter, or a custom provider. At the top of the Dashboard, a usage snapshot summarizes the selected period with requests, total tokens, cache hit rate, estimated cost, and the busiest model. Provider configuration, server API keys, and account changes automatically refresh the running service; new requests use the updated configuration. After authorization or provider configuration, it can start and stop the local proxy with one click and shows the local endpoint, auth header, available models, usage, and logs in the app.
 
 Server runtime, listening host, proxy, verbose logging, and token logging are server startup options. Saving changes automatically restarts a running service and may interrupt active requests. OAuth App, API Home, SQLite DB Path, and Enterprise URL still require restarting the desktop app. Saving while the service is stopped does not start it.
 

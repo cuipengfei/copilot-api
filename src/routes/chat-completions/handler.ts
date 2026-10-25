@@ -4,6 +4,7 @@ import type { Context } from "hono"
 import { streamSSE, type SSEMessage } from "hono/streaming"
 
 import { resolveMappedModel } from "~/lib/config"
+import { recordChatCompletionFirstToken } from "~/lib/first-token"
 import {
   colorizeModel,
   createHandlerLogger,
@@ -12,6 +13,7 @@ import {
 } from "~/lib/logger"
 import { findEndpointModel } from "~/lib/models"
 import { writeSSEIfConnected } from "~/lib/sse"
+import { setPluginRequestModel } from "~/lib/request-events"
 import { resolveConfiguredProviderModelAlias } from "~/lib/provider-resolver"
 import {
   copilotUsageToTokens,
@@ -39,6 +41,7 @@ const logger = createHandlerLogger("chat-completions-handler")
 
 export async function handleCompletion(c: Context) {
   let payload = await c.req.json<ChatCompletionsPayload>()
+  setPluginRequestModel(payload.model)
   const requestedModel = payload.model
   payload.model = resolveMappedModel(payload.model)
   if (payload.model !== requestedModel) {
@@ -125,6 +128,7 @@ export async function handleCompletion(c: Context) {
     for await (const chunk of response) {
       debugJson(logger, "Streaming chunk:", chunk)
       const parsedChunk = parseChatCompletionChunk(chunk)
+      recordChatCompletionFirstToken(parsedChunk)
       if (parsedChunk?.usage) {
         usage = normalizeOpenAIUsage(parsedChunk.usage)
       }

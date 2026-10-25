@@ -82,7 +82,9 @@ export function getLocalProviderModelRecords(
   config?: CatalogProviderConfig | null,
 ): Array<Record<string, unknown>> | undefined {
   if (provider === "opencode-go") return getOpencodeGoModelRecords()
-  if (!usesModelsDevModelCatalog(provider)) return undefined
+  if (!config?.modelsDevProviderId && !usesModelsDevModelCatalog(provider)) {
+    return undefined
+  }
   return getModelsDevProviderModelRecords(
     resolveProviderModelsDevId(provider, config),
   )

@@ -1,6 +1,7 @@
 import consola from "consola"
 import path from "node:path"
 
+import type { RequestTiming } from "~/lib/request-context"
 import { PATHS } from "~/lib/paths"
 import { registerProcessCleanup } from "~/lib/process-cleanup"
 import {
@@ -64,7 +65,14 @@ export interface TokenUsageEventCost extends TokenUsageCost {
   source: string
 }
 
-export interface PersistedTokenUsageEvent {
+export interface TokenUsageTiming {
+  request_id: string | null
+  first_token_ms: number | null
+  duration_ms: number | null
+  request_outcome: RequestTiming["outcome"]
+}
+
+export interface PersistedTokenUsageEvent extends TokenUsageTiming {
   cache_creation_input_tokens: number
   cache_read_input_tokens: number
   cost_currency: string | null
@@ -86,6 +94,7 @@ export interface PersistedTokenUsageEvent {
   total_nano_aiu: number | null
   total_tokens: number
   trace_id: string
+  user_agent: string
   user_id: string
 }
 
@@ -105,6 +114,8 @@ export interface TokenUsageTotals {
 }
 
 export interface TokenUsageModelSummary extends TokenUsageTotals {
+  average_first_token_ms: number | null
+  output_tokens_per_second: number | null
   model: string
 }
 
@@ -112,7 +123,8 @@ export interface TokenUsageSessionSummary extends TokenUsageTotals {
   session_id: string
 }
 
-export interface TokenUsageEventRecord {
+export interface TokenUsageEventRecord extends TokenUsageTiming {
+  output_tokens_per_second: number | null
   cache_creation_input_tokens: number
   cache_read_input_tokens: number
   cost: TokenUsageEventCost | null
@@ -133,6 +145,7 @@ export interface TokenUsageEventRecord {
   total_nano_aiu: number | null
   total_tokens: number
   trace_id: string
+  user_agent: string
   user_id: string
 }
 
@@ -223,6 +236,7 @@ function initializeTokenUsageDb(db: SqliteDatabase): void {
       trace_id TEXT NOT NULL,
       session_id TEXT NOT NULL DEFAULT '',
       user_id TEXT NOT NULL DEFAULT '',
+      user_agent TEXT NOT NULL DEFAULT '',
       source TEXT NOT NULL,
       endpoint TEXT NOT NULL,
       provider_name TEXT,
@@ -243,6 +257,7 @@ function initializeTokenUsageDb(db: SqliteDatabase): void {
     )
   `)
   ensureColumn(db, "user_id", "TEXT NOT NULL DEFAULT ''")
+  ensureColumn(db, "user_agent", "TEXT NOT NULL DEFAULT ''")
   ensureColumn(db, "total_tokens", "INTEGER NOT NULL DEFAULT 0")
   ensureColumn(db, "total_nano_aiu", "INTEGER")
   ensureColumn(db, "nano_cost_input", "INTEGER")
@@ -252,6 +267,14 @@ function initializeTokenUsageDb(db: SqliteDatabase): void {
   ensureColumn(db, "cost_currency", "TEXT")
   ensureColumn(db, "total_cost_nanos", "INTEGER")
   ensureColumn(db, "cost_source", "TEXT")
+  ensureColumn(db, "request_id", "TEXT")
+  ensureColumn(db, "first_token_ms", "REAL")
+  ensureColumn(db, "duration_ms", "REAL")
+  ensureColumn(db, "request_outcome", "TEXT")
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_token_usage_events_request_id
+    ON token_usage_events(request_id)
+  `)
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_token_usage_events_created_at_ms
     ON token_usage_events(created_at_ms)
@@ -355,8 +378,13 @@ async function writeTokenUsageEvent(
         total_tokens,
         cost_currency,
         total_cost_nanos,
-        cost_source
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        cost_source,
+        request_id,
+        first_token_ms,
+        duration_ms,
+        request_outcome,
+        user_agent
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `,
   ).run(
     event.created_at_ms,
@@ -381,6 +409,11 @@ async function writeTokenUsageEvent(
     event.cost_currency,
     event.total_cost_nanos,
     event.cost_source,
+    event.request_id,
+    event.first_token_ms,
+    event.duration_ms,
+    event.request_outcome,
+    event.user_agent,
   )
 }
 
@@ -393,6 +426,27 @@ export function enqueueTokenUsageWrite(event: PersistedTokenUsageEvent): void {
     .then(() => writeTokenUsageEvent(event))
     .catch((error: unknown) => {
       consola.warn("Failed to record token usage", error)
+    })
+}
+
+// Share the insert queue: early usage is preserved, then completed with timing.
+// Late usage carries the final snapshot directly, without a pending-request map.
+export function enqueueTokenUsageTiming(timing: RequestTiming): void {
+  if (!isTokenUsageStorageEnabled()) return
+  const { id, firstTokenMs, durationMs, outcome } = timing
+  writeQueue = writeQueue
+    .then(async () => {
+      const db = await getDb()
+      db.prepare(
+        `
+      UPDATE token_usage_events
+      SET first_token_ms = ?, duration_ms = ?, request_outcome = ?
+      WHERE request_id = ?
+    `,
+      ).run(firstTokenMs, durationMs, outcome, id)
+    })
+    .catch((error: unknown) => {
+      consola.warn("Failed to record token usage timing", error)
     })
 }
 
@@ -747,6 +801,14 @@ function modelSummaryFromRow(
 ): TokenUsageModelSummary {
   return {
     ...totalsFromRow(row, costs),
+    average_first_token_ms: nullableNumberFromRow(
+      row,
+      "average_first_token_ms",
+    ),
+    output_tokens_per_second: nullableNumberFromRow(
+      row,
+      "output_tokens_per_second",
+    ),
     model: typeof row.model === "string" ? row.model : "unknown",
   }
 }
@@ -764,10 +826,37 @@ function nullableStringFromRow(
   return typeof value === "string" ? value : null
 }
 
+function outputTokensPerSecond(row: Record<string, unknown>): number | null {
+  const first = nullableNumberFromRow(row, "first_token_ms")
+  const duration = nullableNumberFromRow(row, "duration_ms")
+  const output = numberFromRow(row, "output_tokens")
+  // A row cannot attribute shared request time to just one of multiple calls.
+  if (
+    row.request_outcome !== "completed"
+    || row.usage_event_count !== 1
+    || first === null
+    || first < 0
+    || duration === null
+    || duration <= first
+    || output <= 0
+  )
+    return null
+  const rate = (output * 1000) / (duration - first)
+  return Number.isFinite(rate) ? rate : null
+}
+
 function usageEventFromRow(
   row: Record<string, unknown>,
 ): TokenUsageEventRecord {
   return {
+    request_id: nullableStringFromRow(row, "request_id"),
+    first_token_ms: nullableNumberFromRow(row, "first_token_ms"),
+    duration_ms: nullableNumberFromRow(row, "duration_ms"),
+    request_outcome: nullableStringFromRow(
+      row,
+      "request_outcome",
+    ) as RequestTiming["outcome"],
+    output_tokens_per_second: outputTokensPerSecond(row),
     cache_creation_input_tokens: numberFromRow(
       row,
       "cache_creation_input_tokens",
@@ -792,6 +881,7 @@ function usageEventFromRow(
     total_tokens: numberFromRow(row, "total_tokens"),
     trace_id: stringFromRow(row, "trace_id"),
     user_id: stringFromRow(row, "user_id"),
+    user_agent: stringFromRow(row, "user_agent"),
   }
 }
 
@@ -984,14 +1074,76 @@ function getSessionSummaries(
   })
 }
 
+// Expand candidate IDs through the request index before grouping. A request
+// contributes once even when usage arrives in several rows. Mixed-model calls
+// and requests crossing a bucket boundary have no unambiguous per-model timing.
+function getModelTimingRows(
+  db: SqliteDatabase,
+  intervals: Array<{ date: string; endMs: number; startMs: number }>,
+): Array<Record<string, unknown>> {
+  if (intervals.length === 0) return []
+  return db
+    .prepare(
+      `
+    WITH selected_requests AS (
+      SELECT DISTINCT request_id FROM token_usage_events
+      WHERE created_at_ms >= ? AND created_at_ms < ? AND request_id IS NOT NULL
+    ), requests AS (
+      SELECT e.request_id, MIN(e.model) AS model,
+        MIN(e.created_at_ms) AS first_usage_at_ms,
+        MAX(e.created_at_ms) AS last_usage_at_ms,
+        SUM(e.output_tokens) AS output_tokens,
+        MAX(e.first_token_ms) AS first_token_ms,
+        MAX(e.duration_ms) AS duration_ms
+      FROM selected_requests r JOIN token_usage_events e USING (request_id)
+      GROUP BY e.request_id
+      HAVING COUNT(DISTINCT e.model) = 1
+        AND COUNT(e.first_token_ms) = COUNT(*)
+        AND COUNT(e.duration_ms) = COUNT(*)
+        AND COUNT(e.request_outcome) = COUNT(*)
+        AND MIN(e.request_outcome) = 'completed'
+        AND MAX(e.request_outcome) = 'completed'
+        AND MIN(e.first_token_ms) >= 0
+        AND MIN(e.duration_ms) >= MAX(e.first_token_ms)
+    ), buckets(usage_date, start_ms, end_ms) AS (VALUES ${intervals.map(() => "(?, ?, ?)").join(", ")})
+    SELECT buckets.usage_date, model,
+      AVG(first_token_ms) AS average_first_token_ms,
+      1000.0 * SUM(CASE WHEN duration_ms > first_token_ms AND output_tokens > 0 THEN output_tokens END)
+        / SUM(CASE WHEN duration_ms > first_token_ms AND output_tokens > 0 THEN duration_ms - first_token_ms END)
+        AS output_tokens_per_second
+    FROM requests JOIN buckets
+      ON first_usage_at_ms >= start_ms AND last_usage_at_ms < end_ms
+    GROUP BY buckets.usage_date, model
+  `,
+    )
+    .all(
+      intervals[0].startMs,
+      intervals[intervals.length - 1].endMs,
+      ...intervals.flatMap(({ date, startMs, endMs }) => [
+        date,
+        startMs,
+        endMs,
+      ]),
+    ) as Array<Record<string, unknown>>
+}
+
 function getModelSummaries(
   db: SqliteDatabase,
   range: { endMs: number; startMs: number },
 ): Array<TokenUsageModelSummary> {
   const costMap = getModelCostMap(db, range)
+  const timings = new Map(
+    getModelTimingRows(db, [{ date: "", ...range }]).map((row) => [
+      stringFromRow(row, "model"),
+      row,
+    ]),
+  )
   return getModelRows(db, range).map((row) => {
     const model = stringFromRow(row, "model") || "unknown"
-    return modelSummaryFromRow(row, costMap.get(model) ?? [])
+    return modelSummaryFromRow(
+      { ...row, ...timings.get(model) },
+      costMap.get(model) ?? [],
+    )
   })
 }
 
@@ -1074,6 +1226,12 @@ function getDailyModelSummaries(
     ])
   }
 
+  const timings = new Map(
+    getModelTimingRows(db, intervals).map((row) => [
+      `${stringFromRow(row, "usage_date")}\u0000${stringFromRow(row, "model")}`,
+      row,
+    ]),
+  )
   const summariesByDate = new Map<string, Array<TokenUsageModelSummary>>()
   for (const row of rows) {
     const date = stringFromRow(row, "usage_date")
@@ -1085,7 +1243,7 @@ function getDailyModelSummaries(
     const summaries = summariesByDate.get(date) ?? []
     summaries.push(
       modelSummaryFromRow(
-        row,
+        { ...row, ...timings.get(`${date}\u0000${model}`) },
         costsByDateAndModel.get(`${date}\u0000${model}`) ?? [],
       ),
     )
@@ -1209,7 +1367,14 @@ export async function getTokenUsageEventsPage(input: {
       total_tokens,
       cost_currency,
       total_cost_nanos,
-      cost_source
+      cost_source,
+      request_id,
+      first_token_ms,
+      duration_ms,
+      request_outcome,
+      user_agent,
+      (SELECT COUNT(*) FROM token_usage_events sibling
+        WHERE sibling.request_id = token_usage_events.request_id) AS usage_event_count
     FROM token_usage_events
     WHERE created_at_ms >= ? AND created_at_ms < ?
     ORDER BY created_at_ms DESC, id DESC

@@ -4,6 +4,14 @@ import { forwardError } from "~/lib/error"
 import { createHandlerLogger } from "~/lib/logger"
 import { resolveProviderConfig } from "~/lib/provider-resolver"
 import { handleCodexImages } from "~/routes/images/route"
+import {
+  forwardStagedCodexImageEdits,
+  imageEditContentTypeErrorResponse,
+  imageEditsRouteDependencies,
+  isMultipartImagesRequest,
+  multipartImagesErrorResponse,
+  snapshotRequestHeaders,
+} from "~/routes/images/shared"
 import type { CodexImagesOperation } from "~/services/codex/images"
 import { forwardProviderImagesWithLogging } from "~/routes/images/forward-provider-images"
 
@@ -32,6 +40,25 @@ async function handleProviderImages(
     }
 
     if (providerConfig.name === "codex") {
+      if (operation === "edits") {
+        const contentTypeError = imageEditContentTypeErrorResponse(c)
+        if (contentTypeError) return contentTypeError
+
+        const requestHeaders = snapshotRequestHeaders(c.req.raw)
+        if (isMultipartImagesRequest(requestHeaders)) {
+          const staged =
+            await imageEditsRouteDependencies.stageMultipartBodyToDisk(
+              c.req.raw.body,
+              requestHeaders.get("content-type") ?? "",
+            )
+          return await forwardStagedCodexImageEdits(
+            c,
+            staged,
+            requestHeaders,
+            providerConfig,
+          )
+        }
+      }
       return await handleCodexImages(c, operation, providerConfig)
     }
 
@@ -42,6 +69,9 @@ async function handleProviderImages(
       { logger, provider },
     )
   } catch (error) {
+    const multipartError = multipartImagesErrorResponse(c, error)
+    if (multipartError) return multipartError
+
     logger.error(`provider.images.${operation}.error`, { provider, error })
     return await forwardError(c, error)
   }

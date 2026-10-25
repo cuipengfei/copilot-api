@@ -29,6 +29,7 @@ import { copilotBaseUrl } from "~/lib/api-config"
 import { logCopilotRateLimits } from "~/lib/copilot-rate-limit"
 import { HTTPError } from "~/lib/error"
 import { attachPremiumInfo, getPremiumInfoFromHeaders } from "~/lib/logger"
+import { setPluginRequestActualModel } from "~/lib/request-context"
 import { attachResponseHeaders } from "~/lib/response-headers"
 import { state } from "~/lib/state"
 
@@ -86,6 +87,7 @@ export const createMessages = async (
     model: payload.model,
     stream: payload.stream,
   })
+  setPluginRequestActualModel(payload.model)
 
   let result: Response
   try {

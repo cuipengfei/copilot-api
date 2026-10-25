@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useLanguage } from '../contexts/LanguageContext'
+import { primaryButtonClass } from '../lib/button-styles'
 import type {
   ProviderManagementConfig,
   ProviderModelOptions,
@@ -21,6 +22,14 @@ interface Props {
   serverRunning?: boolean
   onOpenAuthConfig?: () => void
   onSavingChange?: (saving: boolean) => void
+}
+
+function getDefaultProviderName(
+  providers: ProviderManagementConfig['providers'],
+): string {
+  return (
+    (providers.find((provider) => provider.enabled) ?? providers[0])?.name ?? ''
+  )
 }
 
 export default function ProviderManagementPanel({
@@ -48,7 +57,7 @@ export default function ProviderManagementPanel({
         if (!active) return
         setConfig(result)
         setDrafts(createProviderDrafts(result))
-        setActiveName(result.providers[0]?.name ?? '')
+        setActiveName(getDefaultProviderName(result.providers))
       })
       .catch((reason: unknown) => {
         if (active) setError(String(reason))
@@ -116,11 +125,14 @@ export default function ProviderManagementPanel({
       )
       setConfig(result)
       setDrafts(createProviderDrafts(result))
-      setActiveName((name) =>
-        result.providers.some((provider) => provider.name === name) ?
-          name
-        : (result.providers[0]?.name ?? ''),
-      )
+      setActiveName((name) => {
+        const previous = result.providers.find(
+          (provider) => provider.name === name,
+        )
+        return previous?.enabled ?
+            previous.name
+          : getDefaultProviderName(result.providers)
+      })
       setDirty(false)
       setSaved(true)
     } catch (reason) {
@@ -180,7 +192,7 @@ export default function ProviderManagementPanel({
             onClick={() => {
               void save()
             }}
-            className="inline-flex h-9 items-center justify-center gap-2 rounded-lg bg-accent-strong px-4 text-[13px] font-semibold text-white shadow-sm transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40 dark:bg-blue-500"
+            className={`inline-flex h-9 items-center justify-center gap-2 px-4 ${primaryButtonClass}`}
           >
             <svg
               width="14"

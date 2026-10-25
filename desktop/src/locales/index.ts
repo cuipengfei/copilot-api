@@ -3,6 +3,60 @@ import en from './en'
 import zh from './zh'
 
 export interface Locale {
+  studio: {
+    title: string
+    description: string
+    generate: string
+    edit: string
+    video: string
+    provider: string
+    gateway: string
+    model: string
+    prompt: string
+    imagePrompt: string
+    editPrompt: string
+    videoPrompt: string
+    size: string
+    quality: string
+    count: string
+    auto: string
+    low: string
+    medium: string
+    high: string
+    upload: string
+    uploadHint: string
+    uploadError: string
+    remove: string
+    firstFrame: string
+    firstFrameHint: string
+    duration: string
+    ratio: string
+    resolution: string
+    audio: string
+    create: string
+    creating: string
+    cancel: string
+    cancelled: string
+    results: string
+    empty: string
+    save: string
+    saving: string
+    saved: string
+    viewOriginal: string
+    closePreview: string
+    useAsInput: string
+    failed: string
+    videoFailed: string
+    pending: string
+    paused: string
+    pause: string
+    discard: string
+    resume: string
+    requestId: string
+    stopped: string
+    gatewayHint: string
+    videoHint: string
+  }
   updates: {
     title: string
     description: string
@@ -139,10 +193,47 @@ export interface Locale {
     overviewPort: string
     overviewModels: string
     overviewLastRefresh: string
+    usageSnapshot: string
+    usageSnapshotTopModel: string
+    usageSnapshotModelRequests: string
     serviceAddress: string
     authHeader: string
     copy: string
     quotaUsage: string
+    subscriptionQuota: string
+    tabSubscriptions: string
+    quotaRefreshAll: string
+    quotaRemaining: string
+    quotaRequests: string
+    quotaAvailableBalance: string
+    quotaLoadFailedShort: string
+    quotaLimitReachedShort: string
+    quotaConnected: string
+    quotaNotConnected: string
+    quotaRefreshProvider: string
+    quotaLiveUsage: string
+    quotaAccountUsage: string
+    quotaPageDescription: string
+    quotaProviderCount: string
+    quotaEmptyTitle: string
+    quotaEmptyDescription: string
+    quotaMonthlyCredits: string
+    quotaOnDemand: string
+    quotaWeekly: string
+    quotaMonthly: string
+    quotaDays: string
+    quotaHours: string
+    quotaMinutes: string
+    quotaAllowance: string
+    quotaCredits: string
+    quotaPrepaid: string
+    quotaCreditsAvailable: string
+    quotaUnlimited: string
+    quotaLimitReached: string
+    quotaWorkspaceCreditsDepleted: string
+    quotaWorkspaceLimitReached: string
+    quotaLoadFailed: string
+    quotaAccountUnavailable: string
     quotaResetsOn: string
     quotaUnavailable: string
     quotaUsedPercent: string
@@ -161,6 +252,10 @@ export interface Locale {
     tokenUsageCacheHitRate: string
     tokenUsageCost: string
     tokenUsageEndpoint: string
+    tokenUsageAverageFirstToken: string
+    tokenUsageOutputSpeed: string
+    tokenUsageDuration: string
+    tokenUsageTimingHint: string
     tokenUsageEvents: string
     tokenUsageInput: string
     tokenUsageModel: string
@@ -253,6 +348,8 @@ export interface Locale {
     autoStartServerDesc: string
     minimizeToTray: string
     minimizeToTrayDesc: string
+    showCreate: string
+    showCreateDesc: string
     sectionSecurity: string
     serverKeysNote: string
     serverKeysSaveFailed: string

@@ -31,7 +31,10 @@ import {
   getResponsesStreamTerminalDisposition,
 } from "~/services/responses-websocket-helpers"
 import { createResponsesHttpEventStream } from "~/services/responses-http"
-import { requestContext } from "~/lib/request-context"
+import {
+  requestContext,
+  setPluginRequestActualModel,
+} from "~/lib/request-context"
 import consola from "consola"
 
 import {
@@ -308,6 +311,7 @@ export async function forwardCodexResponses(
 ): Promise<CreateResponsesReturn> {
   consola.log(`<-- model: ${payload.model}`)
   options.clientSignal?.throwIfAborted()
+  setPluginRequestActualModel(payload.model)
   const transport = resolveCodexResponsesTransport(options.transport)
   if (payload.stream && transport === "websocket") {
     return forwardCodexResponsesOverWebSocket(

@@ -91,6 +91,7 @@ interface TokenUsageEventMap {
 }
 
 const tokenUsageEventBus = new EventBus<TokenUsageEventMap>()
+const USER_AGENT_MAX_LENGTH = 64
 
 function resolveTraceId(traceId: string | null | undefined): string {
   return (
@@ -187,8 +188,13 @@ function toPersistedEvent(
   }
 
   const now = new Date()
+  const timing = requestContext.getStore()?.requestTiming
   const cost = resolveTokenUsageCost({ ...input, at: now })
   return {
+    request_id: timing?.id ?? null,
+    first_token_ms: timing?.firstTokenMs ?? null,
+    duration_ms: timing?.durationMs ?? null,
+    request_outcome: timing?.outcome ?? null,
     cache_creation_input_tokens: normalizeToken(
       input.cache_creation_input_tokens,
     ),
@@ -212,6 +218,10 @@ function toPersistedEvent(
     total_cost_nanos: cost?.total_cost_nanos ?? null,
     total_tokens: resolveTotalTokens(input),
     trace_id: resolveTraceId(input.traceId),
+    user_agent: (requestContext.getStore()?.userAgent ?? "").slice(
+      0,
+      USER_AGENT_MAX_LENGTH,
+    ),
     user_id: resolveUserId(input),
   }
 }
@@ -224,6 +234,11 @@ export function recordTokenUsageEvent(input: TokenUsageEventInput): void {
     return
   }
 
+  const observer = requestContext.getStore()?.pluginRequest
+  const timing = requestContext.getStore()?.requestTiming
+  if (timing) timing.hasUsage = true
+  observer?.setSessionId(event.session_id)
+  observer?.recordUsage(event)
   tokenUsageEventBus.publish("token_usage.recorded", event)
 }
 
@@ -232,8 +247,12 @@ export function createTokenUsageRecorder(
 ): (usage: UsageTokens, copilotUsage?: CopilotUsageTokens | null) => void {
   const store = requestContext.getStore()
   const traceId = options.traceId ?? store?.traceId
-  const sessionId = options.sessionId ?? store?.sessionAffinity
+  const sessionId = resolveTokenUsageSessionId(
+    options.sessionId,
+    options.fallbackSessionId,
+  )
 
+  store?.pluginRequest?.setSessionId(sessionId)
   return (usage, copilotUsage) => {
     recordTokenUsageEvent({
       ...usage,

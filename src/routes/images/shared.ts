@@ -12,7 +12,14 @@ import {
 } from "~/lib/xai-image-model"
 import { forwardProviderImagesWithLogging } from "~/routes/images/forward-provider-images"
 import {
+  InvalidMultipartBodyError,
+  MultipartBodyTooLargeError,
+  stageMultipartBodyToDisk,
+  type StagedMultipartBody,
+} from "~/routes/images/temp-form-data"
+import {
   forwardCodexImages,
+  translateCodexImageEditForm,
   type CodexImagesOperation,
 } from "~/services/codex/images"
 import { createProviderProxyResponse } from "~/services/providers/provider-proxy"
@@ -27,12 +34,69 @@ export const imageRouteDependencies = {
   resolveProviderConfig,
 }
 
+export const imageEditsRouteDependencies = {
+  stageMultipartBodyToDisk,
+}
+
 export interface ParsedImagesRequest {
   /** Rebuilds the forwarding request with the resolved model in the body. */
   createRequest: (model: string) => Request
+  /**
+   * Rebuilds the Codex request with the resolved model. Multipart uploads are
+   * translated to JSON here, so building it may read the staged files.
+   */
+  createCodexRequest?: (model: string) => Promise<Request>
   model: string
   /** Unchanged request, forwarded as-is when no rebuild is needed. */
   originalRequest?: Request
+}
+
+function requestMediaType(headers: Headers): string | undefined {
+  return headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase()
+}
+
+export function isMultipartImagesRequest(headers: Headers): boolean {
+  return requestMediaType(headers) === "multipart/form-data"
+}
+
+export function imageEditContentTypeErrorResponse(c: Context): Response | null {
+  const mediaType = requestMediaType(c.req.raw.headers)
+  if (mediaType === "application/json" || mediaType === "multipart/form-data") {
+    return null
+  }
+
+  return c.json(
+    {
+      error: {
+        message:
+          "Image edits require application/json with images: [{ image_url }] or [{ file_id }], or a multipart/form-data upload",
+        type: "invalid_request_error",
+      },
+    },
+    415,
+  )
+}
+
+export function multipartImagesErrorResponse(
+  c: Context,
+  error: unknown,
+): Response | null {
+  if (
+    !(error instanceof InvalidMultipartBodyError)
+    && !(error instanceof MultipartBodyTooLargeError)
+  ) {
+    return null
+  }
+
+  return c.json(
+    {
+      error: {
+        message: error.message,
+        type: "invalid_request_error",
+      },
+    },
+    error instanceof MultipartBodyTooLargeError ? 413 : 400,
+  )
 }
 
 function getContentMetadata(headers: Headers) {
@@ -43,8 +107,7 @@ function getContentMetadata(headers: Headers) {
 }
 
 /**
- * Snapshots request headers before the body is consumed: Bun drops
- * auto-generated body headers (like the multipart boundary) afterwards.
+ * Snapshots generated request headers before consuming the body.
  */
 export function snapshotRequestHeaders(request: Request): Headers {
   return new Headers(request.headers)
@@ -69,6 +132,131 @@ export function createForwardRequest(
     signal: request.signal,
   }
   return new Request(request.url, init)
+}
+
+function createJsonImagesRequest(
+  request: Request,
+  requestHeaders: Headers,
+  payload: Record<string, unknown>,
+  model?: string,
+): Request {
+  const headers = new Headers(requestHeaders)
+  headers.set("content-type", "application/json")
+  headers.delete("content-length")
+
+  return createForwardRequest(
+    request,
+    headers,
+    new TextEncoder().encode(
+      JSON.stringify(model === undefined ? payload : { ...payload, model }),
+    ),
+  )
+}
+
+/**
+ * Rebuilds a staged multipart body for a provider, letting `FormData` generate
+ * a fresh boundary instead of reusing the consumed request's headers.
+ */
+export function createMultipartImagesRequest(
+  request: Request,
+  requestHeaders: Headers,
+  formData: FormData,
+  model: string,
+): Request {
+  formData.set("model", model)
+  const headers = new Headers(requestHeaders)
+  headers.delete("content-length")
+  headers.delete("content-type")
+  return createForwardRequest(request, headers, formData)
+}
+
+/**
+ * Converts a staged multipart edit into the JSON body Codex accepts.
+ */
+export async function createCodexImageEditRequest(
+  request: Request,
+  requestHeaders: Headers,
+  formData: FormData,
+  model?: string,
+): Promise<Request> {
+  return createJsonImagesRequest(
+    request,
+    requestHeaders,
+    await translateCodexImageEditForm(formData),
+    model,
+  )
+}
+
+/**
+ * Forwards staged multipart image edits to Codex as JSON. The upload is read
+ * into data URL references, so the staged files are removed before sending.
+ */
+export async function forwardStagedCodexImageEdits(
+  c: Context,
+  staged: StagedMultipartBody,
+  requestHeaders: Headers,
+  resolvedProviderConfig?: ResolvedProviderConfig,
+): Promise<Response> {
+  let request: Request
+  try {
+    request = await createCodexImageEditRequest(
+      c.req.raw,
+      requestHeaders,
+      staged.formData,
+    )
+  } finally {
+    await staged.cleanup()
+  }
+
+  return await handleCodexImages(c, "edits", resolvedProviderConfig, request)
+}
+
+/**
+ * Parses an image request body as JSON, retaining the original bytes for
+ * unchanged forwarding while allowing model mapping to rebuild the payload.
+ * Rebuilt bodies stay binary so Node does not synthesize a text/plain content type.
+ */
+export async function parseJsonImagesRequest(
+  request: Request,
+): Promise<ParsedImagesRequest | Request> {
+  const requestHeaders = snapshotRequestHeaders(request)
+  const body = new Uint8Array(await request.arrayBuffer())
+  const originalRequest = createForwardRequest(request, requestHeaders, body)
+
+  let payload: unknown
+  try {
+    const bodyText = new TextDecoder("utf-8", { fatal: true }).decode(body)
+    payload = JSON.parse(bodyText)
+  } catch {
+    return originalRequest
+  }
+
+  if (
+    payload === null
+    || typeof payload !== "object"
+    || Array.isArray(payload)
+  ) {
+    return originalRequest
+  }
+
+  // Shape checked above: this is a JSON object body.
+  const requestPayload = payload as Record<string, unknown>
+  if (typeof requestPayload.model !== "string") {
+    return originalRequest
+  }
+
+  const model = requestPayload.model
+  return {
+    createRequest: (mappedModel) =>
+      createJsonImagesRequest(
+        request,
+        requestHeaders,
+        requestPayload,
+        mappedModel,
+      ),
+    model,
+    originalRequest,
+  }
 }
 
 /**
@@ -141,20 +329,26 @@ export async function routeImagesRequest(
     consola.debug(`Resolved model mapping: ${requestedModel} -> ${mappedModel}`)
   }
 
+  const createCodexRequest = parsed.createCodexRequest ?? parsed.createRequest
+
   const providerModelAlias = parseProviderModelAlias(mappedModel)
   if (providerModelAlias) {
     const providerConfig = await imageRouteDependencies.resolveProviderConfig(
       providerModelAlias.provider,
     )
     if (providerConfig) {
-      const request = parsed.createRequest(providerModelAlias.model)
       if (providerConfig.name === "codex") {
-        return await handleCodexImages(c, operation, providerConfig, request)
+        return await handleCodexImages(
+          c,
+          operation,
+          providerConfig,
+          await createCodexRequest(providerModelAlias.model),
+        )
       }
 
       return await forwardProviderImagesWithLogging(
         providerConfig,
-        request,
+        parsed.createRequest(providerModelAlias.model),
         operation,
         { logger, provider: providerModelAlias.provider },
       )
@@ -169,7 +363,7 @@ export async function routeImagesRequest(
       c,
       operation,
       undefined,
-      parsed.originalRequest ?? parsed.createRequest(requestedModel),
+      parsed.originalRequest ?? (await createCodexRequest(requestedModel)),
     )
   }
 
@@ -186,6 +380,6 @@ export async function routeImagesRequest(
     c,
     operation,
     undefined,
-    parsed.createRequest(mappedModel),
+    await createCodexRequest(mappedModel),
   )
 }

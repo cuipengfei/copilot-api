@@ -125,6 +125,7 @@ beforeEach(async () => {
       getProviderManagementConfig: getProviderConfig,
       getProviderModelOptions: () => Promise.resolve({}),
       fetchUsage: fetchCopilotUsage,
+      fetchSubscriptionUsage: () => Promise.resolve(null),
       fetchModels: () => Promise.resolve({ data: [{ id: 'qwen-plus' }] }),
       fetchTokenUsage: fetchUsageSummary,
       fetchTokenUsageDaily: () =>
@@ -168,10 +169,16 @@ function createEventsPage(count: number): TokenUsageEventsPage {
   const items: TokenUsageEventRecord[] = Array.from(
     { length: count },
     (_, index) => ({
+      request_id: null,
+      first_token_ms: null,
+      duration_ms: null,
+      request_outcome: null,
+      output_tokens_per_second: null,
       id: count - index,
       created_at_ms: Date.UTC(2026, 9, 16, 3, 4, index),
       created_at_utc: '2026-10-16T03:04:00Z',
       trace_id: `trace-${index}`,
+      user_agent: '',
       session_id: 'session-1',
       user_id: 'user',
       source: 'provider',
@@ -230,7 +237,9 @@ function cardByTitle(title: string): HTMLElement {
   const heading = [...container.querySelectorAll('h3')].find(
     (node) => node.textContent === title,
   )
-  const card = heading?.parentElement?.parentElement
+  const card = heading?.closest<HTMLElement>(
+    '.bg-surface.border.border-line.rounded-xl',
+  )
   if (!card) throw new Error(`Missing card: ${title}`)
   return card
 }
@@ -259,8 +268,67 @@ async function clickButton(label: string) {
 }
 
 describe('dashboard overview', () => {
-  test('places providers at the top of the dashboard and keeps models in the sidebar', async () => {
+  test('loads subscriptions on first open and preserves them across tab switches', async () => {
+    getProviderConfig.mockResolvedValue({
+      configPath: 'config.json',
+      providers: [
+        { name: 'github-copilot', type: 'github-copilot', enabled: true },
+        { name: 'codex', type: 'openai-responses', enabled: true },
+        { name: 'xai', type: 'openai-responses', enabled: true },
+        { name: 'opencode-go', type: 'openai-compatible', enabled: true },
+      ],
+    })
+    const fetchSubscriptions = mock(
+      (provider: 'github-copilot' | 'codex' | 'xai' | 'opencode-go') =>
+        provider === 'xai' ?
+          Promise.reject(new Error('offline'))
+        : Promise.resolve({
+            provider,
+            windows: [],
+            planType: provider === 'codex' ? 'business' : 'individual',
+            limitReached: false,
+          }),
+    )
+    window.electronAPI.fetchSubscriptionUsage = fetchSubscriptions
     await render('provider')
+    expect(fetchSubscriptions).not.toHaveBeenCalled()
+    expect(fetchCopilotUsage).not.toHaveBeenCalled()
+    expect(container.querySelector('.quota-provider-card')).toBeNull()
+    await clickButton('Subscriptions')
+    expect(container.querySelectorAll('.quota-provider-card')).toHaveLength(4)
+    expect(container.querySelectorAll('.quota-provider-logo img')).toHaveLength(
+      4,
+    )
+    expect(container.textContent).toContain('GitHub Copilot')
+    expect(container.textContent).toContain('OpenCode Go')
+    expect(container.textContent).toContain('business')
+    expect(container.textContent).toContain('Could not load quota')
+    expect(fetchSubscriptions).toHaveBeenCalledTimes(4)
+    await clickButton('Refresh all')
+    expect(fetchSubscriptions).toHaveBeenCalledTimes(8)
+    await clickButton('Dashboard')
+    const hiddenSubscriptionsPage = container.querySelector(
+      '.subscriptions-page',
+    )
+    expect(hiddenSubscriptionsPage).not.toBeNull()
+    expect(hiddenSubscriptionsPage?.closest('.hidden')).not.toBeNull()
+    await clickButton('Subscriptions')
+    expect(fetchSubscriptions).toHaveBeenCalledTimes(8)
+    expect(
+      container.querySelector('.subscriptions-page')?.closest('.hidden'),
+    ).toBeNull()
+    expect(container.textContent).toContain('business')
+    await clickButton('Dashboard')
+    expect(cardByTitle('Available models').textContent).toContain('qwen-plus')
+  })
+
+  test('keeps providers and models in separate dashboard columns', async () => {
+    await render('provider')
+    expect(
+      [...container.querySelectorAll('[role="tab"]')].map(
+        (tab) => tab.textContent,
+      ),
+    ).not.toContain('Create')
 
     const providerCard = cardByTitle('Providers')
     expect(providerCard.textContent).toContain('2 / 3 enabled')
@@ -279,7 +347,7 @@ describe('dashboard overview', () => {
     expect(providerCard.textContent).toContain('Disabled')
 
     const modelsCard = cardByTitle('Available models')
-    expect(providerCard.parentElement?.firstElementChild).toBe(providerCard)
+    expect(providerCard.parentElement?.children[1]).toBe(providerCard)
     expect(modelsCard.parentElement?.firstElementChild).toBe(modelsCard)
     expect(providerCard.parentElement).not.toBe(modelsCard.parentElement)
     expect(
@@ -292,59 +360,80 @@ describe('dashboard overview', () => {
     expect(container.textContent).not.toContain('Quota reset')
   })
 
-  test('folds the Copilot plan into the quota card and hides the duplicate summary', async () => {
-    await render('copilot')
-
-    const quotaCard = cardByTitle('GitHub Copilot Quota')
-    expect(quotaCard.textContent).toContain('individual')
-    expect(quotaCard.textContent).toContain('resets 2026-11-01')
-    expect(quotaCard.textContent).toContain('451 / 1500')
-    expect(
-      [...quotaCard.querySelectorAll('span')].map((node) => node.textContent),
-    ).not.toContain('Chat')
-    expect(quotaCard.textContent).not.toContain('Completions')
-
-    expect(container.textContent).not.toContain('Premium used')
-    expect(container.textContent).not.toContain('Quota reset')
-    expect(container.textContent).not.toContain('Copilot Plan')
-
-    // Several providers are enabled, so the overview stays visible in Copilot mode.
-    expect(cardByTitle('Providers').textContent).toContain('2 / 3 enabled')
-  })
-
-  test('hides the provider overview when Copilot is the only enabled provider', async () => {
-    getProviderConfig.mockImplementation(() =>
-      Promise.resolve({
-        configPath: 'config.json',
-        providers: [
-          { name: 'github-copilot', type: 'github-copilot', enabled: true },
+  test('places a usage snapshot above providers and service addresses', async () => {
+    fetchUsageSummary.mockResolvedValue({
+      ...summary,
+      totals: {
+        ...summary.totals,
+        costs: [
+          ...summary.totals.costs,
+          {
+            currency: 'CNY',
+            amount: 9.5,
+            total_cost_nanos: 9_500_000_000,
+          },
         ],
-      }),
-    )
-    await render('copilot')
+      },
+      byModel: [
+        {
+          ...summary.totals,
+          average_first_token_ms: 250,
+          output_tokens_per_second: 40,
+          model: 'qwen-plus',
+        },
+      ],
+    })
+    await render()
 
-    expect(cardByTitle('GitHub Copilot Quota').textContent).toContain(
-      'individual',
-    )
-    expect(container.querySelector('h3') === null).toBe(false)
+    const providerCard = cardByTitle('Providers')
+    const usageCard = cardByTitle('Usage snapshot')
     expect(
-      [...container.querySelectorAll('h3')].map((node) => node.textContent),
-    ).not.toContain('Providers')
+      [...providerCard.parentElement!.children].map(
+        (node) => node.querySelector('h3')?.textContent,
+      ),
+    ).toEqual(['Usage snapshot', 'Providers', 'Service address'])
+    expect(usageCard.textContent).toContain('Requests')
+    expect(usageCard.textContent).toContain(
+      new Intl.NumberFormat().format(summary.totals.total_tokens),
+    )
+    expect(usageCard.textContent).toContain('60.0%')
+    expect(usageCard.textContent).toContain('$1.250000')
+    expect(usageCard.textContent).toContain('¥9.500000')
+    expect(
+      usageCard.querySelector('[title="$1.250000 ¥9.500000"]')?.textContent,
+    ).toBe('$1.250000 ¥9.500000')
+    expect(usageCard.textContent).toContain('Top model')
+    expect(usageCard.textContent).toContain('qwen-plus')
+    expect(usageCard.firstElementChild?.textContent).toContain('Usage snapshot')
+    expect(usageCard.firstElementChild?.textContent).toContain('qwen-plus')
+    await clickButton('Token usage →')
+    expect(
+      container.querySelector('[role="tab"][aria-selected="true"]')
+        ?.textContent,
+    ).toBe('Token usage')
   })
 
-  test('keeps plan and reset information visible when Copilot reports no quota details', async () => {
-    fetchCopilotUsage.mockResolvedValue({
-      copilot_plan: copilotUsage.copilot_plan,
-      quota_reset_date: copilotUsage.quota_reset_date,
+  test('keeps the provider overview visible with Copilot as the only provider', async () => {
+    getProviderConfig.mockResolvedValue({
+      configPath: 'config.json',
+      providers: [
+        { name: 'github-copilot', type: 'github-copilot', enabled: true },
+      ],
     })
     await render('copilot')
+    expect(cardByTitle('Providers').textContent).toContain('1 / 1 enabled')
+    expect(container.querySelector('.quota-provider-card')).toBeNull()
+  })
 
-    const quotaCard = cardByTitle('GitHub Copilot Quota')
-    expect(quotaCard.textContent).toContain('individual')
-    expect(quotaCard.textContent).toContain('resets 2026-11-01')
-    expect(quotaCard.textContent).toContain('No quota details reported.')
-    expect(quotaCard.textContent).not.toContain('Premium')
-    expect(cardByTitle('Available models').textContent).toContain('qwen-plus')
+  test('disables subscriptions until the server is running', async () => {
+    window.electronAPI.getServerStatus = () =>
+      Promise.resolve({ running: false })
+    await render('provider')
+    const tab = [...container.querySelectorAll('button')].find(
+      (button) => button.textContent === 'Subscriptions',
+    )
+    expect(tab?.disabled).toBe(true)
+    expect(container.querySelector('.subscriptions-page')).toBeNull()
   })
 
   test('refreshes provider status from the dashboard', async () => {
@@ -392,30 +481,6 @@ describe('dashboard overview', () => {
     expect(providerCard.textContent).toContain('1 / 1 enabled')
     expect(providerCard.textContent).toContain('new-provider')
     expect(providerCard.textContent).not.toContain('dashscope')
-  })
-
-  test('hides cached Copilot quota after disabling its provider', async () => {
-    await render('copilot')
-    expect(cardByTitle('GitHub Copilot Quota').textContent).toContain(
-      '451 / 1500',
-    )
-    await clickButton('Manage')
-    getProviderConfig.mockResolvedValue({
-      ...providerConfig,
-      providers: providerConfig.providers.map((provider) => ({
-        ...provider,
-        enabled: provider.name === 'github-copilot' ? false : provider.enabled,
-      })),
-    })
-
-    await clickButton('Dashboard')
-
-    expect(
-      [...container.querySelectorAll('h3')].map((node) => node.textContent),
-    ).not.toContain('GitHub Copilot Quota')
-    expect(cardByTitle('Providers').textContent).toContain('1 / 3 enabled')
-    expect(cardByTitle('Providers').textContent).toContain('github-copilot')
-    expect(container.textContent).not.toContain('451 / 1500')
   })
 
   test('opens auth configuration from the Providers page', async () => {
@@ -533,4 +598,78 @@ describe('dashboard overview', () => {
       }
     })
   }
+})
+
+describe('usage timing display', () => {
+  test('shows model timing before Total Tokens and only duration in request events', async () => {
+    fetchUsageSummary.mockResolvedValue({
+      ...summary,
+      byModel: [
+        {
+          ...summary.totals,
+          model: 'timed-model',
+          average_first_token_ms: 1250,
+          output_tokens_per_second: 42.6,
+        },
+      ],
+    })
+    const events = createEventsPage(2)
+    Object.assign(events.items[0], {
+      first_token_ms: 250,
+      duration_ms: 2250,
+      output_tokens_per_second: 10,
+    })
+    window.electronAPI.fetchTokenUsageEvents = mock(() =>
+      Promise.resolve(events),
+    )
+    await render()
+    await clickButton('Token usage')
+    const tables = [...container.querySelectorAll('table')]
+    const models = tables.find((table) =>
+      table.textContent?.includes('timed-model'),
+    )!
+    const details = tables.find((table) =>
+      table.textContent?.includes('trace-0'),
+    )!
+    expect(details.className).toContain('min-w-[1140px]')
+    expect(
+      [...models.querySelectorAll('th')].map((cell) => cell.textContent),
+    ).toEqual([
+      'Model',
+      'Requests',
+      'Input',
+      'Output',
+      'Cache read',
+      'Cache write',
+      'Cache hit rate',
+      'Avg. TTFT',
+      'Output speed',
+      'Total Tokens',
+      'Total Cost',
+    ])
+    expect(models.querySelector('th')?.className).toContain('w-[220px]')
+    expect(models.textContent).toContain('1.25 s')
+    expect(models.textContent).toContain('42.6 tok/s')
+    expect(
+      [...details.querySelectorAll('th')].map((cell) => cell.textContent),
+    ).toEqual([
+      'Time',
+      'User',
+      'Model',
+      'Session',
+      'Trace',
+      'Input',
+      'Output',
+      'Cache read',
+      'Cache write',
+      'Duration',
+      'Total Tokens',
+      'Total Cost',
+    ])
+    const rows = details.querySelectorAll('tbody tr')
+    expect(rows[0].textContent).not.toContain('250 ms')
+    expect(rows[0].textContent).not.toContain('10.0 tok/s')
+    expect(rows[0].textContent).toContain('2.25 s')
+    expect(rows[0].querySelectorAll('td')).toHaveLength(12)
+  })
 })

@@ -1,4 +1,12 @@
-import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test"
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  mock,
+  spyOn,
+  test,
+} from "bun:test"
 import { Hono } from "hono"
 import fs from "node:fs"
 import os from "node:os"
@@ -369,25 +377,54 @@ afterEach(() => {
 })
 
 describe("model routes", () => {
-  test.each([
-    ["/dashscope/v1/models", "curl/8.0"],
-    ["/v1/models", "curl/8.0"],
-    ["/v1/models", "opencode/2.0"],
-    ["/v1/models", "claude-cli/2.1"],
-    ["/v1/models", "codex/1.0"],
-  ])(
-    "filters old DashScope releases on %s for %s including explicit selections",
-    async (endpoint, userAgent) => {
+  test.each(
+    ["dashscope", "alibaba"].flatMap((provider) =>
+      [
+        [`/${provider}/v1/models`, "curl/8.0"],
+        ["/models", "curl/8.0"],
+        ["/v1/models", "curl/8.0"],
+        ["/v1/models", "opencode/2.0"],
+        ["/v1/models", "claude-cli/2.1"],
+        ["/v1/models", "codex/1.0"],
+      ].map(([endpoint, userAgent]) => ({ provider, endpoint, userAgent })),
+    ),
+  )(
+    "filters old $provider releases on $endpoint for $userAgent including explicit selections",
+    async ({ provider, endpoint, userAgent }) => {
       installModelsDevCatalog({
         ...modelsDevProviderCatalogFixture,
-        "alibaba-cn": { models: modelsDevReleaseModelsFixture },
+        "alibaba-cn": {
+          models: {
+            ...modelsDevReleaseModelsFixture,
+            deprecated: {
+              id: "deprecated",
+              status: "deprecated",
+              release_date: "2026-05-02",
+            },
+          },
+        },
       })
-      enabledProviders = ["dashscope"]
-      providerConfigs.dashscope = {
-        ...createProviderConfig("dashscope", "https://gateway.example"),
-        agentsModels: Object.keys(modelsDevReleaseModelsFixture),
+      enabledProviders = [provider]
+      providerConfigs[provider] = {
+        ...createProviderConfig(provider, "https://gateway.example"),
+        modelsDevProviderId: provider === "alibaba" ? "alibaba-cn" : undefined,
+        agentsModels: [
+          ...Object.keys(modelsDevReleaseModelsFixture),
+          "deprecated",
+        ],
         models: { "before-cutoff": {}, "qwen-plus": {} },
       }
+      fetchMock.mockImplementation(() =>
+        Promise.resolve(
+          Response.json({
+            data: [
+              { id: "upstream-only-model" },
+              { id: "before-cutoff" },
+              { id: "after-cutoff" },
+            ],
+          }),
+        ),
+      )
       const response = await createApp().request(endpoint, {
         headers: { "user-agent": userAgent },
       })
@@ -400,11 +437,11 @@ describe("model routes", () => {
         body.models?.map((model) => model.slug)
         ?? body.data?.map((model) => model.id)
         ?? []
-      const dashScopeIds =
-        endpoint.startsWith("/dashscope/") ? ids : (
+      const providerIds =
+        endpoint.startsWith(`/${provider}/`) ? ids : (
           ids
-            .filter((id) => id.startsWith("dashscope/"))
-            .map((id) => id.slice("dashscope/".length))
+            .filter((id) => id.startsWith(`${provider}/`))
+            .map((id) => id.slice(`${provider}/`.length))
         )
       const visibleIds = [
         "after-cutoff",
@@ -412,7 +449,7 @@ describe("model routes", () => {
         "on-cutoff",
         "unknown-date",
       ]
-      expect(dashScopeIds.sort()).toEqual(
+      expect(providerIds.sort()).toEqual(
         userAgent.startsWith("claude") ?
           visibleIds.map((id) => `my-claude-${id}[1m]`)
         : visibleIds,
@@ -459,15 +496,15 @@ describe("model routes", () => {
     },
   )
 
-  test.each(["xai", "openrouter", "deepseek", "kimi", "dashscope"])(
+  test.each(["xai", "openrouter", "deepseek", "kimi", "dashscope", "alibaba"])(
     "returns a local catalog error for missing %s records without remote fallback",
     async (provider) => {
       installModelsDevCatalog(modelsDevCatalogFixture)
       enabledProviders = [provider]
-      providerConfigs[provider] = createProviderConfig(
-        provider,
-        "https://reject.example",
-      )
+      providerConfigs[provider] = {
+        ...createProviderConfig(provider, "https://reject.example"),
+        modelsDevProviderId: provider === "alibaba" ? "alibaba-cn" : undefined,
+      }
       const raw = await createApp().request(`/${provider}/v1/models`)
       expect(raw.status).toBe(503)
       expect(await raw.json()).toMatchObject({
@@ -479,22 +516,25 @@ describe("model routes", () => {
     },
   )
 
-  test("honors explicit models.dev provider mappings while keeping the gateway provider name", async () => {
-    enabledProviders = ["kimi"]
-    providerConfigs.kimi = {
-      ...createProviderConfig("kimi", "https://reject.example"),
-      modelsDevProviderId: "openrouter",
-    }
-    const response = await createApp().request("/v1/models", {
-      headers: { "user-agent": "opencode" },
-    })
-    const { data } = (await response.json()) as { data: Array<OpencodeModel> }
-    expect(data[0]).toMatchObject({
-      id: "kimi/openai/gpt-5.1-codex",
-      limit: { context: 400_000, output: 128_000 },
-    })
-    expect(fetchMock).not.toHaveBeenCalled()
-  })
+  test.each(["kimi", "alibaba", "custom"])(
+    "honors explicit models.dev mappings for %s while keeping the gateway provider name",
+    async (provider) => {
+      enabledProviders = [provider]
+      providerConfigs[provider] = {
+        ...createProviderConfig(provider, "https://reject.example"),
+        modelsDevProviderId: "openrouter",
+      }
+      const response = await createApp().request("/v1/models", {
+        headers: { "user-agent": "opencode" },
+      })
+      const { data } = (await response.json()) as { data: Array<OpencodeModel> }
+      expect(data[0]).toMatchObject({
+        id: `${provider}/openai/gpt-5.1-codex`,
+        limit: { context: 400_000, output: 128_000 },
+      })
+      expect(fetchMock).not.toHaveBeenCalled()
+    },
+  )
 
   test("keeps Codex catalog discovery remote and Copilot records intact while other providers stay local", async () => {
     enableCodexCatalog()
@@ -984,6 +1024,119 @@ describe("model routes", () => {
       cost: [{ input: 0.5, output: 1, cache: { read: 0.05, write: 0 } }],
     })
   })
+
+  test.each(
+    ["/models", "/v1/models"].flatMap((endpoint) =>
+      [
+        { userAgent: "deepseek/1.0", selected: true },
+        { userAgent: "DeepSeek-Code/1.0", selected: true },
+        { userAgent: "curl/8.0", selected: false },
+        { userAgent: "client-deepseek/1.0", selected: false },
+        { userAgent: undefined, selected: false },
+      ].map((client) => ({ endpoint, ...client })),
+    ),
+  )(
+    "filters default model discovery for DeepSeek prefixes on $endpoint with userAgent=$userAgent",
+    async ({ endpoint, userAgent, selected }) => {
+      state.models = createCopilotModels(["copilot-visible", "copilot-hidden"])
+      enabledProviders = ["alibaba", "hidden"]
+      providerConfigs = {
+        "github-copilot": {
+          ...createProviderConfig("github-copilot", "https://copilot.example"),
+          agentsModels: ["copilot-visible"],
+        },
+        alibaba: {
+          ...createProviderConfig("alibaba", "https://reject.example"),
+          modelsDevProviderId: "alibaba-cn",
+          agentsModels: ["deepseek-v4.1-flash-1017", "deepseek-v4.1-flash"],
+        },
+        hidden: {
+          ...createProviderConfig("hidden", "https://reject.example"),
+          modelsDevProviderId: "alibaba-cn",
+          agentsModels: [],
+        },
+      }
+      const cachedIds = [
+        "deepseek-v4.1-flash",
+        "glm-5.3",
+        "kimi-k3",
+        "qwen3.7-plus",
+        "qwen3.8-flash",
+        "qwen3.8-max",
+      ]
+
+      const response = await createApp().request(endpoint, {
+        headers: userAgent === undefined ? {} : { "user-agent": userAgent },
+      })
+
+      expect(response.status).toBe(200)
+      const body = (await response.json()) as {
+        object: string
+        data: Array<{ id: string; object: string }>
+        has_more: boolean
+      }
+      expect(body.object).toBe("list")
+      expect(body.has_more).toBe(false)
+      expect(body.data.every((model) => model.object === "model")).toBe(true)
+      expect(body.data.map((model) => model.id)).toEqual(
+        selected ?
+          [
+            "copilot-visible",
+            "alibaba/deepseek-v4.1-flash-1017",
+            "alibaba/deepseek-v4.1-flash",
+          ]
+        : [
+            "copilot-visible",
+            "copilot-hidden",
+            ...cachedIds.map((id) => `alibaba/${id}`),
+            ...cachedIds.map((id) => `hidden/${id}`),
+          ],
+      )
+      expect(fetchMock).not.toHaveBeenCalled()
+    },
+  )
+
+  test.each(
+    ["/models", "/v1/models"].flatMap((endpoint) =>
+      [false, true].map((fullCatalog) => ({ endpoint, fullCatalog })),
+    ),
+  )(
+    "includes manually selected models absent from models.dev on $endpoint with fullCatalog=$fullCatalog",
+    async ({ endpoint, fullCatalog }) => {
+      setCatalogLimit(1)
+      enabledProviders = ["alibaba"]
+      providerConfigs.alibaba = {
+        ...createProviderConfig("alibaba", "https://reject.example"),
+        modelsDevProviderId: "alibaba-cn",
+        agentsModels: ["deepseek-v4.1-flash-1017", "deepseek-v4.1-flash"],
+      }
+
+      const response = await createApp(fullCatalog).request(endpoint, {
+        headers: { "user-agent": "codex-cli/0.160.0" },
+      })
+
+      expect(response.status).toBe(200)
+      const body = (await response.json()) as CodexModelsResponse
+      const models = body.models.filter((model) =>
+        model.slug.startsWith("alibaba/"),
+      )
+      expect(models.map((model) => model.slug).sort()).toEqual([
+        "alibaba/deepseek-v4.1-flash",
+        "alibaba/deepseek-v4.1-flash-1017",
+      ])
+      expect(
+        models.find(
+          (model) => model.slug === "alibaba/deepseek-v4.1-flash-1017",
+        ),
+      ).toMatchObject({
+        display_name: "deepseek-v4.1-flash-1017 (alibaba)",
+        supported_in_api: true,
+        visibility: "list",
+        use_responses_lite: true,
+      })
+      expect(fetchMock).not.toHaveBeenCalled()
+    },
+  )
 
   test.each(["USD", "CNY"])(
     "converts %s pricing overrides to USD",
@@ -2499,7 +2652,12 @@ describe("model routes", () => {
       installModelsDevCatalog({
         ...modelsDevCatalogFixture,
         [modelsDevProviderId ?? "custom"]: {
-          models: { "org/claude-model": { limit: { output: 65_536 } } },
+          models: {
+            "org/claude-model": {
+              id: "org/claude-model",
+              limit: { output: 65_536 },
+            },
+          },
         },
       })
       enabledProviders = ["custom"]
@@ -2519,10 +2677,16 @@ describe("model routes", () => {
         body.models.find((model) => model.slug === "custom/org/claude-model")
           ?.max_output_tokens,
       ).toBe(65_536)
-      expect(
-        body.models.find((model) => model.slug === "custom/qwen-plus")
-          ?.max_output_tokens,
-      ).toBe(32_000)
+      const upstreamModel = body.models.find(
+        (model) => model.slug === "custom/qwen-plus",
+      )
+      if (modelsDevProviderId) {
+        expect(upstreamModel).toBeUndefined()
+        expect(fetchMock).not.toHaveBeenCalled()
+      } else {
+        expect(upstreamModel?.max_output_tokens).toBe(32_000)
+        expect(fetchMock).toHaveBeenCalledTimes(1)
+      }
     },
   )
 
@@ -2866,6 +3030,78 @@ describe("model routes", () => {
       template?.model_messages?.instructions_template,
     )
   })
+
+  test.each([
+    ["/v1/models", "headers"],
+    ["/v1/models", "body"],
+    ["/codex/v1/models", "headers"],
+    ["/codex/v1/models", "body"],
+  ])(
+    "%s falls back to the bundled Codex catalog after 3 seconds waiting for %s",
+    async (endpoint, phase) => {
+      enableCodexCatalog()
+      const copilotModels = createCopilotModels(["claude-sonnet-4.6"])
+      copilotModels.data[0].supported_endpoints = ["/v1/messages"]
+      copilotModels.data[0].capabilities.supports.tool_calls = true
+      state.models = copilotModels
+
+      let receivedHeaders = false
+      const server = Bun.serve({
+        hostname: "127.0.0.1",
+        port: 0,
+        fetch: () => {
+          if (phase === "headers") return new Promise<Response>(() => {})
+          return new Response(
+            new ReadableStream({
+              start(controller) {
+                controller.enqueue(new TextEncoder().encode('{"models":['))
+              },
+            }),
+            { headers: { "Content-Type": "application/json" } },
+          )
+        },
+      })
+      const timeoutSpy = spyOn(AbortSignal, "timeout")
+      fetchMock.mockImplementationOnce(async (_url, init) => {
+        const response = await originalFetch(server.url, init)
+        receivedHeaders = true
+        return response
+      })
+
+      try {
+        const response = await createApp().request(
+          `${endpoint}?client_version=0.160.0`,
+          { headers: { "user-agent": "codex-tui/0.160.0" } },
+        )
+
+        expect(response.status).toBe(200)
+        expect(receivedHeaders).toBe(phase === "body")
+        expect(timeoutSpy).toHaveBeenCalledWith(3_000)
+        expect(fetchMock.mock.calls[0]?.[1]?.signal?.aborted).toBe(true)
+        const body = (await response.json()) as CodexModelsResponse
+        const slugs = body.models.map((model) => model.slug)
+        if (endpoint === "/codex/v1/models") {
+          expect(slugs).toEqual(bundledCodexModels.map((model) => model.slug))
+        } else {
+          for (const slug of bundledCodexSlugs) expect(slugs).toContain(slug)
+          expect(slugs).toContain("codex/gpt-6.1-sol")
+          expect(slugs).toContain("claude-sonnet-4-6")
+        }
+        expect(slugs).not.toContain("gpt-native")
+        expect(
+          body.models.find((model) => model.slug === "gpt-6.1-sol")
+            ?.model_messages,
+        ).toEqual(
+          bundledCodexModels.find((model) => model.slug === "gpt-6.1-sol")
+            ?.model_messages,
+        )
+      } finally {
+        timeoutSpy.mockRestore()
+        await server.stop(true)
+      }
+    },
+    5_000,
+  )
 
   test("copies matching Codex catalog models with provider suffixes", async () => {
     const solCatalogModel = {
@@ -3309,6 +3545,53 @@ describe("model routes", () => {
     const headers = new Headers(fetchMock.mock.calls[0]?.[1]?.headers)
     expect(headers.get("authorization")).toBe("Bearer codex-access-token")
     expect(headers.get("chatgpt-account-id")).toBe("account-123")
+  })
+
+  test.each([401, 502])(
+    "preserves upstream HTTP %s errors on the scoped Codex catalog route",
+    async (status) => {
+      enableCodexCatalog()
+      const error = { error: { message: "upstream error" } }
+      fetchMock.mockImplementationOnce(() =>
+        Promise.resolve(Response.json(error, { status })),
+      )
+
+      const response = await createApp().request("/codex/v1/models", {
+        headers: { "user-agent": "codex-tui/0.160.0" },
+      })
+
+      expect(response.status).toBe(status)
+      expect(await response.json()).toEqual(error)
+    },
+  )
+
+  test("rejects malformed JSON on the scoped Codex catalog route", async () => {
+    enableCodexCatalog()
+    fetchMock.mockImplementationOnce(() =>
+      Promise.resolve(new Response("invalid JSON")),
+    )
+
+    const response = await createApp().request("/codex/v1/models", {
+      headers: { "user-agent": "codex-tui/0.160.0" },
+    })
+
+    expect(response.status).toBe(502)
+    expect(await response.json()).toEqual({
+      error: { message: "Invalid Codex model catalog", type: "api_error" },
+    })
+  })
+
+  test("preserves non-timeout failures on the scoped Codex catalog route", async () => {
+    enableCodexCatalog()
+    fetchMock.mockImplementationOnce(() =>
+      Promise.reject(new Error("connection refused")),
+    )
+
+    const response = await createApp().request("/codex/v1/models", {
+      headers: { "user-agent": "codex-tui/0.160.0" },
+    })
+
+    expect(response.status).toBe(500)
   })
 
   test("returns built-in Codex models on the provider route without Codex UA", async () => {

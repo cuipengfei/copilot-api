@@ -32,7 +32,7 @@ curl http://localhost:4141/admin/config/model-mappings \
 
 ## API 端点
 
-服务端提供多个 OpenAI / Anthropic 兼容端点。请求会根据所选模型和 `provider/model` 别名路由到 GitHub Copilot、内置 `codex` provider 或已配置的 provider。下列每个 `/v1/...` 端点也都支持 `/:provider/v1/...` 形式的 provider 级路径，表格中不再重复列出。
+服务端提供多个 OpenAI / Anthropic 兼容端点。请求会根据所选模型和 `provider/model` 别名路由到 GitHub Copilot、内置 `codex` provider 或已配置的 provider。支持 provider 级路径的端点使用 `/:provider/v1/...` 形式；视频端点仅提供顶层路由。
 
 ### OpenAI 兼容端点
 
@@ -63,11 +63,38 @@ Codex model catalog、Copilot 模型缓存和其他自定义 provider 的远程�
 | ---------------------------------------------------------- | ---- | ---------------------------------------------------------------------------------------------------- |
 | `POST /v1/alpha/search`            | `POST` | 将 Codex alpha-search 请求路由到 Codex 后端，或在本地及通过 Responses web search 处理支持的命令。 |
 | `POST /v1/images/generations` | `POST` | 将 JSON 图片生成请求转发到 Codex Images 上游。请求未携带 `Content-Type` 时，网关默认补充 `application/json`。请求 `model` 命中已配置的 model mapping 时会被改写；映射结果为已配置 provider 的 `provider/model` 别名时，请求将转发到该 provider 的 images 端点。 |
-| `POST /v1/images/edits` | `POST` | 将图片编辑请求转发到 Codex Images 上游。请使用 `multipart/form-data`，并让 HTTP 客户端自动生成 `boundary`；网关在接收上传时就把文件流式写入临时磁盘文件，转发时从磁盘读取，大文件不会常驻内存。multipart 请求总大小上限为 128 MiB，单文件上限为 64 MiB，最多包含 16 个文件；超过限制时返回 `413`。model mapping 与 `provider/model` 别名路由同样适用于此端点。 |
+| `POST /v1/images/edits` | `POST` | 通过 Codex 或 model mapping 指定的 provider 编辑图片，接受两种请求形式。JSON：使用 `Content-Type: application/json`，传入 `prompt` 与 `images: [{ image_url }]`（HTTP URL 或 base64 data URL），也可使用 `images: [{ file_id }]`，可选 `mask` 为单个图片引用对象；未触发 model mapping 改写时请求体按原始字节转发。multipart：改用 `multipart/form-data` 上传文件，网关在接收时把文件流式写入临时磁盘文件（总大小上限 128 MiB、单文件 64 MiB、最多 16 个文件；超限返回 `413`，格式错误返回 `400`），转发不再需要时即删除。Codex 一律接收 JSON：`/v1/images/edits` 与 `/codex/v1/images/edits` 都会把上传的图片和 `mask` 转成 base64 data URL 引用，并保留数字、布尔字段的类型。命中 `provider/model` 别名且目标不是 Codex 时，若客户端发送的是 multipart，则向该 provider 发送重建后的 multipart 请求。其他 content type 返回 `415`。model mapping 与 `provider/model` 别名照常生效；其他 provider 作用域的图片路由继续保持原有透传行为。 |
 
-当 `imageGenerationModel` 或 `imageEditModel` 配置为 `xai/model` 别名时，对应的顶层图片路由会把 OpenAI 图片请求翻译后发到已启用的 `xai` provider 的 Imagine 接口，上游模型由该别名决定。配置为空时仍走上面的 OpenAI 转发路径。这两项目前不接受其他 provider。
+当 `imageGenerationModel` 或 `imageEditModel` 配置为 `xai/model` 别名时，对应的顶层图片路由会把 OpenAI 图片请求翻译后发到已启用的 `xai` provider 的 Imagine 接口，上游模型由该别名决定。JSON 与 multipart 图片编辑都会翻译成 xAI 的 JSON 协议：上传文件转成 data URL，`mask` 因 xAI 无法表达而返回 `400`。配置为空时仍走上面的 OpenAI 转发路径。这两项目前不接受其他 provider。
 
 对于路由到 Codex 后端的请求，网关会使用当前 Codex 登录态覆盖客户端的 authorization 和 account header，并保留兼容的请求元数据。基于 Responses 的 alpha-search 则遵循所选 Copilot 或 provider 的路由。
+
+### xAI 视频端点
+
+| 端点 | 方法 | 说明 |
+| --- | --- | --- |
+| `/v1/videos/generations` | `POST` | 提交 xAI 原生异步视频生成请求。`model` 使用 `xai/grok-imagine-video-1.5`，或映射到该模型的 model mapping 名称，返回上游 `request_id`。 |
+| `/v1/videos/{request_id}` | `GET` | 查询任务状态和视频 URL，使用与提交时相同的 xAI 账号及上游地址。 |
+
+两个端点也支持省略 `/v1`，沿用普通网关鉴权，使用已启用 `xai` provider 的 API key 或 OAuth 凭据。`model` 没有默认值，缺失或不支持的模型返回 `400`，provider 不可用返回 `404`。其余原生生成字段交由上游校验，图片和参考素材输入会原样转发。上游响应体、状态码及元数据保持不变。
+
+提交生成请求：
+
+```sh
+curl http://localhost:4141/v1/videos/generations \
+  -H 'Authorization: Bearer your_gateway_key' \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"xai/grok-imagine-video-1.5","prompt":"A paper boat on a lake","duration":5}'
+```
+
+响应包含上游 `request_id`，使用该 ID 轮询结果：
+
+```sh
+curl http://localhost:4141/v1/videos/YOUR_REQUEST_ID \
+  -H 'Authorization: Bearer your_gateway_key'
+```
+
+网关不等待生成完成、不重试提交，也不保存任务。查询期间需保持同一 xAI 账号和上游地址。客户端处理 `pending`、`done`、`failed` 等原生状态，并直接访问返回的 `video.url`。xAI 默认视频 URL 为临时地址，详见 [xAI 视频文档](https://docs.x.ai/developers/model-capabilities/video/generation)。
 
 ### Anthropic 兼容端点
 
@@ -85,6 +112,14 @@ Codex model catalog、Copilot 模型缓存和其他自定义 provider 的远程�
 | 端点           | 方法 | 说明                                              |
 | -------------- | ---- | ------------------------------------------------- |
 | `GET /usage`   | `GET` | 获取详细的 Copilot 使用统计与额度信息。          |
+| `GET /usage/github-copilot` | `GET` | 获取统一格式的 Premium、Chat 和 Completions 订阅额度。 |
+| `GET /usage/codex` | `GET` | 获取当前 Codex 订阅的额度窗口、Credits 和 Business 成员额度上限。 |
+| `GET /usage/xai` | `GET` | 获取当前 xAI 订阅的 Grok Build 额度和预付余额。 |
+| `GET /usage/opencode-go` | `GET` | 获取 OpenCode Go 滚动 5 小时、每周及每月的用量百分比与重置时间。 |
+
+OpenCode Go 使用已配置的 provider API key 和 base URL 查询 `GET /v1/usage`；旧地址 `https://opencode.ai/zen/go` 沿用现有规范化逻辑，转为 `https://opencode.ai/inference/go`。不会根据百分比推算金额上限或套餐等级。工作区没有 Go 额度时，与其他不可用订阅一致返回 404。
+
+订阅接口使用服务端已启用的提供商和当前选中的账号，返回统一的 `provider`、`planType`、`windows`、`credits` 和额度限制状态，`resetAt` 使用 Unix 秒时间戳，Copilot 的日历重置日期使用 `resetDate`，额度窗口可通过 `unlimited` 表示无限制。订阅不可用时返回 404，上游或凭据查询失败时返回 502。桌面端和网页的订阅额度标签页分别查询这些接口，上游凭据保留在服务端。
 
 ### Admin / 配置端点
 

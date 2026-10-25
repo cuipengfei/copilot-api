@@ -85,6 +85,7 @@ beforeEach(async () => {
       fetchModels,
       getAuthStatus: () => Promise.resolve({ success: true, mode: 'provider' }),
       getServerStatus: () => Promise.resolve({ running: false }),
+      getSettings: () => Promise.resolve({ showCreate: false, host: '' }),
       getLogs: () => Promise.resolve([]),
       onServerStatus: () => () => {},
       onServerLog: () => () => {},
@@ -196,6 +197,8 @@ function createTokenUsageSummary(
   costs: TokenUsageSummary['totals']['costs'],
 ): TokenUsageSummary {
   const totals = {
+    average_first_token_ms: null,
+    output_tokens_per_second: null,
     request_count: 10,
     input_tokens: 200,
     output_tokens: 9000,
@@ -243,11 +246,20 @@ function createTokenUsageSessionsPage(
   }
 }
 
+async function selectBreakdownTab(
+  label: 'Model breakdown' | 'Session breakdown',
+) {
+  const tab = [
+    ...container.querySelectorAll<HTMLButtonElement>('[role="tab"]'),
+  ].find((node) => node.textContent === label)
+  if (!tab) throw new Error(`Missing breakdown tab: ${label}`)
+  if (tab.getAttribute('aria-selected') !== 'true') {
+    await act(async () => tab.click())
+  }
+}
+
 function sessionUsagePanel(): HTMLElement {
-  const title = [...container.querySelectorAll('span')].find(
-    (node) => node.textContent === 'Session breakdown',
-  )
-  const panel = title?.parentElement?.parentElement
+  const panel = container.querySelector<HTMLElement>('#token-usage-breakdown')
   if (!panel) throw new Error('Missing session usage panel')
   return panel
 }
@@ -273,6 +285,8 @@ function leafDivTexts(): Array<string | null> {
 describe('provider management UI', () => {
   test('shows token-weighted cache hit rates in the model breakdown', async () => {
     const totals = {
+      average_first_token_ms: null,
+      output_tokens_per_second: null,
       request_count: 10,
       input_tokens: 200,
       output_tokens: 9000,
@@ -360,6 +374,8 @@ describe('provider management UI', () => {
       'Cache read',
       'Cache write',
       'Cache hit rate',
+      'Avg. TTFT',
+      'Output speed',
       'Total Tokens',
       'Total Cost',
     ])
@@ -367,7 +383,7 @@ describe('provider management UI', () => {
     expect(
       rows.map((row) => row.querySelectorAll('td')[6].textContent),
     ).toEqual(['60.0%', '0.0%', '—'])
-    expect(rows.every((row) => row.querySelectorAll('td').length === 9)).toBe(
+    expect(rows.every((row) => row.querySelectorAll('td').length === 11)).toBe(
       true,
     )
   })
@@ -384,6 +400,36 @@ describe('provider management UI', () => {
     expect(labels).not.toContain('Cost (CNY)')
   })
 
+  test('switches model and session details in one breakdown panel', async () => {
+    const summary = createTokenUsageSummary([])
+    await renderTokenUsageDashboard(summary, {
+      fetchTokenUsageSessions: () =>
+        Promise.resolve(createTokenUsageSessionsPage(summary)),
+    })
+
+    const modelTab = [
+      ...container.querySelectorAll<HTMLButtonElement>('[role="tab"]'),
+    ].find((node) => node.textContent === 'Model breakdown')
+    const sessionTab = [
+      ...container.querySelectorAll<HTMLButtonElement>('[role="tab"]'),
+    ].find((node) => node.textContent === 'Session breakdown')
+    const panel = container.querySelector<HTMLElement>(
+      '#token-usage-breakdown-panel',
+    )
+
+    expect(modelTab?.getAttribute('aria-selected')).toBe('true')
+    expect(sessionTab?.getAttribute('aria-selected')).toBe('false')
+    expect(panel?.querySelector('table th')?.textContent).toBe('Model')
+    expect(panel?.textContent).toContain('cached-model')
+
+    await selectBreakdownTab('Session breakdown')
+
+    expect(modelTab?.getAttribute('aria-selected')).toBe('false')
+    expect(sessionTab?.getAttribute('aria-selected')).toBe('true')
+    expect(panel?.querySelector('table th')?.textContent).toBe('Session')
+    expect(panel?.textContent).toContain('today-session-1')
+    expect(panel?.textContent).not.toContain('cached-model')
+  })
   test('falls back to a single cost metric when no costs are recorded', async () => {
     await renderTokenUsageDashboard(createTokenUsageSummary([]))
 
@@ -399,6 +445,8 @@ describe('provider management UI', () => {
 
   test('pages session breakdown five rows at a time', async () => {
     const totals = {
+      average_first_token_ms: null,
+      output_tokens_per_second: null,
       request_count: 2,
       input_tokens: 10,
       output_tokens: 20,
@@ -458,6 +506,7 @@ describe('provider management UI', () => {
       )
     })
     await act(async () => button('Token usage').click())
+    await selectBreakdownTab('Session breakdown')
 
     expect(fetchTokenUsageSessions).toHaveBeenCalledWith('today', 1, 5)
     const sessionTable = [...container.querySelectorAll('table')].find(
@@ -472,10 +521,7 @@ describe('provider management UI', () => {
     expect(container.textContent).toContain('Page 1 / 2')
     expect(container.textContent).toContain('6 sessions')
 
-    const sessionHeader = [...container.querySelectorAll('span')].find(
-      (node) => node.textContent === 'Session breakdown',
-    )?.parentElement
-    const next = [...(sessionHeader?.querySelectorAll('button') ?? [])].find(
+    const next = [...sessionUsagePanel().querySelectorAll('button')].find(
       (node) => node.textContent === 'Next',
     )
     expect(next?.disabled).toBe(false)
@@ -508,6 +554,7 @@ describe('provider management UI', () => {
         Promise.resolve(createTokenUsageSessionsPage(summary, period, page)),
     )
     await renderTokenUsageDashboard(summary, { fetchTokenUsageSessions })
+    await selectBreakdownTab('Session breakdown')
     expect(sessionUsagePanel().textContent).toContain('today-session-1')
 
     fetchTokenUsageSessions.mockReturnValueOnce(pending.promise)
@@ -541,6 +588,7 @@ describe('provider management UI', () => {
       Promise.resolve(createTokenUsageSessionsPage(summary)),
     )
     await renderTokenUsageDashboard(summary, { fetchTokenUsageSessions })
+    await selectBreakdownTab('Session breakdown')
     expect(sessionUsagePanel().textContent).toContain('today-session-1')
 
     fetchTokenUsageSessions.mockRejectedValueOnce(new Error('offline'))
@@ -559,6 +607,7 @@ describe('provider management UI', () => {
           Promise.resolve(createTokenUsageSessionsPage(summary, period, page)),
       )
       await renderTokenUsageDashboard(summary, { fetchTokenUsageSessions })
+      await selectBreakdownTab('Session breakdown')
       const next = [...sessionUsagePanel().querySelectorAll('button')].find(
         (node) => node.textContent === 'Next',
       )
@@ -598,6 +647,7 @@ describe('provider management UI', () => {
             ),
       )
       await renderTokenUsageDashboard(summary, { fetchTokenUsageSessions })
+      await selectBreakdownTab('Session breakdown')
       await changeTokenUsagePeriod('this_week')
       await changeTokenUsagePeriod('this_month')
       expect(sessionUsagePanel().textContent).toContain('this_month-session-1')
@@ -623,24 +673,43 @@ describe('provider management UI', () => {
   )
 
   test('shows Copilot percentages without rounding 99.9 percent to a full bar', async () => {
-    const quota = {
-      entitlement: 1500,
-      remaining: 1499,
-      quota_remaining: 0,
-      percent_remaining: 99.9,
-      unlimited: false,
-    }
+    getConfig.mockResolvedValue({
+      configPath: 'config.json',
+      providers: [
+        { name: 'github-copilot', type: 'github-copilot', enabled: true },
+      ],
+    })
     Object.assign(window.electronAPI, {
       getAuthStatus: () => Promise.resolve({ success: true, mode: 'copilot' }),
       getServerStatus: () => Promise.resolve({ running: true }),
       getServerAuthInfo: () => Promise.resolve({ enabled: false }),
-      fetchUsage: () =>
+      fetchSubscriptionUsage: () =>
         Promise.resolve({
-          quota_snapshots: {
-            premium_interactions: quota,
-            chat: quota,
-            completions: { ...quota, unlimited: true },
-          },
+          provider: 'github-copilot',
+          limitReached: false,
+          windows: [
+            {
+              id: 'copilot:premium_interactions',
+              name: 'Premium',
+              kind: 'usage',
+              used: 1,
+              limit: 1500,
+              unit: 'requests',
+              usedPercent: 0.1,
+            },
+            {
+              id: 'copilot:chat',
+              name: 'Chat',
+              kind: 'usage',
+              unlimited: true,
+            },
+            {
+              id: 'copilot:completions',
+              name: 'Completions',
+              kind: 'usage',
+              unlimited: true,
+            },
+          ],
         }),
     })
     await act(async () => {
@@ -655,17 +724,21 @@ describe('provider management UI', () => {
         }),
       )
     })
-    expect(container.textContent).toContain('1 / 1500 · 0.1% used')
-    expect(container.textContent).not.toContain('99.9% remaining')
-    const quotaBar = (label: string) =>
-      [...container.querySelectorAll('span')]
-        .find((node) => node.textContent === label)
-        ?.parentElement?.parentElement?.querySelector<HTMLDivElement>(
-          'div[style]',
-        )
-    expect(parseFloat(quotaBar('Premium')!.style.width)).toBeCloseTo(0.1)
-    expect(quotaBar('Chat')).toBeUndefined()
-    expect(quotaBar('Completions')).toBeUndefined()
+    await act(async () => button('Subscriptions').click())
+    expect(container.textContent).toContain('1 / 1,500 requests')
+    expect(container.textContent).toContain('0.1% used')
+    expect(container.querySelector('.quota-summary-value')?.textContent).toBe(
+      '99.9%',
+    )
+    expect(
+      parseFloat(
+        container.querySelector<HTMLElement>('.quota-progress-fill')!.style
+          .width,
+      ),
+    ).toBeCloseTo(0.1)
+    expect(container.querySelectorAll('[role="progressbar"]')).toHaveLength(1)
+    expect(container.textContent).toContain('Chat')
+    expect(container.textContent).toContain('Completions')
   })
 
   test('does not report the update installer stopping the server as a crash', async () => {
@@ -956,7 +1029,7 @@ describe('provider management UI', () => {
     },
   )
 
-  test('uses current Copilot authorization when starting, restarting, and refreshing', async () => {
+  test('uses current authorization for startup and restart without eager quota requests', async () => {
     const getAuthStatus = mock(() =>
       Promise.resolve({ success: true, mode: 'copilot' }),
     )
@@ -989,8 +1062,8 @@ describe('provider management UI', () => {
       button('Start server').click()
     })
     expect(startServer).toHaveBeenCalledWith(4141, 'copilot', '127.0.0.1')
-    expect(fetchUsage).toHaveBeenCalled()
-    expect(container.textContent).toContain('copilot_pro')
+    expect(fetchUsage).not.toHaveBeenCalled()
+    expect(container.textContent).not.toContain('copilot_pro')
 
     getAuthStatus.mockImplementation(() =>
       Promise.resolve({ success: true, mode: 'provider' }),
@@ -1011,10 +1084,15 @@ describe('provider management UI', () => {
     await act(async () => {
       button('Refresh').click()
     })
-    expect(container.textContent).toContain('copilot_pro')
+    expect(fetchUsage).not.toHaveBeenCalled()
+    expect(container.textContent).not.toContain('copilot_pro')
   })
 
   test('allows provider management and advanced configuration while stopped', async () => {
+    Object.assign(window.electronAPI, {
+      getSettings: () =>
+        Promise.resolve({ showCreate: true, host: '127.0.0.1' }),
+    })
     await act(async () => {
       root.render(
         createElement(LanguageProvider, {
@@ -1030,12 +1108,38 @@ describe('provider management UI', () => {
     const tabs = [
       ...container.querySelectorAll<HTMLButtonElement>('[role="tab"]'),
     ]
-    expect(tabs[2].textContent).toBe('Providers')
-    expect(tabs[2].disabled).toBe(false)
-    expect(tabs[3].textContent?.toLowerCase()).toContain('advanced config')
-    expect(tabs[3].disabled).toBe(false)
+    const providersTab = tabs.find((tab) => tab.textContent === 'Providers')!
+    const configTab = tabs.find((tab) =>
+      tab.textContent?.toLowerCase().includes('advanced config'),
+    )!
+    const studioTab = tabs.find((tab) => tab.textContent === 'Create')!
+    expect(providersTab.disabled).toBe(false)
+    expect(configTab.disabled).toBe(false)
+    expect(studioTab.disabled).toBe(false)
+    const selectedTabLabel = () =>
+      container.querySelector<HTMLButtonElement>(
+        '[role="tab"][aria-selected="true"]',
+      )?.textContent
     await act(async () => {
-      tabs[2].click()
+      studioTab.click()
+    })
+    // The stopped-service reset must not bounce the studio back to the
+    // dashboard: a hidden-but-mounted studio subtree would still satisfy
+    // text queries, so assert the selected tab and the visible panel.
+    expect(selectedTabLabel()).toBe('Create')
+    const studioPanel = [...container.querySelectorAll('h1')].find(
+      (heading) => heading.textContent === 'Create',
+    )
+    expect(studioPanel?.closest('.hidden')).toBeNull()
+    expect(container.textContent).toContain('Start the server to create media')
+    const prompt = container.querySelector('textarea')!
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(
+        win.HTMLTextAreaElement.prototype,
+        'value',
+      )!.set!.call(prompt, 'Keep this draft')
+      prompt.dispatchEvent(new Event('input', { bubbles: true }))
+      providersTab.click()
     })
     expect(container.querySelector('[role="dialog"]')).toBeNull()
     expect(container.querySelectorAll('nav button')).toHaveLength(2)
@@ -1046,6 +1150,9 @@ describe('provider management UI', () => {
         (node) => node.textContent === 'Providers',
       ),
     ).toHaveLength(1)
+    await act(async () => studioTab.click())
+    expect(selectedTabLabel()).toBe('Create')
+    expect(container.querySelector('textarea')?.value).toBe('Keep this draft')
   })
   test('renders as a page and preserves edits when switching between providers', async () => {
     await act(async () => {
@@ -1127,6 +1234,32 @@ describe('provider management UI', () => {
       container.querySelector<HTMLInputElement>('[role="switch"]')!.click()
     })
     expect(names()).toEqual(['dashscope', 'gemini', 'codex'])
+  })
+
+  test('selects the first enabled provider when disabled providers come first', async () => {
+    getConfig.mockImplementation(() =>
+      Promise.resolve({
+        configPath: 'config.json',
+        providers: [
+          {
+            name: 'github-copilot',
+            type: 'github-copilot',
+            enabled: false,
+          },
+          { name: 'deepseek', type: 'openai-compatible', enabled: true },
+          { name: 'codex', type: 'openai-responses', enabled: false },
+        ],
+      }),
+    )
+
+    await render()
+
+    expect(
+      container
+        .querySelector<HTMLButtonElement>('nav button[aria-pressed="true"]')
+        ?.getAttribute('aria-label'),
+    ).toBe('deepseek')
+    expect(container.querySelector('h3')?.textContent).toBe('deepseek')
   })
 
   test('keeps selected models first while searching and preserves unknown selections', async () => {

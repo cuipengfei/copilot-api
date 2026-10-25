@@ -4,6 +4,7 @@ import consola from "consola"
 import * as config from "~/lib/config"
 import { getConfig } from "~/lib/config-store"
 import * as copilotProvider from "~/lib/github-copilot-provider"
+import { PATHS } from "~/lib/paths"
 import { state } from "~/lib/state"
 
 const originalState = { ...state }
@@ -38,6 +39,7 @@ await mock.module("~/lib/opencode", () => ({
   initOpencodeVersion: () => Promise.resolve(),
 }))
 await mock.module("~/lib/paths", () => ({
+  PATHS,
   ensurePaths: () => Promise.resolve(),
 }))
 await mock.module("~/lib/models-dev-cache", () => ({

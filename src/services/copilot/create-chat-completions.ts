@@ -18,6 +18,7 @@ import {
 import { getUpstreamTransportConfig } from "~/lib/config"
 import { logCopilotRateLimits } from "~/lib/copilot-rate-limit"
 import { attachPremiumInfo, getPremiumInfoFromHeaders } from "~/lib/logger"
+import { setPluginRequestActualModel } from "~/lib/request-context"
 import { attachResponseHeaders } from "~/lib/response-headers"
 import { resolveInitiatorWithSmartAgent } from "~/lib/smart-agent"
 import { state } from "~/lib/state"
@@ -91,6 +92,7 @@ export const createChatCompletions = async (
 
   consola.debug(`<-- model: ${payload.model}`)
   const url = `${copilotBaseUrl(state)}/chat/completions`
+  setPluginRequestActualModel(payload.model)
   const response = await sendCopilotRequest(url, {
     headers,
     payload,

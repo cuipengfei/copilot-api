@@ -182,6 +182,43 @@ describe("xAI image request translation", () => {
     ).toBe("url")
   })
 
+  test("sends multiple JSON references and rejects masks or too many images", () => {
+    const images = [
+      { image_url: "https://example.com/a.png" },
+      { image_url: "data:image/jpeg;base64,/9j/AA==" },
+    ]
+    const payload = translateXaiImageEditJson(
+      { prompt: "combine them", images },
+      "grok-imagine-image-2.0",
+    )
+    expect(payload.image).toBeUndefined()
+    expect(payload.images).toEqual([
+      { type: "image_url", url: "https://example.com/a.png" },
+      { type: "image_url", url: "data:image/jpeg;base64,/9j/AA==" },
+    ])
+    expect(() =>
+      translateXaiImageEditJson(
+        {
+          prompt: "cut it",
+          images,
+          mask: { image_url: "https://example.com/mask.png" },
+        },
+        "model",
+      ),
+    ).toThrow("xAI image edits do not support mask")
+    expect(() =>
+      translateXaiImageEditJson(
+        {
+          prompt: "too many",
+          images: Array.from({ length: 6 }, (_, index) => ({
+            image_url: `https://example.com/${index}.png`,
+          })),
+        },
+        "model",
+      ),
+    ).toThrow("xAI image edits accept at most 5 images")
+  })
+
   test("converts one uploaded edit image to a data URL", async () => {
     const form = new FormData()
     form.set("model", "gpt-image-1")
@@ -202,7 +239,66 @@ describe("xAI image request translation", () => {
     })
   })
 
-  test("sends multiple references and rejects a mask or too many images", async () => {
+  test.each([
+    {
+      name: "WebP signature before extension",
+      fileName: "photo.jpg",
+      bytes: Buffer.from("RIFF0000WEBP"),
+      mime: "image/webp",
+    },
+    {
+      name: "GIF signature before extension",
+      fileName: "photo.png",
+      bytes: Buffer.from("GIF89a"),
+      mime: "image/gif",
+    },
+    {
+      name: "case-insensitive JPEG extension",
+      fileName: "photo.JPEG",
+      bytes: Buffer.from("upload"),
+      mime: "image/jpeg",
+    },
+    {
+      name: "WebP extension",
+      fileName: "photo.webp",
+      bytes: Buffer.from("upload"),
+      mime: "image/webp",
+    },
+    {
+      name: "GIF extension",
+      fileName: "photo.gif",
+      bytes: Buffer.from("upload"),
+      mime: "image/gif",
+    },
+    {
+      name: "unknown upload defaults to PNG",
+      fileName: "photo.bin",
+      bytes: Buffer.from("upload"),
+      mime: "image/png",
+    },
+  ])(
+    "preserves a usable data URL for $name",
+    async ({ fileName, bytes, mime }) => {
+      const form = new FormData()
+      form.set("prompt", "edit this image")
+      form.set(
+        "image",
+        new File([bytes], fileName, { type: "application/octet-stream" }),
+      )
+
+      const payload = await translateXaiImageEditForm(
+        form,
+        "grok-imagine-image",
+      )
+
+      expect(payload.image).toEqual({
+        type: "image_url",
+        url: `data:${mime};base64,${bytes.toString("base64")}`,
+      })
+    },
+  )
+
+  test("converts uploaded references and rejects a mask or too many images", async () => {
     const form = new FormData()
     form.set("prompt", "combine them")
     form.append("image", "https://example.com/a.png")
