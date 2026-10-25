@@ -15,6 +15,20 @@ function extract(start: string, end: string): string {
   return html.slice(first, last)
 }
 
+function formatTestAmount(
+  value: number,
+  unit?: "credits" | "USD" | "requests",
+): string {
+  return unit === "USD" ?
+      new Intl.NumberFormat(undefined, {
+        style: "currency",
+        currency: "USD",
+      }).format(value)
+    : new Intl.NumberFormat(undefined, { maximumFractionDigits: 2 }).format(
+        value,
+      )
+}
+
 const business: SubscriptionUsage = {
   provider: "codex",
   planType: "business",
@@ -132,16 +146,20 @@ describe("web subscription quota rendering", () => {
       win.document.body.innerHTML = viewer.renderSubscriptionUsageSection()
       expect(win.document.body.textContent).toContain("Subscriptions")
       expect(win.document.body.textContent).toContain("Monthly credit limit")
-      expect(win.document.body.textContent).toContain("25,000 / 25,000 Credits")
+      expect(win.document.body.textContent).toContain(
+        `${formatTestAmount(25000)} / ${formatTestAmount(25000)} Credits`,
+      )
       expect(win.document.body.textContent).toContain(
         "Workspace spending limit reached",
       )
-      expect(win.document.body.textContent).toContain("17,000")
+      expect(win.document.body.textContent).toContain(formatTestAmount(17000))
       expect(win.document.body.textContent).toContain("Resets")
       expect(win.document.body.textContent).toContain("Weekly limit")
       expect(win.document.body.textContent).toContain("42.5% used")
       expect(win.document.body.textContent).toContain("Prepaid balance")
-      expect(win.document.body.textContent).toContain("$12.50")
+      expect(win.document.body.textContent).toContain(
+        formatTestAmount(12.5, "USD"),
+      )
       expect(
         win.document.querySelectorAll('[role="progressbar"]'),
       ).toHaveLength(2)
@@ -237,7 +255,7 @@ describe("web subscription quota rendering", () => {
       "Pay as you go",
     ])
       expect(rendered).toContain(label)
-    expect(rendered).toContain("— / $20.00")
+    expect(rendered).toContain(`— / ${formatTestAmount(20, "USD")}`)
     expect(rendered).not.toContain("Invalid Date")
   })
 })

@@ -18,6 +18,19 @@ let fetchUsage: ReturnType<
   typeof mock<(provider: string) => Promise<SubscriptionUsage | null>>
 >
 const previousGlobals = new Map<string, PropertyDescriptor | undefined>()
+function formatTestAmount(
+  value: number,
+  unit?: 'credits' | 'USD' | 'requests',
+): string {
+  return unit === 'USD' ?
+      new Intl.NumberFormat(undefined, {
+        style: 'currency',
+        currency: 'USD',
+      }).format(value)
+    : new Intl.NumberFormat(undefined, { maximumFractionDigits: 2 }).format(
+        value,
+      )
+}
 const business: SubscriptionUsage = {
   provider: 'codex',
   planType: 'business',
@@ -167,7 +180,7 @@ describe('subscription quota details', () => {
             unit: 'USD',
           },
         },
-        '$12.50',
+        formatTestAmount(12.5, 'USD'),
       ],
       [
         {
@@ -225,8 +238,10 @@ describe('subscription quota details', () => {
   test('renders Business monthly credit caps and balances without personal windows', async () => {
     await renderDetails(business)
     expect(container.textContent).toContain('Monthly credit limit')
-    expect(container.textContent).toContain('8,000 / 25,000 Credits')
-    expect(container.textContent).toContain('17,000')
+    expect(container.textContent).toContain(
+      `${formatTestAmount(8000)} / ${formatTestAmount(25000)} Credits`,
+    )
+    expect(container.textContent).toContain(formatTestAmount(17000))
     expect(container.textContent).toContain('32% used')
     expect(container.textContent).toContain('resets')
     expect(
@@ -264,8 +279,12 @@ describe('subscription quota details', () => {
     expect(container.textContent).toContain('30-minute limit')
     expect(container.textContent).toContain('120% used')
     expect(container.textContent).toContain('4.3% used')
-    expect(container.textContent).toContain('— / $20.00')
-    expect(container.textContent).toContain('$3.00 / $50.00')
+    expect(container.textContent).toContain(
+      `— / ${formatTestAmount(20, 'USD')}`,
+    )
+    expect(container.textContent).toContain(
+      `${formatTestAmount(3, 'USD')} / ${formatTestAmount(50, 'USD')}`,
+    )
     expect(
       container
         .querySelector('[aria-label="Codex Other · 5-hour limit"]')
@@ -285,7 +304,7 @@ describe('subscription quota details', () => {
       [{ unlimited: false, hasCredits: false, unit: 'credits' }, '—'],
       [
         { unlimited: false, hasCredits: false, balance: 0, unit: 'USD' },
-        '$0.00',
+        formatTestAmount(0, 'USD'),
       ],
     ] as const) {
       await renderDetails({ ...business, windows: [], credits })
@@ -417,7 +436,7 @@ describe('subscription quota loading', () => {
     expect(container.querySelector('[role="alert"]')?.textContent).toContain(
       'Could not load quota',
     )
-    expect(container.textContent).not.toContain('17,000')
+    expect(container.textContent).not.toContain(formatTestAmount(17000))
     fetchUsage.mockResolvedValueOnce(null)
     await act(async () => refresh.click())
     expect(container.textContent).toContain(

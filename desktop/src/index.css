@@ -81,7 +81,7 @@ body {
 .subscriptions-description { margin: 9px 0 0; font-size: 13px; line-height: 1.6; color: var(--quota-muted); }
 .subscriptions-count { display: inline-flex; align-items: center; gap: 7px; flex-shrink: 0; padding: 7px 11px; border: 1px solid var(--quota-line); border-radius: 99px; font-size: 11px; color: var(--quota-muted); background: var(--quota-surface); }
 .subscriptions-count > span { width: 5px; height: 5px; border-radius: 50%; background: #22a06b; }
-.subscriptions-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr)); gap: 18px; align-items: start; }
+.subscriptions-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 18px; align-items: start; }
 .quota-provider-card { --quota-brand: #7c5ac7; position: relative; min-width: 0; padding: 22px 20px 14px; overflow: hidden; border: 1px solid var(--quota-line); border-radius: 18px; background: var(--quota-surface); box-shadow: 0 3px 12px rgb(0 0 0 / 2%); }
 .quota-provider-card[data-provider="codex"] { --quota-brand: #179876; }
 .quota-provider-card[data-provider="xai"] { --quota-brand: #386fce; }
@@ -130,9 +130,13 @@ body {
 .subscriptions-empty h3 { margin: 0; font-size: 17px; font-weight: 600; color: var(--quota-text); }
 .subscriptions-empty p { max-width: 360px; margin: 0; line-height: 1.7; }
 .subscriptions-action { margin-top: 5px; border: 0; border-radius: 9px; padding: 8px 14px; background: var(--quota-text); color: var(--quota-surface); cursor: pointer; font-size: 12px; }
+@media (max-width: 899px) {
+  .subscriptions-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
 @media (max-width: 639px) {
   .subscriptions-page { padding: 12px 20px 20px; }
   .subscriptions-page-heading { align-items: flex-start; gap: 12px; margin-bottom: 20px; flex-direction: column; }
   .subscriptions-page-heading h2 { font-size: 23px; }
+  .subscriptions-grid { grid-template-columns: minmax(0, 1fr); }
   .quota-provider-card { padding: 20px 18px 14px; }
 }
