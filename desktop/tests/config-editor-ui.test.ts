@@ -732,12 +732,14 @@ describe('Desktop config editor', () => {
     )
   })
 
-  test('refreshes clean drafts on entry but retains unsaved edits across tab changes', async () => {
+  test('opens model mappings on clean entry but retains unsaved edits and their section', async () => {
     await render(false, false)
     expect(read).not.toHaveBeenCalled()
     await render()
+    expect(button('Model mappings').getAttribute('aria-current')).toBe('page')
     await click('Request settings')
     expect(read).toHaveBeenCalledTimes(1)
+    await click('JSON')
     await render(false, false)
     documentFixture = {
       ...documentFixture,
@@ -746,12 +748,16 @@ describe('Desktop config editor', () => {
     }
     await render()
     expect(read).toHaveBeenCalledTimes(2)
+    expect(button('Model mappings').getAttribute('aria-current')).toBe('page')
+    expect(button('Visual').getAttribute('aria-selected')).toBe('true')
+    await click('Request settings')
     expect(field('useMessagesApi').checked).toBe(false)
     await act(async () => field('useMessagesApi').click())
     await render(false, false)
     documentFixture.content = '{"useMessagesApi":false,"external":true}'
     await render()
     expect(read).toHaveBeenCalledTimes(2)
+    expect(button('Request settings').getAttribute('aria-current')).toBe('page')
     expect(field('useMessagesApi').checked).toBe(true)
   })
 

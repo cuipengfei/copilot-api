@@ -175,6 +175,8 @@ export default function AdvancedConfigPage({
   }
   useEffect(() => {
     if (!active || dirty) return
+    setSection('mappings')
+    setMode('form')
     let current = true
     setBusy(true)
     setError('')

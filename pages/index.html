@@ -18,6 +18,9 @@
 
     <style>
       :root {
+        --page-zoom: 0.9;
+        zoom: var(--page-zoom);
+
         --color-red: #dc2626;
         --color-green: #16a34a;
         --color-yellow: #d97706;
@@ -62,7 +65,7 @@
       }
 
       .app-shell {
-        min-height: 100vh;
+        min-height: calc(100vh / var(--page-zoom));
         background: linear-gradient(180deg, #f8fafc 0%, #eef2f7 100%);
       }
 
