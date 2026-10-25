@@ -197,6 +197,40 @@ export interface Locale {
     authHeader: string
     copy: string
     quotaUsage: string
+    subscriptionQuota: string
+    tabSubscriptions: string
+    quotaRefreshAll: string
+    quotaRemaining: string
+    quotaRequests: string
+    quotaAvailableBalance: string
+    quotaLoadFailedShort: string
+    quotaLimitReachedShort: string
+    quotaConnected: string
+    quotaNotConnected: string
+    quotaRefreshProvider: string
+    quotaLiveUsage: string
+    quotaAccountUsage: string
+    quotaPageDescription: string
+    quotaProviderCount: string
+    quotaEmptyTitle: string
+    quotaEmptyDescription: string
+    quotaMonthlyCredits: string
+    quotaOnDemand: string
+    quotaWeekly: string
+    quotaMonthly: string
+    quotaDays: string
+    quotaHours: string
+    quotaMinutes: string
+    quotaAllowance: string
+    quotaCredits: string
+    quotaPrepaid: string
+    quotaCreditsAvailable: string
+    quotaUnlimited: string
+    quotaLimitReached: string
+    quotaWorkspaceCreditsDepleted: string
+    quotaWorkspaceLimitReached: string
+    quotaLoadFailed: string
+    quotaAccountUnavailable: string
     quotaResetsOn: string
     quotaUnavailable: string
     quotaUsedPercent: string
