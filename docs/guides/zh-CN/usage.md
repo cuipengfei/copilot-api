@@ -14,7 +14,6 @@
    ```
 2. 服务会输出一个 usage viewer 的 URL。将它复制到浏览器中打开，形式大致如下：
    `http://localhost:4141/usage-viewer?endpoint=http://localhost:4141/usage`
-   - 如果你在 Windows 上使用 `start.bat` 脚本，这个页面会自动打开。
 
 看板提供了更易读的 Copilot 用量视图：
 

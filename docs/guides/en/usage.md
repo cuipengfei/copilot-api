@@ -12,7 +12,6 @@ After starting the server, a URL to the Copilot Usage Dashboard will be displaye
     ```
 2.  The server will output a URL to the usage viewer. Copy and paste this URL into your browser. It will look something like this:
     `http://localhost:4141/usage-viewer?endpoint=http://localhost:4141/usage`
-    - If you use the `start.bat` script on Windows, this page will open automatically.
 
 The dashboard provides a user-friendly interface to view your Copilot usage data:
 
