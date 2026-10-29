@@ -39,6 +39,9 @@ export interface State {
   smartAgentCacheTimestamp?: number
 
   tokenBasedBilling?: boolean
+
+  // Responses belong-retry learnings keyed by identity, model, auth scope
+  responsesReplayLearned: Set<string>
 }
 
 export const state: State = {
@@ -49,4 +52,5 @@ export const state: State = {
   forceAgent: false,
   nativeMessages: false,
   vsCodeDeviceId: randomUUID(),
+  responsesReplayLearned: new Set(),
 }

@@ -308,6 +308,88 @@ test("preserves request output_config effort when adaptive thinking enabled", as
   expect(parsed.output_config?.effort).toBe("medium")
 })
 
+test("injects configured effort when adaptive thinking is enabled and request omits it", async () => {
+  state.models = {
+    object: "list",
+    data: [
+      {
+        id: "claude-sonnet-4-20250514",
+        name: "Claude Sonnet 4",
+        object: "model",
+        vendor: "anthropic",
+        version: "20250514",
+        preview: false,
+        model_picker_enabled: true,
+        capabilities: {
+          family: "claude",
+          limits: {},
+          object: "model_capabilities",
+          supports: {
+            adaptive_thinking: true,
+          },
+          tokenizer: "claude",
+          type: "chat.completions",
+        },
+        supported_endpoints: ["/v1/messages"],
+      },
+    ],
+  }
+
+  spyOn(configModule, "getReasoningEffortForModel").mockReturnValue("high")
+
+  const payload: AnthropicMessagesPayload = {
+    model: "claude-sonnet-4-20250514",
+    max_tokens: 1024,
+    messages: [{ role: "user", content: "hi" }],
+  }
+
+  await createMessages(payload, undefined)
+
+  const parsed = JSON.parse(getMessagesBody()) as AnthropicMessagesPayload
+
+  expect(parsed.thinking).toEqual({ type: "adaptive" })
+  expect(parsed.output_config?.effort).toBe("high")
+})
+
+test("does not add effort thinking to native models without adaptive thinking", async () => {
+  state.models = {
+    object: "list",
+    data: [
+      {
+        id: "claude-sonnet-4-20250514",
+        name: "Claude Sonnet 4",
+        object: "model",
+        vendor: "anthropic",
+        version: "20250514",
+        preview: false,
+        model_picker_enabled: true,
+        capabilities: {
+          family: "claude",
+          limits: {},
+          object: "model_capabilities",
+          supports: {},
+          tokenizer: "claude",
+          type: "chat.completions",
+        },
+        supported_endpoints: ["/v1/messages"],
+      },
+    ],
+  }
+
+  const payload: AnthropicMessagesPayload = {
+    model: "claude-sonnet-4-20250514",
+    max_tokens: 1024,
+    messages: [{ role: "user", content: "hi" }],
+  }
+
+  await createMessages(payload, undefined)
+
+  const parsed = JSON.parse(getMessagesBody()) as AnthropicMessagesPayload
+
+  expect(parsed.thinking).toBeUndefined()
+  expect(parsed.output_config).toBeUndefined()
+})
+
 test("native log effort uses anthropic mapping for config fallback", () => {
   const effortSpy = spyOn(
     configModule,

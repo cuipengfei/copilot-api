@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, mock, test } from "bun:test"
+import { afterEach, beforeEach, expect, mock, spyOn, test } from "bun:test"
 import { Hono } from "hono"
 
 import type {
@@ -23,6 +23,7 @@ import type {
 } from "~/lib/types/responses"
 
 import { COMPACT_REQUEST } from "~/lib/compact"
+import * as configModule from "~/lib/config"
 import { installModelsDevCatalog } from "~/lib/models-dev-cache"
 import { attachResponseHeaders } from "~/lib/response-headers"
 import { closeUsageStore, getTokenUsageEventsPage } from "~/lib/token-usage"
@@ -106,6 +107,10 @@ const logger = {
 
 const createContext = () =>
   ({
+    req: {
+      raw: new Request("http://localhost/v1/messages"),
+      header: (_name: string) => undefined,
+    },
     json: (body: unknown) => Response.json(body),
   }) as Parameters<typeof handleWithChatCompletions>[0]
 
@@ -348,7 +353,7 @@ test("messages Chat Completions flow downgrades unsupported reasoning effort", a
   expect(capturedPayload?.reasoning_effort).toBe("high")
 })
 
-test("messages Chat Completions flow omits reasoning effort without model support", async () => {
+test("Messages 显式 effort 在能力未知时保留，在明确不支持时移除", async () => {
   const createPayload = (): AnthropicMessagesPayload => ({
     model: "gpt-test",
     max_tokens: 128,
@@ -369,7 +374,7 @@ test("messages Chat Completions flow omits reasoning effort without model suppor
   )
 
   expect(response.status).toBe(200)
-  expect(capturedPayload).not.toHaveProperty("reasoning_effort")
+  expect(capturedPayload?.reasoning_effort).toBe("high")
 
   capturedPayload = null
   createChatCompletions.mockClear()
@@ -384,6 +389,47 @@ test("messages Chat Completions flow omits reasoning effort without model suppor
 
   expect(response.status).toBe(200)
   expect(capturedPayload).not.toHaveProperty("reasoning_effort")
+})
+
+test("messages Responses flow uses configured effort when request omits it", async () => {
+  const payload: AnthropicMessagesPayload = {
+    model: "gpt-test",
+    max_tokens: 128,
+    messages: [{ role: "user", content: "hello" }],
+  }
+
+  const effortSpy = spyOn(
+    configModule,
+    "getReasoningEffortForModel",
+  ).mockReturnValue("high")
+
+  const response = await handleWithResponsesApi(createContext(), payload, {
+    logger,
+    requestId: "request-1",
+    selectedModel: createModel(["/responses"]),
+  })
+
+  expect(response.status).toBe(200)
+  expect(capturedResponsesPayload?.reasoning?.effort).toBe("high")
+  effortSpy.mockRestore()
+})
+
+test("messages Responses flow maps request effort onto reasoning effort", async () => {
+  const payload: AnthropicMessagesPayload = {
+    model: "gpt-test",
+    max_tokens: 128,
+    messages: [{ role: "user", content: "hello" }],
+    output_config: { effort: "max" },
+  }
+
+  const response = await handleWithResponsesApi(createContext(), payload, {
+    logger,
+    requestId: "request-1",
+    selectedModel: createModel(["/responses"]),
+  })
+
+  expect(response.status).toBe(200)
+  expect(capturedResponsesPayload?.reasoning?.effort).toBe("xhigh")
 })
 
 test("messages Chat Completions flow emits an error event when the stream breaks during thinking output", async () => {

@@ -7,7 +7,7 @@ import { HTTPError } from "~/lib/error"
 import {
   colorizeModel,
   createHandlerLogger,
-  resolvePremiumInfo,
+  getAttachedPremiumInfo,
   shouldUseColor,
   writeStreamLog,
 } from "~/lib/logger"
@@ -88,21 +88,16 @@ export const retryResponsesWithoutImages = async <T>({
   return await retry()
 }
 
-export const logResponsesCompletion = async ({
+export const logResponsesCompletion = ({
   model,
   response,
   chunks,
-  streaming,
 }: {
   model: string
   response: unknown
   chunks: number
-  streaming: boolean
-}): Promise<void> => {
-  const premium = await resolvePremiumInfo(
-    response,
-    streaming ? "responses/stream" : "responses/non-stream",
-  )
+}): void => {
+  const premium = getAttachedPremiumInfo(response)
   writeStreamLog({ model, chunks, done: true, premium }, true)
 }
 

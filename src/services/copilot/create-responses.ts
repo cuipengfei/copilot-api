@@ -66,6 +66,7 @@ interface ResponsesRequestOptions {
   compactType?: CompactType
   transport?: ResponsesTransport
   clientSignal?: AbortSignal
+  reasoningReplayIdentity?: string
 }
 
 export const createResponses = async (
@@ -79,6 +80,7 @@ export const createResponses = async (
     compactType,
     transport = "http",
     clientSignal,
+    reasoningReplayIdentity,
   }: ResponsesRequestOptions,
 ): Promise<CreateResponsesReturn> => {
   if (!state.copilotToken) throw new Error("Copilot token not found")
@@ -136,6 +138,7 @@ export const createResponses = async (
     modelCallId,
     start,
     clientSignal,
+    reasoningReplayIdentity,
   })
 }
 
@@ -144,12 +147,19 @@ interface ResponsesHttpContext {
   modelCallId: string
   start: number
   clientSignal?: AbortSignal
+  reasoningReplayIdentity?: string
 }
 
 const createHttpResponses = async (
   payload: ResponsesPayload,
   headers: Record<string, string>,
-  { requestId, modelCallId, start, clientSignal }: ResponsesHttpContext,
+  {
+    requestId,
+    modelCallId,
+    start,
+    clientSignal,
+    reasoningReplayIdentity,
+  }: ResponsesHttpContext,
 ): Promise<CreateResponsesReturn> => {
   // Auto 会话令牌仅用于 HTTP 分支；WebSocket 请求不附带
   await attachAutoSessionToken(headers, payload.model, "/responses")
@@ -160,6 +170,7 @@ const createHttpResponses = async (
     headers,
     clientSignal,
     transportConfig,
+    reasoningReplayIdentity,
   })
 
   if (!response.ok) {

@@ -3,8 +3,6 @@ import fs from "node:fs"
 import path from "node:path"
 import util from "node:util"
 
-import { getCopilotUsage } from "~/services/github/get-copilot-usage"
-
 import { PATHS } from "./paths"
 import { registerProcessCleanup } from "./process-cleanup"
 import { requestContext } from "./request-context"
@@ -381,7 +379,11 @@ export const writeStreamLog = (
     return
   }
 
-  process.stdout.write(appendNewline ? `${output}\n` : output)
+  try {
+    process.stdout.write(appendNewline ? `${output}\n` : output)
+  } catch {
+    // stdout 不可写时仍继续响应与清理流程。
+  }
 }
 
 const premiumInfoSymbol = Symbol("premiumInfo")
@@ -448,57 +450,24 @@ export const getAttachedPremiumInfo = (
   )
 }
 
-export const getPremiumInfo = async (): Promise<{
-  remaining: number
-  total: number
-} | null> => {
-  try {
-    const usage = await getCopilotUsage()
-    const pi = usage?.quota_snapshots?.premium_interactions
-    if (!pi) return null
-    if (!pi.unlimited) {
-      return { remaining: pi.remaining, total: pi.entitlement }
-    }
-  } catch {
-    // Ignore errors, don't affect main flow
-  }
-  return null
-}
-
-export const resolvePremiumInfo = async (
-  value: unknown,
-  _context: string,
-): Promise<{ remaining: number; total: number } | null> => {
-  const attached = getAttachedPremiumInfo(value)
-  if (attached) {
-    return attached
-  }
-
-  return getPremiumInfo()
-}
-
 export const formatStreamLog = ({
   model,
   chunks,
   done,
   premium,
 }: StreamLogOptions): string => {
-  if (!done) {
-    return ""
-  }
-
   const displayModel = shouldUseColor() ? colorizeModel(model) : model
-  const base = `\x1b[2K\r↪ ${displayModel} ${chunks} ✓`
-  if (premium) {
-    // Color based on remaining percentage: green > 50%, yellow 20-50%, red < 20%
-    const pct = premium.remaining / premium.total
-    let numColor = "\x1b[31m" // red < 20%
-    if (pct > 0.5)
-      numColor = "\x1b[32m" // green
-    else if (pct > 0.2) numColor = "\x1b[33m" // yellow
-    const reset = "\x1b[0m"
-    const dim = "\x1b[2m"
-    return `${base} [${numColor}${formatPremiumRemaining(premium.remaining)}${reset} ${dim}left${reset}]`
+  const base = `\x1b[2K\r↪ ${displayModel} ${chunks}${done ? " ✓" : ""}`
+  if (!done || !premium) {
+    return base
   }
-  return base
+  // Color based on remaining percentage: green > 50%, yellow 20-50%, red < 20%
+  const pct = premium.remaining / premium.total
+  let numColor = "\x1b[31m" // red < 20%
+  if (pct > 0.5)
+    numColor = "\x1b[32m" // green
+  else if (pct > 0.2) numColor = "\x1b[33m" // yellow
+  const reset = "\x1b[0m"
+  const dim = "\x1b[2m"
+  return `${base} [${numColor}${formatPremiumRemaining(premium.remaining)}${reset} ${dim}left${reset}]`
 }

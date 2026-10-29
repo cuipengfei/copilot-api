@@ -1,5 +1,14 @@
-import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test"
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  mock,
+  spyOn,
+  test,
+} from "bun:test"
 import { Hono, type Context } from "hono"
+import { SSEStreamingApi } from "hono/streaming"
 
 import { attachResponseHeaders } from "../src/lib/response-headers"
 import type {
@@ -154,6 +163,35 @@ async function* streamChunks(items: Array<Record<string, unknown>>) {
   await Promise.resolve()
   for (const item of items) {
     yield item
+  }
+}
+
+const captureStreamLogs = () => {
+  const writes: Array<string> = []
+  const originalNoColor = process.env.NO_COLOR
+  process.env.NO_COLOR = "1"
+  const spy = spyOn(process.stdout, "write").mockImplementation(
+    (chunk: string | Uint8Array) => {
+      writes.push(
+        typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk),
+      )
+      return true
+    },
+  )
+  return {
+    entries: () =>
+      writes
+        .join("")
+        .split("\x1b[2K\r")
+        .filter((entry) => entry.includes("↪")),
+    restore: () => {
+      spy.mockRestore()
+      if (originalNoColor === undefined) {
+        Reflect.deleteProperty(process.env, "NO_COLOR")
+      } else {
+        process.env.NO_COLOR = originalNoColor
+      }
+    },
   }
 }
 
@@ -2722,6 +2760,94 @@ describe("responses handler upstream header forwarding across fallbacks", () => 
     expect(types).toContain("response.completed")
     expect(types).not.toContain("response.failed")
   })
+
+  test("streams chunk progress and a final check for a completed chat fallback", async () => {
+    state.models = {
+      object: "list",
+      data: [
+        {
+          capabilities: { limits: { max_prompt_tokens: 128000 } },
+          id: "chat-fallback-test",
+          supported_endpoints: ["/v1/chat/completions"],
+        },
+      ],
+    } as typeof state.models
+    responsesChatDependencies.createChatCompletions = mock(
+      (payload: ChatCompletionsPayload) =>
+        Promise.resolve(createChatStream(payload.model)),
+    ) as typeof responsesChatDependencies.createChatCompletions
+    const stdout = captureStreamLogs()
+
+    try {
+      const response = await createApp().request("/v1/responses", {
+        body: JSON.stringify({
+          input: "hello",
+          model: "chat-fallback-test",
+          stream: true,
+        }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      })
+      const body = await response.text()
+      expect(body).toContain("response.completed")
+    } finally {
+      stdout.restore()
+    }
+
+    const entries = stdout.entries().map((entry) => entry.trim())
+    expect(entries.slice(0, 2)).toEqual([
+      "↪ chat-fallback-test 1",
+      "↪ chat-fallback-test 2",
+    ])
+    expect(entries.at(-1)?.startsWith("↪ chat-fallback-test 3 ✓")).toBe(true)
+    expect(entries.filter((entry) => entry.includes("✓"))).toHaveLength(1)
+  })
+
+  test("omits the completion check when a chat fallback stream fails", async () => {
+    state.models = {
+      object: "list",
+      data: [
+        {
+          capabilities: { limits: { max_prompt_tokens: 128000 } },
+          id: "chat-fallback-test",
+          supported_endpoints: ["/v1/chat/completions"],
+        },
+      ],
+    } as typeof state.models
+    async function* failingChatStream(
+      model: string,
+    ): AsyncGenerator<ChatCompletionChunk> {
+      yield* createChatStream(model, false)
+      throw new Error("upstream interrupted")
+    }
+    responsesChatDependencies.createChatCompletions = mock(
+      (payload: ChatCompletionsPayload) =>
+        Promise.resolve(failingChatStream(payload.model)),
+    ) as typeof responsesChatDependencies.createChatCompletions
+    const stdout = captureStreamLogs()
+    let body: string
+
+    try {
+      const response = await createApp().request("/v1/responses", {
+        body: JSON.stringify({
+          input: "hello",
+          model: "chat-fallback-test",
+          stream: true,
+        }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      })
+      body = await response.text()
+    } finally {
+      stdout.restore()
+    }
+
+    expect(body).toContain("response.failed")
+    const entries = stdout.entries().map((entry) => entry.trim())
+    expect(entries).toContain("↪ chat-fallback-test 1")
+    expect(entries.some((entry) => entry.includes("✓"))).toBe(false)
+    expect(stdout.entries().at(-1)?.endsWith("\n")).toBe(true)
+  })
 })
 
 describe("responses handler interrupted streams", () => {
@@ -2792,4 +2918,285 @@ describe("responses handler interrupted streams", () => {
       "response.failed",
     ])
   })
+})
+
+describe("responses handler native stream logging", () => {
+  const completedResponse = {
+    created_at: 0,
+    error: null,
+    id: "resp_stream_test",
+    incomplete_details: null,
+    instructions: null,
+    metadata: null,
+    model: "gpt-responses-test",
+    object: "response",
+    output: [],
+    output_text: "hi",
+    parallel_tool_calls: false,
+    status: "completed",
+    temperature: null,
+    tool_choice: "auto",
+    tools: [],
+    top_p: null,
+    usage: { input_tokens: 2, output_tokens: 1, total_tokens: 3 },
+  }
+
+  test("logs prompt-visible progress for a completed native Responses stream", async () => {
+    createResponses.mockImplementation(() =>
+      Promise.resolve(
+        streamChunks([
+          {
+            data: JSON.stringify({
+              response: { ...completedResponse, usage: null },
+              type: "response.created",
+            }),
+            event: "response.created",
+          },
+          {
+            data: JSON.stringify({
+              delta: "hi",
+              type: "response.output_text.delta",
+            }),
+            event: "response.output_text.delta",
+          },
+          {
+            data: JSON.stringify({
+              response: completedResponse,
+              type: "response.completed",
+            }),
+            event: "response.completed",
+          },
+        ]),
+      ),
+    )
+    const stdout = captureStreamLogs()
+
+    try {
+      const response = await createApp().request("/v1/responses", {
+        body: JSON.stringify({
+          input: "hello",
+          model: "gpt-responses-test",
+          stream: true,
+        }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      })
+      expect(response.headers.get("content-type") ?? "").toContain(
+        "text/event-stream",
+      )
+      await response.text()
+    } finally {
+      stdout.restore()
+    }
+
+    const entries = stdout.entries().map((entry) => entry.trim())
+    expect(entries.slice(0, 2)).toEqual([
+      "↪ gpt-responses-test 1",
+      "↪ gpt-responses-test 2",
+    ])
+    expect(entries.at(-1)?.startsWith("↪ gpt-responses-test 3 ✓")).toBe(true)
+    expect(entries.filter((entry) => entry.includes("✓"))).toHaveLength(1)
+  })
+
+  for (const terminalType of ["response.failed", "response.incomplete"]) {
+    test(`omits the completion check for ${terminalType}`, async () => {
+      createResponses.mockImplementation(() =>
+        Promise.resolve(
+          streamChunks([
+            {
+              data: JSON.stringify({
+                response: {
+                  ...completedResponse,
+                  status:
+                    terminalType === "response.failed" ? "failed" : (
+                      "incomplete"
+                    ),
+                },
+                type: terminalType,
+              }),
+              event: terminalType,
+            },
+          ]),
+        ),
+      )
+      const stdout = captureStreamLogs()
+
+      try {
+        const response = await createApp().request("/v1/responses", {
+          body: JSON.stringify({
+            input: "hello",
+            model: "gpt-responses-test",
+            stream: true,
+          }),
+          headers: { "content-type": "application/json" },
+          method: "POST",
+        })
+        await response.text()
+      } finally {
+        stdout.restore()
+      }
+
+      const entries = stdout.entries().map((entry) => entry.trim())
+      expect(entries).toContain("↪ gpt-responses-test 1")
+      expect(entries.some((entry) => entry.includes("✓"))).toBe(false)
+      expect(stdout.entries().at(-1)?.endsWith("\n")).toBe(true)
+    })
+  }
+
+  test("omits the completion check when the upstream stream throws", async () => {
+    createResponses.mockImplementation(() =>
+      Promise.resolve(
+        (async function* () {
+          await Promise.resolve()
+          yield {
+            data: JSON.stringify({
+              response: { ...completedResponse, usage: null },
+              type: "response.created",
+            }),
+            event: "response.created",
+          }
+          throw new Error("upstream interrupted")
+        })(),
+      ),
+    )
+    const stdout = captureStreamLogs()
+
+    try {
+      const response = await createApp().request("/v1/responses", {
+        body: JSON.stringify({
+          input: "hello",
+          model: "gpt-responses-test",
+          stream: true,
+        }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      })
+      const body = await response.text()
+      expect(body).toContain("response.failed")
+    } finally {
+      stdout.restore()
+    }
+
+    const entries = stdout.entries().map((entry) => entry.trim())
+    expect(entries).toContain("↪ gpt-responses-test 1")
+    expect(entries.some((entry) => entry.includes("✓"))).toBe(false)
+    expect(stdout.entries().at(-1)?.endsWith("\n")).toBe(true)
+  })
+})
+
+describe("Responses 取消请求后的完成日志", () => {
+  test.each(["native", "chat"] as const)(
+    "%s 上游取消后继续完成时不打印成功标记",
+    async (backend) => {
+      const release = Promise.withResolvers<void>()
+      const finished = Promise.withResolvers<void>()
+      const model =
+        backend === "native" ? "gpt-responses-test" : "chat-fallback-test"
+      state.models!.data[0].id = model
+      state.models!.data[0].supported_endpoints = [
+        backend === "native" ? "/responses" : "/v1/chat/completions",
+      ]
+      if (backend === "native") {
+        createResponses.mockImplementation(() =>
+          Promise.resolve(
+            (async function* () {
+              yield {
+                event: "response.created",
+                data: JSON.stringify({
+                  type: "response.created",
+                  response: createResponsesResult(model),
+                }),
+              }
+              await release.promise
+              yield {
+                event: "response.completed",
+                data: JSON.stringify({
+                  type: "response.completed",
+                  response: {
+                    ...createResponsesResult(model),
+                    usage: {
+                      input_tokens: 2,
+                      output_tokens: 1,
+                      total_tokens: 3,
+                    },
+                  },
+                }),
+              }
+            })(),
+          ),
+        )
+      } else {
+        responsesChatDependencies.createChatCompletions = mock(() =>
+          Promise.resolve(
+            (async function* () {
+              yield {
+                choices: [
+                  {
+                    index: 0,
+                    delta: { content: "hi" },
+                    finish_reason: null,
+                    logprobs: null,
+                  },
+                ],
+                created: 0,
+                id: "chat-aborted",
+                model,
+              }
+              await release.promise
+              yield {
+                choices: [
+                  {
+                    index: 0,
+                    delta: {},
+                    finish_reason: "stop" as const,
+                    logprobs: null,
+                  },
+                ],
+                created: 0,
+                id: "chat-aborted",
+                model,
+                usage: {
+                  prompt_tokens: 2,
+                  completion_tokens: 1,
+                  total_tokens: 3,
+                },
+              }
+            })(),
+          ),
+        )
+      }
+      const close = Reflect.get(SSEStreamingApi.prototype, "close")
+      const closed = spyOn(
+        SSEStreamingApi.prototype,
+        "close",
+      ).mockImplementation(async function (this: SSEStreamingApi) {
+        await close.call(this)
+        finished.resolve()
+      })
+      const stdout = captureStreamLogs()
+      const controller = new AbortController()
+      try {
+        const response = await createApp().request("/v1/responses", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ model, input: "hello", stream: true }),
+          signal: controller.signal,
+        })
+        const reader = response.body!.getReader()
+        expect((await reader.read()).done).toBe(false)
+        controller.abort()
+        await reader.cancel()
+        release.resolve()
+        await finished.promise
+        expect(stdout.entries().some((entry) => entry.includes("✓"))).toBe(
+          false,
+        )
+        expect(stdout.entries().at(-1)?.endsWith("\n")).toBe(true)
+      } finally {
+        release.resolve()
+        stdout.restore()
+        closed.mockRestore()
+      }
+    },
+  )
 })

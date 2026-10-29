@@ -11,7 +11,7 @@
 | Token lifecycle | `token.ts` | GitHub/Copilot token 获取与刷新；wall-clock 按 token 剩余时间分段重新调度，AbortController 管理生命周期；opencode OAuth 模式复用 GitHub token 并停 refresh loop |
 | Rate limit / approval / copilot-rate-limit | `rate-limit.ts`, `approval.ts`, `copilot-rate-limit.ts` | `-r` / `-w` 与手动确认；copilot-rate-limit 管理 Copilot 上游 429 响应的冷却逻辑 |
 | Response header forwarding | `response-headers.ts` | 统一附着/提取 upstream headers，剥离 hop-by-hop headers，并提供 JSON/SSE 回包 helper |
-| Logging / debug / models log | `logger.ts`, `models-log.ts` | stream log、debug dump、models 输出；三路路由共用 `getPremiumInfo()` / `formatStreamLog()` |
+| Logging / debug / models log | `logger.ts`, `models-log.ts` | stream log、debug dump、models 输出；三路路由共用 `getAttachedPremiumInfo()` / `formatStreamLog()` |
 | 暗渡之门策略 | `smart-agent.ts` | forceAgent / 配额决断与缓存 |
 | API request config | `api-config.ts` | 统一组装 Copilot headers / host / UA / compact 前处理 |
 | Compact 标记 | `compact.ts` | compact request / auto-continue prompt 常量 |
@@ -38,7 +38,7 @@
 - `Copilot-Session-Token` 可能与生成它时的 Copilot auth/account context 绑定；改 `token.ts`、认证刷新或账户切换逻辑时，要检查 auto-session cache 是否需要失效，避免旧 session token 搭配新 auth token。
 - `smart-agent.ts` 只缓存 `forceAgent=true` 之决断；“尚在预算之内”不作缓存之项
 - `api-config.ts` 组装请求头后被三个 `create-*` service 共享调用，不要在 service 内重复构造 header
-- `logger.ts` 的 `getPremiumInfo()` / `formatStreamLog()` 现在被 chat-completions、messages、responses 三条路由共用；progress log 可以失败，但不能改写 SSE/JSON 响应内容
+- `logger.ts` 的 `getAttachedPremiumInfo()` / `formatStreamLog()` 被 chat-completions、messages、responses 三条路由共用；配额展示只读取当前响应附带的数据，progress log 保持 SSE/JSON 内容与清理行为
 - `response-headers.ts` 负责另一条元数据链：upstream response headers。premium info 与 response headers 不可混作同一概念；service 附着 headers，route 再决定如何转发
 - 任何上游 response header 往客户端透传前，都必须先经过 `cloneForwardableResponseHeaders()` 的 hop-by-hop 过滤；不要在 handler 里手写 `Object.fromEntries(response.headers)`
 - `rate-limit.ts` 只有在 `rateLimitSeconds` 为 finite number 时才启用等待；脏配置视为未启用，而不是隐式 sleep / retry

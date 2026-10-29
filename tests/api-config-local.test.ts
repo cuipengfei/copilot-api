@@ -18,6 +18,7 @@ const baseState = (): State => ({
   verbose: false,
   forceAgent: false,
   nativeMessages: false,
+  responsesReplayLearned: new Set<string>(),
   vsCodeDeviceId: "test-device-id",
 })
 

@@ -9,7 +9,9 @@ import {
   colorizeModel,
   createHandlerLogger,
   debugJson,
+  getAttachedPremiumInfo,
   shouldUseColor,
+  writeStreamLog,
 } from "~/lib/logger"
 import { findEndpointModel } from "~/lib/models"
 import { writeSSEIfConnected } from "~/lib/sse"
@@ -35,7 +37,10 @@ import type {
   ChatCompletionResponse,
   ChatCompletionsPayload,
 } from "~/lib/types/chat-completions"
-import { createChatCompletions } from "~/services/copilot/create-chat-completions"
+import {
+  createChatCompletions,
+  resolveChatCompletionsReasoningEffort,
+} from "~/services/copilot/create-chat-completions"
 
 const logger = createHandlerLogger("chat-completions-handler")
 
@@ -98,11 +103,12 @@ export async function handleCompletion(c: Context) {
 
   const modelLabel =
     shouldUseColor() ? colorizeModel(payload.model) : payload.model
-  const effortSuffix =
-    payload.reasoning_effort ?
-      ` [effort=${payload.reasoning_effort} (request)]`
-    : ""
-  consola.info(`IN ${modelLabel}${effortSuffix}`)
+  const effort = resolveChatCompletionsReasoningEffort(payload)
+  const effortSource =
+    payload.reasoning_effort !== undefined ? "request" : "config"
+  consola.info(
+    `IN ${modelLabel} [effort=${effort ?? "unsupported"} (${effortSource})]`,
+  )
 
   const response = await createChatCompletions(payload, {
     clientSignal: c.req.raw.signal,
@@ -117,6 +123,11 @@ export async function handleCompletion(c: Context) {
       normalizeOpenAIUsage(response.usage),
       response.copilot_usage ?? null,
     )
+    const premium = getAttachedPremiumInfo(response)
+    writeStreamLog(
+      { model: payload.model, chunks: 0, done: true, premium },
+      true,
+    )
     return jsonWithForwardedHeaders(response, sourceHeaders)
   }
 
@@ -125,22 +136,72 @@ export async function handleCompletion(c: Context) {
   return streamSSE(c, async (stream) => {
     let usage: UsageTokens = {}
     let copilotUsage: CopilotUsageTokens = {}
-    for await (const chunk of response) {
-      debugJson(logger, "Streaming chunk:", chunk)
-      const parsedChunk = parseChatCompletionChunk(chunk)
-      recordChatCompletionFirstToken(parsedChunk)
-      if (parsedChunk?.usage) {
-        usage = normalizeOpenAIUsage(parsedChunk.usage)
+    let chunkCount = 0
+    let completed = false
+    let sawTerminal = false
+    let streamErrored = false
+    try {
+      for await (const chunk of response) {
+        debugJson(logger, "Streaming chunk:", chunk)
+        const parsedChunk = parseChatCompletionChunk(chunk)
+        const envelope = chunk as SSEMessage
+        if (
+          envelope.data === "[DONE]"
+          || (parsedChunk?.choices ?? []).some(
+            (choice) => typeof choice.finish_reason === "string",
+          )
+        ) {
+          sawTerminal = true
+        }
+        if (
+          envelope.event === "error"
+          || (parsedChunk !== null && "error" in parsedChunk)
+        ) {
+          streamErrored = true
+        }
+        if (parsedChunk) {
+          chunkCount++
+          writeStreamLog({
+            model: payload.model,
+            chunks: chunkCount,
+            done: false,
+          })
+        }
+        recordChatCompletionFirstToken(parsedChunk)
+        if (parsedChunk?.usage) {
+          usage = normalizeOpenAIUsage(parsedChunk.usage)
+        }
+        if (parsedChunk?.copilot_usage) {
+          copilotUsage = mergeCopilotUsage(
+            copilotUsage,
+            copilotUsageToTokens(parsedChunk.copilot_usage),
+          )
+        }
+        await writeSSEIfConnected(stream, envelope)
       }
-      if (parsedChunk?.copilot_usage) {
-        copilotUsage = mergeCopilotUsage(
-          copilotUsage,
-          copilotUsageToTokens(parsedChunk.copilot_usage),
-        )
+      completed = sawTerminal && !streamErrored
+    } finally {
+      try {
+        recordUsage(usage, copilotUsage)
+        if (completed && !stream.aborted) {
+          const premium = getAttachedPremiumInfo(response)
+          writeStreamLog(
+            { model: payload.model, chunks: chunkCount, done: true, premium },
+            true,
+          )
+        } else if (chunkCount > 0) {
+          // 失败或缺少终态时结束进度行，不输出成功标记。
+          writeStreamLog(
+            { model: payload.model, chunks: chunkCount, done: false },
+            true,
+          )
+        }
+      } finally {
+        if (!stream.closed) {
+          await stream.close()
+        }
       }
-      await writeSSEIfConnected(stream, chunk as SSEMessage)
     }
-    recordUsage(usage, copilotUsage)
   })
 }
 

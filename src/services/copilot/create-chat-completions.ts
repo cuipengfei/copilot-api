@@ -15,9 +15,13 @@ import {
   prepareForCompact,
   prepareInteractionHeaders,
 } from "~/lib/api-config"
-import { getUpstreamTransportConfig } from "~/lib/config"
+import {
+  getReasoningEffortForModel,
+  getUpstreamTransportConfig,
+} from "~/lib/config"
 import { logCopilotRateLimits } from "~/lib/copilot-rate-limit"
 import { attachPremiumInfo, getPremiumInfoFromHeaders } from "~/lib/logger"
+import { resolveSupportedReasoningEffort } from "~/lib/reasoning-effort"
 import { setPluginRequestActualModel } from "~/lib/request-context"
 import { attachResponseHeaders } from "~/lib/response-headers"
 import { resolveInitiatorWithSmartAgent } from "~/lib/smart-agent"
@@ -36,6 +40,23 @@ import { ensureChatCompletionOkResponse } from "~/services/copilot/chat-completi
 import { sendCopilotRequest } from "~/services/copilot/request"
 
 export type { CopilotUsage } from "~/lib/token-usage"
+
+// 显式请求优先；配置默认值按模型声明的能力转换。
+export const resolveChatCompletionsReasoningEffort = (
+  payload: Pick<ChatCompletionsPayload, "model" | "reasoning_effort">,
+): string | undefined => {
+  if (payload.reasoning_effort !== undefined) return payload.reasoning_effort
+
+  const supportedEfforts = state.models?.data.find(
+    (model) => model.id === payload.model,
+  )?.capabilities?.supports?.reasoning_effort
+  if (supportedEfforts?.length === 0) return undefined
+
+  return resolveSupportedReasoningEffort(
+    getReasoningEffortForModel(payload.model),
+    supportedEfforts,
+  )
+}
 
 export const createChatCompletions = async (
   payload: ChatCompletionsPayload,
@@ -93,9 +114,15 @@ export const createChatCompletions = async (
   consola.debug(`<-- model: ${payload.model}`)
   const url = `${copilotBaseUrl(state)}/chat/completions`
   setPluginRequestActualModel(payload.model)
+
+  const reasoningEffort = resolveChatCompletionsReasoningEffort(payload)
+  const upstreamPayload =
+    reasoningEffort === payload.reasoning_effort ?
+      payload
+    : { ...payload, reasoning_effort: reasoningEffort }
   const response = await sendCopilotRequest(url, {
     headers,
-    payload,
+    payload: upstreamPayload,
     clientSignal: options?.clientSignal,
     transportConfig: getUpstreamTransportConfig(),
   })
@@ -104,7 +131,7 @@ export const createChatCompletions = async (
   const okResponse = await ensureChatCompletionOkResponse({
     url,
     response,
-    payload,
+    payload: upstreamPayload,
     headers,
     start,
     requestId,

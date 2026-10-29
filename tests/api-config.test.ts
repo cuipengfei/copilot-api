@@ -27,6 +27,7 @@ const proxyState: State = {
   macMachineId: "machine-1",
   showToken: false,
   verbose: false,
+  responsesReplayLearned: new Set(),
 }
 
 beforeEach(() => {

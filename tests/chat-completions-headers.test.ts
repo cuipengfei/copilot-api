@@ -203,7 +203,7 @@ describe("chat completions handler", () => {
     }
   })
 
-  test("logs IN model without inventing an omitted effort", async () => {
+  test("logs config effort source when the request omits effort", async () => {
     const infoSpy = spyOn(consola, "info")
     try {
       const app = createApp()
@@ -217,9 +217,11 @@ describe("chat completions handler", () => {
       })
 
       expect(response.status).toBe(200)
-      expect(infoSpy.mock.calls.some((args) => args[0] === "IN gpt-test")).toBe(
-        true,
-      )
+      expect(
+        infoSpy.mock.calls.some(
+          (args) => String(args[0]) === "IN gpt-test [effort=high (config)]",
+        ),
+      ).toBe(true)
     } finally {
       infoSpy.mockRestore()
     }

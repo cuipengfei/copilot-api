@@ -100,14 +100,38 @@ describe("response header attachment", () => {
 })
 
 describe("formatStreamLog", () => {
-  test("suppresses in-progress stream output so each request logs once", () => {
+  test("renders in-progress chunk counts on one carriage-returned line", () => {
     const log = formatStreamLog({
       model: "gpt-5-mini",
       chunks: 41,
       done: false,
     })
 
-    expect(log).toBe("")
+    expect(log.startsWith("\x1b[2K\r↪ ")).toBe(true)
+    expect(log.endsWith(" 41")).toBe(true)
+    expect(log).not.toContain("✓")
+  })
+
+  test("marks completion with a checkmark and no trailing newline of its own", () => {
+    const log = formatStreamLog({
+      model: "gpt-5-mini",
+      chunks: 42,
+      done: true,
+    })
+
+    expect(log.startsWith("\x1b[2K\r↪ ")).toBe(true)
+    expect(log.endsWith(" 42 ✓")).toBe(true)
+  })
+
+  test("shows the premium badge only once the stream completes", () => {
+    const premium = { remaining: 10, total: 100 }
+
+    expect(
+      formatStreamLog({ model: "gpt-5-mini", chunks: 7, done: false, premium }),
+    ).not.toContain("left")
+    expect(
+      formatStreamLog({ model: "gpt-5-mini", chunks: 7, done: true, premium }),
+    ).toContain("left")
   })
 
   test("renders left badge with at most two decimal places", () => {

@@ -87,6 +87,9 @@ interface ChatCompletionsRequestBody {
   functions?: OpenAiFunctionDef[];
   function_call?: { name: string };
 
+  // 可选 - reasoning（请求值优先；缺省用本地配置默认值收敛到模型能力，模型显式声明空列表则不注入）
+  reasoning_effort?: "low" | "medium" | "high" | "xhigh" | "max";
+
   // 可选 - Copilot 扩展
   copilot_thread_id?: string; // 会话线程 ID
   copilot_skills?: string[]; // 启用的 skills
@@ -146,10 +149,10 @@ interface ResponsesRequestBody {
 
   // Reasoning
   reasoning?: {
-    effort?: "low" | "medium" | "high"; // 默认 medium
+    effort?: "low" | "medium" | "high" | "xhigh" | "max"; // 请求值优先；缺省用本地按模型配置的默认值
     summary?: "auto" | "brief" | "detailed";
   };
-  include: ["reasoning.encrypted_content"];
+  include: ["reasoning.encrypted_content"]; // 请求返回加密推理状态，始终保留
 
   // 文本控制
   text?: {
@@ -163,8 +166,11 @@ type ResponseInputItem =
   | ResponseOutputMessage // assistant 消息
   | { type: "function_call"; name: string; arguments: string; call_id: string }
   | { type: "function_call_output"; call_id: string; output: string }
+  // belong 4xx 重试或已学习身份命中时，移除 input 中 reasoning item 的 encrypted_content，保留 id/type/summary
   | { type: "reasoning"; id: string; summary: []; encrypted_content: string };
 ```
+
+HTTP Responses 收到 `error.message` 包含 `belong` 的实际 `4xx` 且输入含 `encrypted_content` 时，规范化输入并重试一次。同一明确 session 与 agent、模型、上游 URL 和认证凭据的后续请求会在首发前应用已学习的处理；缓存键只保存认证凭据的 SHA-256 摘要。记录仅保存在当前进程，最多 1024 条，按首次插入顺序淘汰。未提供明确 session 身份的请求保留逐次检查，WebSocket 请求沿用原有处理。身份选择顺序见[Responses HTTP replay 兼容](local-features.md#4-responses-http-replay-兼容)。
 
 ### Messages API（Anthropic 原生格式）
 
@@ -709,7 +715,7 @@ data: {"type":"error","code":"rate_limit_exceeded","message":"Rate limit exceede
 ```typescript
 {
   reasoning: {
-    effort: 'medium',      // low | medium | high
+    effort: 'medium',      // low | medium | high | xhigh | max；请求值优先，缺省用本地配置默认值
     summary: 'auto',       // auto | brief | detailed
   },
   include: ['reasoning.encrypted_content'],

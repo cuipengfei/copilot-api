@@ -1,8 +1,11 @@
+import { createHash } from "node:crypto"
+
 import consola from "consola"
 
 import type { ResponsesPayload } from "~/lib/types/responses"
 
 import { logCopilotRateLimits } from "~/lib/copilot-rate-limit"
+import { state } from "~/lib/state"
 import {
   isReasoningItem,
   normalizeResponsesInputForReplay,
@@ -17,7 +20,10 @@ import {
 
 export interface ResponsesHttpSendOptions extends CopilotHttpRequestOptions {
   payload: ResponsesPayload
+  reasoningReplayIdentity?: string
 }
+
+const REPLAY_CACHE_LIMIT = 1024
 
 export const hasStrippableReasoningItem = (
   payload: ResponsesPayload,
@@ -32,8 +38,33 @@ export const hasStrippableReasoningItem = (
 
 export const sendResponsesRequestWithReasoningReplay = async (
   url: string,
-  { payload, headers, clientSignal, transportConfig }: ResponsesHttpSendOptions,
+  {
+    payload,
+    headers,
+    clientSignal,
+    transportConfig,
+    reasoningReplayIdentity,
+  }: ResponsesHttpSendOptions,
 ): Promise<Response> => {
+  const replayCacheKey =
+    reasoningReplayIdentity === undefined ? undefined : (
+      JSON.stringify([
+        reasoningReplayIdentity,
+        payload.model,
+        url,
+        createHash("sha256")
+          .update(headers.Authorization ?? headers.authorization ?? "")
+          .digest("hex"),
+      ])
+    )
+  const replayLearned =
+    replayCacheKey !== undefined
+    && state.responsesReplayLearned.has(replayCacheKey)
+
+  if (replayLearned && hasStrippableReasoningItem(payload)) {
+    normalizeResponsesInputForReplay(payload)
+  }
+
   let response = await sendCopilotRequest(url, {
     headers,
     payload,
@@ -56,6 +87,14 @@ export const sendResponsesRequestWithReasoningReplay = async (
         `drop thinking block, reason: upstream ${response.status} response mentions "belong" (instance-bound item ID); stripping reasoning.encrypted_content and retrying once`,
       )
       normalizeResponsesInputForReplay(payload)
+      if (replayCacheKey !== undefined) {
+        const learned = state.responsesReplayLearned
+        learned.add(replayCacheKey)
+        if (learned.size > REPLAY_CACHE_LIMIT) {
+          const oldest = learned.values().next().value
+          if (oldest !== undefined) learned.delete(oldest)
+        }
+      }
       response = await sendCopilotHttpRequest(url, {
         headers,
         payload,

@@ -9,10 +9,15 @@ import {
 } from "bun:test"
 
 import type { ChatCompletionsPayload } from "~/lib/types/chat-completions"
+import type { Model } from "~/lib/types/models"
+import type { ResponsesPayload } from "~/lib/types/responses"
 
 import * as autoSession from "../src/lib/auto-session"
+import * as configModule from "../src/lib/config"
 import { getAttachedResponseHeaders } from "../src/lib/response-headers"
 import { state } from "../src/lib/state"
+import { translateToOpenAI } from "../src/routes/messages/completions-translation"
+import { translateResponsesToChatCompletions } from "../src/routes/responses/responses-from-chat"
 import { createChatCompletions } from "../src/services/copilot/create-chat-completions"
 import * as telemetryModule from "../src/services/telemetry/telemetry"
 
@@ -491,5 +496,286 @@ describe("Initiator detection (last-message role)", () => {
     const chatCall = fetchCalls.find((c) => c.url.includes("chat/completions"))
     expect(chatCall).toBeDefined()
     expect(chatCall!.headers["x-initiator"]).toBe("user")
+  })
+})
+
+describe("default reasoning effort injection", () => {
+  let upstreamBodies: Array<Record<string, unknown>> = []
+  let originalModels = state.models
+
+  const createModel = (id: string, reasoningEffort?: Array<string>): Model => ({
+    capabilities: {
+      family: "gpt",
+      limits: {},
+      object: "model_capabilities",
+      supports:
+        reasoningEffort === undefined ?
+          {}
+        : { reasoning_effort: reasoningEffort },
+      tokenizer: "o200k_base",
+      type: "chat",
+    },
+    id,
+    model_picker_enabled: true,
+    name: id,
+    object: "model",
+    preview: false,
+    vendor: "openai",
+    version: "1",
+  })
+
+  // Captures the JSON body actually sent upstream; only fetch is faked.
+  const installUpstreamFetch = (): void => {
+    upstreamBodies = []
+    globalThis.fetch = mock((url: string, opts: { body?: string }) => {
+      if (url.includes("copilot_internal")) {
+        return Promise.resolve({ ok: false, status: 500 })
+      }
+      upstreamBodies.push(
+        JSON.parse(opts.body ?? "{}") as Record<string, unknown>,
+      )
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({ id: "123", object: "chat.completion", choices: [] }),
+          { status: 200 },
+        ),
+      )
+    }) as unknown as typeof fetch
+  }
+
+  beforeEach(() => {
+    originalModels = state.models
+    state.models = {
+      object: "list",
+      data: [
+        createModel("gpt-5.4", ["low", "medium", "high", "xhigh"]),
+        createModel("gpt-5.4-limited", ["low", "medium", "high"]),
+        createModel("gpt-test"),
+        createModel("no-effort-model", []),
+        {
+          id: "gpt-minimal-metadata",
+          capabilities: { limits: {} },
+        } as unknown as Model,
+      ],
+    }
+    state.interactionId = "test-interaction-id"
+    state.forceAgent = false
+
+    spyOn(configModule, "getReasoningEffortForModel").mockImplementation(
+      (model) =>
+        model === "gpt-5.4-limited" ? "xhigh"
+        : model === "gpt-5.4" ? "medium"
+        : "high",
+    )
+    spyOn(autoSession, "getAutoSessionTokenForModel").mockResolvedValue(
+      "test-session-token",
+    )
+    spyOn(telemetryModule, "trackRequestSent").mockImplementation(() => {})
+    spyOn(telemetryModule, "trackResponseSuccess").mockImplementation(() => {})
+    spyOn(telemetryModule, "trackResponseError").mockImplementation(() => {})
+    spyOn(telemetryModule, "scheduleFeedbackEvents").mockImplementation(
+      () => {},
+    )
+    spyOn(telemetryModule, "schedulePostResponseEvents").mockImplementation(
+      () => {},
+    )
+    spyOn(telemetryModule, "trackPanelRequest").mockImplementation(() => {})
+    spyOn(telemetryModule, "trackGhostTextShown").mockImplementation(() => {})
+  })
+
+  afterEach(() => {
+    state.models = originalModels
+    mock.restore()
+  })
+
+  test("non-stream request without effort sends the configured model effort", async () => {
+    installUpstreamFetch()
+
+    await createChatCompletions({
+      messages: [{ role: "user", content: "hi" }],
+      model: "gpt-5.4",
+    })
+
+    expect(upstreamBodies).toHaveLength(1)
+    expect(upstreamBodies[0].reasoning_effort).toBe("medium")
+  })
+
+  test("explicit request effort is sent unchanged", async () => {
+    installUpstreamFetch()
+
+    const payload: ChatCompletionsPayload = {
+      messages: [{ role: "user", content: "hi" }],
+      model: "gpt-5.4",
+      reasoning_effort: "minimal",
+    }
+    await createChatCompletions(payload)
+
+    expect(upstreamBodies[0].reasoning_effort).toBe("minimal")
+    expect(payload.reasoning_effort).toBe("minimal")
+  })
+
+  test("stream request without effort also sends the configured effort", async () => {
+    installUpstreamFetch()
+
+    await createChatCompletions({
+      messages: [{ role: "user", content: "hi" }],
+      model: "gpt-test",
+      stream: true,
+    })
+
+    expect(upstreamBodies[0]).toMatchObject({
+      reasoning_effort: "high",
+      stream: true,
+    })
+  })
+
+  test("model advertising no efforts gets none injected", async () => {
+    installUpstreamFetch()
+
+    await createChatCompletions({
+      messages: [{ role: "user", content: "hi" }],
+      model: "no-effort-model",
+    })
+
+    expect(upstreamBodies[0]).not.toHaveProperty("reasoning_effort")
+  })
+
+  test("configured effort is clamped to the model supported efforts", async () => {
+    installUpstreamFetch()
+
+    await createChatCompletions({
+      messages: [{ role: "user", content: "hi" }],
+      model: "gpt-5.4-limited",
+    })
+
+    expect(upstreamBodies[0].reasoning_effort).toBe("high")
+  })
+
+  test("Messages to Chat translation still gets the configured effort at send time", async () => {
+    installUpstreamFetch()
+
+    const translated = translateToOpenAI(
+      {
+        max_tokens: 128,
+        messages: [{ role: "user", content: "hi" }],
+        model: "gpt-test",
+      },
+      { validateReasoningEffort: true },
+    )
+    expect(translated).not.toHaveProperty("reasoning_effort")
+
+    await createChatCompletions(translated)
+
+    expect(upstreamBodies[0].reasoning_effort).toBe("high")
+  })
+
+  test("Responses to Chat translation keeps request effort and defaults missing effort", async () => {
+    installUpstreamFetch()
+
+    const withoutEffort: ResponsesPayload = { input: "hi", model: "gpt-5.4" }
+    await createChatCompletions(
+      translateResponsesToChatCompletions(withoutEffort),
+    )
+    expect(upstreamBodies[0].reasoning_effort).toBe("medium")
+
+    upstreamBodies = []
+    const withEffort: ResponsesPayload = {
+      input: "hi",
+      model: "gpt-5.4",
+      reasoning: { effort: "low" },
+    }
+    await createChatCompletions(translateResponsesToChatCompletions(withEffort))
+    expect(upstreamBodies[0].reasoning_effort).toBe("low")
+  })
+
+  test("metadata without effort capabilities keeps the request usable", async () => {
+    installUpstreamFetch()
+
+    await createChatCompletions({
+      messages: [{ role: "user", content: "hi" }],
+      model: "gpt-minimal-metadata",
+      temperature: 0.4,
+    })
+
+    expect(upstreamBodies[0]).toMatchObject({
+      model: "gpt-minimal-metadata",
+      reasoning_effort: "high",
+      temperature: 0.4,
+    })
+  })
+
+  test("signature retry keeps the injected config effort", async () => {
+    // 无 Auto 令牌：携带令牌的 400 会先被令牌失效重试原样重发一次，
+    // 签名剥离重试就永远到不了。
+    spyOn(autoSession, "getAutoSessionTokenForModel").mockResolvedValue(
+      undefined,
+    )
+    const thinkingError = new Response(
+      JSON.stringify({ error: { message: "signature invalid" } }),
+      { status: 400 },
+    )
+    let chatCalls = 0
+    upstreamBodies = []
+    globalThis.fetch = mock((url: string, opts: { body?: string }) => {
+      if (url.includes("copilot_internal")) {
+        return Promise.resolve({ ok: false, status: 500 })
+      }
+      chatCalls += 1
+      upstreamBodies.push(
+        JSON.parse(opts.body ?? "{}") as Record<string, unknown>,
+      )
+      if (chatCalls === 1) return Promise.resolve(thinkingError)
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({ id: "123", object: "chat.completion", choices: [] }),
+          { status: 200 },
+        ),
+      )
+    }) as unknown as typeof fetch
+
+    await createChatCompletions({
+      messages: [
+        { role: "user", content: "hi" },
+        {
+          role: "assistant",
+          content: "ok",
+          reasoning_opaque: "sig",
+          reasoning_text: "old thought",
+        },
+        { role: "user", content: "again" },
+      ],
+      model: "gpt-5.4",
+      temperature: 0.3,
+    })
+
+    expect(chatCalls).toBe(2)
+    const firstMessages = upstreamBodies[0].messages as Array<
+      Record<string, unknown>
+    >
+    expect(upstreamBodies[0]).toMatchObject({
+      model: "gpt-5.4",
+      reasoning_effort: "medium",
+      temperature: 0.3,
+    })
+    expect(firstMessages).toHaveLength(3)
+    expect(firstMessages[1]).toMatchObject({
+      content: "ok",
+      reasoning_opaque: "sig",
+      reasoning_text: "old thought",
+      role: "assistant",
+    })
+
+    expect(upstreamBodies[1]).toMatchObject({
+      model: "gpt-5.4",
+      reasoning_effort: "medium",
+      temperature: 0.3,
+    })
+    const retriedMessages = upstreamBodies[1].messages as Array<
+      Record<string, unknown>
+    >
+    expect(retriedMessages).toHaveLength(3)
+    expect(retriedMessages[0]).toEqual({ content: "hi", role: "user" })
+    expect(retriedMessages[1]).toEqual({ content: "ok", role: "assistant" })
+    expect(retriedMessages[2]).toEqual({ content: "again", role: "user" })
   })
 })

@@ -29,6 +29,7 @@ import {
   createResponses,
   prepareResponsesWebSocketRequest,
 } from "../src/services/copilot/create-responses"
+import { hasStrippableReasoningItem } from "../src/services/copilot/responses-compat"
 import * as telemetryModule from "../src/services/telemetry/telemetry"
 
 const originalFetch = globalThis.fetch
@@ -543,6 +544,25 @@ const createBelongThenSuccessFetchMock = (): Mock<TestFetchImpl> => {
   })
 }
 
+const setFetch = (fetchImpl: Mock<TestFetchImpl>) => {
+  // @ts-expect-error - Mock fetch doesn't implement all fetch properties
+  ;(globalThis as unknown as { fetch: typeof fetch }).fetch = fetchImpl
+}
+
+const getRequestReasoningItem = (
+  fetchImpl: Mock<TestFetchImpl>,
+  callIndex: number,
+) => {
+  const rawBody = fetchImpl.mock.calls[callIndex][1]?.body
+  if (rawBody === undefined) {
+    throw new Error(`request body missing on fetch call ${callIndex}`)
+  }
+  const body = JSON.parse(rawBody) as {
+    input: Array<Record<string, unknown>>
+  }
+  return body.input.find((item) => item.type === "reasoning")
+}
+
 describe("Reasoning strip-retry on belong 4xx", () => {
   const reasoningPayload = (): ResponsesPayload => ({
     model: "gpt-test",
@@ -557,25 +577,6 @@ describe("Reasoning strip-retry on belong 4xx", () => {
       { role: "user", content: "next" },
     ],
   })
-
-  const setFetch = (fetchImpl: Mock<TestFetchImpl>) => {
-    // @ts-expect-error - Mock fetch doesn't implement all fetch properties
-    ;(globalThis as unknown as { fetch: typeof fetch }).fetch = fetchImpl
-  }
-
-  const getRequestReasoningItem = (
-    fetchImpl: Mock<TestFetchImpl>,
-    callIndex: number,
-  ) => {
-    const rawBody = fetchImpl.mock.calls[callIndex][1]?.body
-    if (rawBody === undefined) {
-      throw new Error(`request body missing on fetch call ${callIndex}`)
-    }
-    const body = JSON.parse(rawBody) as {
-      input: Array<Record<string, unknown>>
-    }
-    return body.input.find((item) => item.type === "reasoning")
-  }
 
   test("sends encrypted_content first, retries once with it stripped when 4xx mentions belong", async () => {
     const belongMock = createBelongThenSuccessFetchMock()
@@ -895,5 +896,117 @@ describe("createResponses websocket helpers", () => {
     expect(new Set([mainKey, subagentKey, otherModelKey]).size).toBe(3)
     expect(mainKey).toContain("gpt-test")
     expect(mainKey).toContain("request-1")
+  })
+})
+
+// ── Reasoning replay learning pass-through ────────────────────────────────
+
+const createBelongByBodyFetchMock = (): Mock<TestFetchImpl> =>
+  mock(async (_url: string, opts: { body?: string }) => {
+    await Promise.resolve()
+    const body = JSON.parse(opts.body ?? "{}") as {
+      input?: Array<Record<string, unknown>>
+    }
+    const reasoningItem = body.input?.find(
+      (item) =>
+        item.type === "reasoning" && item.encrypted_content !== undefined,
+    )
+
+    if (reasoningItem) {
+      return {
+        ok: false,
+        status: 401,
+        json: () => Promise.resolve({ error: "does not belong" }),
+        text: () => Promise.resolve(BELONG_ERROR_BODY),
+        headers: new Headers(),
+        clone: function () {
+          return this
+        },
+      }
+    }
+
+    return {
+      ok: true,
+      json: () =>
+        Promise.resolve({
+          id: "resp-ok",
+          output: [],
+          usage: { input_tokens: 10, output_tokens: 5 },
+          incomplete_details: null,
+          error: null,
+        }),
+      text: () => Promise.resolve('{"itemsReceived":1,"itemsAccepted":1}'),
+      headers: new Headers(),
+    }
+  })
+
+describe("Reasoning replay learning", () => {
+  const replayPayload = (): ResponsesPayload => ({
+    model: "gpt-test",
+    input: [
+      { role: "user", content: "hi" },
+      {
+        type: "reasoning",
+        id: "r-1",
+        summary: [],
+        encrypted_content: "enc-abc",
+      },
+    ],
+  })
+
+  beforeEach(() => {
+    state.responsesReplayLearned.clear()
+  })
+
+  test("reuses learned stripping per identity and model", async () => {
+    const belongMock = createBelongByBodyFetchMock()
+    setFetch(belongMock)
+
+    const first = await createResponses(replayPayload(), {
+      vision: false,
+      initiator: "user",
+      reasoningReplayIdentity: "session-a",
+    })
+    expect(first).toMatchObject({ id: "resp-ok" })
+    expect(belongMock).toHaveBeenCalledTimes(2)
+
+    await createResponses(replayPayload(), {
+      vision: false,
+      initiator: "user",
+      reasoningReplayIdentity: "session-a",
+    })
+
+    expect(belongMock).toHaveBeenCalledTimes(3)
+    expect(getRequestReasoningItem(belongMock, 2)).toEqual({
+      id: "r-1",
+      type: "reasoning",
+      summary: [],
+    })
+  })
+
+  test("does not learn when no replay identity is provided", async () => {
+    const belongMock = createBelongByBodyFetchMock()
+    setFetch(belongMock)
+
+    await createResponses(replayPayload(), { vision: false, initiator: "user" })
+    await createResponses(replayPayload(), { vision: false, initiator: "user" })
+
+    expect(belongMock).toHaveBeenCalledTimes(4)
+    expect(state.responsesReplayLearned.size).toBe(0)
+  })
+
+  test("websocket responses are not affected by replay identity", async () => {
+    const payload = { ...replayPayload(), stream: true }
+
+    await createResponses(payload, {
+      vision: false,
+      initiator: "user",
+      transport: "websocket",
+      reasoningReplayIdentity: "session-a",
+    })
+
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(hasStrippableReasoningItem(payload)).toBe(true)
+    expect(state.responsesReplayLearned.size).toBe(0)
   })
 })

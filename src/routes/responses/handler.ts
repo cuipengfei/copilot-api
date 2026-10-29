@@ -6,10 +6,16 @@ import {
   isResponsesApiWebSearchEnabled as isConfiguredResponsesApiWebSearchEnabled,
   resolveMappedModel,
 } from "~/lib/config"
-import { createHandlerLogger, debugJson, debugJsonTail } from "~/lib/logger"
+import {
+  createHandlerLogger,
+  debugJson,
+  debugJsonTail,
+  writeStreamLog,
+} from "~/lib/logger"
 import { recordResponsesFirstToken } from "~/lib/first-token"
 import { findEndpointModel } from "~/lib/models"
 import { resolveConfiguredProviderModelAlias } from "~/lib/provider-resolver"
+import { getReasoningReplayIdentity } from "~/lib/reasoning-replay"
 import { requestContext } from "~/lib/request-context"
 import { setPluginRequestModel } from "~/lib/request-events"
 import { writeSSEIfConnected } from "~/lib/sse"
@@ -264,6 +270,11 @@ export const handleResponses = async (c: Context) => {
     getResponsesRequestOptions(payload)
   const initiator = subagentMarker ? "agent" : inferredInitiator
 
+  const reasoningReplayIdentity = getReasoningReplayIdentity(
+    c.req.raw.headers,
+    payload.prompt_cache_key,
+  )
+
   const responseOptions = {
     vision,
     initiator,
@@ -272,6 +283,7 @@ export const handleResponses = async (c: Context) => {
     sessionId: fallbackSessionId,
     clientSignal: c.req.raw.signal,
     transport: responsesTransport,
+    reasoningReplayIdentity,
   }
 
   const response = await responsesHandlerDependencies
@@ -295,6 +307,8 @@ export const handleResponses = async (c: Context) => {
     return streamSSE(c, async (stream) => {
       const idTracker = createStreamIdTracker()
       let chunkCount = 0
+      let terminalEventType: ResponseStreamEvent["type"] | undefined
+      let streamErrored = false
       let usage: UsageTokens = {}
       let copilotUsage: CopilotUsageTokens = {}
       const iterator = response[Symbol.asyncIterator]()
@@ -305,6 +319,11 @@ export const handleResponses = async (c: Context) => {
         }) {
           debugJson(logger, "Responses stream chunk:", chunk)
           chunkCount++
+          writeStreamLog({
+            model: payload.model,
+            chunks: chunkCount,
+            done: false,
+          })
           const parsedEvent = parseResponsesStreamEvent(chunk)
           recordResponsesFirstToken(parsedEvent)
           if (
@@ -312,6 +331,7 @@ export const handleResponses = async (c: Context) => {
             || parsedEvent?.type === "response.failed"
             || parsedEvent?.type === "response.incomplete"
           ) {
+            terminalEventType = parsedEvent.type
             usage = {
               ...normalizeResponsesUsage(parsedEvent.response.usage),
               total_nano_aiu: normalizeOptionalToken(
@@ -335,21 +355,40 @@ export const handleResponses = async (c: Context) => {
           })
         }
       } catch (err) {
+        streamErrored = true
         await writeResponsesStreamError(
           stream,
           createResponsesStreamErrorEvent(payload.model, err),
         )
       } finally {
-        await iterator.return?.()
-        await logResponsesCompletion({
-          model: payload.model,
-          response,
-          chunks: chunkCount,
-          streaming: true,
-        })
-        recordUsage(usage, copilotUsage)
-        if (!stream.closed) {
-          await stream.close()
+        let iteratorClosed = false
+        try {
+          await iterator.return?.()
+          iteratorClosed = true
+        } finally {
+          try {
+            recordUsage(usage, copilotUsage)
+            if (
+              iteratorClosed
+              && !streamErrored
+              && terminalEventType === "response.completed"
+              && !stream.aborted
+              && !c.req.raw.signal.aborted
+            ) {
+              logResponsesCompletion({
+                model: payload.model,
+                response,
+                chunks: chunkCount,
+              })
+            } else if (chunkCount > 0) {
+              writeStreamLog(
+                { model: payload.model, chunks: chunkCount, done: false },
+                true,
+              )
+            }
+          } finally {
+            if (!stream.closed) await stream.close()
+          }
         }
       }
     })
@@ -369,12 +408,13 @@ export const handleResponses = async (c: Context) => {
     },
     copilotUsageToTokens(result.copilot_usage),
   )
-  await logResponsesCompletion({
-    model: payload.model,
-    response,
-    chunks: 0,
-    streaming: false,
-  })
+  if (result.status === "completed") {
+    logResponsesCompletion({
+      model: payload.model,
+      response,
+      chunks: 0,
+    })
+  }
   return jsonWithForwardedHeaders(result, getAttachedResponseHeaders(response))
 }
 

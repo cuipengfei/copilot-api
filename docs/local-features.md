@@ -57,7 +57,7 @@
 
 - 识别直接图像和 `tool_result` 中的图像，保留 vision header。
 - 根据模型 capability 启用 adaptive thinking；强制工具选择时保持既有禁用条件。
-- 请求显式指定的 `output_config.effort` 优先；配置中的 effort 继续按既有规则映射。
+- 仅模型 capability 支持 `adaptive_thinking` 且 `tool_choice` 不是 `any`/`tool` 时写入 effort：请求显式 `output_config.effort` 优先，缺省用 `getReasoningEffortForModel` 的配置默认值，再按模型 `reasoning_effort` 能力收敛。
 - 保留 beta 过滤、`top_p` 移除和 `temperature=1`。
 - 调整 assistant 的 text/tool_use 顺序时，保持 thinking 与 redacted_thinking 的原位置。
 - 仅匹配已有 `400` effort 或 thinking 错误时执行对应的单次兼容重试；首次请求保留完整 thinking 内容。
@@ -86,10 +86,11 @@
 - 首次发送保持请求内容；仅 `400` 且错误内容包含 `signature` 或 `cannot be modified` 时触发兼容重试，匹配不区分大小写。
 - 重试只移除 assistant 的 `reasoning_opaque`、`reasoning_text`，保留工具调用与其他消息；不修改原始 payload 对象。
 - 成功、失败及重试后的 Telemetry、premium 信息、原始响应 headers、HTTPError 和 JSON/SSE 返回形式保持一致。
+- 请求携带 `reasoning_effort` 时原样保留；缺省时共享 Chat service 按 `getReasoningEffortForModel` 的配置默认值补齐并收敛到模型声明的能力，模型显式声明为空的能力列表时不注入。Chat 路由与 Responses→Chat fallback 共用该行为。
 
 **本地实现**：[chat-completions-compat.ts](../src/services/copilot/chat-completions-compat.ts) 承载 reasoning 错误判定、字段移除与单次兼容重试。
 
-**必要的上游接入**：[create-chat-completions.ts](../src/services/copilot/create-chat-completions.ts) 保留请求组织、JSON/SSE 结果解析、Telemetry 和响应附加信息，调用共享发送入口与本地错误处理函数。
+**必要的上游接入**：[create-chat-completions.ts](../src/services/copilot/create-chat-completions.ts) 保留请求组织、缺省 `reasoning_effort` 补齐、JSON/SSE 结果解析、Telemetry 和响应附加信息，调用共享发送入口与本地错误处理函数。
 
 **验证入口**：
 
@@ -103,13 +104,17 @@
 
 **必须保留的行为**：
 
-- 首次发送保留 `reasoning.encrypted_content`。
-- 同时满足 `4xx`、`error.message` 为字符串且大小写敏感地包含 `belong`、请求存在 `reasoning.encrypted_content` 时，才按既有逻辑处理输入并重试一次。
-- 仅按 `error.message` 判断；其他错误字段、不同大小写、服务端错误和没有可处理 reasoning 的输入保持原错误路径。
+- 身份与模型尚未学习到对应失败时，首次发送保留 `reasoning.encrypted_content`。
+- 同时满足 `4xx`、`error.message` 为字符串且不区分大小写包含 `belong`、请求存在 `reasoning.encrypted_content` 时，才按既有逻辑处理输入并重试一次；大小写处理与 `responses-compat.ts` 现有实现一致。
+- 仅按 `error.message` 判断；其他错误字段、服务端错误和没有可处理 reasoning 的输入保持原错误路径。
+- 同一身份与模型已学习到 `belong` 失败时，后续首发前先按既有输入规范化移除 `reasoning.encrypted_content`，保留 reasoning 的 `id`、`type` 与 `summary`。
+- 学习只发生在实际返回含 `belong` 的 `4xx` 且请求存在 `encrypted_content` 的 HTTP 请求；进程内最多保存 1024 条记录，按明确身份、模型、上游 URL 与认证凭据的 SHA-256 摘要隔离。超出时按首次插入顺序淘汰最早条目，并发重复学习保持原顺序；没有明确 session 身份不学习。
+- 身份按 `x-session-id`、`x-claude-code-session-id`、`session-id`、`session_id`，再显式 `prompt_cache_key`，再 `x-root-session-id`、`x-opencode-session-id`、`x-session-affinity`、`x-client-request-id`、`thread-id` 取首个 trim 后非空值；agent 取 `x-oc-agent`，缺省记为 `_`。不使用 fallback session ID、机器 ID 或请求文本哈希。
+- WebSocket 分支不应用学习缓存。
 - 保留 payload 原地更新、两次请求各自的 rate-limit 记录、响应 headers 和用量处理。
 - WebSocket 分支、连接池、取消与终态处理继续使用上游实现。
 
-**本地实现**：[responses-compat.ts](../src/services/copilot/responses-compat.ts) 的 `sendResponsesRequestWithReasoningReplay`。
+**本地实现**：[responses-compat.ts](../src/services/copilot/responses-compat.ts) 的 `sendResponsesRequestWithReasoningReplay` 承载学习缓存与重试；[reasoning-replay.ts](../src/lib/reasoning-replay.ts) 的 `getReasoningReplayIdentity` 提供身份。
 
 **必要的上游接入**：[create-responses.ts](../src/services/copilot/create-responses.ts) 的 HTTP 发送位置调用兼容函数；JSON/SSE 结果处理保留在原入口。
 
@@ -118,12 +123,13 @@
 - [create-responses.test.ts](../tests/create-responses.test.ts)：公开 service 的 replay、headers 和用量行为。
 - [responses-compat.test.ts](../tests/responses-compat.test.ts)：错误字段与状态边界、本地真实 HTTP 重试。
 - [create-responses-websocket-pool.test.ts](../tests/create-responses-websocket-pool.test.ts)。
+- [reasoning-replay.test.ts](../tests/reasoning-replay.test.ts)：身份优先级、空白值跳过、agent 分组与无身份返回。
 
 ## 5. Responses → Chat fallback
 
 **使用场景**：Responses 路由按现有 endpoint 判定，选择 Chat Completions 处理请求。
 
-**必须保留的行为**：请求、工具调用、响应事件和流式结果按既有规则转换；保持 output item 生命周期与递增的 `sequence_number`。
+**必须保留的行为**：请求、工具调用、响应事件和流式结果按既有规则转换；保持 output item 生命周期与递增的 `sequence_number`。Native Responses 请求在 `prepareNativeResponsesRequest` 中按请求显式 `reasoning.effort` 优先、缺省用 `getReasoningEffortForModel` 的配置默认值补齐 effort。
 
 **本地实现**：[chat-handler.ts](../src/routes/responses/chat-handler.ts)、[responses-from-chat.ts](../src/routes/responses/responses-from-chat.ts)。
 
@@ -207,15 +213,17 @@
 
 ## 11. 请求与翻译日志
 
-**行为**：请求入口记录原始模型、目标模型、effort 与来源；Messages 路由使用自己的 IN/OUT 日志。协议转换和 provider 转发保留 thinking block、thinking config 的移除数量与原因记录。
+**行为**：请求入口记录原始模型、目标模型、实际发送的 effort 与来源；模型明确不支持配置 effort 时记录 `unsupported (config)`。Messages 路由使用自己的 IN/OUT 日志。流式响应每收到一个 chunk 在同一行覆盖输出 `\x1b[2K\r↪ <model> <N>` 进度；上游正常完成且客户端连接有效时追加 `✓` 并换行，`failed`/`incomplete` 终态、抛错或提前取消只结束进度行。Chat 非流式响应记录 `0 ✓`。Chat、Messages 与 Responses 路由共用该格式，premium 信息只读取当前响应附带的数据，缺少数据时省略配额标记。JSON/SSE 内容、`[DONE]`、响应 headers、用量记录和清理路径保持原有行为。协议转换和 provider 转发保留 thinking block、thinking config 的移除数量与原因记录。
+
+stdout 同步写入失败时省略该条进度日志，继续原有响应与流关闭流程。
 
 **源码与接入**：[logger.ts](../src/lib/logger.ts)、[server.ts](../src/server.ts)、[Messages handler](../src/routes/messages/handler.ts)、[preprocess.ts](../src/routes/messages/preprocess.ts)、[non-stream-translation.ts](../src/routes/messages/non-stream-translation.ts)、[responses-translation.ts](../src/routes/messages/responses-translation.ts)、[provider Messages handler](../src/routes/provider/messages/handler.ts) 与 [provider Messages local-behavior.ts](../src/routes/provider/messages/local-behavior.ts)。
 
-**验证入口**：[logger.test.ts](../tests/logger.test.ts)、[logger-local.test.ts](../tests/logger-local.test.ts)、[models-log.test.ts](../tests/models-log.test.ts) 与 [translation-drop-observation.test.ts](../tests/translation-drop-observation.test.ts)。本地日志观察使用实际转换结果，转换算法继续由原模块负责。
+**验证入口**：[logger.test.ts](../tests/logger.test.ts)、[logger-local.test.ts](../tests/logger-local.test.ts)、[models-log.test.ts](../tests/models-log.test.ts) 与 [translation-drop-observation.test.ts](../tests/translation-drop-observation.test.ts)。测试调用实际 handler/service，仅隔离上游；日志断言同时覆盖 chunk 进度行、正常完成行与失败/取消不写 `✓`，不能只断言最终日志。本地日志观察使用实际转换结果，转换算法继续由原模块负责。
 
 ## 12. Responses reasoning replay 防护与 effort 映射
 
-**行为**：Messages 转 Responses 时，只重放具有有效 signature 且 reasoning ID 长度不超过 64 的 thinking 内容；缺失 signature 或超过长度限制的内容按原规则处理并保留诊断。assistant phase 在模型配置含 `## Intermediary updates` extra prompt 或为 Grok 模型时设置；请求显式指定的 effort 优先，`max` 映射为 `xhigh`。Grok 使用 `concise` reasoning summary，并保留文本、图像、工具调用与 phase（commentary/final_answer）。
+**行为**：Messages 转 Responses 时，只重放具有有效 signature 且 reasoning ID 长度不超过 64 的 thinking 内容；缺失 signature 或超过长度限制的内容按原规则处理并保留诊断。assistant phase 在模型配置含 `## Intermediary updates` extra prompt 或为 Grok 模型时设置；请求显式指定的 effort 优先，缺省用 `getReasoningEffortForModel` 的配置默认值，`max` 映射为 `xhigh`。Grok 使用 `concise` reasoning summary，并保留文本、图像、工具调用与 phase（commentary/final_answer）。
 
 **源码与接入**：[responses-translation.ts](../src/routes/messages/responses-translation.ts) 的 `createReasoningContent`、`shouldApplyPhase` 与 effort 映射。
 

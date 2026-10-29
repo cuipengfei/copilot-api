@@ -12,7 +12,7 @@
 | Stream ID sync | `stream-id-sync.ts` | 修正 added/done 事件 ID 不一致 |
 | Vision / initiator detection | `utils.ts` | 只看 `payload.input` 与最后一项 role |
 | Payload preflight | `preflight.ts` | Shared mutation: `removeUnsupportedTools` → conditional `removeWebSearchTool` |
-| Input normalization | `utils.ts` (`normalizeResponsesInputForReplay`) | 不再无条件执行；仅当上游 4xx 报 instance-bound item（`belong`）时由 `createHttpResponses` 剥除 `encrypted_content` 后重试一次 |
+| Input normalization | `utils.ts` (`normalizeResponsesInputForReplay`) | HTTP 上游 `4xx` 的 `error.message` 包含 `belong` 时剥除 `encrypted_content` 并重试一次；同一明确身份、模型、上游 URL 和认证凭据命中学习缓存时，在首发前应用相同处理 |
 | Compact input collapse | `utils.ts` (`compactInputByLatestCompaction`) | Path A 仅在 `applyResponsesApiContextManagement()` 启用时裁剪；Path B/C 在翻译前保留 replay 裁剪 |
 | Messages backend fallback | `responses-from-messages.ts` | Anthropic Messages ↔ Responses 双向翻译，含 monotonic `sequence_number` 与 assistant 合并 |
 | Chat completions fallback | `responses-from-chat.ts` | Chat Completions ↔ Responses 双向翻译，含 stream event 序列号 |
@@ -32,7 +32,7 @@
 - `stream-id-sync.ts` 会在 `response.output_item.added` 缺少 `item.id` 时补造 `oi_*` ID；后续事件必须复用该映射
 - `responses-from-messages.ts` 的 stream 翻译现在必须输出 monotonic `sequence_number` 和完整的 `response.output_item.added/done` 生命周期；assistant text + tool_use 合并为同一 message（防止 Claude replay 断流）
 - `preflight.ts` 独立管理共享工具 mutation；reasoning 条目原样放行（含 `encrypted_content`），Path A 的 compaction 由 context-management gate 决定，Path B/C 在各自 fallback 前裁剪
-- `prompt_cache_key` 完全由客户端自带，本网关不做注入；`normalizeResponsesInputForReplay()` 只在 `createHttpResponses` 的 belong-4xx 重试时执行（剥 `encrypted_content`、保留 id/type/summary、重试一次），路径级 `compactInputByLatestCompaction()` 必须在 stream id sync 之前完成
+- `prompt_cache_key` 由客户端提供；`normalizeResponsesInputForReplay()` 用于 HTTP belong-4xx 单次重试及已学习身份的首发前处理，保留 reasoning 的 id/type/summary。学习缓存最多 1024 条并按首次插入顺序淘汰，无明确 session 身份时逐次检查；WebSocket 使用原有处理。路径级 `compactInputByLatestCompaction()` 必须在 stream id sync 之前完成
 - `compactInputByLatestCompaction()` 在 messages → responses 路径（`api-flows.ts`）也复用；改语义时两处一并验
 - stream/non-stream 两条路径都要保留上游 quota/rate-limit headers；缺口通常先查 route helper 调用，再查 service 是否附着了 headers
 

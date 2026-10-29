@@ -1,6 +1,7 @@
 import type { Context } from "hono"
 import { streamSSE } from "hono/streaming"
 
+import { writeStreamLog } from "~/lib/logger"
 import {
   applyForwardableResponseHeaders,
   getAttachedResponseHeaders,
@@ -19,10 +20,14 @@ import type {
   ChatCompletionChunk,
   ChatCompletionResponse,
 } from "~/lib/types/chat-completions"
-import type { ResponsesPayload } from "~/lib/types/responses"
+import type {
+  ResponseStreamEvent,
+  ResponsesPayload,
+} from "~/lib/types/responses"
 import { isAsyncIterable } from "~/lib/utils"
 import { createChatCompletions } from "~/services/copilot/create-chat-completions"
 
+import { logResponsesCompletion } from "./local-behavior"
 import {
   createChatCompletionToResponsesStreamState,
   flushChatCompletionToResponsesStreamEvents,
@@ -145,13 +150,31 @@ export async function handleResponsesViaChatCompletions(
 
   return streamSSE(c, async (stream) => {
     const state = createChatCompletionToResponsesStreamState()
+    let chunkCount = 0
+    let terminalEventType: ResponseStreamEvent["type"] | undefined
+    let streamErrored = false
     let usage: UsageTokens = {}
     let copilotUsage: CopilotUsageTokens = {}
+    const rememberTerminalEvent = (eventType: ResponseStreamEvent["type"]) => {
+      if (
+        eventType === "response.completed"
+        || eventType === "response.incomplete"
+        || eventType === "response.failed"
+      ) {
+        terminalEventType = eventType
+      }
+    }
 
     try {
       for await (const rawEvent of chatResponse) {
         const chunk = toChatCompletionChunk(rawEvent)
         if (!chunk) continue
+        chunkCount++
+        writeStreamLog({
+          model: options.payload.model,
+          chunks: chunkCount,
+          done: false,
+        })
         if (chunk.usage) {
           usage = normalizeOpenAIUsage(chunk.usage)
         }
@@ -165,6 +188,7 @@ export async function handleResponsesViaChatCompletions(
           chunk,
           state,
         )) {
+          rememberTerminalEvent(event.type)
           await writeSSEIfConnected(stream, {
             event: event.type,
             data: JSON.stringify(event),
@@ -173,12 +197,14 @@ export async function handleResponsesViaChatCompletions(
       }
 
       for (const event of flushChatCompletionToResponsesStreamEvents(state)) {
+        rememberTerminalEvent(event.type)
         await writeSSEIfConnected(stream, {
           event: event.type,
           data: JSON.stringify(event),
         })
       }
     } catch (error) {
+      streamErrored = true
       if (!state.terminalEmitted) {
         const event = translateChatCompletionStreamErrorToResponsesEvent(
           error,
@@ -190,9 +216,27 @@ export async function handleResponsesViaChatCompletions(
         })
       }
     } finally {
-      recordUsage(usage, copilotUsage)
-      if (!stream.closed) {
-        await stream.close()
+      try {
+        recordUsage(usage, copilotUsage)
+        if (
+          !streamErrored
+          && terminalEventType === "response.completed"
+          && !stream.aborted
+          && !options.clientSignal?.aborted
+        ) {
+          logResponsesCompletion({
+            model: options.payload.model,
+            response: chatResponse,
+            chunks: chunkCount,
+          })
+        } else if (chunkCount > 0) {
+          writeStreamLog(
+            { model: options.payload.model, chunks: chunkCount, done: false },
+            true,
+          )
+        }
+      } finally {
+        if (!stream.closed) await stream.close()
       }
     }
   })
