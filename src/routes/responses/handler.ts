@@ -264,7 +264,10 @@ export const handleResponses = async (c: Context) => {
 
   debugJson(logger, "Translated Responses payload:", payload)
 
-  prepareNativeResponsesRequest(payload)
+  prepareNativeResponsesRequest({
+    payload,
+    supportedEfforts: selectedModel?.capabilities?.supports?.reasoning_effort,
+  })
 
   const { vision, initiator: inferredInitiator } =
     getResponsesRequestOptions(payload)

@@ -46,7 +46,8 @@ export const sendResponsesRequestWithReasoningReplay = async (
     reasoningReplayIdentity,
   }: ResponsesHttpSendOptions,
 ): Promise<Response> => {
-  const replayCacheKey =
+  // 内层 auto-session 重试可能换掉令牌，学习时必须按发送后的当前 headers 重算
+  const getReplayCacheKey = (): string | undefined =>
     reasoningReplayIdentity === undefined ? undefined : (
       JSON.stringify([
         reasoningReplayIdentity,
@@ -55,8 +56,16 @@ export const sendResponsesRequestWithReasoningReplay = async (
         createHash("sha256")
           .update(headers.Authorization ?? headers.authorization ?? "")
           .digest("hex"),
+        createHash("sha256")
+          .update(
+            headers["Copilot-Session-Token"]
+              ?? headers["copilot-session-token"]
+              ?? "",
+          )
+          .digest("hex"),
       ])
     )
+  const replayCacheKey = getReplayCacheKey()
   const replayLearned =
     replayCacheKey !== undefined
     && state.responsesReplayLearned.has(replayCacheKey)
@@ -87,9 +96,10 @@ export const sendResponsesRequestWithReasoningReplay = async (
         `drop thinking block, reason: upstream ${response.status} response mentions "belong" (instance-bound item ID); stripping reasoning.encrypted_content and retrying once`,
       )
       normalizeResponsesInputForReplay(payload)
-      if (replayCacheKey !== undefined) {
+      const learnedKey = getReplayCacheKey()
+      if (learnedKey !== undefined) {
         const learned = state.responsesReplayLearned
-        learned.add(replayCacheKey)
+        learned.add(learnedKey)
         if (learned.size > REPLAY_CACHE_LIMIT) {
           const oldest = learned.values().next().value
           if (oldest !== undefined) learned.delete(oldest)

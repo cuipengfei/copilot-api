@@ -183,7 +183,7 @@ export async function handleCompletion(c: Context) {
     } finally {
       try {
         recordUsage(usage, copilotUsage)
-        if (completed && !stream.aborted) {
+        if (completed && !stream.aborted && !c.req.raw.signal.aborted) {
           const premium = getAttachedPremiumInfo(response)
           writeStreamLog(
             { model: payload.model, chunks: chunkCount, done: true, premium },

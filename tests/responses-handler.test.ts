@@ -2576,7 +2576,7 @@ describe("responses handler upstream header forwarding across fallbacks", () => 
     })
   })
 
-  test("does not emit a failed event after a completed chat fallback stream", async () => {
+  test("emits failure when the upstream throws after stop and usage", async () => {
     state.models = {
       object: "list",
       data: [
@@ -2629,7 +2629,7 @@ describe("responses handler upstream header forwarding across fallbacks", () => 
         ].includes(String(type)),
       )
 
-    expect(terminalTypes).toEqual(["response.completed"])
+    expect(terminalTypes).toEqual(["response.failed"])
   })
 
   test("compacts replay input before chat fallback translation", async () => {
@@ -3199,4 +3199,129 @@ describe("Responses 取消请求后的完成日志", () => {
       }
     },
   )
+})
+
+describe("Responses Chat fallback 带内错误", () => {
+  test.each([
+    { event: "error", data: JSON.stringify({ message: "upstream failed" }) },
+    { data: JSON.stringify({ error: { message: "upstream failed" } }) },
+    { error: { message: "upstream failed" } },
+    { event: "error", data: "upstream failed" },
+    { event: "error", data: "{invalid" },
+    { event: "error", data: "" },
+  ])("保留错误前输出及尾用量，仅发送 failed：%p", async (failure) => {
+    const model = "chat-fallback-test"
+    state.models!.data[0].id = model
+    state.models!.data[0].supported_endpoints = ["/chat/completions"]
+    const makeChunk = (
+      choices: ChatCompletionChunk["choices"],
+      usage?: ChatCompletionChunk["usage"],
+    ) => ({
+      id: "chatcmpl-inband-error",
+      object: "chat.completion.chunk",
+      model,
+      created: 0,
+      choices,
+      usage,
+    })
+    const before = makeChunk(
+      [
+        {
+          index: 0,
+          delta: { content: "partial" },
+          finish_reason: "stop",
+          logprobs: null,
+        },
+      ],
+      { prompt_tokens: 2, completion_tokens: 1, total_tokens: 3 },
+    )
+    const after = makeChunk(
+      [
+        {
+          index: 0,
+          delta: { content: "hidden" },
+          finish_reason: null,
+          logprobs: null,
+        },
+      ],
+      { prompt_tokens: 4, completion_tokens: 2, total_tokens: 6 },
+    )
+    const upstream = streamChunks([
+      { data: JSON.stringify(before) },
+      failure,
+      {
+        data: JSON.stringify({
+          ...after,
+          copilot_usage: { total_nano_aiu: 7_000_000 },
+        }),
+      },
+    ])
+    attachResponseHeaders(
+      upstream,
+      new Headers({ "x-usage-ratelimit-session": "review-rate" }),
+    )
+    responsesChatDependencies.createChatCompletions = mock(() =>
+      Promise.resolve(upstream),
+    )
+    const close = Reflect.get(SSEStreamingApi.prototype, "close")
+    const closed = Promise.withResolvers<boolean>()
+    const cleanup = spyOn(
+      SSEStreamingApi.prototype,
+      "close",
+    ).mockImplementation(async function (this: SSEStreamingApi) {
+      await close.call(this)
+      closed.resolve(this.closed)
+    })
+    const stdout = captureStreamLogs()
+    try {
+      const response = await createApp().request("/v1/responses", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ model, input: "hello", stream: true }),
+      })
+      const body = await response.text()
+      const events = body
+        .split("\n")
+        .filter((line) => line.startsWith("data: "))
+        .map(
+          (line) =>
+            JSON.parse(line.slice(6)) as {
+              type: string
+              sequence_number: number
+              response?: ResponsesResult
+            },
+        )
+      expect(
+        events
+          .filter((event) =>
+            [
+              "response.completed",
+              "response.incomplete",
+              "response.failed",
+            ].includes(event.type),
+          )
+          .map((event) => event.type),
+      ).toEqual(["response.failed"])
+      expect(events.at(-1)?.response).toMatchObject({
+        status: "failed",
+        output_text: "partial",
+        usage: { input_tokens: 4, output_tokens: 2, total_tokens: 6 },
+        copilot_usage: { total_nano_aiu: 7_000_000 },
+      })
+      expect(typeof events.at(-1)?.response?.error?.message).toBe("string")
+      expect(body).not.toContain("hidden")
+      expect(events.map((event) => event.sequence_number)).toEqual(
+        events.map((_, index) => index),
+      )
+      expect(response.headers.get("x-usage-ratelimit-session")).toBe(
+        "review-rate",
+      )
+      expect(await closed.promise).toBe(true)
+      expect(stdout.entries().some((entry) => entry.includes("✓"))).toBe(false)
+      expect(stdout.entries().at(-1)?.endsWith("\n")).toBe(true)
+    } finally {
+      stdout.restore()
+      cleanup.mockRestore()
+    }
+  })
 })

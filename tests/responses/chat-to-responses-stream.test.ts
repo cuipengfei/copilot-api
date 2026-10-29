@@ -71,6 +71,7 @@ describe("translateChatCompletionChunkToResponsesStreamEvents text", () => {
         }),
         state,
       ),
+      flushChatCompletionToResponsesStreamEvents(state),
     ].flat()
 
     expect(events.map((event) => event.type)).toEqual([
@@ -173,8 +174,10 @@ describe("translateChatCompletionChunkToResponsesStreamEvents terminal metadata"
         (event) => event.type === "response.completed",
       ),
     ).toBe(false)
-    expect(usageEvents).toHaveLength(1)
-    expect(usageEvents[0]).toMatchObject({
+    expect(usageEvents).toEqual([])
+    const terminalEvents = flushChatCompletionToResponsesStreamEvents(state)
+    expect(terminalEvents).toHaveLength(1)
+    expect(terminalEvents[0]).toMatchObject({
       type: "response.completed",
       response: {
         copilot_usage: {

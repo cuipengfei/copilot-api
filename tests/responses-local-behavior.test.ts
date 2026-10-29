@@ -1,5 +1,7 @@
-import { afterAll, afterEach, describe, expect, test } from "bun:test"
+import { afterAll, afterEach, describe, expect, spyOn, test } from "bun:test"
 import { rejects } from "node:assert/strict"
+
+import consola from "consola"
 
 import { HTTPError } from "~/lib/error"
 import type { ResponsesPayload } from "~/lib/types/responses"
@@ -9,6 +11,8 @@ import {
   retryResponsesWithoutImages,
   shouldUseChatFallback,
 } from "~/routes/responses/local-behavior"
+
+const CONFIG_DEFAULT_MODEL = "local-effort-config-default"
 
 const requests: Array<ResponsesPayload> = []
 const server = Bun.serve({
@@ -91,14 +95,69 @@ describe("Responses 本地分派条件", () => {
   })
 })
 
-test("默认 effort 处理保留显式 effort 与其它 reasoning 字段", () => {
+const prepareWithLog = (
+  payload: ResponsesPayload,
+  supportedEfforts: Array<string> | undefined,
+): Array<string> => {
+  const info = spyOn(consola, "info")
+  try {
+    prepareNativeResponsesRequest({ payload, supportedEfforts })
+    return info.mock.calls.map((args) => String(args[0]))
+  } finally {
+    info.mockRestore()
+  }
+}
+
+test("显式 effort 优先于能力收敛且保留其它 reasoning 字段", () => {
   const payload: ResponsesPayload = {
     model: "gpt-image",
-    reasoning: { effort: "low", summary: "detailed" },
+    reasoning: { effort: "high", summary: "detailed" },
     input: "hello",
   }
-  prepareNativeResponsesRequest(payload)
-  expect(payload.reasoning).toEqual({ effort: "low", summary: "detailed" })
+  const logs = prepareWithLog(payload, ["low", "medium"])
+  expect(payload.reasoning).toEqual({ effort: "high", summary: "detailed" })
+  expect(logs).toContain("IN gpt-image [effort=high (request)]")
+})
+
+test("缺少能力列表时配置默认值照旧注入并保留 summary", () => {
+  const payload: ResponsesPayload = {
+    model: CONFIG_DEFAULT_MODEL,
+    reasoning: { summary: "detailed" },
+    input: "hello",
+  }
+  const logs = prepareWithLog(payload, undefined)
+  expect(payload.reasoning).toEqual({ effort: "high", summary: "detailed" })
+  expect(logs).toContain(`IN ${CONFIG_DEFAULT_MODEL} [effort=high (config)]`)
+})
+
+test("空能力列表不注入配置默认值，日志记录 unsupported", () => {
+  const withSummary: ResponsesPayload = {
+    model: CONFIG_DEFAULT_MODEL,
+    reasoning: { summary: "detailed" },
+    input: "hello",
+  }
+  const logs = prepareWithLog(withSummary, [])
+  expect(withSummary.reasoning).toEqual({ summary: "detailed" })
+  expect(logs).toContain(
+    `IN ${CONFIG_DEFAULT_MODEL} [effort=unsupported (config)]`,
+  )
+
+  const withoutReasoning: ResponsesPayload = {
+    model: CONFIG_DEFAULT_MODEL,
+    input: "hello",
+  }
+  prepareWithLog(withoutReasoning, [])
+  expect(withoutReasoning.reasoning).toBeUndefined()
+})
+
+test("非空能力列表把配置默认值向下收敛并记录实际发送值", () => {
+  const payload: ResponsesPayload = {
+    model: CONFIG_DEFAULT_MODEL,
+    input: "hello",
+  }
+  const logs = prepareWithLog(payload, ["minimal", "low"])
+  expect(payload.reasoning).toEqual({ effort: "low" })
+  expect(logs).toContain(`IN ${CONFIG_DEFAULT_MODEL} [effort=low (config)]`)
 })
 
 test("413 图片重试通过真实 HTTP 保留输入并使用已有图片清理", async () => {

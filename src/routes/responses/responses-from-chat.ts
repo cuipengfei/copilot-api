@@ -121,12 +121,8 @@ export const translateChatCompletionChunkToResponsesStreamEvents = (
     state.responseCreated = true
   }
 
-  if (chunk.choices.length === 0) {
-    if (chunk.usage) {
-      events.push(...emitPendingTerminalEvent(state))
-    }
-    return events
-  }
+  // 整体终态只在 EOF flush 产出：usage-only chunk 不提前关闭错误处理机会。
+  if (chunk.choices.length === 0) return events
 
   const choice = chunk.choices[0]
   const { delta } = choice
@@ -181,9 +177,30 @@ export const translateChatCompletionChunkToResponsesStreamEvents = (
   return events
 }
 
+// 整体 completed/incomplete 只在 EOF flush 确认，finish/usage 到达后仍保留错误处理机会。
 export const flushChatCompletionToResponsesStreamEvents = (
   state: ChatCompletionToResponsesStreamState,
-): Array<ResponseStreamEvent> => emitPendingTerminalEvent(state)
+): Array<ResponseStreamEvent> => {
+  if (!state.pendingStatus || state.terminalEmitted) {
+    return []
+  }
+
+  const response = buildResponsesResultFromStreamState(
+    state,
+    state.pendingStatus,
+  )
+  state.terminalEmitted = true
+  return [
+    {
+      type:
+        response.status === "incomplete" ?
+          "response.incomplete"
+        : "response.completed",
+      sequence_number: nextSequenceNumber(state),
+      response,
+    },
+  ]
+}
 
 export const translateChatCompletionStreamErrorToResponsesEvent = (
   error: unknown,
@@ -692,34 +709,7 @@ const buildFinishEvents = (
   }
 
   state.pendingStatus = mapFinishReasonToStatus(finishReason ?? undefined)
-  if (state.latestUsage) {
-    events.push(...emitPendingTerminalEvent(state))
-  }
   return events
-}
-
-const emitPendingTerminalEvent = (
-  state: ChatCompletionToResponsesStreamState,
-): Array<ResponseStreamEvent> => {
-  if (!state.pendingStatus || state.terminalEmitted) {
-    return []
-  }
-
-  const response = buildResponsesResultFromStreamState(
-    state,
-    state.pendingStatus,
-  )
-  state.terminalEmitted = true
-  return [
-    {
-      type:
-        response.status === "incomplete" ?
-          "response.incomplete"
-        : "response.completed",
-      sequence_number: nextSequenceNumber(state),
-      response,
-    },
-  ]
 }
 
 const buildResponsesResultFromStreamState = (

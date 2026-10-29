@@ -293,7 +293,8 @@ export const handleWithChatCompletions = async (
             loopCompleted
             && streamState.messageCompleted
             && !streamInterrupted
-            && !stream.aborted,
+            && !stream.aborted
+            && !c.req.raw.signal.aborted,
         })
       } finally {
         if (!stream.closed) {
@@ -448,7 +449,8 @@ export const handleWithResponsesApi = async (
             completed:
               loopCompleted
               && terminalEventType === "response.completed"
-              && !stream.aborted,
+              && !stream.aborted
+              && !c.req.raw.signal.aborted,
           })
         } finally {
           if (!stream.closed) {
@@ -596,7 +598,8 @@ export const handleWithMessagesApi = async (
               messageStopSeen
               && !errorSeen
               && !streamInterrupted
-              && !stream.aborted,
+              && !stream.aborted
+              && !c.req.raw.signal.aborted,
           })
         } finally {
           if (!stream.closed) {

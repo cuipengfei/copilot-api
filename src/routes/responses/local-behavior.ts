@@ -11,6 +11,7 @@ import {
   shouldUseColor,
   writeStreamLog,
 } from "~/lib/logger"
+import { resolveSupportedReasoningEffort } from "~/lib/reasoning-effort"
 import { writeSSEIfConnected } from "~/lib/sse"
 import type {
   Reasoning,
@@ -47,22 +48,34 @@ export const shouldUseChatFallback = ({
   )
 }
 
-export const prepareNativeResponsesRequest = (
-  payload: ResponsesPayload,
-): void => {
+export const prepareNativeResponsesRequest = ({
+  payload,
+  supportedEfforts,
+}: {
+  payload: ResponsesPayload
+  supportedEfforts: Array<string> | undefined
+}): void => {
   const effortForLog = resolveEffortForLog(
     payload.reasoning?.effort ?? undefined,
     payload.model,
   )
-  if (!payload.reasoning?.effort) {
-    payload.reasoning = {
-      ...payload.reasoning,
-      effort: effortForLog.value as NonNullable<Reasoning>["effort"],
+  let sentEffort: string | undefined = effortForLog.value
+  if (effortForLog.source === "config") {
+    // 空能力列表表示模型不接受 effort；未知能力列表沿用配置默认值。
+    sentEffort =
+      supportedEfforts === undefined ? effortForLog.value
+      : supportedEfforts.length === 0 ? undefined
+      : resolveSupportedReasoningEffort(effortForLog.value, supportedEfforts)
+    if (sentEffort) {
+      payload.reasoning = {
+        ...payload.reasoning,
+        effort: sentEffort as NonNullable<Reasoning>["effort"],
+      }
     }
   }
   const model = shouldUseColor() ? colorizeModel(payload.model) : payload.model
   consola.info(
-    `IN ${model} [effort=${effortForLog.value} (${effortForLog.source})]`,
+    `IN ${model} [effort=${sentEffort ?? "unsupported"} (${effortForLog.source})]`,
   )
 }
 

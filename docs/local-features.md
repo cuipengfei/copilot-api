@@ -108,7 +108,7 @@
 - 同时满足 `4xx`、`error.message` 为字符串且不区分大小写包含 `belong`、请求存在 `reasoning.encrypted_content` 时，才按既有逻辑处理输入并重试一次；大小写处理与 `responses-compat.ts` 现有实现一致。
 - 仅按 `error.message` 判断；其他错误字段、服务端错误和没有可处理 reasoning 的输入保持原错误路径。
 - 同一身份与模型已学习到 `belong` 失败时，后续首发前先按既有输入规范化移除 `reasoning.encrypted_content`，保留 reasoning 的 `id`、`type` 与 `summary`。
-- 学习只发生在实际返回含 `belong` 的 `4xx` 且请求存在 `encrypted_content` 的 HTTP 请求；进程内最多保存 1024 条记录，按明确身份、模型、上游 URL 与认证凭据的 SHA-256 摘要隔离。超出时按首次插入顺序淘汰最早条目，并发重复学习保持原顺序；没有明确 session 身份不学习。
+- 学习只发生在实际返回含 `belong` 的 `4xx` 且请求存在 `encrypted_content` 的 HTTP 请求；进程内最多保存 1024 条记录，按明确身份、模型、上游 URL、`Authorization` 的 SHA-256 摘要及 `Copilot-Session-Token` 的 SHA-256 摘要隔离。令牌在 HTTP 重试中更新时，学习记录归属返回该错误的最终请求凭据。超出时按首次插入顺序淘汰最早条目，并发重复学习保持原顺序；没有明确 session 身份不学习。
 - 身份按 `x-session-id`、`x-claude-code-session-id`、`session-id`、`session_id`，再显式 `prompt_cache_key`，再 `x-root-session-id`、`x-opencode-session-id`、`x-session-affinity`、`x-client-request-id`、`thread-id` 取首个 trim 后非空值；agent 取 `x-oc-agent`，缺省记为 `_`。不使用 fallback session ID、机器 ID 或请求文本哈希。
 - WebSocket 分支不应用学习缓存。
 - 保留 payload 原地更新、两次请求各自的 rate-limit 记录、响应 headers 和用量处理。
@@ -216,6 +216,8 @@
 **行为**：请求入口记录原始模型、目标模型、实际发送的 effort 与来源；模型明确不支持配置 effort 时记录 `unsupported (config)`。Messages 路由使用自己的 IN/OUT 日志。流式响应每收到一个 chunk 在同一行覆盖输出 `\x1b[2K\r↪ <model> <N>` 进度；上游正常完成且客户端连接有效时追加 `✓` 并换行，`failed`/`incomplete` 终态、抛错或提前取消只结束进度行。Chat 非流式响应记录 `0 ✓`。Chat、Messages 与 Responses 路由共用该格式，premium 信息只读取当前响应附带的数据，缺少数据时省略配额标记。JSON/SSE 内容、`[DONE]`、响应 headers、用量记录和清理路径保持原有行为。协议转换和 provider 转发保留 thinking block、thinking config 的移除数量与原因记录。
 
 stdout 同步写入失败时省略该条进度日志，继续原有响应与流关闭流程。
+
+Responses 的 Chat fallback 持续发送内容与工具调用事件，整体 `response.completed` 或 `response.incomplete` 在上游流结束时发送。上游流内错误及传输异常生成 `response.failed`，保留错误前输出和已收集用量；错误后的上游内容不继续发送。Chat 与 Messages 的成功日志同时检查请求取消信号，取消后仍执行原有用量记录与流关闭流程。
 
 **源码与接入**：[logger.ts](../src/lib/logger.ts)、[server.ts](../src/server.ts)、[Messages handler](../src/routes/messages/handler.ts)、[preprocess.ts](../src/routes/messages/preprocess.ts)、[non-stream-translation.ts](../src/routes/messages/non-stream-translation.ts)、[responses-translation.ts](../src/routes/messages/responses-translation.ts)、[provider Messages handler](../src/routes/provider/messages/handler.ts) 与 [provider Messages local-behavior.ts](../src/routes/provider/messages/local-behavior.ts)。
 

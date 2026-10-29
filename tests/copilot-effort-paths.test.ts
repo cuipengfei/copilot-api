@@ -6,12 +6,14 @@ import {
   beforeEach,
   describe,
   expect,
+  spyOn,
   test,
 } from "bun:test"
 import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 
+import consola from "consola"
 import { Hono } from "hono"
 
 import { invalidateAutoSession } from "~/lib/auto-session"
@@ -233,6 +235,18 @@ const requestJsonBody = (
 const reasoningEffortOf = (body: Record<string, unknown>): string | undefined =>
   (body.reasoning as { effort?: string } | undefined)?.effort
 
+const withInfoLogs = async (
+  run: () => Response | Promise<Response>,
+): Promise<{ logs: Array<string>; response: Response }> => {
+  const info = spyOn(consola, "info")
+  try {
+    const response = await run()
+    return { logs: info.mock.calls.map((args) => String(args[0])), response }
+  } finally {
+    info.mockRestore()
+  }
+}
+
 const reasoningInputItem = (
   body: Record<string, unknown>,
 ): Record<string, unknown> => {
@@ -382,30 +396,91 @@ describe("Messages 到 Chat 的显式 effort 优先级", () => {
 })
 
 describe("native Responses effort", () => {
+  const nativeModel = () =>
+    state.models!.data.find((item) => item.id === NATIVE_MODEL)!
+
   test("请求未给 effort 时把模型配置的默认值发往上游", async () => {
-    const response = await postResponses({
-      input: "hello",
-      model: NATIVE_MODEL,
-    })
+    const { logs, response } = await withInfoLogs(() =>
+      postResponses({ input: "hello", model: NATIVE_MODEL }),
+    )
 
     expect(response.status).toBe(200)
     expect(upstreamFor("/responses")).toHaveLength(1)
     expect(
       reasoningEffortOf(requestJsonBody(upstreamFor("/responses")[0])),
     ).toBe("low")
+    expect(logs).toContain(`IN ${NATIVE_MODEL} [effort=low (config)]`)
   })
 
   test("请求显式 effort 时优先于模型配置", async () => {
-    const response = await postResponses({
-      input: "hello",
-      model: NATIVE_MODEL,
-      reasoning: { effort: "high" },
-    })
+    const { logs, response } = await withInfoLogs(() =>
+      postResponses({
+        input: "hello",
+        model: NATIVE_MODEL,
+        reasoning: { effort: "high" },
+      }),
+    )
 
     expect(response.status).toBe(200)
     expect(
       reasoningEffortOf(requestJsonBody(upstreamFor("/responses")[0])),
     ).toBe("high")
+    expect(logs).toContain(`IN ${NATIVE_MODEL} [effort=high (request)]`)
+  })
+
+  test("能力列表缺失时保留旧配置默认值行为", async () => {
+    delete nativeModel().capabilities.supports.reasoning_effort
+    const { logs, response } = await withInfoLogs(() =>
+      postResponses({ input: "hello", model: NATIVE_MODEL }),
+    )
+
+    expect(response.status).toBe(200)
+    expect(
+      reasoningEffortOf(requestJsonBody(upstreamFor("/responses")[0])),
+    ).toBe("low")
+    expect(logs).toContain(`IN ${NATIVE_MODEL} [effort=low (config)]`)
+  })
+
+  test("空能力列表时不注入 effort", async () => {
+    nativeModel().capabilities.supports.reasoning_effort = []
+    const { logs, response } = await withInfoLogs(() =>
+      postResponses({ input: "hello", model: NATIVE_MODEL }),
+    )
+
+    expect(response.status).toBe(200)
+    expect(
+      requestJsonBody(upstreamFor("/responses")[0]).reasoning,
+    ).toBeUndefined()
+    expect(logs).toContain(`IN ${NATIVE_MODEL} [effort=unsupported (config)]`)
+  })
+
+  test("非空能力列表把配置默认值向下收敛后发往上游", async () => {
+    nativeModel().capabilities.supports.reasoning_effort = ["minimal"]
+    const { logs, response } = await withInfoLogs(() =>
+      postResponses({ input: "hello", model: NATIVE_MODEL }),
+    )
+
+    expect(response.status).toBe(200)
+    expect(
+      reasoningEffortOf(requestJsonBody(upstreamFor("/responses")[0])),
+    ).toBe("minimal")
+    expect(logs).toContain(`IN ${NATIVE_MODEL} [effort=minimal (config)]`)
+  })
+
+  test("补配置默认值时保留 summary", async () => {
+    const { response } = await withInfoLogs(() =>
+      postResponses({
+        input: "hello",
+        model: NATIVE_MODEL,
+        reasoning: { summary: "concise" },
+      }),
+    )
+
+    expect(response.status).toBe(200)
+    expect(requestJsonBody(upstreamFor("/responses")[0]).reasoning).toEqual({
+      effort: "low",
+      summary: "concise",
+    })
   })
 })
 

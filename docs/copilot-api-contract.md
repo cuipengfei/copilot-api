@@ -170,7 +170,9 @@ type ResponseInputItem =
   | { type: "reasoning"; id: string; summary: []; encrypted_content: string };
 ```
 
-HTTP Responses 收到 `error.message` 包含 `belong` 的实际 `4xx` 且输入含 `encrypted_content` 时，规范化输入并重试一次。同一明确 session 与 agent、模型、上游 URL 和认证凭据的后续请求会在首发前应用已学习的处理；缓存键只保存认证凭据的 SHA-256 摘要。记录仅保存在当前进程，最多 1024 条，按首次插入顺序淘汰。未提供明确 session 身份的请求保留逐次检查，WebSocket 请求沿用原有处理。身份选择顺序见[Responses HTTP replay 兼容](local-features.md#4-responses-http-replay-兼容)。
+HTTP Responses 收到 `error.message` 包含 `belong` 的实际 `4xx` 且输入含 `encrypted_content` 时，规范化输入并重试一次。同一明确 session 与 agent、模型、上游 URL、`Authorization` 和 `Copilot-Session-Token` 的后续请求会在首发前应用已学习的处理；缓存键只保存两种凭据的 SHA-256 摘要。HTTP 重试更新令牌时，学习使用最终请求凭据。记录仅保存在当前进程，最多 1024 条，按首次插入顺序淘汰。未提供明确 session 身份的请求保留逐次检查，WebSocket 请求沿用原有处理。身份选择顺序见[Responses HTTP replay 兼容](local-features.md#4-responses-http-replay-兼容)。
+
+native Responses 只在模型支持时注入配置 effort，空能力列表时省略配置值，能力数据未知时保留配置默认行为。显式请求继续使用既有能力归一化规则。Chat fallback 的整体终态在上游流结束时提交，流内错误生成 `response.failed`，不会先发送整体成功终态。
 
 ### Messages API（Anthropic 原生格式）
 

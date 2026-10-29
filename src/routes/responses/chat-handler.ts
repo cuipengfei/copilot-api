@@ -61,32 +61,75 @@ const isChatCompletionChunkShape = (
   return "choices" in value && Array.isArray(value.choices)
 }
 
-const toChatCompletionChunk = (
-  value: unknown,
-): ChatCompletionChunk | undefined => {
-  if (typeof value !== "object" || value === null) return undefined
-  // createChatCompletions 流式返回 fetch-event-stream envelope
-  // （{ data: "<json>" }）；解包成 ChatCompletionChunk。
-  if ("data" in value && typeof value.data === "string") {
-    const data = value.data
-    if (!data || data === "[DONE]") return undefined
+type StreamError = { message?: string }
+
+type ParsedChatStreamEvent =
+  { chunk: ChatCompletionChunk } | { error: StreamError }
+
+const readErrorMessage = (value: unknown): string | undefined => {
+  if (typeof value === "string") {
+    const text = value.trim()
+    if (!text) return undefined
     try {
-      const parsed: unknown = JSON.parse(data)
-      if (
-        typeof parsed === "object"
-        && parsed !== null
-        && isChatCompletionChunkShape(parsed)
-      ) {
-        return parsed
-      }
-      return undefined
+      return readErrorMessage(JSON.parse(text))
     } catch {
-      return undefined
+      // 纯文本 / 非法 JSON 正文本身就是错误文本。
+      return text
     }
   }
-  // 兼容测试 / 已解包路径直接给裸 chunk。
-  if (isChatCompletionChunkShape(value)) return value
+  if (typeof value === "object" && value !== null) {
+    const record = value as Record<string, unknown>
+    if (typeof record.message === "string" && record.message.trim()) {
+      return record.message
+    }
+    if (record.error !== undefined) return readErrorMessage(record.error)
+  }
   return undefined
+}
+
+const readPayloadError = (payload: unknown): StreamError | undefined => {
+  if (typeof payload !== "object" || payload === null) return undefined
+  const { error } = payload as { error?: unknown }
+  if (error === undefined || error === null) return undefined
+  return { message: readErrorMessage(error) }
+}
+
+const parseChatStreamEvent = (
+  value: unknown,
+): ParsedChatStreamEvent | undefined => {
+  if (typeof value !== "object" || value === null) return undefined
+  // createChatCompletions 流式返回 fetch-event-stream envelope
+  // （{ event?: "error", data: "<json>" }）；data 缺失时容忍裸事件。
+  const record = value as Record<string, unknown>
+  const isErrorEvent = record.event === "error"
+  const data = "data" in record ? record.data : value
+
+  let payload: unknown = data
+  if (typeof data === "string") {
+    if (data === "" || data === "[DONE]") {
+      return isErrorEvent ? { error: {} } : undefined
+    }
+    try {
+      payload = JSON.parse(data)
+    } catch {
+      return isErrorEvent ? { error: { message: data } } : undefined
+    }
+  }
+
+  // 错误优先于 choices 识别；无 choices 的 error 载荷同样失败。
+  const error =
+    isErrorEvent ?
+      { message: readErrorMessage(payload) }
+    : readPayloadError(payload)
+  if (error) return { error }
+
+  return (
+      typeof payload === "object"
+        && payload !== null
+        && isChatCompletionChunkShape(payload)
+    ) ?
+      { chunk: payload }
+    : undefined
 }
 
 export async function handleResponsesViaChatCompletions(
@@ -152,6 +195,7 @@ export async function handleResponsesViaChatCompletions(
     const state = createChatCompletionToResponsesStreamState()
     let chunkCount = 0
     let terminalEventType: ResponseStreamEvent["type"] | undefined
+    let streamError: Error | undefined
     let streamErrored = false
     let usage: UsageTokens = {}
     let copilotUsage: CopilotUsageTokens = {}
@@ -167,8 +211,15 @@ export async function handleResponsesViaChatCompletions(
 
     try {
       for await (const rawEvent of chatResponse) {
-        const chunk = toChatCompletionChunk(rawEvent)
-        if (!chunk) continue
+        const parsed = parseChatStreamEvent(rawEvent)
+        if (!parsed) continue
+        if ("error" in parsed) {
+          streamError ??= new Error(
+            parsed.error.message ?? "Upstream Chat Completions stream error",
+          )
+          continue
+        }
+        const { chunk } = parsed
         chunkCount++
         writeStreamLog({
           model: options.payload.model,
@@ -184,6 +235,16 @@ export async function handleResponsesViaChatCompletions(
             copilotUsageToTokens(chunk.copilot_usage),
           )
         }
+        if (streamError) {
+          if (chunk.usage) state.latestUsage = chunk.usage
+          if (chunk.copilot_usage) {
+            state.latestCopilotUsage = mergeCopilotUsage(
+              state.latestCopilotUsage ?? {},
+              chunk.copilot_usage,
+            )
+          }
+          continue
+        }
         for (const event of translateChatCompletionChunkToResponsesStreamEvents(
           chunk,
           state,
@@ -195,6 +256,7 @@ export async function handleResponsesViaChatCompletions(
           })
         }
       }
+      if (streamError) throw streamError
 
       for (const event of flushChatCompletionToResponsesStreamEvents(state)) {
         rememberTerminalEvent(event.type)

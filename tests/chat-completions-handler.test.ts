@@ -54,13 +54,14 @@ const createModels = () => ({
   ],
 })
 
-const postChat = (body: Record<string, unknown>) => {
+const postChat = (body: Record<string, unknown>, signal?: AbortSignal) => {
   const app = new Hono()
   app.route("/v1/chat/completions", completionRoutes)
   return app.request("/v1/chat/completions", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
+    signal,
   })
 }
 
@@ -573,6 +574,82 @@ describe("chat completions handler logging", () => {
     } finally {
       stdout.restore()
       infoSpy.mockRestore()
+    }
+  })
+
+  test("does not log a success line when the request signal aborts mid-stream", async () => {
+    const gate = Promise.withResolvers<void>()
+    const head = `data: ${JSON.stringify(contentChunk("he"))}\n\n`
+    const tail = sseBody([contentChunk("llo"), usageChunk])
+    installFetch(
+      mock(() =>
+        Promise.resolve(
+          new Response(
+            new ReadableStream({
+              start(controller) {
+                const encoder = new TextEncoder()
+                controller.enqueue(encoder.encode(head))
+                void gate.promise.then(() => {
+                  controller.enqueue(encoder.encode(tail))
+                  controller.close()
+                })
+              },
+            }),
+            { status: 200, headers: { "content-type": "text/event-stream" } },
+          ),
+        ),
+      ),
+    )
+    const stdout = captureStdout()
+    const close = Reflect.get(SSEStreamingApi.prototype, "close")
+    const closeSpy = spyOn(SSEStreamingApi.prototype, "close")
+    const closeSettled = Promise.withResolvers<void>()
+    let streamClosed = false
+    closeSpy.mockImplementation(async function (this: SSEStreamingApi) {
+      await close.call(this)
+      streamClosed = this.closed
+      closeSettled.resolve()
+    })
+    try {
+      const abort = new AbortController()
+      const response = await postChat(
+        {
+          model: "gpt-test",
+          stream: true,
+          messages: [{ role: "user", content: "hello" }],
+        },
+        abort.signal,
+      )
+      expect(response.status).toBe(200)
+      const reader = (response.body as ReadableStream<Uint8Array>).getReader()
+      const decoder = new TextDecoder()
+      let body = ""
+      const read = async () => {
+        const { done, value } = await reader.read()
+        if (done) return false
+        body += decoder.decode(value, { stream: true })
+        return true
+      }
+      await read()
+      abort.abort()
+      gate.resolve()
+      let more = true
+      while (more) more = await read()
+      await closeSettled.promise
+
+      const logs = streamLogWrites(stdout.writes)
+      expect(logs.some((write) => write.includes("✓"))).toBe(false)
+      const final = logs.at(-1) as string
+      expect(final).toStartWith("\x1b[2K\r↪ gpt-test 3")
+      expect(final.endsWith("\n")).toBe(true)
+      expect(body).toContain('"content":"llo"')
+      expect(body).toContain('"total_tokens":17')
+      expect(body).toContain("[DONE]")
+      expect(streamClosed).toBe(true)
+    } finally {
+      gate.resolve()
+      stdout.restore()
+      closeSpy.mockRestore()
     }
   })
 

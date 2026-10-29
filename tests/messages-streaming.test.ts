@@ -237,6 +237,86 @@ describe("messages Chat Completions stream log", () => {
     expect(entries[2]).not.toContain("✓")
     expect(entries[2].endsWith(" 2\n")).toBe(true)
   })
+
+  test("does not mark completion when the request signal aborts mid-stream", async () => {
+    const gate = Promise.withResolvers<void>()
+    messagesApiFlowDependencies.createChatCompletions = () =>
+      Promise.resolve(
+        (async function* () {
+          yield {
+            data: JSON.stringify(
+              createChatChunk("gpt-test", { content: "he" }),
+            ),
+          }
+          await gate.promise
+          yield {
+            data: JSON.stringify(
+              createChatChunk("gpt-test", { content: "llo" }),
+            ),
+          }
+          yield {
+            data: JSON.stringify({
+              ...createChatChunk("gpt-test", {}, "stop"),
+              usage: {
+                completion_tokens: 5,
+                prompt_tokens: 12,
+                total_tokens: 17,
+              },
+            }),
+          }
+          yield { data: "[DONE]" }
+        })(),
+      )
+    const logs = captureStreamLogs()
+    const close = Reflect.get(SSEStreamingApi.prototype, "close")
+    const closeSettled = Promise.withResolvers<boolean>()
+    const closeSpy = spyOn(SSEStreamingApi.prototype, "close")
+    closeSpy.mockImplementation(async function (this: SSEStreamingApi) {
+      await close.call(this)
+      closeSettled.resolve(this.closed)
+    })
+    try {
+      const app = new Hono()
+      app.post("/", (c) =>
+        handleWithChatCompletions(c, createStreamPayload("gpt-test"), {
+          logger,
+          requestId: "abort-signal-chat",
+        }),
+      )
+      const abort = new AbortController()
+      const response = await app.request("/", {
+        method: "POST",
+        signal: abort.signal,
+      })
+      const reader = (response.body as ReadableStream<Uint8Array>).getReader()
+      const decoder = new TextDecoder()
+      let body = ""
+      const read = async () => {
+        const { done, value } = await reader.read()
+        if (done) return false
+        body += decoder.decode(value, { stream: true })
+        return true
+      }
+      await read()
+      abort.abort()
+      gate.resolve()
+      let more = true
+      while (more) more = await read()
+
+      expect(body).toContain('"text":"llo"')
+      expect(body).toContain('"output_tokens":5')
+      expect(body).toContain("event: message_stop")
+      const closed = await closeSettled.promise
+      expect(closed).toBe(true)
+    } finally {
+      gate.resolve()
+      logs.restore()
+      closeSpy.mockRestore()
+    }
+    const entries = logs.entries()
+    expect(entries.some((entry) => entry.includes("✓"))).toBe(false)
+    expect(entries.at(-1)?.endsWith(" 3\n")).toBe(true)
+  })
 })
 
 describe("messages native Messages stream log", () => {
@@ -352,6 +432,93 @@ describe("messages native Messages stream log", () => {
     expect(entries[2]).not.toContain("✓")
     expect(entries[2].endsWith(" 2\n")).toBe(true)
   })
+
+  test("does not mark completion when the request signal aborts mid-stream", async () => {
+    const gate = Promise.withResolvers<void>()
+    messagesApiFlowDependencies.createMessages = () =>
+      Promise.resolve(
+        (async function* () {
+          yield {
+            event: "message_start",
+            data: JSON.stringify({
+              type: "message_start",
+              message: {
+                id: "msg-1",
+                type: "message",
+                role: "assistant",
+                content: [],
+                model: "claude-test",
+                stop_reason: null,
+                stop_sequence: null,
+                usage: { input_tokens: 1, output_tokens: 0 },
+              },
+            }),
+          }
+          await gate.promise
+          yield {
+            event: "message_delta",
+            data: JSON.stringify({
+              type: "message_delta",
+              delta: { stop_reason: "end_turn", stop_sequence: null },
+              usage: { output_tokens: 1 },
+            }),
+          }
+          yield {
+            event: "message_stop",
+            data: JSON.stringify({ type: "message_stop" }),
+          }
+        })(),
+      )
+    const logs = captureStreamLogs()
+    const close = Reflect.get(SSEStreamingApi.prototype, "close")
+    const closeSettled = Promise.withResolvers<boolean>()
+    const closeSpy = spyOn(SSEStreamingApi.prototype, "close")
+    closeSpy.mockImplementation(async function (this: SSEStreamingApi) {
+      await close.call(this)
+      closeSettled.resolve(this.closed)
+    })
+    try {
+      const app = new Hono()
+      app.post("/", (c) =>
+        handleWithMessagesApi(c, createStreamPayload("claude-test"), {
+          logger,
+          requestId: "abort-signal-messages",
+        }),
+      )
+      const abort = new AbortController()
+      const response = await app.request("/", {
+        method: "POST",
+        signal: abort.signal,
+      })
+      const reader = (response.body as ReadableStream<Uint8Array>).getReader()
+      const decoder = new TextDecoder()
+      let body = ""
+      const read = async () => {
+        const { done, value } = await reader.read()
+        if (done) return false
+        body += decoder.decode(value, { stream: true })
+        return true
+      }
+      await read()
+      abort.abort()
+      gate.resolve()
+      let more = true
+      while (more) more = await read()
+
+      expect(body).toContain("event: message_start")
+      expect(body).toContain('"output_tokens":1')
+      expect(body).toContain("event: message_stop")
+      const closed = await closeSettled.promise
+      expect(closed).toBe(true)
+    } finally {
+      gate.resolve()
+      logs.restore()
+      closeSpy.mockRestore()
+    }
+    const entries = logs.entries()
+    expect(entries.some((entry) => entry.includes("✓"))).toBe(false)
+    expect(entries.at(-1)?.endsWith(" 3\n")).toBe(true)
+  })
 })
 
 describe("messages Responses stream log", () => {
@@ -438,6 +605,92 @@ describe("messages Responses stream log", () => {
     expect(entries[1].endsWith(" 2")).toBe(true)
     expect(entries[2]).not.toContain("✓")
     expect(entries[2].endsWith(" 2\n")).toBe(true)
+  })
+
+  test("does not mark completion when the request signal aborts mid-stream", async () => {
+    const gate = Promise.withResolvers<void>()
+    messagesApiFlowDependencies.createResponses = () =>
+      Promise.resolve(
+        (async function* () {
+          yield {
+            data: JSON.stringify({
+              type: "response.created",
+              response: createResponsesResult("gpt-test"),
+            }),
+          }
+          await gate.promise
+          yield {
+            data: JSON.stringify({
+              type: "response.output_text.delta",
+              output_index: 0,
+              content_index: 0,
+              delta: "llo",
+            }),
+          }
+          yield {
+            data: JSON.stringify({
+              type: "response.completed",
+              response: {
+                ...createResponsesResult("gpt-test"),
+                usage: {
+                  input_tokens: 12,
+                  output_tokens: 5,
+                  total_tokens: 17,
+                },
+              },
+            }),
+          }
+        })(),
+      )
+    const logs = captureStreamLogs()
+    const close = Reflect.get(SSEStreamingApi.prototype, "close")
+    const closeSettled = Promise.withResolvers<boolean>()
+    const closeSpy = spyOn(SSEStreamingApi.prototype, "close")
+    closeSpy.mockImplementation(async function (this: SSEStreamingApi) {
+      await close.call(this)
+      closeSettled.resolve(this.closed)
+    })
+    try {
+      const app = new Hono()
+      app.post("/", (c) =>
+        handleWithResponsesApi(c, createStreamPayload("gpt-test"), {
+          logger,
+          requestId: "abort-signal-responses",
+        }),
+      )
+      const abort = new AbortController()
+      const response = await app.request("/", {
+        method: "POST",
+        signal: abort.signal,
+      })
+      const reader = (response.body as ReadableStream<Uint8Array>).getReader()
+      const decoder = new TextDecoder()
+      let body = ""
+      const read = async () => {
+        const { done, value } = await reader.read()
+        if (done) return false
+        body += decoder.decode(value, { stream: true })
+        return true
+      }
+      await read()
+      abort.abort()
+      gate.resolve()
+      let more = true
+      while (more) more = await read()
+
+      expect(body).toContain('"text":"llo"')
+      expect(body).toContain('"output_tokens":5')
+      expect(body).toContain("event: message_stop")
+      const closed = await closeSettled.promise
+      expect(closed).toBe(true)
+    } finally {
+      gate.resolve()
+      logs.restore()
+      closeSpy.mockRestore()
+    }
+    const entries = logs.entries()
+    expect(entries.some((entry) => entry.includes("✓"))).toBe(false)
+    expect(entries.at(-1)?.endsWith(" 3\n")).toBe(true)
   })
 })
 

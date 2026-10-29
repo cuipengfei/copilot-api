@@ -7,6 +7,7 @@ import type { ResponsesPayload } from "~/lib/types/responses"
 import {
   invalidateAutoSession,
   prewarmAutoSession,
+  registerAutoSelection,
 } from "../src/lib/auto-session"
 import { getConfig } from "../src/lib/config-store"
 import { HTTPError } from "../src/lib/error"
@@ -938,4 +939,103 @@ describe("auto-session token injection across chains", () => {
       }
     },
   )
+
+  test("learns only the final session token after the shared retry rotates it", async () => {
+    queuePrewarmPlusRefresh("/responses")
+    let responseAttempt = 0
+    wireFetchMock(() => {
+      responseAttempt += 1
+      // 首发 401 触发共享重试：session-stale 换 session-fresh
+      if (responseAttempt === 1) return createOpaqueTokenRejection(401)
+      // 换令牌后的 belong 由 responses-compat 学下当前令牌并直接重试
+      if (responseAttempt === 2) {
+        return new Response(
+          JSON.stringify({
+            error: {
+              message: "input item ID does not belong to this connection",
+            },
+          }),
+          { status: 401 },
+        )
+      }
+      return createResponsesSuccess(`resp-replay-${responseAttempt}`)
+    })
+
+    const payloadWithReasoning = (): ResponsesPayload => ({
+      ...createResponsesPayload,
+      input: [
+        { role: "user", content: "hello" },
+        {
+          type: "reasoning",
+          id: "r-1",
+          summary: [],
+          encrypted_content: "enc-abc",
+        },
+      ],
+    })
+
+    await prewarmAutoSession()
+    state.responsesReplayLearned.clear()
+    try {
+      const result = (await createResponses(payloadWithReasoning(), {
+        vision: false,
+        initiator: "user",
+        reasoningReplayIdentity: "rotation",
+      })) as { id: string }
+      expect(result.id).toBe("resp-replay-3")
+
+      const rotatedCalls = getFinalCallSnapshots("/responses")
+      expect(rotatedCalls).toHaveLength(3)
+      expect(getSessionHeader(rotatedCalls[0][1])).toBe("session-stale")
+      expect(getSessionHeader(rotatedCalls[1][1])).toBe("session-fresh")
+      expect(getSessionHeader(rotatedCalls[2][1])).toBe("session-fresh")
+      expect(requestBodyText(rotatedCalls[1][1])).toContain("encrypted_content")
+      expect(requestBodyText(rotatedCalls[2][1])).not.toContain(
+        "encrypted_content",
+      )
+      expect(state.responsesReplayLearned.size).toBe(1)
+      const learned = Array.from(state.responsesReplayLearned).join("\n")
+      expect(learned).not.toContain("session-stale")
+      expect(learned).not.toContain("session-fresh")
+      expect(learned).not.toContain("test-copilot-token")
+
+      // 学到的 session-fresh 重发必须命中：首发即去掉 encrypted_content
+      const beforeFreshReuse = rotatedCalls.length
+      await createResponses(payloadWithReasoning(), {
+        vision: false,
+        initiator: "user",
+        reasoningReplayIdentity: "rotation",
+      })
+      const freshReuseCalls = getFinalCallSnapshots("/responses")
+      expect(freshReuseCalls).toHaveLength(beforeFreshReuse + 1)
+      expect(getSessionHeader(freshReuseCalls[beforeFreshReuse][1])).toBe(
+        "session-fresh",
+      )
+      expect(
+        requestBodyText(freshReuseCalls[beforeFreshReuse][1]),
+      ).not.toContain("encrypted_content")
+
+      // 旧令牌重新登记：只学到 session-fresh，旧令牌首发必须保留 encrypted_content
+      expect(
+        registerAutoSelection(
+          queuedAutoSelection("gpt-5.3-codex", "session-stale", ["/responses"]),
+        ),
+      ).toBe(true)
+      const beforeStale = getFinalCallSnapshots("/responses").length
+      await createResponses(payloadWithReasoning(), {
+        vision: false,
+        initiator: "user",
+        reasoningReplayIdentity: "rotation",
+      })
+      const staleCalls = getFinalCallSnapshots("/responses")
+      expect(staleCalls).toHaveLength(beforeStale + 1)
+      expect(getSessionHeader(staleCalls[beforeStale][1])).toBe("session-stale")
+      expect(requestBodyText(staleCalls[beforeStale][1])).toContain(
+        "encrypted_content",
+      )
+      expect(state.responsesReplayLearned.size).toBe(1)
+    } finally {
+      state.responsesReplayLearned.clear()
+    }
+  })
 })

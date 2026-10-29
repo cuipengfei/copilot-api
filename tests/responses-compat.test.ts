@@ -441,6 +441,59 @@ describe("reasoning replay learning cache", () => {
     ).toBe(1)
   })
 
+  test("does not share learnings across session tokens", async () => {
+    const tokenA = { headers: { "Copilot-Session-Token": "session-token-a" } }
+    const tokenB = { headers: { "Copilot-Session-Token": "session-token-b" } }
+    const start = countFor("/belong-by-body")
+    expect(
+      (await sendCounted("/belong-by-body", "session-token", tokenA)).attempts,
+    ).toBe(2)
+    expect(
+      (await sendCounted("/belong-by-body", "session-token", tokenB)).attempts,
+    ).toBe(2)
+    expect(
+      attemptBody("/belong-by-body", start + 2).input.find(
+        (item) => item.type === "reasoning",
+      ),
+    ).toMatchObject({ encrypted_content: "enc-abc" })
+    expect(
+      (await sendCounted("/belong-by-body", "session-token", tokenB)).attempts,
+    ).toBe(1)
+    const learned = Array.from(state.responsesReplayLearned).join("\n")
+    expect(learned).not.toContain("session-token-a")
+    expect(learned).not.toContain("session-token-b")
+  })
+
+  test("reads the session token header in either case", async () => {
+    const canonical = {
+      headers: { "Copilot-Session-Token": "session-token-a" },
+    }
+    expect(
+      (await sendCounted("/belong-by-body", "session-token", canonical))
+        .attempts,
+    ).toBe(2)
+    const lowercase = {
+      headers: { "copilot-session-token": "session-token-a" },
+    }
+    expect(
+      (await sendCounted("/belong-by-body", "session-token", lowercase))
+        .attempts,
+    ).toBe(1)
+  })
+
+  test("does not share learnings between tokenless and token requests", async () => {
+    expect(
+      (await sendCounted("/belong-by-body", "session-token")).attempts,
+    ).toBe(2)
+    expect(
+      (
+        await sendCounted("/belong-by-body", "session-token", {
+          headers: { "Copilot-Session-Token": "session-token-a" },
+        })
+      ).attempts,
+    ).toBe(2)
+  })
+
   test("does not learn from non-belong, non-message, or non-4xx failures", async () => {
     expect((await sendCounted("/non-belong", "session-a")).attempts).toBe(1)
     expect((await sendCounted("/belong-in-detail", "session-a")).attempts).toBe(
