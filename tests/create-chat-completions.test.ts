@@ -503,9 +503,13 @@ describe("default reasoning effort injection", () => {
   let upstreamBodies: Array<Record<string, unknown>> = []
   let originalModels = state.models
 
-  const createModel = (id: string, reasoningEffort?: Array<string>): Model => ({
+  const createModel = (
+    id: string,
+    reasoningEffort?: Array<string>,
+    family = "gpt",
+  ): Model => ({
     capabilities: {
-      family: "gpt",
+      family,
       limits: {},
       object: "model_capabilities",
       supports:
@@ -552,6 +556,7 @@ describe("default reasoning effort injection", () => {
         createModel("gpt-5.4-limited", ["low", "medium", "high"]),
         createModel("gpt-test"),
         createModel("no-effort-model", []),
+        createModel("metadata-gemini", undefined, "GeMiNi"),
         {
           id: "gpt-minimal-metadata",
           capabilities: { limits: {} },
@@ -777,5 +782,56 @@ describe("default reasoning effort injection", () => {
     expect(retriedMessages[0]).toEqual({ content: "hi", role: "user" })
     expect(retriedMessages[1]).toEqual({ content: "ok", role: "assistant" })
     expect(retriedMessages[2]).toEqual({ content: "again", role: "user" })
+  })
+
+  test("applies cache markers from case-insensitive Gemini family metadata", async () => {
+    installUpstreamFetch()
+
+    await createChatCompletions({
+      messages: [
+        { role: "system", content: "system" },
+        { role: "user", content: "latest" },
+      ],
+      model: "metadata-gemini",
+    })
+
+    expect(upstreamBodies[0].messages).toEqual([
+      {
+        role: "system",
+        content: "system",
+        copilot_cache_control: { type: "ephemeral" },
+      },
+      {
+        role: "user",
+        content: "latest",
+        copilot_cache_control: { type: "ephemeral" },
+      },
+    ])
+  })
+
+  test("does not add cache markers for non-Gemini family metadata", async () => {
+    installUpstreamFetch()
+
+    await createChatCompletions({
+      messages: [{ role: "user", content: "hello" }],
+      model: "gpt-test",
+    })
+
+    expect(upstreamBodies[0].messages).toEqual([
+      { role: "user", content: "hello" },
+    ])
+  })
+
+  test("does not infer cache eligibility from a Gemini-like model id without metadata", async () => {
+    installUpstreamFetch()
+
+    await createChatCompletions({
+      messages: [{ role: "user", content: "hello" }],
+      model: "gemini-unlisted",
+    })
+
+    expect(upstreamBodies[0].messages).toEqual([
+      { role: "user", content: "hello" },
+    ])
   })
 })

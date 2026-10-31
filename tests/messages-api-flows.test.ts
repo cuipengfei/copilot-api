@@ -90,7 +90,6 @@ const {
   handleWithMessagesApi,
   handleWithResponsesApi,
   messagesApiFlowDependencies,
-  prepareCopilotChatCompletionsPayload,
 } = await import("../src/routes/messages/api-flows")
 const { responsesUtilsDependencies } =
   await import("../src/routes/responses/utils")
@@ -614,63 +613,6 @@ test("messages Chat Completions flow ends without an error event on normal compl
   expect(eventTypes).toContain("message_delta")
   expect(eventTypes).toContain("message_stop")
   expect(eventTypes).not.toContain("error")
-})
-
-test("Copilot Chat Completions payload preparation marks two system and latest non-system message", () => {
-  const payload: ChatCompletionsPayload = {
-    model: "gpt-test",
-    messages: [
-      { role: "system", content: "system one" },
-      { role: "system", content: "system two" },
-      { role: "system", content: "system three" },
-      { role: "user", content: "older user" },
-      { role: "assistant", content: "older assistant" },
-      { role: "user", content: "latest user" },
-      { role: "assistant", content: "latest assistant" },
-    ],
-  }
-
-  prepareCopilotChatCompletionsPayload(payload)
-
-  expect(payload.messages).toEqual([
-    {
-      role: "system",
-      content: "system one",
-      copilot_cache_control: {
-        type: "ephemeral",
-      },
-    },
-    {
-      role: "system",
-      content: "system two",
-      copilot_cache_control: {
-        type: "ephemeral",
-      },
-    },
-    {
-      role: "system",
-      content: "system three",
-    },
-    {
-      role: "user",
-      content: "older user",
-    },
-    {
-      role: "assistant",
-      content: "older assistant",
-    },
-    {
-      role: "user",
-      content: "latest user",
-    },
-    {
-      role: "assistant",
-      content: "latest assistant",
-      copilot_cache_control: {
-        type: "ephemeral",
-      },
-    },
-  ])
 })
 
 test("messages Chat Completions stream preserves Copilot AIU across metadata and usage chunks", async () => {

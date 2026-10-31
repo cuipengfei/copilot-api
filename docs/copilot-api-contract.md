@@ -116,6 +116,14 @@ interface CAPIChatMessage {
 }
 ```
 
+#### Chat 上游自动缓存标记
+
+Gemini 模型经 [create-chat-completions.ts](../src/services/copilot/create-chat-completions.ts) 发往 Copilot `/chat/completions` 时自动添加 `copilot_cache_control`，覆盖 Chat Completions 入口、Messages 的 Chat fallback 和 Responses 的 Chat fallback。service 按 `payload.model` 精确查找 `state.models` metadata，仅在 `capabilities.family` 匹配 `/^gemini(?:-|$)/iu` 时调用 [context-cache.ts](../src/services/copilot/context-cache.ts) 的 `applyCopilotContextCache`。metadata 缺失时，service 不添加标记。
+
+共享 helper 选择前两条 content 非空的 system 消息和最后一条 content 非空的非 system 消息，写入的标记数据仅为 `{ type: "ephemeral" }`。已有 `copilot_cache_control` 保持原值，重复调用不会增加或改变标记，消息 content 和工具定义不变。
+
+[Messages api-flows.ts](../src/routes/messages/api-flows.ts) 继续在 route 层无条件调用共享 helper，因此非 Gemini 模型保持该入口的现有标记行为。Gemini metadata 判定只作用于 Copilot Chat 上游，不影响其他 provider。标记不保证缓存命中、配额降低或费用节省。
+
 ### Responses API
 
 ```typescript

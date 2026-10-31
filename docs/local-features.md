@@ -279,3 +279,15 @@ Responses 的 Chat fallback 持续发送内容与工具调用事件，整体 `re
 **源码与接入**：[start.ts](../src/start.ts)、[state.ts](../src/lib/state.ts)、[config-store.ts](../src/lib/config-store.ts) 与 [Messages handler](../src/routes/messages/handler.ts)。`runServer` 将 CLI 的 `-F` 参数写入共享 `state.forceAgent`；Messages API 启用条件继续由现有配置控制。
 
 **验证入口**：[start-auto-session-prewarm.test.ts](../tests/start-auto-session-prewarm.test.ts)（`runServer` 启动参数与 `state.forceAgent` 映射）。
+
+## 19. Copilot Gemini 的 Chat 上游缓存标记
+
+**行为**：Gemini 模型经 `createChatCompletions` 发往 Copilot `/chat/completions` 时自动添加消息缓存标记，覆盖 Chat Completions 入口、Messages 的 Chat fallback 和 Responses 的 Chat fallback。service 按 `payload.model` 在 `state.models` 中精确查找模型，仅在模型 metadata 的 `capabilities.family` 匹配 `/^gemini(?:-|$)/iu` 时调用共享 helper。metadata 缺失时，service 不添加标记。
+
+共享 helper 选择前两条 content 非空的 system 消息和最后一条 content 非空的非 system 消息，为选中的消息写入 `copilot_cache_control: { type: "ephemeral" }`。已有 `copilot_cache_control` 保持原值，重复调用不会增加或改变标记。消息 content 和工具定义不变。
+
+Messages 的 Chat fallback 仍在 route 层无条件调用共享 helper，非 Gemini 模型保持该入口的现有标记行为。这套 Gemini metadata 判定只作用于 Copilot Chat 上游，不影响其他 provider。标记不保证缓存命中、配额降低或费用节省。
+
+**源码与接入**：[context-cache.ts](../src/services/copilot/context-cache.ts) 的 `applyCopilotContextCache` 负责选择与写入；[create-chat-completions.ts](../src/services/copilot/create-chat-completions.ts) 在发送前按模型 metadata 调用；[Messages api-flows.ts](../src/routes/messages/api-flows.ts) 保留 route 层调用。三个入口分别经过 [Chat handler](../src/routes/chat-completions/handler.ts)、Messages api-flows.ts 和 [Responses chat-handler.ts](../src/routes/responses/chat-handler.ts)。
+
+**验证入口**：[copilot-context-cache.test.ts](../tests/copilot-context-cache.test.ts) 覆盖消息选择与已有标记保留；[copilot-context-cache-local-http.test.ts](../tests/copilot-context-cache-local-http.test.ts) 覆盖三个实际 handler 到本地 HTTP 的标记行为。

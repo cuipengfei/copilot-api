@@ -37,9 +37,12 @@ import {
 
 import { attachAutoSessionToken } from "~/services/copilot/auto-session-retry"
 import { ensureChatCompletionOkResponse } from "~/services/copilot/chat-completions-compat"
+import { applyCopilotContextCache } from "~/services/copilot/context-cache"
 import { sendCopilotRequest } from "~/services/copilot/request"
 
 export type { CopilotUsage } from "~/lib/token-usage"
+
+const GEMINI_MODEL_FAMILY = /^gemini(?:-|$)/iu
 
 // 显式请求优先；配置默认值按模型声明的能力转换。
 export const resolveChatCompletionsReasoningEffort = (
@@ -120,6 +123,15 @@ export const createChatCompletions = async (
     reasoningEffort === payload.reasoning_effort ?
       payload
     : { ...payload, reasoning_effort: reasoningEffort }
+  const modelMetadata = state.models?.data.find(
+    (model) => model.id === payload.model,
+  )
+  if (
+    modelMetadata
+    && GEMINI_MODEL_FAMILY.test(modelMetadata.capabilities.family)
+  ) {
+    applyCopilotContextCache(upstreamPayload)
+  }
   const response = await sendCopilotRequest(url, {
     headers,
     payload: upstreamPayload,

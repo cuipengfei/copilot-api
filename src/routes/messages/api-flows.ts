@@ -60,13 +60,12 @@ import {
 import type {
   ChatCompletionChunk,
   ChatCompletionResponse,
-  ChatCompletionsPayload,
-  Message,
 } from "~/lib/types/chat-completions"
 import type {
   ResponsesResult,
   ResponseStreamEvent,
 } from "~/lib/types/responses"
+import { applyCopilotContextCache } from "~/services/copilot/context-cache"
 import { createChatCompletions as createCopilotChatCompletions } from "~/services/copilot/create-chat-completions"
 import { createMessages as createCopilotMessages } from "~/services/copilot/create-messages"
 import { createResponses as createCopilotResponses } from "~/services/copilot/create-responses"
@@ -88,12 +87,6 @@ import {
   translateChunkToAnthropicEvents,
   translateErrorToAnthropicErrorEvent,
 } from "./completions-stream-translation"
-
-const COPILOT_CONTEXT_CACHE_SYSTEM_MARKER_LIMIT = 2
-const COPILOT_CONTEXT_CACHE_NON_SYSTEM_MARKER_LIMIT = 1
-const COPILOT_CONTEXT_CACHE_CONTROL = {
-  type: "ephemeral",
-} as const
 
 // 只有上游流正常结束才打印 ✓；失败或取消只结束数字行。
 const finishMessagesStreamLog = ({
@@ -172,7 +165,7 @@ export const handleWithChatCompletions = async (
     reasoningEffortSupport:
       selectedModel?.capabilities?.supports?.reasoning_effort,
   })
-  prepareCopilotChatCompletionsPayload(openAIPayload)
+  applyCopilotContextCache(openAIPayload)
   const recordUsage = createCopilotUsageRecorder({
     endpoint: options.usageEndpoint ?? "chat_completions",
     fallbackSessionId: sessionId,
@@ -620,58 +613,6 @@ export const handleWithMessagesApi = async (
   })
   return jsonWithForwardedHeaders(response, sourceHeaders)
 }
-
-export const prepareCopilotChatCompletionsPayload = (
-  payload: ChatCompletionsPayload,
-): void => {
-  applyCopilotContextCache(payload)
-}
-
-const applyCopilotContextCache = (payload: ChatCompletionsPayload): void => {
-  const messageIndexes = selectCopilotContextCacheMessageIndexes(
-    payload.messages,
-  )
-  for (const messageIndex of messageIndexes) {
-    const message = payload.messages[messageIndex]
-    message.copilot_cache_control = { ...COPILOT_CONTEXT_CACHE_CONTROL }
-  }
-}
-
-const selectCopilotContextCacheMessageIndexes = (
-  messages: Array<Message>,
-): Array<number> => {
-  const systemIndexes = messages
-    .flatMap((message, index) =>
-      message.role === "system" && isCopilotContextCacheEligible(message) ?
-        [index]
-      : [],
-    )
-    .slice(0, COPILOT_CONTEXT_CACHE_SYSTEM_MARKER_LIMIT)
-  const reverseNonSystemIndexes = messages
-    .flatMap((message, index) =>
-      message.role !== "system" && isCopilotContextCacheEligible(message) ?
-        [index]
-      : [],
-    )
-    .reverse()
-    .slice(0, COPILOT_CONTEXT_CACHE_NON_SYSTEM_MARKER_LIMIT)
-
-  return uniqueIndexes([...systemIndexes, ...reverseNonSystemIndexes]).sort(
-    (a, b) => a - b,
-  )
-}
-
-const isCopilotContextCacheEligible = (message: Message): boolean => {
-  if (typeof message.content === "string") {
-    return message.content.length > 0
-  }
-
-  return Array.isArray(message.content) && message.content.length > 0
-}
-
-const uniqueIndexes = (indexes: Array<number>): Array<number> => [
-  ...new Set(indexes),
-]
 
 const isNonStreaming = (
   response: Awaited<ReturnType<typeof createCopilotChatCompletions>>,
