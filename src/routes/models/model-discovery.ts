@@ -1,6 +1,9 @@
 import type { Context } from "hono"
 
-import { getBuiltinProviderModelRecords } from "~/lib/builtin-provider-models"
+import {
+  getBuiltinProviderImageModelRecords,
+  getBuiltinProviderModelRecords,
+} from "~/lib/builtin-provider-models"
 import {
   getRawProviderConfig,
   listEnabledProviders,
@@ -9,14 +12,17 @@ import {
 } from "~/lib/config"
 import {
   GITHUB_COPILOT_PROVIDER,
+  isGitHubCopilotAvailable,
   isGitHubCopilotEnabled,
 } from "~/lib/github-copilot-provider"
 import { createHandlerLogger } from "~/lib/logger"
 import { withModelDisplayName } from "~/lib/model-display-name"
 import { toClientModelId } from "~/lib/models"
+import { getModelsDevModel } from "~/lib/models-dev-cache"
 import {
   getLocalProviderModelRecords,
   isProviderModelVisible,
+  resolveProviderModelsDevId,
 } from "~/lib/provider-model-catalog"
 import { resolveProviderConfig } from "~/lib/provider-resolver"
 import { getProviderAgentModels } from "~/lib/provider-management"
@@ -162,6 +168,32 @@ export function getStringList(value: unknown): Array<string> | undefined {
   return strings.length > 0 ? strings : undefined
 }
 
+export function isImageOnlyModel(
+  provider: string,
+  modelId: string,
+  model: unknown,
+  config?: ProviderConfig | null,
+): boolean {
+  const record = isRecord(model) ? model : undefined
+  const catalog = getModelsDevModel(
+    resolveProviderModelsDevId(provider, config),
+    modelId,
+  )
+  const builtin = getBuiltinProviderImageModelRecords(provider).find(
+    (image) => image.id === modelId,
+  )
+  const output =
+    getStringList(record?.output_modalities)
+    ?? getStringList(getRecordField(record, "architecture")?.output_modalities)
+    ?? getStringList(catalog?.modalities?.output)
+    ?? getStringList(builtin?.output_modalities)
+  if (output) return output.includes("image") && !output.includes("text")
+  return (
+    record?.type === "image"
+    || getRecordField(record, "capabilities")?.type === "image"
+  )
+}
+
 type ProviderModelsFallbackReason = "error" | "invalid_body" | "non_ok"
 
 function getFallbackProviderModelRecords(
@@ -184,13 +216,18 @@ function normalizeProviderModel(
   provider: string,
   model: unknown,
   config?: ProviderConfig | null,
+  includeImageModels = false,
 ): ClientModel | null {
   if (!isRecord(model)) {
     return null
   }
 
   const rawId = getStringField(model, "id")
-  if (!rawId || !isProviderModelVisible(provider, rawId, config)) {
+  if (
+    !rawId
+    || !isProviderModelVisible(provider, rawId, config)
+    || (!includeImageModels && isImageOnlyModel(provider, rawId, model, config))
+  ) {
     return null
   }
 
@@ -215,9 +252,12 @@ function normalizeProviderModels(
   provider: string,
   models: Array<unknown>,
   config?: ProviderConfig | null,
+  includeImageModels = false,
 ): Array<ClientModel> {
   return models
-    .map((model) => normalizeProviderModel(provider, model, config))
+    .map((model) =>
+      normalizeProviderModel(provider, model, config, includeImageModels),
+    )
     .filter((model): model is ClientModel => model !== null)
 }
 
@@ -261,6 +301,7 @@ type ProviderModelSelector = (
 ) => Array<unknown>
 
 interface ModelSelectors {
+  includeImageModels?: boolean
   selectCopilotModels?: (models: Array<Model>) => Array<Model>
   selectProviderModels?: ProviderModelSelector
 }
@@ -294,23 +335,50 @@ export function deduplicateModels<T>(
   })
 }
 
+function withProviderImageModels(
+  provider: string,
+  models: Array<unknown>,
+): Array<unknown> {
+  const imageModels = getModelsById(
+    getBuiltinProviderImageModelRecords(provider),
+  )
+  if (imageModels.size === 0) return models
+  const listedModels = getModelsById(models)
+  return [
+    ...models.map((model) =>
+      isRecord(model) ?
+        { ...imageModels.get(getStringField(model, "id") ?? ""), ...model }
+      : model,
+    ),
+    ...[...imageModels.values()].filter(
+      (model) => !listedModels.has(getStringField(model, "id") ?? ""),
+    ),
+  ]
+}
+
 async function getProviderModels(
   provider: string,
   requestHeaders: Headers,
   selectModels?: ProviderModelSelector,
+  includeImageModels = false,
 ): Promise<Array<ClientModel>> {
   try {
     const providerConfig = await resolveProviderConfig(provider)
     if (!providerConfig) return []
 
-    const models =
+    const upstreamModels =
       providerConfig.name === "codex" ?
         getCodexModels().data.map(normalizeModelCapabilities)
       : await getProviderModelRecords(providerConfig, requestHeaders)
+    const models =
+      includeImageModels ?
+        withProviderImageModels(providerConfig.name, upstreamModels)
+      : upstreamModels
     return normalizeProviderModels(
       providerConfig.name,
       selectModels?.(providerConfig, models) ?? models,
       providerConfig,
+      includeImageModels,
     )
   } catch (error) {
     if (provider === "codex") {
@@ -326,6 +394,7 @@ async function getProviderModels(
       provider,
       selectModels?.(providerConfig, fallbackModels) ?? fallbackModels,
       providerConfig,
+      includeImageModels,
     )
   }
 }
@@ -345,21 +414,55 @@ export async function getAggregatedModels(
     await cacheModels()
   }
   const rawCopilotModels = getCopilotModelRecords()
+  const copilotConfig = getRawProviderConfig(GITHUB_COPILOT_PROVIDER)
+  const isCopilotImage = (model: Model) =>
+    isImageOnlyModel(GITHUB_COPILOT_PROVIDER, model.id, model, copilotConfig)
   const copilotModels = (
     selectors.selectCopilotModels?.(rawCopilotModels) ?? rawCopilotModels
-  ).map(normalizeCopilotModel)
+  )
+    .filter((model) => !isCopilotImage(model))
+    .map(normalizeCopilotModel)
+  const rawCopilotImages =
+    selectors.includeImageModels && isGitHubCopilotAvailable() ?
+      withProviderImageModels(
+        GITHUB_COPILOT_PROVIDER,
+        rawCopilotModels.filter(isCopilotImage),
+      )
+    : []
+  const copilotImages =
+    selectors.includeImageModels && isGitHubCopilotAvailable() ?
+      normalizeProviderModels(
+        GITHUB_COPILOT_PROVIDER,
+        (
+          selectors.selectProviderModels?.(copilotConfig, rawCopilotImages)
+          ?? rawCopilotImages
+        ).filter(
+          (model) =>
+            isRecord(model)
+            && isImageOnlyModel(
+              GITHUB_COPILOT_PROVIDER,
+              getStringField(model, "id") ?? "",
+              model,
+              copilotConfig,
+            ),
+        ),
+        copilotConfig,
+        true,
+      )
+    : []
   const providerModelsByProvider = await Promise.all(
     enabledProviders.map((provider) =>
       getProviderModels(
         provider,
         requestHeaders,
         selectors.selectProviderModels,
+        selectors.includeImageModels,
       ),
     ),
   )
 
   return deduplicateModels(
-    [...copilotModels, ...providerModelsByProvider.flat()],
+    [...copilotModels, ...copilotImages, ...providerModelsByProvider.flat()],
     (model) => model.id,
   )
 }
@@ -388,8 +491,10 @@ function selectAgentProviderModels(
 
 export async function getAgentModels(
   requestHeaders: Headers,
+  options: { includeImageModels?: boolean } = {},
 ): Promise<Array<ClientModel>> {
   return getAggregatedModels(requestHeaders, {
+    includeImageModels: options.includeImageModels,
     selectCopilotModels: selectAgentCopilotModels,
     selectProviderModels: selectAgentProviderModels,
   })

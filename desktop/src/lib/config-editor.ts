@@ -79,11 +79,6 @@ const providerSchema = z.looseObject({
   agentsModels: z.array(z.string()).optional(),
   models: z.record(z.string(), modelSchema).optional(),
 })
-const imageModel = z
-  .string()
-  .refine((value) => value === '' || /^xai\/.+/.test(value), {
-    message: 'Use an xai/model alias, or an empty string for the default route',
-  })
 
 // Validate known fields without stripping future or provider-specific fields.
 // The original parsed document is persisted, not Zod's transformed output.
@@ -111,6 +106,8 @@ export const appConfigSchema = z.looseObject({
   modelReasoningEfforts: z.record(z.string(), reasoningEffort).optional(),
   useMessagesApi: z.boolean().optional(),
   useResponsesApiWebSocket: z.boolean().optional(),
+  codexMultiAgentV1: z.boolean().optional(),
+  noEncryptedOutputModels: z.array(nonEmptyString).optional(),
   upstreamTransport: z
     .looseObject({
       headersTimeoutMs: positiveInteger.optional(),
@@ -126,8 +123,6 @@ export const appConfigSchema = z.looseObject({
   alphaSearchCodexPriority: z.boolean().optional(),
   alphaSearchModel: z.string().optional(),
   messageApiWebSearchModel: z.string().optional(),
-  imageGenerationModel: imageModel.optional(),
-  imageEditModel: imageModel.optional(),
   claudeAutoModel: z.string().optional(),
   claudeTokenMultiplier: z.number().positive().optional(),
 })

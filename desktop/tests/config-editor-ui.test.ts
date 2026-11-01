@@ -356,6 +356,97 @@ describe('Desktop config editor', () => {
     ).toBeUndefined()
   })
 
+  test('edits, saves and resets Codex Multi-Agent V1 through the visual form', async () => {
+    await render(true)
+    await click('Request settings')
+    expect(field('codexMultiAgentV1').checked).toBe(false)
+    await act(async () => field('codexMultiAgentV1').click())
+    await click('Save and apply')
+    expect(save).toHaveBeenCalledTimes(1)
+    expect(JSON.parse(save.mock.calls[0][0].content)).toMatchObject({
+      codexMultiAgentV1: true,
+      future: { keep: true },
+    })
+    await click('Reset to default')
+    expect(field('codexMultiAgentV1').checked).toBe(false)
+    await click('Save and apply')
+    expect(JSON.parse(save.mock.calls[1][0].content)).not.toHaveProperty(
+      'codexMultiAgentV1',
+    )
+  })
+
+  test('edits and resets encrypted output model exclusions through the visual form', async () => {
+    await render(true)
+    await click('Model rules')
+    const exclusions = () =>
+      container.querySelector<HTMLTextAreaElement>(
+        '#config-noEncryptedOutputModels',
+      )!
+    expect(exclusions().value).toBe('[]')
+    expect(
+      container.querySelector('label[for="config-noEncryptedOutputModels"]')
+        ?.textContent,
+    ).toBe('Models without encrypted output')
+    expect(button('Save and apply').disabled).toBe(true)
+
+    await change(exclusions(), '["gpt-6-astra"]')
+    await click('JSON')
+    await reveal()
+    expect(
+      (JSON.parse(jsonEditor().value) as AppConfig).noEncryptedOutputModels,
+    ).toEqual(['gpt-6-astra'])
+    await click('Visual')
+    await click('Save and apply')
+    expect(save).toHaveBeenCalledTimes(1)
+    const saved = JSON.parse(save.mock.calls[0][0].content) as AppConfig & {
+      future: { keep: boolean }
+    }
+    expect(saved.noEncryptedOutputModels).toEqual(['gpt-6-astra'])
+    expect(saved.auth?.adminApiKey).toBe('test-admin-key')
+    expect(saved.future).toEqual({ keep: true })
+
+    await click('Reset to default')
+    expect(exclusions().value).toBe('[]')
+    await click('Save and apply')
+    expect(save).toHaveBeenCalledTimes(2)
+    const reset = JSON.parse(save.mock.calls[1][0].content) as AppConfig & {
+      future: { keep: boolean }
+    }
+    expect(reset).not.toHaveProperty('noEncryptedOutputModels')
+    expect(reset.auth).toEqual(saved.auth)
+    expect(reset.future).toEqual(saved.future)
+  })
+
+  test.each(['{broken', '{}', '[1]', '[""]', '"gpt-6-astra"'])(
+    'blocks invalid encrypted output model exclusions %s and allows correction',
+    async (value) => {
+      await render()
+      await click('Model rules')
+      const exclusions = container.querySelector<HTMLTextAreaElement>(
+        '#config-noEncryptedOutputModels',
+      )!
+      await change(exclusions, value)
+      expect(button('Save configuration').disabled).toBe(true)
+      expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+        'noEncryptedOutputModels',
+      )
+      expect(save).not.toHaveBeenCalled()
+      await change(exclusions, '["gpt-6-astra"]')
+      expect(button('Save configuration').disabled).toBe(false)
+    },
+  )
+
+  test('explains encrypted output model exclusions in Chinese', async () => {
+    Object.defineProperty(win.navigator, 'language', { value: 'zh-CN' })
+    await render()
+    await click('模型规则')
+    expect(
+      container.querySelector('label[for="config-noEncryptedOutputModels"]')
+        ?.textContent,
+    ).toBe('禁用输出加密的模型')
+    expect(container.textContent).toContain('默认 [] 不限制')
+  })
+
   test('supports model rules, inherited values, explicit disable and group resets', async () => {
     await render()
     await click('Model rules')
@@ -410,11 +501,10 @@ describe('Desktop config editor', () => {
       container.querySelector<HTMLSelectElement>('#config-claudeAutoModel')!
         .value,
     ).toBe('default')
-    await click('Search and images')
+    await click('Search')
     await change(field('alphaSearchModel'), '')
-    await change(field('imageEditModel'), 'bad/model')
-    expect(button('Save configuration').disabled).toBe(true)
-    await change(field('imageEditModel'), 'xai/image-model')
+    expect(container.querySelector('#config-imageGenerationModel')).toBeNull()
+    expect(container.querySelector('#config-imageEditModel')).toBeNull()
     expect(button('Save configuration').disabled).toBe(false)
     await click('Upstream transport')
     await change(field('headersTimeoutMs'), '0')
@@ -430,7 +520,7 @@ describe('Desktop config editor', () => {
     for (const group of [
       'Request settings',
       'Model rules',
-      'Search and images',
+      'Search',
       'Upstream transport',
       'Model mappings',
     ]) {
@@ -487,7 +577,7 @@ describe('Desktop config editor', () => {
   test.each([
     'Request settings',
     'Model rules',
-    'Search and images',
+    'Search',
     'Upstream transport',
     'Model mappings',
   ])(
@@ -543,6 +633,8 @@ describe('Desktop config editor', () => {
 
   test.each([
     ['{"opencodeModelContextWindow":400000}', '{}', 'Request settings'],
+    ['{"noEncryptedOutputModels":[]}', '{}', 'Model rules'],
+    ['{}', '{"noEncryptedOutputModels":[]}', 'Model rules'],
     ['{}', '{"upstreamTransport":{}}', 'Upstream transport'],
     ['{"upstreamTransport":{}}', '{}', 'Upstream transport'],
   ])(
@@ -651,7 +743,7 @@ describe('Desktop config editor', () => {
 
   test('shows dollar replacement sequences literally in change previews', async () => {
     await render()
-    await click('Search and images')
+    await click('Search')
     await change(field('alphaSearchModel'), 'model$&name$$')
     await click('Review changes')
     const review = container.querySelector(
@@ -803,7 +895,7 @@ describe('Desktop config editor', () => {
       await render()
       await click('Request settings')
       await act(async () => field('useMessagesApi').click())
-      await click('Search and images')
+      await click('Search')
       await change(field('alphaSearchModel'), 'mine')
       save.mockResolvedValueOnce({ error: { code: 'conflict' } })
       await click('Save configuration')

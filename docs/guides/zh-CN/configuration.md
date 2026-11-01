@@ -31,6 +31,8 @@
     },
     "useMessagesApi": true,
     "useResponsesApiWebSocket": true,
+    "codexMultiAgentV1": false,
+    "noEncryptedOutputModels": [],
     "upstreamTransport": {
       "headersTimeoutMs": 300000,
       "streamInactivityTimeoutMs": 300000,
@@ -47,11 +49,23 @@
   ```
 - **auth.apiKeys：** 用于普通非 admin 路由的 API key。支持多个 key 轮换使用。请求可通过 `x-api-key: <key>` 或 `Authorization: Bearer <key>` 进行认证。若为空或省略，仅回环监听会禁用普通路由认证；非回环监听会拒绝启动。
 - **auth.adminApiKey：** 仅用于 `/admin/*` 路由的单个 admin key。若未配置，服务会在启动时自动生成一个随机 key，并回写到 `config.json`。它同样使用 `x-api-key` 或 `Authorization: Bearer` 这两种头，但普通 `auth.apiKeys` 不能访问 `/admin/*`。
-- **modelMappings：** 用于顶层 `POST /v1/messages`、`POST /v1/messages/count_tokens`、`POST /v1/responses` 和 `POST /v1/chat/completions` 请求的精确 `sourceModel -> targetModel` 重写映射，这几类接口共用同一份规则。默认映射为 `codex-auto-review -> codex/codex-auto-review` 和 `gpt-reserve -> codex/gpt-reserve`；省略该字段、保留为 `{}` 或配置其他模型时，都会补齐缺少的默认映射。同名项以用户配置为准，启动和保存映射时会将合并结果写回 `config.json`。如需取消某条默认重写，可将其映射到自身，例如 `"gpt-reserve": "gpt-reserve"`。`source` 和 `target` 都必须是非空字符串。`target` 可以是普通模型 ID，也可以是 `provider/model` 形式的别名，例如 `dashscope/qwen3.6-plus`；重写发生在 provider alias 解析之前。这些映射不再按接口区分。`GET/POST /admin/config/model-mappings` 管理接口读写的也只有这个字段。
+- **modelMappings：** 用于顶层 `POST /v1/messages`、`POST /v1/messages/count_tokens`、`POST /v1/responses`、`POST /v1/chat/completions`、`POST /v1/images/generations` 和 `POST /v1/images/edits` 请求的精确 `sourceModel -> targetModel` 重写映射，这几类接口共用同一份规则。默认映射为 `codex-auto-review -> codex/codex-auto-review` 和 `gpt-reserve -> codex/gpt-reserve`；省略该字段、保留为 `{}` 或配置其他模型时，都会补齐缺少的默认映射。同名项以用户配置为准，启动和保存映射时会将合并结果写回 `config.json`。如需取消某条默认重写，可将其映射到自身，例如 `"gpt-reserve": "gpt-reserve"`。`source` 和 `target` 都必须是非空字符串。`target` 可以是普通模型 ID，也可以是 `provider/model` 形式的别名，例如 `dashscope/qwen3.6-plus`；重写发生在 provider alias 解析之前。这些映射不再按接口区分。`GET/POST /admin/config/model-mappings` 管理接口读写的也只有这个字段。
+
+  图片请求可映射客户端实际发送的模型，例如：
+
+  ```json
+  {
+    "modelMappings": {
+      "gpt-image-2": "xai/grok-imagine-image-2.0"
+    }
+  }
+  ```
+
+  同一映射作用于图片生成和编辑；需要不同目标时，客户端使用不同模型别名。请求未传模型时仍自动选择 provider。旧 `imageGenerationModel`、`imageEditModel` 字段不再生效，请改用模型映射或显式 provider/model 请求。
 - **extraPrompts：** `model -> prompt` 的映射。把 Anthropic 风格请求翻译为 Responses API 时，会将其附加到第一条 system prompt 后面。你可以借此为不同模型注入护栏或指引。对于 GPT-5.3+ 模型（如 `gpt-5.3-codex`、`gpt-5.4`、`gpt-5.5`），未显式配置时会自动使用内置的 commentary prompt。内置 prompt 会启用带阶段感知的 commentary，让模型在工具调用或更深层推理前先发出简短的用户可见进度说明。
 - **providers：** 全局上游 provider 映射。每个 provider key（例如 `dashscope`）都会变成一个路由前缀（`/dashscope/v1/messages`）。支持 `type: "anthropic"`、`type: "openai-compatible"`、`type: "openai-responses"` 和 `type: "google"`。顶层客户端也可以在 `/v1/messages`、`/v1/messages/count_tokens`、`/v1/responses` 和 `/v1/chat/completions` 中使用 `model: "dashscope/model-id"`；AI gateway 会在转发上游前移除 `dashscope/` 前缀。`anthropic`、`openai-compatible` 和 `google` provider 的 `/v1/responses` 会通过 Responses Lite → Messages 适配；其中 `openai-compatible` provider 再复用 Messages → Chat 翻译。Codex 客户端（`User-Agent` 以 `codex` 开头）在 `openai-responses` provider 上请求非 `gpt-*` 模型时同样走该适配路径。`GET /v1/models` 会聚合已启用 provider 的模型，并以 `provider/model-id` 形式返回；Codex UA 的顶层模型列表还会把这些可适配模型合并为 `use_responses_lite` 模型。单个 provider 的原始模型列表仍可使用 `GET /dashscope/v1/models`。
   - `enabled`：可选，若省略则默认为 `true`。
-  - `agentsModels`：可选，填写 Codex 和 Claude Code 网关发现列表展示的上游原始模型 ID；省略表示自动发现，`[]` 表示不展示该 provider 的模型。无需添加 `my-claude-` 或网关 provider 前缀。显式名单覆盖 Codex 默认排除规则，不限制模型调用或其他客户端的列表。
+  - `agentsModels`：可选，填写 Codex、Claude Code、DeepSeek 和 OpenCode 网关发现列表展示的上游原始模型 ID；省略表示自动发现，`[]` 表示不向这些客户端展示该 provider 的模型。无需添加 `my-claude-`、`[1m]` 或网关 provider 前缀。显式名单覆盖 Codex 默认排除规则，但 Codex、Claude 和 DeepSeek 始终排除仅输出图片的模型，显式选择也不会展示。OpenCode 仍可发现仅输出图片的模型；使用显式名单时需加入原始模型 ID，例如在 `codex` 下加入 `gpt-image-2`。该配置不限制模型调用，也不影响桌面端 Dashboard 和网页端使用的普通聚合目录。
     旧 `codexModels` 名单会在启动或保存配置时迁移为 `agentsModels`。若同时存在两个字段，以 `agentsModels` 为准（包括空数组），旧字段会从磁盘配置中移除。
   - `baseUrl`：手动填写 provider 时使用其 API 基础 URL，不要带结尾的 endpoint。Anthropic provider 不要带 `/v1/messages`；OpenAI 兼容 provider 不要带 `/v1/chat/completions`；OpenAI Responses provider 不要带 `/v1/responses`。Google provider 可使用 `https://generativelanguage.googleapis.com`，或以 `/v1beta`、`/v1`、`/v1alpha` 结尾的基础地址；未指定版本时默认追加 `/v1beta`。
   - `modelsDevProviderId`：可选，通过自定义授权选择 models.dev provider 时写入。此时 `baseUrl` 为 models.dev 提供的 API URL（也可编辑），网关直接追加 `/messages`、`/chat/completions` 或 `/responses`。缓存目录中的模型级协议和 USD 价格元数据在可用时生效；仅当 `baseUrl` 与目录中的 provider API URL 一致时，才应用模型级 API URL 覆盖。显式配置的 `models.<id>.pricing` 优先。手动填写的非 Google provider 仍使用 `baseUrl` 加 `/v1/<endpoint>`。Google provider 使用原生 `/models/{model}:generateContent` 或 `:streamGenerateContent` 端点。
@@ -75,11 +89,12 @@
     - `reasoningEfforts`：可选，Codex 支持的推理档位。配置和发现元数据均未提供时，使用 models.dev 目录，再回退到 `["high", "xhigh", "max", "ultra"]`。已知模型能力时，Provider Responses 请求中的不支持档位会被归一化为支持的档位。
     - `defaultReasoningEffort`：可选，Codex 默认推理档位；未配置时优先取可用的 `max`，否则取第一个支持的档位。合成 Codex 模型始终启用并行工具调用。
     - `reasoningField`：可选，OpenAI-compatible `/v1/messages` 转发 assistant 思考文本时使用的字段，支持 `reasoning` 与 `reasoning_content`，默认 `reasoning_content`；OpenRouter 风格模型设为 `reasoning`，OpenCode Go 的 Hy 系列模型会根据 models.dev 的 family 元数据使用 `reasoning` 字段。
-- **imageGenerationModel** 和 **imageEditModel：** 顶层图片路由可选的 `xai/model` 别名，默认都为空。留空或省略时，该路由继续走 OpenAI 图片协议（Codex，或由 model mapping 选中的其他 provider）。`imageGenerationModel` 作用于 `POST /v1/images/generations`，`imageEditModel` 作用于 `POST /v1/images/edits`。例如 `xai/grok-imagine-image-2.0` 会把 OpenAI 图片请求翻译后发到已启用的 `xai` provider 的 Imagine 接口，上游模型取 `xai/` 后面的部分。该路由不再使用请求里的 `model` 和 model mapping。目前只支持 `xai/model`，其他值返回 `400`。`xai` provider 必须已启用：OAuth 账号走订阅 base URL，API key 账号走配置的 base URL。OpenAI 的 `size` 会映射为 xAI 的 `aspect_ratio` 和 `resolution`。`grok-imagine-image-2.0` 的 `quality` 中 `high` 和 `hd` 会按 `medium` 发送，其他模型不发送 `quality`。编辑请求支持 JSON 图片引用（URL 或 base64 data URL）或 multipart 上传，最多 5 张，两种形式都会翻译成 xAI 的 JSON 协议。带 `mask` 时返回 `400`。未传 `response_format` 时，网关会向 xAI 请求 `b64_json`。如果上游只返回 URL，网关会从 xAI 输出 CDN 下载图片并补上 `b64_json`，下载上限为 32 MiB，失败返回 `502`。显式指定 `response_format: "url"` 时不下载图片。按 provider 划分的图片路由不变。
+
 - **smallModels：** 按 provider 指定 Codex 客户端 `/v1/responses` 标题请求的模型。`codex`、`copilot` 默认使用 `gpt-6-luna`；其他 provider 仅在配置同名键时切换（如 `smallModels.dashscope`）。模型须受对应 provider 支持；设为空字符串可禁用切换。标题提示词须出现在最后两个 input 项之一的 user `input_text` 中。`copilot` 也用于非 token-based 计费账户的 Claude Code 无工具预热；旧 `smallModel` 不再生效。
-- **opencodeModelContextWindow：** OpenCode 模型目录（携带 OpenCode User-Agent 的 `GET /v1/models`）中 `limit.context` 和已有 `limit.input` 的 token 上限，默认 `400000`。两个字段分别在超过上限时截断，较小值保持不变，未提供的 input 上限不会补填。不修改 `limit.output`、上游实际限制或其他客户端的模型目录。正数会向下取整；缺失、无效、零或负数回退到默认值。启动合并配置时会将归一化后的值写入 `config.json`。
+- **opencodeModelContextWindow：** OpenCode 模型目录（携带 OpenCode User-Agent 的 `GET /v1/models`）中 `limit.context` 和已有 `limit.input` 的 token 上限，默认 `400000`。两个字段分别在超过上限时截断，较小值保持不变，未提供的 input 上限不会补填。不修改 `limit.output`、上游实际限制或其他客户端的模型目录。正数会向下取整；缺失、无效、零或负数回退到默认值。归一化仅在读取时生效，不回写此配置值。
 - **contextManagement：** 控制代理是否为 Responses API 附加 `context_management` 压缩指令。`messages` 作用于被翻译成 Responses API 的 Anthropic 风格 `/v1/messages` 请求，包括 `openai-responses` provider 的 Messages 路由，默认值为 `true`。`responses` 作用于 native `/v1/responses` 流量，包括 `provider/model` 别名和内置 `codex` provider，默认值为 `false`。只有在确认客户端支持 context management compaction 后，才建议在 Responses API 下启用 `responses`。启用后，请求体会带上 `context_management`，并在后续轮次中仅保留最新的压缩承载内容。代理仅为 `gpt-*` 模型添加 context management 并压缩历史；这两个配置开关对 Grok 等非 GPT 模型不生效。**注意：** 对于 GPT-5.6 及以上模型（如 `gpt-5.6-sol`、`gpt-5.6-terra`、`gpt-5.6-luna`），context management 功能同样会被强制禁用，因为开启后会破坏这些模型的 prompt 缓存命中。这些强制覆盖优先于 `contextManagement` 和 `modelResponsesApiCompactThresholds` 配置。
  - **modelResponsesApiCompactThresholds：** 按模型覆盖 Responses API 的 `compact_threshold`，仅在代理自动附加 `context_management` 时使用。它的优先级高于 `resolveResponsesCompactThreshold` 基于 `max_prompt_tokens * ratio` 的兜底阈值。默认将 `gpt-5.4` 和 `gpt-5.5` 设为 `217600`（`272000 * 0.8`）。未列出的模型继续使用原有兜底逻辑。
+- **noEncryptedOutputModels：** 不支持 Responses 输出加密内容的 Copilot 模型 ID 名单。仅对名单内的模型移除请求 `include` 中的 `output.encrypted_content`；默认 `[]`，省略或留空时所有模型均原样透传该字段。按模型映射后的最终上游模型 ID 精确匹配，HTTP 和 WebSocket 请求均生效。其他 include 项（包括 `reasoning.encrypted_content`）保持不变。仅作用于 GitHub Copilot，不影响内置 `codex` 或第三方 provider。
 - **modelReasoningEfforts：** `/v1/messages` 请求的模型级默认推理强度。仅当请求没有传入 `output_config.effort` 时，该配置才会生效。
   - **优先级：** 请求中的 `output_config.effort` > `modelReasoningEfforts[model]` > 内置默认值（GPT-5.3+ 模型为 `xhigh`，其他模型为 `high`）。
   - **转发字段：** 走 Copilot 原生 Messages API 时，最终值写入 `output_config.effort`；转换为 Responses API 时，最终值写入 `reasoning.effort`。
@@ -97,9 +112,9 @@
 - **claudeTokenMultiplier：** 用于 Claude `/v1/messages/count_tokens` 请求在本地走 GPT tokenizer 估算时的乘数。默认值为 `1.15`。如果你的客户端仍然过晚触发上下文压缩，可以适当调大。这个配置只会在代理本地估算 Claude token 时生效；如果已经配置 `anthropicApiKey` 且 Anthropic token counting 调用成功，则会直接返回 Anthropic 的精确计数，不会使用这个乘数。
 - **anthropicApiKey：** 用于把 Claude `/v1/messages/count_tokens` 请求转发到 Anthropic 真实 token counting 端点的 API key，这样会返回精确计数，而不是 GPT tokenizer 估算值。也可通过环境变量 `ANTHROPIC_API_KEY` 设置。若未配置，或上游调用失败，则回退到由 `claudeTokenMultiplier` 控制的本地 GPT tokenizer 估算。
 
-**Codex 目录：** 普通 JSON 响应不超过 1 MiB，不限制模型数量。显式 provider 名单优先；候选超过 20 个时，未配置 `agentsModels` 的来源应用默认排除名单。完整本地导出绕过大小及默认排除限制，仍遵守启停状态和显式名单。
+**Codex 目录：** 普通 JSON 响应不超过 1 MiB，不限制模型数量。显式 provider 名单优先；候选超过 20 个时，未配置 `agentsModels` 的来源应用默认排除名单。完整本地导出绕过大小及默认排除限制，仍遵守启停状态、显式名单和仅输出图片模型的过滤规则。
 
-**Provider 管理：** 桌面端“高级配置”前的“Provider 管理”标签页可启停已配置的 provider、编辑“Coding Agent 展示模型”名单，服务停止时也可使用；授权页也保留管理入口。CLI 命令为 `copilot-api provider enable <name>` 和 `copilot-api provider disable <name>`，支持 `--api-home`。`enabled` 控制所有客户端的 Provider 路由，`agentsModels` 筛选 Codex 模型目录和 Claude Code 网关发现列表。停用保留凭据和模型配置；Copilot 继续使用独立授权方式。
+**Provider 管理：** 桌面端“高级配置”前的“Provider 管理”标签页可启停已配置的 provider、编辑“Coding Agent 展示模型”名单，服务停止时也可使用；授权页也保留管理入口。CLI 命令为 `copilot-api provider enable <name>` 和 `copilot-api provider disable <name>`，支持 `--api-home`。`enabled` 控制所有客户端的 Provider 路由，`agentsModels` 按上述图片模型规则筛选 Codex、Claude Code、DeepSeek 和 OpenCode 的发现列表。停用保留凭据和模型配置；Copilot 继续使用独立授权方式。
 
 ![Provider 管理界面](../../screenshots/provider-management.png)
 
@@ -107,6 +122,16 @@
 
 内置 GitHub Copilot 也支持统一管理：`providers["github-copilot"]` 只需配置 `enabled`，可选 `agentsModels`，无需 URL、API Key 或协议类型。旧配置没有这一项时默认启用，继续使用已有 GitHub 登录凭据。使用 `copilot-api provider disable github-copilot` / `copilot-api provider enable github-copilot`，或在 Providers 页面切换后保存并重启网关。禁用会跳过 Copilot 初始化，从所有客户端的模型列表移除其模型并拒绝 Copilot 请求，其他启用的 provider 可继续使用。
 
+
+### Codex 多 Agent 兼容性
+
+`codexMultiAgentV1` 默认 `false`：合成的 Codex 模型声明 `multi_agent_version: "v2"`。设为 `true` 后声明 `"v1"`，同时将上游模型及其别名中的 V2 声明改为 V1。上游原有的 V1 或未启用能力保持不变。只有布尔值 `true` 启用 V1，缺失或非法值均回退为 V2。
+
+V1 使用明文任务和消息参数，可改善不支持加密多 Agent 消息的上游兼容性。此开关不会删除请求中的加密内容。可在桌面端 **高级配置 → 请求设置 → Codex 多 Agent V1** 中开启，或编辑 `config.json` 后重启网关。
+
+应用网关配置后，刷新远程模型目录（如果使用本地 `model_catalog.json`，请重新生成），然后**新建 Codex 会话**。Codex 一旦确定会话的多 Agent 版本，后续刷新目录不会切换该版本。恢复旧会话时优先使用历史中记录的版本。此开关不会转换已有加密历史，也不能修复旧会话中已经保存的加密参数。
+
+Codex CLI 显式 feature 配置可能优先于已记录的会话版本和模型目录元数据。
 
 ### 桌面端配置编辑器
 

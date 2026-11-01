@@ -13,6 +13,7 @@ import os from "node:os"
 import path from "node:path"
 
 import type { ResolvedProviderConfig } from "~/lib/config"
+import { fromClaudeDiscoveryModelId } from "~/lib/claude-models"
 import { PATHS } from "~/lib/paths"
 import { defaultConfig, invalidateConfigCache } from "~/lib/config-store"
 import type { ModelsResponse } from "~/lib/types/models"
@@ -104,6 +105,10 @@ state.vsCodeVersion = "1.0.0"
 state.accountType = "individual"
 
 const originalFetch = globalThis.fetch
+const originalCopilotTokens = {
+  githubToken: state.githubToken,
+  copilotToken: state.copilotToken,
+}
 
 const createProviderConfig = (
   name: string,
@@ -349,7 +354,26 @@ async function getModelsResponse(): Promise<ModelListResponse> {
   return res.json() as Promise<ModelListResponse>
 }
 
+async function getDiscoveredModelIds(endpoint: string, userAgent: string) {
+  const response = await createApp().request(endpoint, {
+    headers: { "user-agent": userAgent },
+  })
+  expect(response.status).toBe(200)
+  if (userAgent.startsWith("codex")) {
+    const body = (await response.json()) as CodexModelsResponse
+    return body.models.map((model) => model.slug)
+  }
+  const body = (await response.json()) as { data: Array<{ id: string }> }
+  return body.data.map((model) =>
+    userAgent.includes("claude") ?
+      fromClaudeDiscoveryModelId(model.id)
+    : model.id,
+  )
+}
+
 beforeEach(() => {
+  state.githubToken = undefined
+  state.copilotToken = undefined
   setRouteConfig({})
   installModelsDevCatalog(modelsDevProviderCatalogFixture)
   enabledProviders = []
@@ -365,6 +389,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  Object.assign(state, originalCopilotTokens)
   PATHS.CONFIG_PATH = originalConfigPath
   invalidateConfigCache()
   if (catalogConfigDir)
@@ -377,6 +402,99 @@ afterEach(() => {
 })
 
 describe("model routes", () => {
+  test.each(["curl/8.0", "opencode/2.0"])(
+    "adds the missing Copilot image model for %s without querying upstream",
+    async (userAgent) => {
+      state.githubToken = "test-github-token"
+      state.copilotToken = "test-copilot-token"
+      state.models = createCopilotModels(["gpt-test"])
+      const response = await createApp().request("/v1/models", {
+        headers: { "user-agent": userAgent },
+      })
+      expect(response.status).toBe(200)
+      const { data } = (await response.json()) as { data: Array<OpencodeModel> }
+      expect(data.map((model) => model.id)).toEqual([
+        "gpt-test",
+        "github-copilot/gpt-image-2.5-flare",
+      ])
+      expect(data[1]).toMatchObject({
+        id: "github-copilot/gpt-image-2.5-flare",
+        type: "image",
+      })
+      if (userAgent.startsWith("opencode")) {
+        expect(data[1]).toMatchObject({
+          package: "@opencode/ai/providers/openai/images",
+          capabilities: {
+            tools: false,
+            input: ["text", "image"],
+            output: ["image"],
+          },
+          family: "gpt-image",
+        })
+      }
+      expect(fetchMock).not.toHaveBeenCalled()
+    },
+  )
+
+  test("applies Copilot availability and client selections to the builtin image model", async () => {
+    const image = "gpt-image-2.5-flare"
+    const alias = `github-copilot/${image}`
+    state.githubToken = "test-github-token"
+    state.copilotToken = "test-copilot-token"
+    state.models = createCopilotModels([])
+    providerConfigs["github-copilot"] = createProviderConfig(
+      "github-copilot",
+      "https://unused.test",
+    )
+    const config = providerConfigs["github-copilot"]
+    config.agentsModels = []
+    expect(await getDiscoveredModelIds("/v1/models", "opencode/2.0")).toEqual(
+      [],
+    )
+    expect(await getDiscoveredModelIds("/v1/models", "curl/8.0")).toEqual([
+      alias,
+    ])
+    config.agentsModels = ["gpt-test"]
+    expect(await getDiscoveredModelIds("/v1/models", "opencode/2.0")).toEqual(
+      [],
+    )
+    config.agentsModels = [image]
+    expect(await getDiscoveredModelIds("/v1/models", "opencode/2.0")).toEqual([
+      alias,
+    ])
+    for (const userAgent of ["codex/1.0", "claude-cli/2.1", "deepseek/1.0"]) {
+      expect(await getDiscoveredModelIds("/v1/models", userAgent)).toEqual([])
+    }
+    state.githubToken = undefined
+    expect(await getDiscoveredModelIds("/v1/models", "opencode/2.0")).toEqual(
+      [],
+    )
+    expect(await getDiscoveredModelIds("/v1/models", "curl/8.0")).toEqual([])
+    state.githubToken = "test-github-token"
+    setRouteConfig({ providers: { "github-copilot": { enabled: false } } })
+    expect(await getDiscoveredModelIds("/v1/models", "opencode/2.0")).toEqual(
+      [],
+    )
+    expect(await getDiscoveredModelIds("/v1/models", "curl/8.0")).toEqual([])
+  })
+
+  test("deduplicates cached Copilot image models and keeps their metadata", async () => {
+    state.githubToken = "test-github-token"
+    state.copilotToken = "test-copilot-token"
+    state.models = createCopilotModels(["gpt-image-2.5-flare"])
+    state.models.data[0].name = "Account Image Model"
+    const response = await createApp().request("/v1/models", {
+      headers: { "user-agent": "opencode/2.0" },
+    })
+    const { data } = (await response.json()) as { data: Array<OpencodeModel> }
+    expect(data).toHaveLength(1)
+    expect(data[0]).toMatchObject({
+      id: "github-copilot/gpt-image-2.5-flare",
+      name: "Account Image Model (github-copilot)",
+      type: "image",
+    })
+  })
+
   test.each(
     ["dashscope", "alibaba"].flatMap((provider) =>
       [
@@ -489,15 +607,15 @@ describe("model routes", () => {
       expect(rawBody.data.map((model) => model.id)).toEqual(ids)
       const aggregated = await app.request("/v1/models")
       const body = (await aggregated.json()) as { data: Array<{ id: string }> }
-      expect(body.data.map((model) => model.id)).toEqual(
-        ids.map((id) => `${provider}/${id}`),
-      )
+      const expectedIds = ids.map((id) => `${provider}/${id}`)
+      if (provider === "xai") expectedIds.push("xai/grok-imagine-image-2.0")
+      expect(body.data.map((model) => model.id)).toEqual(expectedIds)
       expect(fetchMock).not.toHaveBeenCalled()
     },
   )
 
   test.each(["xai", "openrouter", "deepseek", "kimi", "dashscope", "alibaba"])(
-    "returns a local catalog error for missing %s records without remote fallback",
+    "preserves scoped errors for missing %s records without remote fallback",
     async (provider) => {
       installModelsDevCatalog(modelsDevCatalogFixture)
       enabledProviders = [provider]
@@ -511,7 +629,10 @@ describe("model routes", () => {
         error: { type: "service_unavailable" },
       })
       const aggregated = await createApp().request("/v1/models")
-      expect(await aggregated.json()).toMatchObject({ data: [] })
+      const body = (await aggregated.json()) as { data: Array<{ id: string }> }
+      expect(body.data.map((model) => model.id)).toEqual(
+        provider === "xai" ? ["xai/grok-imagine-image-2.0"] : [],
+      )
       expect(fetchMock).not.toHaveBeenCalled()
     },
   )
@@ -632,6 +753,412 @@ describe("model routes", () => {
   test("does not treat a missing or unrelated user agent as OpenCode", () => {
     expect(isOpencodeUserAgent(undefined)).toBe(false)
     expect(isOpencodeUserAgent("claude-cli/2.1.258")).toBe(false)
+  })
+
+  test("discovers Codex and xAI image models from the gateway with image packages", async () => {
+    enableCodexCatalog()
+    enabledProviders.push("xai")
+    providerConfigs.xai = createProviderConfig("xai", "https://unused.example")
+    const response = await createApp().request("/v1/models", {
+      headers: { "user-agent": "opencode" },
+    })
+    const { data } = (await response.json()) as { data: Array<OpencodeModel> }
+    const images = data.filter((model) => model.type === "image")
+    expect(images.map((model) => model.id)).toEqual([
+      "codex/gpt-image-2",
+      "xai/grok-imagine-image-2.0",
+    ])
+    for (const image of images) {
+      expect(image).toMatchObject({
+        modelID: image.id,
+        providerID: "local",
+        package: "@opencode/ai/providers/openai/images",
+        capabilities: {
+          tools: false,
+          input: ["text", "image"],
+          output: ["image"],
+        },
+        variants: [],
+        cost: [],
+        limit: { context: 0, output: 0 },
+        enabled: true,
+      })
+    }
+    expect(images[0].family).toBe("gpt-image")
+    expect(images[1].family).toBe("grok-imagine")
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  test.each([
+    { provider: "codex", id: "gpt-image-2", chat: "gpt-6-luna" },
+    { provider: "xai", id: "grok-imagine-image-2.0", chat: "grok-4.7" },
+  ])(
+    "applies model selections and provider availability to $provider image models",
+    async ({ provider, id, chat }) => {
+      state.models = createCopilotModels([])
+      enableCodexCatalog()
+      enabledProviders = [provider]
+      providerConfigs.xai = createProviderConfig(
+        "xai",
+        "https://unused.example",
+      )
+      const config = providerConfigs[provider]!
+      const request = async () => {
+        const response = await createApp().request("/v1/models", {
+          headers: { "user-agent": "opencode" },
+        })
+        expect(response.status).toBe(200)
+        return ((await response.json()) as { data: Array<OpencodeModel> }).data
+      }
+      config.agentsModels = [id]
+      expect((await request()).map((model) => model.id)).toEqual([
+        `${provider}/${id}`,
+      ])
+      config.agentsModels = [chat]
+      expect((await request()).map((model) => model.id)).toEqual([
+        `${provider}/${chat}`,
+      ])
+      config.agentsModels = []
+      expect(await request()).toEqual([])
+      delete config.agentsModels
+      config.enabled = false
+      enabledProviders = []
+      expect(await request()).toEqual([])
+      enabledProviders = [provider]
+      providerConfigs[provider] = null
+      expect(await request()).toEqual([])
+    },
+  )
+
+  test("merges a listed xAI image model without duplicates and preserves catalog metadata", async () => {
+    const id = "grok-imagine-image-2.0"
+    installModelsDevCatalog({
+      ...modelsDevCatalogFixture,
+      xai: {
+        models: {
+          [id]: {
+            id,
+            name: "Catalog Imagine",
+            release_date: "2026-10-01",
+            modalities: { input: ["text"], output: ["image"] },
+            cost: { input: 1, output: 2 },
+          },
+        },
+      },
+    })
+    enabledProviders = ["xai"]
+    providerConfigs.xai = createProviderConfig("xai", "https://unused.example")
+    const response = await createApp().request("/v1/models", {
+      headers: { "user-agent": "opencode" },
+    })
+    const { data } = (await response.json()) as { data: Array<OpencodeModel> }
+    expect(data).toHaveLength(1)
+    expect(data[0]).toMatchObject({
+      id: `xai/${id}`,
+      name: "Catalog Imagine (xai)",
+      type: "image",
+      package: "@opencode/ai/providers/openai/images",
+      capabilities: { tools: false, input: ["text"], output: ["image"] },
+      cost: [{ input: 1, output: 2, cache: { read: 0, write: 0 } }],
+      time: { released: Date.parse("2026-10-01") },
+    })
+  })
+
+  test("uses image output metadata for additional catalog models while keeping mixed output on Responses", async () => {
+    installModelsDevCatalog({
+      ...modelsDevCatalogFixture,
+      images: {
+        models: {
+          image: {
+            id: "image",
+            modalities: { input: ["text", "image"], output: ["image"] },
+            reasoning_options: [{ type: "effort", values: ["high"] }],
+          },
+          mixed: {
+            id: "mixed",
+            modalities: { input: ["text"], output: ["text", "image"] },
+          },
+        },
+      },
+    })
+    enabledProviders = ["custom"]
+    providerConfigs.custom = {
+      ...createProviderConfig("custom", "https://unused.example"),
+      modelsDevProviderId: "images",
+    }
+    const response = await createApp().request("/v1/models", {
+      headers: { "user-agent": "opencode" },
+    })
+    const { data } = (await response.json()) as { data: Array<OpencodeModel> }
+    expect(data[0]).toMatchObject({
+      id: "custom/image",
+      type: "image",
+      package: "@opencode/ai/providers/openai/images",
+      capabilities: { tools: false, output: ["image"] },
+      variants: [],
+      limit: { context: 0, output: 0 },
+    })
+    expect(data[1]).toMatchObject({
+      id: "custom/mixed",
+      package: "@opencode/ai/providers/openai/responses",
+      capabilities: { output: ["text", "image"] },
+    })
+    expect(data[1].type).toBeUndefined()
+  })
+
+  test.each([{ type: "image" }, { output_modalities: ["image"] }])(
+    "recognizes upstream image metadata %j without a catalog entry",
+    async (metadata) => {
+      enabledProviders = ["custom"]
+      providerConfigs.custom = createProviderConfig(
+        "custom",
+        "https://custom.example",
+      )
+      fetchMock.mockImplementationOnce(() =>
+        Promise.resolve(
+          Response.json({
+            data: [
+              {
+                id: "upstream-image",
+                input_modalities: ["text", "image"],
+                reasoning_efforts: ["high"],
+                ...metadata,
+              },
+            ],
+          }),
+        ),
+      )
+      const response = await createApp().request("/v1/models", {
+        headers: { "user-agent": "opencode" },
+      })
+      const { data } = (await response.json()) as { data: Array<OpencodeModel> }
+      expect(data).toHaveLength(1)
+      expect(data[0]).toMatchObject({
+        id: "custom/upstream-image",
+        type: "image",
+        package: "@opencode/ai/providers/openai/images",
+        capabilities: {
+          tools: false,
+          input: ["text", "image"],
+          output: ["image"],
+        },
+        variants: [],
+        cost: [],
+      })
+    },
+  )
+
+  test.each(
+    ["/models", "/v1/models"].flatMap((endpoint) =>
+      ["claude-cli/2.1", "codex/1.0", "DeepSeek-Harness"].flatMap((userAgent) =>
+        [false, true].map((selected) => ({ endpoint, userAgent, selected })),
+      ),
+    ),
+  )(
+    "excludes built-in image models on $endpoint for $userAgent with selected=$selected",
+    async ({ endpoint, userAgent, selected }) => {
+      enableCodexCatalog()
+      enabledProviders.push("xai")
+      providerConfigs.xai = createProviderConfig(
+        "xai",
+        "https://unused.example",
+      )
+      if (selected) {
+        providerConfigs.codex!.agentsModels = ["gpt-native", "gpt-image-2"]
+        providerConfigs.xai.agentsModels = [
+          "grok-4.7",
+          "grok-imagine-image-2.0",
+        ]
+        providerConfigs.xai.models = { "grok-imagine-image-2.0": {} }
+      }
+      const ids = await getDiscoveredModelIds(endpoint, userAgent)
+      expect(ids).toContain("xai/grok-4.7")
+      expect(ids).not.toContain("codex/gpt-image-2")
+      expect(ids).not.toContain("xai/grok-imagine-image-2.0")
+    },
+  )
+
+  test.each(
+    ["/models", "/v1/models"].flatMap((endpoint) =>
+      [
+        "claude-cli/2.1",
+        "codex/1.0",
+        "DeepSeek-Harness",
+        "curl/8.0",
+        "opencode",
+      ].map((userAgent) => ({ endpoint, userAgent })),
+    ),
+  )(
+    "filters catalog image models while preserving vision and mixed output on $endpoint for $userAgent",
+    async ({ endpoint, userAgent }) => {
+      const models = {
+        "catalog-image": {
+          id: "catalog-image",
+          modalities: { input: ["text", "image"], output: ["image"] },
+        },
+        "vision-chat": {
+          id: "vision-chat",
+          modalities: { input: ["text", "image"], output: ["text"] },
+        },
+        "mixed-output": {
+          id: "mixed-output",
+          modalities: { input: ["text"], output: ["text", "image"] },
+        },
+      }
+      installModelsDevCatalog({
+        ...modelsDevCatalogFixture,
+        "image-catalog": { models },
+      })
+      enabledProviders = ["custom"]
+      providerConfigs.custom = {
+        ...createProviderConfig("custom", "https://unused.example"),
+        modelsDevProviderId: "image-catalog",
+        models: { "catalog-image": {} },
+        agentsModels: Object.keys(models),
+      }
+      const ids = await getDiscoveredModelIds(endpoint, userAgent)
+      expect(ids).toContain("custom/vision-chat")
+      expect(ids).toContain("custom/mixed-output")
+      expect(ids.includes("custom/catalog-image")).toBe(
+        userAgent === "curl/8.0" || userAgent === "opencode",
+      )
+      expect(fetchMock).not.toHaveBeenCalled()
+    },
+  )
+
+  test.each([
+    "claude-cli/2.1",
+    "codex/1.0",
+    "DeepSeek-Harness",
+    "curl/8.0",
+    "opencode",
+  ])(
+    "filters upstream image metadata while preserving chat models for %s",
+    async (userAgent) => {
+      const models = [
+        { id: "typed-image", type: "image" },
+        { id: "output-image", output_modalities: ["image"] },
+        { id: "capabilities-image", capabilities: { type: "image" } },
+        {
+          id: "architecture-image",
+          architecture: { output_modalities: ["image"] },
+        },
+        { id: "vision-chat", input_modalities: ["text", "image"] },
+        { id: "mixed-output", output_modalities: ["text", "image"] },
+      ]
+      enabledProviders = ["custom"]
+      providerConfigs.custom = {
+        ...createProviderConfig("custom", "https://custom.example"),
+        agentsModels: models.map((model) => model.id),
+      }
+      fetchMock.mockImplementationOnce(() =>
+        Promise.resolve(Response.json({ data: models })),
+      )
+      const ids = await getDiscoveredModelIds("/v1/models", userAgent)
+      expect(ids).toContain("custom/vision-chat")
+      expect(ids).toContain("custom/mixed-output")
+      for (const model of models.slice(0, 4)) {
+        expect(ids.includes(`custom/${model.id}`)).toBe(
+          userAgent === "curl/8.0" || userAgent === "opencode",
+        )
+      }
+    },
+  )
+
+  test.each(["claude-cli/2.1", "codex/1.0", "DeepSeek-Harness"])(
+    "excludes Copilot image capabilities while keeping vision chat for %s",
+    async (userAgent) => {
+      state.models = createCopilotModels(["copilot-image", "vision-chat"])
+      state.models.data[0].capabilities.type = "image"
+      for (const model of state.models.data) {
+        model.supported_endpoints = ["/chat/completions"]
+        model.capabilities.supports.vision = true
+      }
+      const originalModels = structuredClone(state.models)
+      const ids = await getDiscoveredModelIds("/v1/models", userAgent)
+      expect(ids).not.toContain("copilot-image")
+      expect(ids).toContain("vision-chat")
+      expect(state.models).toEqual(originalModels)
+    },
+  )
+
+  test.each(["/v1/models", "/codex/v1/models"])(
+    "excludes native Codex image catalog entries and aliases at %s",
+    async (endpoint) => {
+      enableCodexCatalog()
+      codexCatalogModels.push(
+        { slug: "gpt-image-2" },
+        { slug: "typed-image", type: "image" },
+        { slug: "output-image", output_modalities: ["image"] },
+        { slug: "mixed-output", output_modalities: ["text", "image"] },
+      )
+      providerConfigs.codex!.agentsModels = codexCatalogModels.map(
+        (model) => model.slug as string,
+      )
+      const ids = await getDiscoveredModelIds(endpoint, "codex/1.0")
+      expect(ids).toContain("gpt-native")
+      expect(ids).toContain("mixed-output")
+      for (const id of ["gpt-image-2", "typed-image", "output-image"]) {
+        expect(ids).not.toContain(id)
+        expect(ids).not.toContain(`codex/${id}`)
+      }
+    },
+  )
+
+  test.each(["/models", "/v1/models"])(
+    "includes built-in image models in the default catalog at %s",
+    async (endpoint) => {
+      enableCodexCatalog()
+      enabledProviders.push("xai")
+      providerConfigs.codex!.agentsModels = ["gpt-6-luna"]
+      providerConfigs.xai = {
+        ...createProviderConfig("xai", "https://unused.example"),
+        agentsModels: [],
+      }
+      const response = await createApp().request(endpoint)
+      expect(response.status).toBe(200)
+      const { data } = (await response.json()) as {
+        data: Array<Record<string, unknown> & { id: string }>
+      }
+      expect(data.map((model) => model.id)).toContain("codex/gpt-6-luna")
+      expect(data.map((model) => model.id)).toContain("xai/grok-4.7")
+      const images = data.filter((model) => model.type === "image")
+      expect(images.map((model) => model.id)).toEqual([
+        "codex/gpt-image-2",
+        "xai/grok-imagine-image-2.0",
+      ])
+      for (const image of images) {
+        expect(image).toMatchObject({
+          object: "model",
+          input_modalities: ["text", "image"],
+          output_modalities: ["image"],
+        })
+        expect(image).not.toHaveProperty("package")
+      }
+      expect(fetchMock).not.toHaveBeenCalled()
+    },
+  )
+
+  test("skips unavailable providers in the default image-inclusive catalog", async () => {
+    enableCodexCatalog()
+    enabledProviders.push("xai")
+    providerConfigs.codex = null
+    const unavailable = await createApp().request("/models")
+    expect(await unavailable.json()).toMatchObject({ data: [] })
+  })
+
+  test("preserves chat selections and excludes selected images for DeepSeek", async () => {
+    enableCodexCatalog()
+    providerConfigs.codex!.agentsModels = ["gpt-6-luna"]
+    const request = () =>
+      createApp().request("/models", {
+        headers: { "user-agent": "DeepSeek-Harness" },
+      })
+    const chat = await request()
+    expect(await chat.text()).not.toContain("gpt-image-2")
+    providerConfigs.codex!.agentsModels = ["gpt-image-2"]
+    const image = await request()
+    expect(await image.json()).toMatchObject({ data: [] })
   })
 
   test.each<{
@@ -2769,6 +3296,23 @@ describe("model routes", () => {
         id: "codex/gpt-6.1-sol",
         name: "GPT-6.1 Sol",
       })
+      expect(
+        body.data.find((model) => model.id === "codex/gpt-6.1-terra"),
+      ).toMatchObject({
+        capabilities: {
+          limits: {
+            max_context_window_tokens: 872_000,
+            max_output_tokens: 128_000,
+            max_prompt_tokens: 872_000,
+          },
+          supports: {
+            reasoning_effort: ["none", "low", "medium", "high", "xhigh", "max"],
+            vision: true,
+          },
+        },
+        id: "codex/gpt-6.1-terra",
+        name: "GPT-6.1 Terra",
+      })
     }
     expect(fetchMock).not.toHaveBeenCalled()
   })
@@ -2826,6 +3370,71 @@ describe("model routes", () => {
     expect(headers.get("accept")).toBe("*/*")
   })
 
+  test.each([undefined, false, true, null, "true", 1, {}, []])(
+    "applies Codex Multi-Agent V1 setting %j consistently without changing other fields",
+    async (configured) => {
+      enableCodexCatalog()
+      codexCatalogModels = [
+        { ...createDefaultCodexCatalogModels()[0], multi_agent_version: "v2" },
+        { slug: "gpt-v1", multi_agent_version: "v1" },
+        { slug: "gpt-disabled", multi_agent_version: null },
+        { slug: "gpt-unspecified" },
+      ]
+      const upstream = structuredClone(codexCatalogModels)
+      codexCatalogMetadata = { custom_metadata: { preserved: true } }
+      const copilotModels = createCopilotModels(["claude-sonnet-4.6"])
+      copilotModels.data[0].supported_endpoints = ["/v1/messages"]
+      state.models = copilotModels
+      enabledProviders.push("custom")
+      providerConfigs.custom = {
+        ...createProviderConfig("custom", "https://custom.example"),
+        models: { "gpt-native": {} },
+      }
+      const app = createApp()
+      const headers = { "user-agent": "codex-cli/0.165.0" }
+      const baselineResponse = await app.request("/models", { headers })
+      expect(baselineResponse.status).toBe(200)
+      const baseline = (await baselineResponse.json()) as CodexModelsResponse
+      for (const slug of [
+        "gpt-native",
+        "codex/gpt-native",
+        "custom/gpt-native",
+        "claude-sonnet-4-6",
+        "custom/qwen-plus",
+      ]) {
+        expect(baseline.models.map((model) => model.slug)).toContain(slug)
+      }
+      expect(
+        baseline.models.find((model) => model.slug === "claude-sonnet-4-6")
+          ?.multi_agent_version,
+      ).toBe("v2")
+
+      setRouteConfig({ codexMultiAgentV1: configured })
+      for (const endpoint of ["/models", "/v1/models", "/codex/v1/models"]) {
+        const response = await app.request(endpoint, { headers })
+        expect(response.status).toBe(200)
+        const actual = (await response.json()) as CodexModelsResponse
+        const expected = {
+          ...baseline,
+          models: baseline.models
+            .filter((model) =>
+              endpoint.startsWith("/codex/") ?
+                upstream.some((item) => item.slug === model.slug)
+              : true,
+            )
+            .map((model) => ({
+              ...model,
+              ...(configured === true && model.multi_agent_version === "v2" ?
+                { multi_agent_version: "v1" as const }
+              : {}),
+            })),
+        }
+        expect(actual).toEqual(expected)
+      }
+      expect(codexCatalogModels).toEqual(upstream)
+    },
+  )
+
   test("merges Messages-backed models into the Codex response_lite catalog", async () => {
     const copilotModels = createCopilotModels(["claude-sonnet-4.6"])
     copilotModels.data[0].supported_endpoints = ["/v1/messages"]
@@ -2863,13 +3472,61 @@ describe("model routes", () => {
       use_responses_lite: true,
       prefer_websockets: false,
       apply_patch_tool_type: "freeform",
-      supports_search_tool: false,
+      supports_search_tool: true,
       supports_parallel_tool_calls: true,
       tool_mode: "code_mode_only",
       multi_agent_version: "v2",
       default_reasoning_level: "max",
     })
   })
+
+  test.each([false, true])(
+    "enables deferred tools on synthesized models while preserving catalog aliases (full catalog=%j)",
+    async (fullCatalog) => {
+      enableCodexCatalog()
+      codexCatalogModels[0].supports_reasoning_effort_updates = true
+      codexCatalogModels[0].supports_search_tool = false
+      const copilotModels = createCopilotModels(["claude-sonnet-4.6"])
+      copilotModels.data[0].supported_endpoints = ["/v1/messages"]
+      state.models = copilotModels
+      enabledProviders.push("custom")
+      providerConfigs.custom = {
+        ...createProviderConfig("custom", "https://custom.example"),
+        type: "openai-responses",
+        models: { "gpt-native": {} },
+      }
+
+      const response = await createApp().request(
+        "/v1/models?client_version=0.165.0",
+        {
+          headers: {
+            "user-agent": "codex-cli/0.165.0",
+            ...(fullCatalog ? { "x-full-model-catalog": "true" } : {}),
+          },
+        },
+      )
+
+      expect(response.status).toBe(200)
+      const body = (await response.json()) as CodexModelsResponse
+      for (const slug of [
+        "gpt-native",
+        "codex/gpt-native",
+        "custom/gpt-native",
+      ]) {
+        expect(body.models.find((model) => model.slug === slug)).toMatchObject({
+          supports_reasoning_effort_updates: true,
+          supports_search_tool: false,
+        })
+      }
+      expect(
+        body.models.find((model) => model.slug === "claude-sonnet-4-6"),
+      ).toMatchObject({
+        supports_reasoning_effort_updates: false,
+        supports_search_tool: true,
+        tool_mode: "code_mode_only",
+      })
+    },
+  )
 
   test("merges Responses-backed Copilot models into the Codex catalog", async () => {
     const copilotModels = createCopilotModels([
@@ -3021,6 +3678,21 @@ describe("model routes", () => {
     expect(
       gpt61Sol?.supported_reasoning_levels.map((level) => level.effort),
     ).toEqual(["low", "medium", "high", "xhigh", "max", "ultra"])
+    const gpt61Terra = body.models.find(
+      (model) => model.slug === "gpt-6.1-terra",
+    )
+    expect(gpt61Terra).toMatchObject({
+      context_window: 500_000,
+      default_reasoning_level: "low",
+      input_modalities: ["text", "image"],
+      max_context_window: 872_000,
+      multi_agent_reasoning_effort: "xhigh",
+      supported_in_api: true,
+      visibility: "list",
+    })
+    expect(
+      gpt61Terra?.supported_reasoning_levels.map((level) => level.effort),
+    ).toEqual(["low", "medium", "high", "xhigh", "max", "ultra"])
     expect(synthetic).toMatchObject({
       display_name: "claude-sonnet-4.6",
       shell_type: template?.shell_type,
@@ -3085,6 +3757,7 @@ describe("model routes", () => {
         } else {
           for (const slug of bundledCodexSlugs) expect(slugs).toContain(slug)
           expect(slugs).toContain("codex/gpt-6.1-sol")
+          expect(slugs).toContain("codex/gpt-6.1-terra")
           expect(slugs).toContain("claude-sonnet-4-6")
         }
         expect(slugs).not.toContain("gpt-native")
@@ -3311,6 +3984,8 @@ describe("model routes", () => {
     const slugs = body.models.map((model) => model.slug)
     expect(slugs).toContain("gpt-6.1-sol")
     expect(slugs).toContain("codex/gpt-6.1-sol")
+    expect(slugs).toContain("gpt-6.1-terra")
+    expect(slugs).toContain("codex/gpt-6.1-terra")
     expect(slugs).toContain("claude-sonnet-4-6")
     expect(slugs).not.toContain("broken-model")
   })
@@ -3477,11 +4152,18 @@ describe("model routes", () => {
       input_modalities: ["text", "image"],
       default_reasoning_level: "high",
       supports_parallel_tool_calls: true,
-      supports_search_tool: false,
+      supports_search_tool: true,
     })
     expect(body.models.map((model) => model.slug)).toContain(
       "chat/chat-provider",
     )
+    expect(
+      body.models.find((model) => model.slug === "chat/chat-provider"),
+    ).toMatchObject({
+      supports_search_tool: true,
+      tool_mode: "code_mode_only",
+      use_responses_lite: true,
+    })
   })
 
   test("uses the cached input modalities for each Kimi Codex model", async () => {

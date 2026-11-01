@@ -680,6 +680,29 @@ describe("token usage storage", () => {
     }
   })
 
+  test("prices GPT-6.1 Terra cache usage at the 272K input tier boundary", () => {
+    for (const { inputTokens, totalCostNanos } of [
+      { inputTokens: 269_000, totalCostNanos: 285_350_000 },
+      { inputTokens: 269_001, totalCostNanos: 563_202_000 },
+    ]) {
+      expect(
+        resolveTokenUsageCost({
+          cache_creation_input_tokens: 1_000,
+          cache_read_input_tokens: 2_000,
+          input_tokens: inputTokens,
+          model: "gpt-6.1-terra",
+          output_tokens: 3_000,
+          providerName: "codex",
+          source: "provider",
+        }),
+      ).toEqual({
+        currency: "USD",
+        source: "builtin",
+        total_cost_nanos: totalCostNanos,
+      })
+    }
+  })
+
   test("prices DashScope Qwen3.8 Max from the cached USD catalog", () => {
     expect(
       resolveTokenUsageCost({
@@ -1231,6 +1254,99 @@ describe("token usage storage", () => {
     expect(daily.days[0]?.totals.total_tokens).toBe(0)
     expect(daily.byModel).toEqual([])
     expect(daily.totals.request_count).toBe(0)
+  })
+
+  test("deduplicates identical upstream request ids without collapsing others", async () => {
+    const record = (
+      model: string,
+      upstreamRequestId?: string,
+      endpoint: "images_edits" | "images_generations" = "images_generations",
+    ) =>
+      recordTokenUsageEvent({
+        source: "provider",
+        providerName: "xai",
+        endpoint,
+        model,
+        input_tokens: 4,
+        upstreamRequestId,
+      })
+
+    record("dedupe-generation", "shared-id")
+    record("dedupe-generation", "shared-id")
+    record("dedupe-edits", "shared-id", "images_edits")
+    record("dedupe-other", "other-id")
+    record("no-id")
+    record("no-id")
+    record("blank-id", "  ")
+
+    const page = await fetchEventsPage()
+    expect(page.items.map((item) => item.model).sort()).toEqual([
+      "blank-id",
+      "dedupe-edits",
+      "dedupe-generation",
+      "dedupe-other",
+      "no-id",
+      "no-id",
+    ])
+  })
+
+  test("deduplicates Copilot upstream request ids without a provider name", async () => {
+    const record = (model: string, upstreamRequestId?: string) =>
+      recordTokenUsageEvent({
+        source: "copilot",
+        endpoint: "responses",
+        model,
+        input_tokens: 3,
+        upstreamRequestId,
+      })
+
+    record("copilot-repeat", "copilot-shared-id")
+    record("copilot-repeat", "copilot-shared-id")
+    record("copilot-other", "copilot-other-id")
+    record("copilot-no-id")
+    record("copilot-no-id")
+
+    const page = await fetchEventsPage()
+    expect(
+      page.items.map((item) => [item.model, item.provider_name]).sort(),
+    ).toEqual([
+      ["copilot-no-id", null],
+      ["copilot-no-id", null],
+      ["copilot-other", null],
+      ["copilot-repeat", null],
+    ])
+  })
+
+  test("normalizes fractional Copilot AIU before pricing", async () => {
+    const recordUsage = createCopilotTokenUsageRecorder({
+      endpoint: "images_generations",
+      model: "fractional-aiu",
+    })
+
+    recordUsage(
+      { input_tokens: 5 },
+      {
+        token_details: [
+          {
+            batch_size: 1_000_000,
+            cost_per_batch: 1_000_000_000,
+            token_count: 5,
+            token_type: "input",
+          },
+        ],
+        total_nano_aiu: 150.9,
+      },
+    )
+
+    const event = (await fetchEventsPage()).items[0]
+    expect(event?.total_nano_aiu).toBe(150)
+    expect(event?.nano_cost_input).toBe(5_000)
+    expect(event?.cost).toEqual({
+      amount: 0.000000002,
+      currency: "USD",
+      source: "copilot_aiu",
+      total_cost_nanos: 2,
+    })
   })
 })
 

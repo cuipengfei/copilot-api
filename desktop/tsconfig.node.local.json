@@ -8,6 +8,7 @@
   "include": [
     "electron.vite.config.*",
     "electron/**/*",
+    "shared/**/*.ts",
     "tests/**/*",
     "src/App.tsx",
     "src/lib/auto-start-server.ts",

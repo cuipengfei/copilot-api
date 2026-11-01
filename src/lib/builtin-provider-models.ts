@@ -1,4 +1,5 @@
 import type { TokenUsagePricingConfig } from "./token-usage/pricing"
+import { DEFAULT_IMAGE_MODELS } from "./image-models"
 import type { CodexReasoningEffort, ModelReasoningField } from "./config-store"
 import {
   getOpencodeGoModelConfig,
@@ -174,6 +175,25 @@ export class BuiltinProviderModelRegistry {
           ],
         },
       },
+      "gpt-6.1-terra": {
+        pricing: {
+          tiers: [
+            {
+              cacheCreationInput: 1.25,
+              cachedInput: 0.05,
+              input: 1,
+              maxInputTokens: 272_000,
+              output: 5,
+            },
+            {
+              cacheCreationInput: 2.5,
+              cachedInput: 0.1,
+              input: 2,
+              output: 7.5,
+            },
+          ],
+        },
+      },
     },
   }
 
@@ -213,6 +233,47 @@ export class BuiltinProviderModelRegistry {
 }
 
 export const builtinProviderModelRegistry = new BuiltinProviderModelRegistry()
+
+// Image endpoints support these models even when the upstream chat catalog
+// omits them. Keep them separate from models advertised to chat-only clients.
+const IMAGE_MODELS: Record<
+  string,
+  Array<{ id: string; name: string; family: string }>
+> = {
+  "github-copilot": [
+    {
+      id: DEFAULT_IMAGE_MODELS["github-copilot"],
+      name: "GPT Image 2.5 Flare",
+      family: "gpt-image",
+    },
+  ],
+  codex: [
+    {
+      id: DEFAULT_IMAGE_MODELS.codex,
+      name: "GPT Image 2",
+      family: "gpt-image",
+    },
+  ],
+  xai: [
+    {
+      id: DEFAULT_IMAGE_MODELS.xai,
+      name: "Grok Imagine Image 2.0",
+      family: "grok-imagine",
+    },
+  ],
+}
+
+export function getBuiltinProviderImageModelRecords(
+  provider: string,
+): Array<Record<string, unknown>> {
+  return (IMAGE_MODELS[provider] ?? []).map((model) => ({
+    ...model,
+    object: "model",
+    type: "image",
+    input_modalities: ["text", "image"],
+    output_modalities: ["image"],
+  }))
+}
 
 export function getBuiltinProviderModelRecords(
   provider: string,

@@ -6,10 +6,15 @@ import type {
   PluginRequest,
   GatewayPluginEvents,
 } from "./gateway-plugins"
-import { requestContext, type RequestTiming } from "./request-context"
+import {
+  formatPluginActualModel,
+  requestContext,
+  type RequestTiming,
+} from "./request-context"
 import { enqueueTokenUsageTiming } from "./token-usage/store"
 
 const TRACKED = /\/(chat\/completions|responses|messages|alpha\/search)$/
+const IMAGE_REQUEST = /\/images\/(generations|edits)$/u
 
 // Called only where the handler already has a parsed payload.
 export function setPluginRequestModel(model: string): void {
@@ -21,11 +26,17 @@ export function requestEventsMiddleware(
   port: number,
 ): MiddlewareHandler {
   return async (c, next) => {
-    if (c.req.method !== "POST" || !TRACKED.test(c.req.path)) {
+    const isImageRequest = IMAGE_REQUEST.test(c.req.path)
+    if (
+      c.req.method !== "POST"
+      || (!TRACKED.test(c.req.path) && !isImageRequest)
+    ) {
       return await next()
     }
     const store = requestContext.getStore()
     if (!store) return await next()
+    // Images retain SQLite timing without publishing plugin events.
+    const requestPlugins = isImageRequest ? undefined : plugins
     const started = performance.now()
     const info: PluginRequest = {
       id: randomUUID(),
@@ -49,7 +60,7 @@ export function requestEventsMiddleware(
       recordFirstToken: () => {
         if (finished || timing.firstTokenMs !== null) return
         timing.firstTokenMs = performance.now() - started
-        plugins?.publish("request.first_token", {
+        requestPlugins?.publish("request.first_token", {
           ...info,
           firstTokenMs: timing.firstTokenMs,
         })
@@ -63,7 +74,7 @@ export function requestEventsMiddleware(
       timing.durationMs = performance.now() - started
       timing.outcome = outcome
       if (timing.hasUsage) enqueueTokenUsageTiming(timing)
-      plugins?.publish("request.end", {
+      requestPlugins?.publish("request.end", {
         ...info,
         durationMs: timing.durationMs,
         firstTokenMs: timing.firstTokenMs,
@@ -73,7 +84,7 @@ export function requestEventsMiddleware(
       signal.removeEventListener("abort", abort)
     }
     const abort = () => finish("cancelled")
-    if (plugins?.enabled)
+    if (requestPlugins?.enabled)
       store.pluginRequest = {
         id: info.id,
         setModel: (model) => {
@@ -85,7 +96,7 @@ export function requestEventsMiddleware(
           )
             return
           info.model = model
-          plugins.publish("request.model", info)
+          requestPlugins.publish("request.model", info)
         },
         setActualModel: (model) => {
           if (
@@ -96,24 +107,27 @@ export function requestEventsMiddleware(
           )
             return
           info.actualModel = model
-          plugins.publish("request.actual_model", info)
+          requestPlugins.publish("request.actual_model", info)
         },
         setSessionId: (sessionId) => {
           if (!sessionId || info.sessionId === sessionId) return
           info.sessionId = sessionId
-          if (!finished) plugins.publish("request.session", info)
+          if (!finished) requestPlugins.publish("request.session", info)
         },
         recordFirstToken: timing.recordFirstToken,
         recordUsage: (event) =>
-          plugins.publish("usage.recorded", {
+          requestPlugins.publish("usage.recorded", {
             ...event,
             requestId: info.id,
             userAgent: info.userAgent,
             sessionId: event.session_id || null,
-            actualModel: event.model,
+            actualModel: formatPluginActualModel(
+              event.model,
+              event.provider_name,
+            ),
           }),
       }
-    plugins?.publish("request.start", info)
+    requestPlugins?.publish("request.start", info)
     signal.addEventListener("abort", abort, { once: true })
     if (signal.aborted) abort()
     try {

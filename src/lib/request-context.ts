@@ -33,8 +33,22 @@ export const requestContext = {
 }
 
 // Observe the final target at upstream dispatch, after mapping and overrides.
-export function setPluginRequestActualModel(model: string): void {
-  requestContext.getStore()?.pluginRequest?.setActualModel(model)
+export function formatPluginActualModel(
+  model: string,
+  provider?: string | null,
+): string {
+  return !model || !provider || provider === "github-copilot" ?
+      model
+    : `${provider}/${model}`
+}
+
+export function setPluginRequestActualModel(
+  model: string,
+  provider?: string,
+): void {
+  requestContext
+    .getStore()
+    ?.pluginRequest?.setActualModel(formatPluginActualModel(model, provider))
 }
 
 export function generateTraceId(): string {

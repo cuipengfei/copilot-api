@@ -51,6 +51,7 @@ export type {
 
 export interface TokenUsageEventInput extends UsageTokens {
   copilotUsage?: CopilotUsageTokens | null
+  upstreamRequestId?: string | null
   serviceTier?: string | null
   endpoint: TokenUsageEndpoint
   fallbackSessionId?: string | null
@@ -183,13 +184,13 @@ function toPersistedEvent(
     normalizeOptionalToken(rawInput.copilotUsage?.total_nano_aiu)
     ?? normalizeOptionalToken(rawInput.total_nano_aiu)
   const input = { ...rawInput, total_nano_aiu: totalNanoAiu }
-  if (!hasAnyToken(input)) {
+  const now = new Date()
+  const cost = resolveTokenUsageCost({ ...input, at: now })
+  if (!hasAnyToken(input) && !cost) {
     return null
   }
 
-  const now = new Date()
   const timing = requestContext.getStore()?.requestTiming
-  const cost = resolveTokenUsageCost({ ...input, at: now })
   return {
     request_id: timing?.id ?? null,
     first_token_ms: timing?.firstTokenMs ?? null,
@@ -223,6 +224,7 @@ function toPersistedEvent(
       USER_AGENT_MAX_LENGTH,
     ),
     user_id: resolveUserId(input),
+    upstream_request_id: input.upstreamRequestId?.trim() || null,
   }
 }
 

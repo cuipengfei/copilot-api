@@ -152,6 +152,67 @@ describe("stageMultipartBodyToDisk", () => {
     await expectTooLarge(formData, { maxParts: 1 })
   })
 
+  test("rejects multipart bodies with too many fields", async () => {
+    const formData = new FormData()
+    formData.set("model", "gpt-image-2")
+    formData.set("prompt", "too many fields")
+    await expectTooLarge(formData, { maxFields: 1 })
+  })
+
+  test("cleans incomplete uploads when the client cancels", async () => {
+    const before = listStagingDirectories()
+    const controller = new AbortController()
+    const original = multipartStagingDependencies.createWriteStream
+    multipartStagingDependencies.createWriteStream = (path) => {
+      queueMicrotask(() => controller.abort())
+      return original(path)
+    }
+    const body = new ReadableStream<Uint8Array>({
+      start(stream) {
+        stream.enqueue(
+          new TextEncoder().encode(
+            '--upload\r\nContent-Disposition: form-data; name="image"; filename="source.png"\r\nContent-Type: image/png\r\n\r\npartial-image',
+          ),
+        )
+      },
+    })
+    try {
+      await Promise.resolve(
+        expect(
+          stageMultipartBodyToDisk(
+            body,
+            "multipart/form-data; boundary=upload",
+            {},
+            controller.signal,
+          ),
+        ).rejects.toThrow(),
+      )
+      expect(listStagingDirectories()).toEqual(before)
+    } finally {
+      multipartStagingDependencies.createWriteStream = original
+    }
+  })
+
+  test("rejects invalid limits and already cancelled uploads before staging", async () => {
+    const before = listStagingDirectories()
+    await Promise.resolve(
+      expect(stage(new FormData(), { maxFiles: 0 })).rejects.toThrow(
+        "positive safe integer",
+      ),
+    )
+    await Promise.resolve(
+      expect(
+        stageMultipartBodyToDisk(
+          null,
+          "multipart/form-data; boundary=upload",
+          {},
+          AbortSignal.abort(),
+        ),
+      ).rejects.toThrow(),
+    )
+    expect(listStagingDirectories()).toEqual(before)
+  })
+
   test("rejects file write failures without waiting for the request to end", async () => {
     const originalCreateWriteStream =
       multipartStagingDependencies.createWriteStream

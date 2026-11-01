@@ -28,6 +28,12 @@ export const configFields = [
     unit: 'tokens',
   },
   {
+    id: 'codexMultiAgentV1',
+    path: 'codexMultiAgentV1',
+    section: 'general',
+    type: 'boolean',
+  },
+  {
     id: 'claudeTokenMultiplier',
     path: 'claudeTokenMultiplier',
     section: 'general',
@@ -53,6 +59,12 @@ export const configFields = [
     section: 'models',
     type: 'json',
   },
+  {
+    id: 'noEncryptedOutputModels',
+    path: 'noEncryptedOutputModels',
+    section: 'models',
+    type: 'json',
+  },
   { id: 'extraPrompts', path: 'extraPrompts', section: 'models', type: 'json' },
   {
     id: 'useResponsesApiWebSearch',
@@ -75,18 +87,6 @@ export const configFields = [
   {
     id: 'messageApiWebSearchModel',
     path: 'messageApiWebSearchModel',
-    section: 'search',
-    type: 'string',
-  },
-  {
-    id: 'imageGenerationModel',
-    path: 'imageGenerationModel',
-    section: 'search',
-    type: 'string',
-  },
-  {
-    id: 'imageEditModel',
-    path: 'imageEditModel',
     section: 'search',
     type: 'string',
   },

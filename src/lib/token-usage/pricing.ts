@@ -5,8 +5,10 @@ import {
   usesModelsDevModelCatalog,
 } from "../provider-model-catalog"
 import type { TokenUsagePeakWindow } from "./peak-windows"
+import { resolveBuiltinImageCost } from "./image-pricing"
 import {
   normalizeToken,
+  type TokenUsageEndpoint,
   type TokenUsageSource,
   type UsageTokens,
 } from "./store"
@@ -37,6 +39,7 @@ export interface CalculatedTokenUsageCost {
 }
 
 export interface TokenUsageCostInput extends UsageTokens {
+  endpoint?: TokenUsageEndpoint
   serviceTier?: string | null
   // Timestamp used to pick peak or off-peak prices; defaults to the current
   // time when omitted.
@@ -72,7 +75,9 @@ export function resolveTokenUsageCost(
 ): CalculatedTokenUsageCost | null {
   if (
     input.source === "provider"
-    && input.providerName?.trim().toLowerCase() === "openrouter"
+    && ["openrouter", "xai"].includes(
+      input.providerName?.trim().toLowerCase() ?? "",
+    )
   ) {
     const reportedCost = resolveReportedProviderCost(input)
     if (reportedCost) {
@@ -87,6 +92,15 @@ export function resolveTokenUsageCost(
   const providerName = input.providerName?.trim()
   if (!providerName) {
     return null
+  }
+
+  if (
+    providerName.toLowerCase() === "codex"
+    && !input.pricing
+    && (input.endpoint === "images_generations"
+      || input.endpoint === "images_edits")
+  ) {
+    return resolveBuiltinImageCost(input)
   }
 
   const resolvedPricing = resolveProviderPricing(
@@ -178,6 +192,12 @@ function resolveReportedProviderCost(
 
 export function getCostAmount(totalCostNanos: number): number {
   return totalCostNanos / COST_NANOS_PER_UNIT
+}
+
+export function xaiUsdTicksToCost(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ?
+      value / 10_000_000_000
+    : undefined
 }
 
 function resolveCopilotCost(

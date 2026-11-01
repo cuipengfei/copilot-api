@@ -171,6 +171,41 @@ describe("web subscription quota rendering", () => {
     }
   })
 
+  test("uses the spend allowance when an ent26 credit balance is hidden", () => {
+    const state = createState()
+    state.subscriptionUsage.codex = {
+      provider: "codex",
+      planType: "ent26",
+      limitReached: false,
+      windows: [
+        {
+          id: "individual-limit",
+          kind: "spend",
+          period: "monthly",
+          usedPercent: 40,
+          used: 238.948632478714,
+          limit: 600,
+          unit: "credits",
+          resetAt: 1793491200,
+          limitReached: false,
+        },
+      ],
+      credits: {
+        hasCredits: true,
+        unlimited: false,
+        unit: "credits",
+      },
+    }
+    const rendered = createRenderer(state).renderSubscriptionUsageSection()
+    expect(rendered).toContain(
+      '<p class="quota-summary-label">Remaining allowance</p>',
+    )
+    expect(rendered).toContain('<div class="quota-summary-value">60%</div>')
+    expect(rendered).toContain(
+      '<p class="quota-summary-context">Monthly credit limit</p>',
+    )
+  })
+
   test("handles loading, errors, empty data, unlimited and hidden credit balances", () => {
     const state = createState()
     const viewer = createRenderer(state)

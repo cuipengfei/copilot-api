@@ -47,6 +47,23 @@ const model = (id: string): OpencodeModel => ({
   limit: { context: 200_000, output: 32_000 },
 })
 
+const imageModel = (id: string, name: string): OpencodeModel => ({
+  id,
+  modelID: id,
+  providerID: "local",
+  type: "image",
+  name,
+  family: "gpt-image",
+  package: "@opencode/ai/providers/openai/images",
+  capabilities: { tools: false, input: ["text", "image"], output: ["image"] },
+  variants: [],
+  time: { released: 0 },
+  cost: [{ input: 0, output: 0, cache: { read: 0, write: 0 } }],
+  status: "active",
+  enabled: true,
+  limit: { context: 0, output: 0 },
+})
+
 const originalFetch = globalThis.fetch
 const originalSetInterval = globalThis.setInterval
 const originalClearInterval = globalThis.clearInterval
@@ -151,7 +168,7 @@ describe("OpenCode v2 model discovery plugin", () => {
         compaction: { type: "native" },
       },
     })
-    expect(result.source?.models[0]).toEqual(model("first"))
+    expect(result.source?.models).toEqual([model("first")])
     const [url, init] = (
       fetchMock.mock.calls as unknown as Array<[string, RequestInit]>
     )[0]
@@ -163,6 +180,41 @@ describe("OpenCode v2 model discovery plugin", () => {
     expect(intervalMock).toHaveBeenCalledWith(expect.any(Function), 120_000)
     result.cleanup?.()
     expect(clearMock).toHaveBeenCalledWith(timer)
+  })
+
+  test("preserves gateway-listed Codex and xAI image models and their packages", async () => {
+    const listed = [
+      model("chat"),
+      imageModel("codex/gpt-image-2", "GPT Image 2"),
+      {
+        ...imageModel("xai/grok-imagine-image-2.0", "Grok Imagine Image 2.0"),
+        family: "grok-imagine",
+        cost: [],
+      },
+    ]
+    fetchMock.mockImplementationOnce(() =>
+      Promise.resolve(Response.json({ data: listed })),
+    )
+    const result = await createPlugin({ refreshIntervalMs: 0 })
+    expect(result.source?.models).toEqual(listed)
+  })
+
+  test("uses Responses for older catalogs without a model package", async () => {
+    const legacy: Partial<OpencodeModel> = model("legacy")
+    delete legacy.package
+    fetchMock.mockImplementationOnce(() =>
+      Promise.resolve(Response.json({ data: [legacy] })),
+    )
+    const result = await createPlugin({ refreshIntervalMs: 0 })
+    expect(result.source?.models).toEqual([model("legacy")])
+  })
+
+  test("keeps an empty server catalog empty without injecting image models", async () => {
+    fetchMock.mockImplementationOnce(() =>
+      Promise.resolve(Response.json({ data: [] })),
+    )
+    const result = await createPlugin({ refreshIntervalMs: 0 })
+    expect(result.source?.models).toEqual([])
   })
 
   test("uses the same environment key as Codex and trims the gateway URL", async () => {
@@ -200,7 +252,7 @@ describe("OpenCode v2 model discovery plugin", () => {
     result.cleanup?.()
   })
 
-  test("refreshes additions and removals while keeping the gateway's Responses package and native compaction", async () => {
+  test("refreshes image model additions and removals while preserving packages and native compaction", async () => {
     const result = await createPlugin()
     fetchMock.mockImplementationOnce(() =>
       Promise.resolve(
@@ -209,15 +261,18 @@ describe("OpenCode v2 model discovery plugin", () => {
             {
               ...model("second"),
               providerID: "upstream",
-              package: "@ai-sdk/openai",
             },
+            imageModel("xai/grok-imagine-image-2.0", "Grok Imagine Image 2.0"),
           ],
         }),
       ),
     )
     tick?.()
     await waitFor(() => result.reload.mock.calls.length === 1)
-    expect(result.source?.models).toEqual([model("second")])
+    expect(result.source?.models).toEqual([
+      model("second"),
+      imageModel("xai/grok-imagine-image-2.0", "Grok Imagine Image 2.0"),
+    ])
     expect(result.source?.info.settings.compaction).toEqual({ type: "native" })
     fetchMock.mockImplementationOnce(() =>
       Promise.resolve(Response.json({ data: [] })),

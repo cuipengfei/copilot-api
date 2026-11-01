@@ -104,6 +104,7 @@ function parseMultipartBody(
   directory: string,
   entries: Array<StagedEntry>,
   limits: MultipartStagingLimits,
+  signal?: AbortSignal,
 ): Promise<void> {
   return new Promise((resolve, reject) => {
     let busboy: BusboyInstance
@@ -196,21 +197,26 @@ function parseMultipartBody(
       })
 
       activeFileStreams.add(stream)
+      stream.once("error", fail)
       stream.once("close", () => activeFileStreams.delete(stream))
       stream.once("limit", failLimit)
 
-      const write = pipeline(
-        stream,
-        multipartStagingDependencies.createWriteStream(filePath),
-      )
-      pendingWrites.push(write)
-      void write.catch(fail)
+      try {
+        const write = pipeline(
+          stream,
+          multipartStagingDependencies.createWriteStream(filePath),
+        )
+        pendingWrites.push(write)
+        void write.catch(fail)
+      } catch (error) {
+        fail(error)
+      }
     })
     busboy.on("fieldsLimit", failLimit)
     busboy.on("filesLimit", failLimit)
     busboy.on("partsLimit", failLimit)
 
-    inputPipeline = pipeline(source, bodyLimiter, busboy)
+    inputPipeline = pipeline(source, bodyLimiter, busboy, { signal })
     void inputPipeline.then(
       () => {
         void Promise.allSettled(pendingWrites).then((results) => {
@@ -230,9 +236,9 @@ function parseMultipartBody(
       },
       (error) => {
         fail(
-          error instanceof MultipartBodyTooLargeError ? error : (
-            new InvalidMultipartBodyError({ cause: toError(error) })
-          ),
+          error instanceof MultipartBodyTooLargeError || signal?.aborted ?
+            error
+          : new InvalidMultipartBodyError({ cause: toError(error) }),
         )
       },
     )
@@ -261,13 +267,22 @@ export async function stageMultipartBodyToDisk(
   body: ReadableStream<Uint8Array> | null,
   contentType: string,
   limitOverrides: Partial<MultipartStagingLimits> = {},
+  signal?: AbortSignal,
 ): Promise<StagedMultipartBody> {
+  signal?.throwIfAborted()
   const limits = resolveStagingLimits(limitOverrides)
   const directory = await mkdtemp(join(tmpdir(), "copilot-api-images-"))
   const entries: Array<StagedEntry> = []
 
   try {
-    await parseMultipartBody(body, contentType, directory, entries, limits)
+    await parseMultipartBody(
+      body,
+      contentType,
+      directory,
+      entries,
+      limits,
+      signal,
+    )
   } catch (error) {
     await rm(directory, { force: true, recursive: true })
     throw error

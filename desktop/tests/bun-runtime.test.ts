@@ -345,6 +345,7 @@ describe('Bun runtime detection', () => {
     ).toEqual({ available: false })
   })
 
+  // Copying and scanning a native executable can exceed Bun's default 5s deadline.
   test('executes native Bun in an npm/nvm installation with spaces and no PATH', async () => {
     const homeDir = await fs.mkdtemp(path.join(os.tmpdir(), 'copilot bun nvm '))
     try {
@@ -390,7 +391,7 @@ describe('Bun runtime detection', () => {
     } finally {
       await fs.rm(homeDir, { recursive: true, force: true })
     }
-  })
+  }, 30000)
 
   test('defaults new installations to Bun and migrates legacy settings to Node', () => {
     expect(normalizeSettings(null).serverRuntime).toBe('bun')

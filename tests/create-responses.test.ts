@@ -9,6 +9,9 @@ import {
   describe,
   type Mock,
 } from "bun:test"
+import fs from "node:fs"
+import os from "node:os"
+import path from "node:path"
 
 import type { ResponsesPayload } from "~/lib/types/responses"
 
@@ -21,6 +24,8 @@ import {
   prepareInteractionHeaders,
 } from "../src/lib/api-config"
 import { COMPACT_REQUEST } from "../src/lib/compact"
+import { getConfig, invalidateConfigCache } from "~/lib/config"
+import { PATHS } from "~/lib/paths"
 import { state } from "../src/lib/state"
 import {
   buildResponsesWebSocketPoolKey,
@@ -34,6 +39,8 @@ import * as telemetryModule from "../src/services/telemetry/telemetry"
 
 const originalFetch = globalThis.fetch
 const originalOauthApp = process.env.COPILOT_API_OAUTH_APP
+const originalConfigPath = PATHS.CONFIG_PATH
+let configDir: string
 const originalState = {
   accountType: state.accountType,
   copilotToken: state.copilotToken,
@@ -115,6 +122,10 @@ let capturedScheduleFeedbackRequestId: string | undefined
 let capturedSchedulePostResponseRequestId: string | undefined
 
 beforeEach(() => {
+  configDir = fs.mkdtempSync(path.join(os.tmpdir(), "create-responses-config-"))
+  PATHS.CONFIG_PATH = path.join(configDir, "config.json")
+  fs.writeFileSync(PATHS.CONFIG_PATH, "{}")
+  invalidateConfigCache()
   delete process.env.COPILOT_API_OAUTH_APP
   state.accountType = "individual"
   state.copilotToken = "test-token"
@@ -123,7 +134,7 @@ beforeEach(() => {
   state.macMachineId = "machine-1"
   state.vsCodeDeviceId = "device-1"
   state.vsCodeSessionId = "session-1"
-  state.vsCodeVersion = "1.120.0"
+  state.vsCodeVersion = "1.144.0"
   capturedModelCallId = undefined
   capturedTrackRequestSentRequestId = undefined
   capturedScheduleFeedbackRequestId = undefined
@@ -163,6 +174,9 @@ beforeEach(() => {
 
 afterEach(() => {
   mock.restore()
+  PATHS.CONFIG_PATH = originalConfigPath
+  invalidateConfigCache()
+  fs.rmSync(configDir, { recursive: true, force: true })
   if (originalOauthApp === undefined) {
     delete process.env.COPILOT_API_OAUTH_APP
   } else {
@@ -246,6 +260,86 @@ describe("Interaction headers (Wave 1/2)", () => {
       fetchMock.mock.calls[0][1] as { headers: Record<string, string> }
     ).headers
     expect(headers["x-agent-task-id"]).toBe(headers["x-request-id"])
+  })
+
+  test.each([
+    { models: undefined },
+    { models: [] },
+    { models: ["gpt-6-astra"] },
+    { models: ["gpt-6-luna-preview"] },
+  ] as Array<{ models: Array<string> | undefined }>)(
+    "preserves HTTP output token replay include for unlisted models with config %j",
+    async ({ models }) => {
+      getConfig().noEncryptedOutputModels = models
+      const payload: ResponsesPayload = {
+        include: ["reasoning.encrypted_content", "output.encrypted_content"],
+        input: "hello",
+        model: "gpt-6-luna",
+      }
+
+      await createResponses(payload, {
+        initiator: "user",
+        requestId: "request-1",
+        vision: false,
+      })
+
+      const [, init] = fetchMock.mock.calls[0]
+      const body = JSON.parse(
+        (init as RequestInit).body as string,
+      ) as ResponsesPayload
+      expect(body.include).toEqual([
+        "reasoning.encrypted_content",
+        "output.encrypted_content",
+      ])
+      expect(payload.include).toEqual(body.include)
+    },
+  )
+
+  test("removes output token replay include for configured Copilot HTTP models", async () => {
+    getConfig().noEncryptedOutputModels = ["gpt-6-astra"]
+    const payload: ResponsesPayload = {
+      include: ["reasoning.encrypted_content", "output.encrypted_content"],
+      input: "hello",
+      model: "gpt-6-astra",
+    }
+
+    await createResponses(payload, {
+      initiator: "user",
+      requestId: "request-1",
+      vision: false,
+    })
+
+    const [, init] = fetchMock.mock.calls[0]
+    const body = JSON.parse(
+      (init as RequestInit).body as string,
+    ) as ResponsesPayload
+    expect(body.include).toEqual(["reasoning.encrypted_content"])
+    expect(payload.include).toEqual([
+      "reasoning.encrypted_content",
+      "output.encrypted_content",
+    ])
+  })
+
+  test("omits include when only unsupported output token replay is requested", async () => {
+    getConfig().noEncryptedOutputModels = ["gpt-6-astra"]
+    const payload: ResponsesPayload = {
+      include: ["output.encrypted_content"],
+      input: "hello",
+      model: "gpt-6-astra",
+    }
+
+    await createResponses(payload, {
+      initiator: "user",
+      requestId: "request-1",
+      vision: false,
+    })
+
+    const [, init] = fetchMock.mock.calls[0]
+    const body = JSON.parse(
+      (init as RequestInit).body as string,
+    ) as ResponsesPayload
+    expect(body).not.toHaveProperty("include")
+    expect(payload.include).toEqual(["output.encrypted_content"])
   })
 
   test("sets subagent interaction headers for HTTP responses requests", async () => {
@@ -767,8 +861,8 @@ describe("createResponses websocket helpers", () => {
       "Copilot-Integration-Id": "vscode-chat",
       "Copilot-Vision-Request": "true",
       "Editor-Device-Id": "device-1",
-      "Editor-Plugin-Version": "copilot-chat/0.68.0",
-      "Editor-Version": "vscode/1.120.0",
+      "Editor-Plugin-Version": "copilot-chat/0.72.0",
+      "Editor-Version": "vscode/1.144.0",
       "OpenAI-Intent": "conversation-agent",
       "VScode-SessionId": "session-1",
       "VScode-MachineId": "machine-1",

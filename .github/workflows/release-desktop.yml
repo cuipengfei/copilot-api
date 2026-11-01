@@ -18,11 +18,11 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "22.18.0"
+          node-version: "22.23.4"
 
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
+          bun-version: "1.4.4"
 
       - name: Install root dependencies
         run: bun install --frozen-lockfile
@@ -44,11 +44,22 @@ jobs:
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: false
 
+      - name: Verify macOS update metadata
+        working-directory: desktop
+        run: |
+          test -f release/latest-mac.yml
+          for dmg in release/*.dmg; do
+            test -f "$dmg.blockmap"
+          done
+
       - uses: actions/upload-artifact@v4
         with:
           name: mac-arm64
-          path: desktop/release/*.dmg
-          if-no-files-found: warn
+          path: |
+            desktop/release/*.dmg
+            desktop/release/*.dmg.blockmap
+            desktop/release/latest-mac.yml
+          if-no-files-found: error
 
   # ─── Windows ─────────────────────────────────────────────────────────────
   build-win:
@@ -59,11 +70,11 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "22.18.0"
+          node-version: "22.23.4"
 
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
+          bun-version: "1.4.4"
 
       - name: Install root dependencies
         run: bun install --frozen-lockfile
@@ -111,11 +122,11 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "22.18.0"
+          node-version: "22.23.4"
 
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
+          bun-version: "1.4.4"
 
       - name: Install root dependencies
         run: bun install --frozen-lockfile

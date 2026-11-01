@@ -15,9 +15,12 @@ export type TokenUsageSource = "copilot" | "provider"
 export type TokenUsageEndpoint =
   | "chat_completions"
   | "embeddings"
+  | "images_generations"
+  | "images_edits"
   | "messages"
   | "provider_messages"
   | "responses"
+  | "videos_generations"
 
 export type TokenUsagePeriod =
   | "today"
@@ -32,7 +35,9 @@ export interface UsageTokens {
   cache_read_input_tokens?: number | null
   cost?: number | null
   input_tokens?: number | null
+  input_tokens_details?: ImageTokenDetails
   output_tokens?: number | null
+  output_tokens_details?: ImageTokenDetails
   total_nano_aiu?: number | null
   total_tokens?: number | null
 }
@@ -54,6 +59,11 @@ export interface CopilotUsageTokens {
  * Same shape as CopilotUsageTokens; service layers re-export this name.
  */
 export type CopilotUsage = CopilotUsageTokens
+
+export interface ImageTokenDetails {
+  image_tokens?: number
+  text_tokens?: number
+}
 
 export interface TokenUsageCost {
   amount: number
@@ -96,6 +106,7 @@ export interface PersistedTokenUsageEvent extends TokenUsageTiming {
   trace_id: string
   user_agent: string
   user_id: string
+  upstream_request_id?: string | null
 }
 
 export interface TokenUsageTotals {
@@ -268,9 +279,25 @@ function initializeTokenUsageDb(db: SqliteDatabase): void {
   ensureColumn(db, "total_cost_nanos", "INTEGER")
   ensureColumn(db, "cost_source", "TEXT")
   ensureColumn(db, "request_id", "TEXT")
+  ensureColumn(db, "upstream_request_id", "TEXT")
   ensureColumn(db, "first_token_ms", "REAL")
   ensureColumn(db, "duration_ms", "REAL")
   ensureColumn(db, "request_outcome", "TEXT")
+  // Copilot rows have no provider name, and NULL keys never collide in a unique
+  // index. Coalesce it so one upstream request is billed once; missing upstream
+  // ids stay NULL and therefore never deduplicate.
+  const upstreamRequestIndex = db
+    .prepare(
+      "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'idx_token_usage_events_upstream_request'",
+    )
+    .get() as { sql: string | null } | undefined
+  if (!upstreamRequestIndex?.sql?.includes("COALESCE")) {
+    db.exec("DROP INDEX IF EXISTS idx_token_usage_events_upstream_request")
+    db.exec(`
+      CREATE UNIQUE INDEX idx_token_usage_events_upstream_request
+      ON token_usage_events(source, COALESCE(provider_name, ''), endpoint, upstream_request_id)
+    `)
+  }
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_token_usage_events_request_id
     ON token_usage_events(request_id)
@@ -380,11 +407,13 @@ async function writeTokenUsageEvent(
         total_cost_nanos,
         cost_source,
         request_id,
+        upstream_request_id,
         first_token_ms,
         duration_ms,
         request_outcome,
         user_agent
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(source, COALESCE(provider_name, ''), endpoint, upstream_request_id) DO NOTHING
     `,
   ).run(
     event.created_at_ms,
@@ -410,6 +439,7 @@ async function writeTokenUsageEvent(
     event.total_cost_nanos,
     event.cost_source,
     event.request_id,
+    event.upstream_request_id ?? null,
     event.first_token_ms,
     event.duration_ms,
     event.request_outcome,
@@ -1088,7 +1118,8 @@ function getModelTimingRows(
     WITH selected_requests AS (
       SELECT DISTINCT request_id FROM token_usage_events
       WHERE created_at_ms >= ? AND created_at_ms < ? AND request_id IS NOT NULL
-    ), requests AS (
+    -- The bucket join would otherwise re-run request grouping for every day.
+    ), requests AS MATERIALIZED (
       SELECT e.request_id, MIN(e.model) AS model,
         MIN(e.created_at_ms) AS first_usage_at_ms,
         MAX(e.created_at_ms) AS last_usage_at_ms,

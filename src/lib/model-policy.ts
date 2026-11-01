@@ -169,6 +169,11 @@ export function getModelResponsesApiCompactThreshold(
   return threshold
 }
 
+export function isOutputEncryptedContentDisabled(model: string): boolean {
+  const models = getConfig().noEncryptedOutputModels
+  return Array.isArray(models) && models.includes(model)
+}
+
 export function getReasoningEffortForModel(
   model: string,
 ): "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" {

@@ -21,7 +21,7 @@ const proxyState: State = {
   copilotApiUrl: "https://api.individual.githubcopilot.com",
   githubToken: "test-github-token",
   copilotToken: "test-copilot-token",
-  vsCodeVersion: "1.140.0",
+  vsCodeVersion: "1.144.0",
   vsCodeDeviceId: "device-1",
   vsCodeSessionId: "session-1",
   macMachineId: "machine-1",
@@ -86,6 +86,7 @@ test("prepareMessageProxyHeaders rebuilds proxy headers with GitHub auth and fre
   expect(headers["X-Request-Id"]).toMatch(
     /^[a-f\d]{8}-[a-f\d]{4}-4[a-f\d]{3}-[89ab][a-f\d]{3}-[a-f\d]{12}$/u,
   )
+
   expect(headers["X-Request-Id"]).not.toBe("original-request-id")
 
   // The stale client interaction id is dropped during the rebuild.

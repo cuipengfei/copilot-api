@@ -19,12 +19,18 @@ describe('provider model options', () => {
       },
     })
     const options = buildProviderModelOptions({})
-    expect(options['github-copilot']).toEqual([])
+    expect(options['github-copilot']).toEqual(['gpt-image-2.5-flare'])
     expect(
       mergeProviderModelOptions(options, {
         data: [{ id: 'gpt-6-luna' }, { id: 'claude-sonnet-5.5' }],
       }),
-    ).toEqual({ 'github-copilot': ['claude-sonnet-5.5', 'gpt-6-luna'] })
+    ).toEqual({
+      'github-copilot': [
+        'claude-sonnet-5.5',
+        'gpt-6-luna',
+        'gpt-image-2.5-flare',
+      ],
+    })
   })
 
   test('preserves explicit Copilot model IDs without importing a catalog override', () => {
@@ -52,11 +58,22 @@ describe('provider model options', () => {
         catalog: () => ['claude-fable-5.1'],
       },
     )
-    expect(options['github-copilot']).toEqual(['configured', 'selected'])
+    expect(options['github-copilot']).toEqual([
+      'configured',
+      'selected',
+      'static-model',
+    ])
     expect(mergeProviderModelOptions(options, null)).toEqual(options)
     expect(
       mergeProviderModelOptions(options, { data: [{ id: 'gpt-6-luna' }] }),
-    ).toEqual({ 'github-copilot': ['configured', 'gpt-6-luna', 'selected'] })
+    ).toEqual({
+      'github-copilot': [
+        'configured',
+        'gpt-6-luna',
+        'selected',
+        'static-model',
+      ],
+    })
   })
 
   test('filters old releases from all cached, configured and selected models.dev options', () => {
@@ -64,7 +81,15 @@ describe('provider model options', () => {
     installModelsDevCatalog({
       ...modelsDevProviderCatalogFixture,
       'alibaba-cn': catalog,
-      xai: catalog,
+      xai: {
+        models: {
+          ...modelsDevReleaseModelsFixture,
+          'grok-imagine-image-2.0': {
+            id: 'grok-imagine-image-2.0',
+            status: 'deprecated',
+          },
+        },
+      },
       'opencode-go': catalog,
     })
     const selection = {
@@ -89,7 +114,7 @@ describe('provider model options', () => {
     }
   })
 
-  test('reads default catalogs and provider aliases without static model fallback', () => {
+  test('reads provider catalogs and aliases alongside built-in image models', () => {
     installModelsDevCatalog(modelsDevProviderCatalogFixture)
     const options = buildProviderModelOptions({
       providers: {
@@ -101,7 +126,7 @@ describe('provider model options', () => {
       },
     })
     expect(options).toMatchObject({
-      xai: ['grok-4.7', 'grok-catalog-only'],
+      xai: ['grok-4.7', 'grok-catalog-only', 'grok-imagine-image-2.0'],
       deepseek: ['deepseek-flash', 'deepseek-v4-pro'],
       kimi: ['k3', 'k3-256k'],
       dashscope: [
@@ -116,6 +141,40 @@ describe('provider model options', () => {
     })
     expect(options.dashscope).not.toContain('ZHIPU/GLM-5.3-FlashX')
   })
+
+  test.each([
+    {
+      provider: 'github-copilot',
+      chat: 'gpt-6-luna',
+      image: 'gpt-image-2.5-flare',
+    },
+    { provider: 'codex', chat: 'gpt-6-luna', image: 'gpt-image-2' },
+    { provider: 'xai', chat: 'grok-4.7', image: 'grok-imagine-image-2.0' },
+  ])(
+    'offers $provider image models absent from the chat catalog without changing selections',
+    ({ provider, chat, image }) => {
+      installModelsDevCatalog(modelsDevProviderCatalogFixture)
+      const selectedModels: string[] = [chat]
+      const config = {
+        providers: {
+          [provider]: { enabled: false, agentsModels: selectedModels },
+        },
+      }
+      const options = buildProviderModelOptions(config)
+      expect(options[provider]).toContain(chat)
+      expect(options[provider].filter((id) => id === image)).toEqual([image])
+      expect(options[provider]).not.toContain(`${provider}/${image}`)
+      expect(config.providers[provider].agentsModels).toEqual([chat])
+
+      config.providers[provider].agentsModels.push(image)
+      expect(
+        buildProviderModelOptions(config)[provider].filter(
+          (id) => id === image,
+        ),
+      ).toEqual([image])
+    },
+  )
+
   test('combines cached xAI models with explicit selections for OAuth providers', () => {
     const options = buildProviderModelOptions(
       {
@@ -160,7 +219,7 @@ describe('provider model options', () => {
       },
     )
     expect(options).toEqual({
-      'github-copilot': [],
+      'github-copilot': ['builtin', 'configured'],
       example: ['builtin', 'catalog-model', 'configured', 'selected'],
     })
     expect(JSON.stringify(options)).not.toContain('secret')
@@ -172,13 +231,14 @@ describe('provider model options', () => {
         {
           data: [
             { id: 'gpt-5.4' },
+            { id: 'github-copilot/gpt-image-2.5-flare' },
             { id: 'org/family/model' },
             { id: 'custom/model' },
           ],
         },
       ),
     ).toEqual({
-      'github-copilot': ['gpt-5.4', 'org/family/model'],
+      'github-copilot': ['gpt-5.4', 'gpt-image-2.5-flare', 'org/family/model'],
       custom: ['model'],
     })
   })

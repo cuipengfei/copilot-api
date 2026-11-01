@@ -29,6 +29,9 @@ export interface AppConfig {
   >
   useMessagesApi?: boolean
   useResponsesApiWebSocket?: boolean
+  codexMultiAgentV1?: boolean
+  // Copilot model IDs that must not request output.encrypted_content.
+  noEncryptedOutputModels?: Array<string>
   upstreamTransport?: UpstreamTransportConfig
   anthropicApiKey?: string
   useResponsesApiWebSearch?: boolean
@@ -41,10 +44,6 @@ export interface AppConfig {
   // via /responses. Leave unset to disable (the tool is then stripped).
   // Mixing web_search with other tools is not supported.
   messageApiWebSearchModel?: string
-  // Top-level image routes stay on the OpenAI/Codex path until these are set
-  // to an xai/model alias. Only the xAI Imagine API is supported.
-  imageGenerationModel?: string
-  imageEditModel?: string
   // Model used for Claude Code background security-monitor requests on
   // /v1/messages and provider message APIs: requests without tools, with
   // `stop_sequences: ["</block>"]` and a system block starting with
@@ -168,6 +167,8 @@ export const defaultConfig: AppConfig = {
   modelResponsesApiCompactThresholds,
   useMessagesApi: true,
   useResponsesApiWebSocket: true,
+  codexMultiAgentV1: false,
+  noEncryptedOutputModels: [],
   upstreamTransport: defaultUpstreamTransportConfig,
   useResponsesApiWebSearch: true,
   alphaSearchCodexPriority: true,
@@ -310,10 +311,6 @@ function mergeDefaultConfig(inputConfig: AppConfig): {
   const contextManagement = normalizeContextManagementConfig(
     config.contextManagement,
   )
-  const opencodeModelContextWindow = positiveIntegerOrDefault(
-    config.opencodeModelContextWindow,
-    defaultOpencodeModelContextWindow,
-  )
   const {
     changed: upstreamTransportMigrated,
     migrated: migratedUpstreamTransport,
@@ -347,8 +344,6 @@ function mergeDefaultConfig(inputConfig: AppConfig): {
   const hasResponsesApiCompactThresholdChanges =
     missingResponsesApiCompactThresholdModels.length > 0
   const hasContextManagementChanges = missingContextManagementKeys.length > 0
-  const hasOpencodeModelContextWindowChanges =
-    config.opencodeModelContextWindow !== opencodeModelContextWindow
   const hasUpstreamTransportChanges = Object.entries(upstreamTransport).some(
     ([key, value]) =>
       migratedUpstreamTransport[key as keyof UpstreamTransportConfig] !== value,
@@ -360,7 +355,6 @@ function mergeDefaultConfig(inputConfig: AppConfig): {
     && !hasReasoningEffortChanges
     && !hasResponsesApiCompactThresholdChanges
     && !hasContextManagementChanges
-    && !hasOpencodeModelContextWindowChanges
     && !hasUpstreamTransportChanges
     && !upstreamTransportMigrated
     && !agentModelsMigrated
@@ -390,7 +384,6 @@ function mergeDefaultConfig(inputConfig: AppConfig): {
         ...defaultContextManagementConfig,
         ...contextManagement,
       },
-      opencodeModelContextWindow,
       extraPrompts: {
         ...defaultExtraPrompts,
         ...extraPrompts,

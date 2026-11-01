@@ -295,6 +295,7 @@ describe("Standard Copilot Messages request compatibility", () => {
     })
 
     expect(getRequestHeaders().Authorization).toBe("Bearer test-copilot-token")
+
     expect(new Headers(getRequestHeaders()).has("anthropic-version")).toBe(
       false,
     )

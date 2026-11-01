@@ -235,6 +235,52 @@ describe('subscription quota details', () => {
       )
     }
   })
+
+  test('uses the spend allowance when an ent26 credit balance is hidden', async () => {
+    await act(async () =>
+      root.render(
+        createElement(
+          LanguageProvider,
+          null,
+          createElement(SubscriptionQuotaSummary, {
+            usage: {
+              provider: 'codex',
+              planType: 'ent26',
+              limitReached: false,
+              windows: [
+                {
+                  id: 'individual-limit',
+                  kind: 'spend',
+                  period: 'monthly',
+                  usedPercent: 40,
+                  used: 238.948632478714,
+                  limit: 600,
+                  unit: 'credits',
+                  resetAt: 1793491200,
+                  limitReached: false,
+                },
+              ],
+              credits: {
+                hasCredits: true,
+                unlimited: false,
+                unit: 'credits',
+              },
+            },
+          }),
+        ),
+      ),
+    )
+    expect(container.querySelector('.quota-summary-label')?.textContent).toBe(
+      'Remaining allowance',
+    )
+    expect(container.querySelector('.quota-summary-value')?.textContent).toBe(
+      '60%',
+    )
+    expect(container.querySelector('.quota-summary-context')?.textContent).toBe(
+      'Monthly credit limit',
+    )
+  })
+
   test('renders Business monthly credit caps and balances without personal windows', async () => {
     await renderDetails(business)
     expect(container.textContent).toContain('Monthly credit limit')

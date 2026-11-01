@@ -464,6 +464,8 @@ describe('configuration validation and editing helpers', () => {
     'true',
     '{',
     '{"useMessagesApi":"yes"}',
+    '{"codexMultiAgentV1":"true"}',
+    '{"codexMultiAgentV1":null}',
     '{"contextManagement":{"messages":null}}',
     '{"upstreamTransport":{"headersTimeoutMs":0}}',
     '{"opencodeModelContextWindow":1.2}',
@@ -473,12 +475,36 @@ describe('configuration validation and editing helpers', () => {
     '{"extraPrompts":{"model":false}}',
     '{"providers":{"custom":{"models":{"model":{"maxOutputTokens":"bad"}}}}}',
     '{"auth":{"apiKeys":[""]}}',
-    '{"imageGenerationModel":"other/model"}',
     '{"smallModels":[]}',
+    '{"noEncryptedOutputModels":"gpt-6-astra"}',
+    '{"noEncryptedOutputModels":[1]}',
+    '{"noEncryptedOutputModels":[""]}',
     '{"providers":{"custom":{"enabled":"false"}}}',
     '{"anthropicApiKey":"••••••"}',
   ])('rejects invalid known config: %s', (content) => {
     expect(() => validateConfigContent(content)).toThrow()
+  })
+
+  test.each([false, true])('accepts Codex Multi-Agent V1 = %j', (value) => {
+    const config = { codexMultiAgentV1: value }
+    expect(validateConfigContent(JSON.stringify(config))).toEqual(config)
+  })
+
+  test.each([{ models: [] }, { models: ['gpt-6-astra'] }])(
+    'accepts encrypted output model exclusions %j',
+    ({ models }) => {
+      const config = { noEncryptedOutputModels: models }
+      expect(validateConfigContent(JSON.stringify(config))).toEqual(config)
+    },
+  )
+
+  test('preserves retired image settings as unknown data while accepting model mappings', () => {
+    const config = {
+      imageGenerationModel: 'retired/model',
+      imageEditModel: 42,
+      modelMappings: { 'gpt-image-2': 'xai/grok-imagine-image-2.0' },
+    }
+    expect(validateConfigContent(JSON.stringify(config))).toEqual(config)
   })
 
   test('keeps all supported fields and future fields while allowing inherited defaults', () => {
@@ -487,7 +513,6 @@ describe('configuration validation and editing helpers', () => {
       unknown: { future: ['anything'] },
       claudeAutoModel: '',
       anthropicApiKey: 'key',
-      imageEditModel: 'xai/model',
       providers: {
         test: {
           type: 'future-provider',

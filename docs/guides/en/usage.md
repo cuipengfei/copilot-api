@@ -29,6 +29,22 @@ The dashboard provides a user-friendly interface to view your Copilot usage data
 - **URL-based Configuration**: You can also specify the API endpoint and period directly via `endpoint` and `period` query parameters. For example:
   `http://localhost:4141/usage-viewer?endpoint=http://your-api-server/usage&period=this_week`
 
+### Image usage and costs
+
+Image generations and edits appear in token usage events and model, daily, and session summaries under the actual forwarded model. Codex requests that omit `model` are recorded and priced under its default, `gpt-image-2`. Codex records upstream input, output, and total tokens and estimates USD costs using built-in official OpenAI API rates for image/text tokens. Built-in pricing supports only GPT Image 2 and 2.5, including named variants and dated snapshots. These are API price estimates, not additional Codex subscription charges. Without modality details, input is estimated as text and output as images; other models retain tokens without a price estimate.
+
+xAI uses the upstream `usage.cost_in_usd_ticks` amount (`10^10` ticks = 1 USD), with no built-in image prices. Cost-only responses still count toward request and cost totals; zero token counts mean no tokens were reported. Responses without valid tokens or a valid cost do not create events.
+
+Verbose logs include image response JSON metadata except `data` and streamed image base64. Edit request logs retain prompts, models, and parameters, replacing image base64 with placeholders; multipart files log only names, MIME types, and sizes.
+
+Image requests also include request IDs, total duration, and completion/cancellation outcomes in SQLite, without publishing gateway plugin events. Image TTFT remains unset. JSON requests with an early `model` stream upstream, including model rewrites. Late models and xAI format conversion use temporary files for large bodies/strings, with a 512 MiB staging limit and automatic cleanup; verbose JSON logging observes the forwarding stream without buffering the full body.
+
+### Video costs
+
+When an xAI video result query returns `status: "done"` with valid `usage.cost_in_usd_ticks`, the cost is saved in SQLite's `token_usage_events` under `videos_generations` and included in event, model, daily, and session summaries. The conversion is `10^10` ticks = 1 USD: `11300000000` ticks records 1.13 USD. Token fields remain zero when the upstream does not report tokens.
+
+SQLite deduplicates by provider, endpoint, and upstream task ID, so repeated queries and queries after a restart record the same task only once. Unfinished or failed jobs and results without a valid cost do not create cost events. With `--verbose`, the complete query response body is logged as `videos.result.response.body` in `videos-handler-YYYY-MM-DD.log`.
+
 ### Usage Viewer Screenshot
 
 <p align="center">

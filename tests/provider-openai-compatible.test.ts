@@ -1,4 +1,12 @@
-import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test"
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  mock,
+  spyOn,
+  test,
+} from "bun:test"
 import { Hono } from "hono"
 
 import type { ResolvedProviderConfig } from "~/lib/config"
@@ -14,16 +22,11 @@ let providerConfig: ResolvedProviderConfig | null = null
 
 const noopTokenUsageRecorder = () => {}
 
-const createNoopProviderTokenUsageRecorder = () => noopTokenUsageRecorder
+let restoreTokenUsageRecorder = () => {}
 
 await mock.module("~/lib/config", () => ({
   ...actualConfigModule,
   getProviderConfig: () => providerConfig,
-}))
-
-await mock.module("~/lib/token-usage", () => ({
-  ...actualTokenUsageModule,
-  createProviderTokenUsageRecorder: createNoopProviderTokenUsageRecorder,
 }))
 
 const { providerMessageRoutes } =
@@ -106,6 +109,11 @@ const parseSseData = (text: string): Array<Record<string, unknown>> =>
     )
 
 beforeEach(() => {
+  const recorder = spyOn(
+    actualTokenUsageModule,
+    "createProviderTokenUsageRecorder",
+  ).mockImplementation(() => noopTokenUsageRecorder)
+  restoreTokenUsageRecorder = () => recorder.mockRestore()
   installModelsDevCatalog(modelsDevCatalogFixture)
   providerConfig = {
     name: "dashscope",
@@ -133,6 +141,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  restoreTokenUsageRecorder()
   ;(globalThis as unknown as { fetch: typeof fetch }).fetch = originalFetch
   providerConfig = null
 })

@@ -49,7 +49,10 @@ export function SubscriptionQuotaSummary({
     usage.windows.find((window) => window.kind === 'usage') ?? usage.windows[0]
   const credits = usage.credits
   const showCredits =
-    credits && (credits.hasCredits || credits.unlimited || !main)
+    credits
+    && (credits.unlimited
+      || (credits.hasCredits && credits.balance !== undefined)
+      || !main)
   const value =
     showCredits ?
       credits.unlimited ? '∞'

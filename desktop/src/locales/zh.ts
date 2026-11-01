@@ -61,7 +61,7 @@ const zh: Locale = {
   updates: {
     title: '应用更新',
     description:
-      '启动时及每 6 小时检查更新。Windows 和 Linux AppImage 自动下载更新；未签名的 macOS 版本需手动安装 DMG。',
+      '启动时及每 6 小时检查并自动下载更新。macOS 同时将完整 DMG 保存到下载目录，方便手动安装。',
     currentVersion: '当前版本：{{version}}',
     idle: '可以检查更新',
     checking: '正在检查更新…',
@@ -76,6 +76,11 @@ const zh: Locale = {
     restartInstall: '重启并安装',
     openRelease: '下载安装包',
     manualInstall: '请从 GitHub Releases 下载并安装对应安装包。',
+    packageReady: '{{version}} 安装包已保存到下载目录',
+    showPackage: '在文件夹中显示',
+    openPackage: '打开安装包',
+    manualPackageNote:
+      '请自行退出当前应用后安装下载的 DMG。macOS 可能需要再次允许打开新版本。',
     restartNote: '重启会停止本地 API 服务，并中断进行中的请求。',
     progress: '更新下载进度',
     actionFailed: '更新操作失败，请重试。',
@@ -486,7 +491,7 @@ const zh: Locale = {
       general: '请求设置',
       mappings: '模型映射',
       models: '模型规则',
-      search: '搜索与图片',
+      search: '搜索',
       transport: '上游传输',
     },
     fields: {
@@ -501,6 +506,11 @@ const zh: Locale = {
       opencodeModelContextWindow: {
         label: 'OpenCode 上下文上限',
         description: '限制 OpenCode 模型目录展示的上下文 Token 数。',
+      },
+      codexMultiAgentV1: {
+        label: 'Codex 多 Agent V1',
+        description:
+          '上游不支持加密多 Agent 消息时使用 V1，默认 V2。请在新的 Codex 会话中测试；CLI 显式 feature 配置可能优先。',
       },
       claudeTokenMultiplier: {
         label: 'Claude Token 估算系数',
@@ -522,6 +532,11 @@ const zh: Locale = {
         label: '模型默认推理强度',
         description: '按模型覆盖默认 effort；请求中明确指定的值优先。',
       },
+      noEncryptedOutputModels: {
+        label: '禁用输出加密的模型',
+        description:
+          'Copilot 模型 ID 的 JSON 数组，按映射后的模型名精确匹配。名单内模型不请求输出加密内容，默认 [] 不限制。',
+      },
       extraPrompts: {
         label: '模型额外提示词',
         description: '按模型追加 system prompt，使用 JSON 对象。',
@@ -541,14 +556,6 @@ const zh: Locale = {
       messageApiWebSearchModel: {
         label: 'Messages 网页搜索模型',
         description: '供只包含服务端 web_search 工具的请求使用；空字符串禁用。',
-      },
-      imageGenerationModel: {
-        label: '图片生成模型',
-        description: '留空沿用原有路由；指定时使用 xai/model。',
-      },
-      imageEditModel: {
-        label: '图片编辑模型',
-        description: '留空沿用原有路由；指定时使用 xai/model。',
       },
       headersTimeoutMs: {
         label: '等待响应头超时',

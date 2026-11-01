@@ -57,7 +57,7 @@ async function forwardCodexAlphaSearchRequest(
     body: parseDebugBody<AlphaSearchRequest>(await request.clone().text()),
   }))
 
-  if (model) setPluginRequestActualModel(model)
+  if (model) setPluginRequestActualModel(model, "codex")
   const upstreamResponse =
     await alphaSearchRouteDependencies.forwardCodexAlphaSearch(request)
   await debugJsonAsync(logger, "alpha_search.codex.response", async () => ({

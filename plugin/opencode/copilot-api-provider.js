@@ -39,7 +39,7 @@ export default {
       return body.data.map((model) => ({
         ...model,
         providerID,
-        package: responsesPackage,
+        package: model.package ?? responsesPackage,
       }))
     }
     const reportError = (error) =>

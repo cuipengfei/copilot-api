@@ -62,7 +62,7 @@ const en: Locale = {
   updates: {
     title: 'Updates',
     description:
-      'Check for updates on launch and every 6 hours. Windows and Linux AppImage updates download automatically. Unsigned macOS builds use manual DMG installation.',
+      'Check for updates on launch and every 6 hours. Updates download automatically. macOS also saves a complete DMG to Downloads for manual installation.',
     currentVersion: 'Current version: {{version}}',
     idle: 'Ready to check for updates',
     checking: 'Checking for updates…',
@@ -77,6 +77,11 @@ const en: Locale = {
     restartInstall: 'Restart and install',
     openRelease: 'Download installer',
     manualInstall: 'Download and install the package from GitHub Releases.',
+    packageReady: 'Version {{version}} is saved to Downloads',
+    showPackage: 'Show in folder',
+    openPackage: 'Open installer',
+    manualPackageNote:
+      'Quit this app and install the downloaded DMG manually. macOS may ask you to allow the new version to open.',
     restartNote:
       'Restarting stops the local API server and interrupts active requests.',
     progress: 'Update download progress',
@@ -517,7 +522,7 @@ const en: Locale = {
       general: 'Request settings',
       mappings: 'Model mappings',
       models: 'Model rules',
-      search: 'Search and images',
+      search: 'Search',
       transport: 'Upstream transport',
     },
     fields: {
@@ -535,6 +540,11 @@ const en: Locale = {
         label: 'OpenCode context limit',
         description:
           'Limit context tokens shown in the OpenCode model catalog.',
+      },
+      codexMultiAgentV1: {
+        label: 'Codex Multi-Agent V1',
+        description:
+          'Use V1 for providers without encrypted multi-agent message support. Default: V2. Test in a new Codex session; CLI feature overrides may take precedence.',
       },
       claudeTokenMultiplier: {
         label: 'Claude token multiplier',
@@ -560,6 +570,11 @@ const en: Locale = {
         description:
           'Override effort per model; an explicit request value takes precedence.',
       },
+      noEncryptedOutputModels: {
+        label: 'Models without encrypted output',
+        description:
+          'JSON array of Copilot model IDs, matched exactly after model mapping. Skip requesting encrypted output for listed models; the default [] applies no restrictions.',
+      },
       extraPrompts: {
         label: 'Extra model prompts',
         description: 'Append system prompts per model using a JSON object.',
@@ -580,14 +595,6 @@ const en: Locale = {
         label: 'Messages web-search model',
         description:
           'Used for search-only Messages requests; an empty string disables it.',
-      },
-      imageGenerationModel: {
-        label: 'Image generation model',
-        description: 'Leave empty for the default route, or use xai/model.',
-      },
-      imageEditModel: {
-        label: 'Image edit model',
-        description: 'Leave empty for the default route, or use xai/model.',
       },
       headersTimeoutMs: {
         label: 'Response headers timeout',

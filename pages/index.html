@@ -1788,7 +1788,7 @@
         function renderSubscriptionSummary(usage) {
           const main = usage.windows.find((window) => window.kind === "usage") || usage.windows[0];
           const credits = usage.credits;
-          const showCredits = credits && (credits.hasCredits || credits.unlimited || !main);
+          const showCredits = credits && (credits.unlimited || (credits.hasCredits && credits.balance !== undefined) || !main);
           const value = showCredits ? credits.unlimited ? "∞"
             : formatSubscriptionAmount(credits.balance, credits.unit)
             : main?.unlimited ? "∞"

@@ -101,6 +101,11 @@ export interface ServerStatus {
   error?: string
 }
 
+export interface ServerLogRecord {
+  sequence: number
+  text: string
+}
+
 export interface ServerAuthInfo {
   enabled: boolean
   headerName?: string
@@ -282,6 +287,7 @@ export interface AppUpdateStatus {
     | 'disabled'
   currentVersion: string
   manualInstall: boolean
+  packageReady?: boolean
   releaseUrl: string
   version?: string
   percent?: number
@@ -362,6 +368,7 @@ declare global {
       getAppUpdateStatus: () => Promise<AppUpdateStatus>
       checkAppUpdate: () => Promise<AppUpdateStatus>
       installAppUpdate: () => Promise<AppUpdateStatus>
+      openAppUpdatePackage: (showInFolder?: boolean) => Promise<void>
       onAppUpdateStatus: (
         callback: (status: AppUpdateStatus) => void,
       ) => () => void
@@ -416,10 +423,11 @@ declare global {
       saveServerKeys: (
         keys: ServerKeysConfigUpdate,
       ) => Promise<ServerKeysConfig>
-      getLogs: () => Promise<string[]>
+      getLogs: () => Promise<ServerLogRecord[]>
+      clearLogs: () => Promise<number>
       onAuthSuccess: (callback: (result: AuthResult) => void) => () => void
       onServerStatus: (callback: (status: ServerStatus) => void) => () => void
-      onServerLog: (callback: (log: string) => void) => () => void
+      onServerLog: (callback: (log: ServerLogRecord) => void) => () => void
       platform: NodeJS.Platform
       windowReload: () => void
       windowMinimize: () => void

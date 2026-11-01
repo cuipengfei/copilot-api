@@ -1,6 +1,7 @@
 import type { Context } from "hono"
 
 import {
+  getConfig,
   getModelMappings,
   getRawProviderConfig,
   listEnabledProviders,
@@ -24,7 +25,7 @@ import type {
   CodexReasoningEffort,
   SyntheticCodexModelCandidate,
 } from "~/routes/models/codex-models-types"
-import { isRecord } from "~/routes/models/model-discovery"
+import { isImageOnlyModel, isRecord } from "~/routes/models/model-discovery"
 import fallbackCodexCatalogJson from "~/routes/models/models.json"
 import { forwardCodexModels } from "~/services/codex/get-models"
 import { createProviderProxyResponse } from "~/services/providers/provider-proxy"
@@ -134,8 +135,10 @@ export async function handleCodexModelsProxy(
     c,
     {
       ...catalog,
-      models: catalog.models.filter((model) =>
-        isProviderAgentModelVisible(providerConfig, model.slug),
+      models: catalog.models.filter(
+        (model) =>
+          !isImageOnlyModel("codex", model.slug, model, providerConfig)
+          && isProviderAgentModelVisible(providerConfig, model.slug),
       ),
     },
     new Set(getProviderAgentModels(providerConfig)),
@@ -176,12 +179,16 @@ export async function handleMergedCodexModels(
     }),
   ])
   const upstreamCatalog = upstreamCatalogResult?.catalog
-  const upstreamModels = upstreamCatalog?.models ?? FALLBACK_CODEX_MODELS
+  const codexConfig = getRawProviderConfig("codex")
+  const upstreamModels = (
+    upstreamCatalog?.models ?? FALLBACK_CODEX_MODELS
+  ).filter(
+    (model) => !isImageOnlyModel("codex", model.slug, model, codexConfig),
+  )
   const template = selectTemplate(upstreamModels)
   const catalogModelsBySlug = new Map(
     upstreamModels.map((model) => [model.slug, model]),
   )
-  const codexConfig = getRawProviderConfig("codex")
   const copilotConfig = getRawProviderConfig("github-copilot")
   const visibleUpstreamModels = upstreamModels.filter(
     (model) =>
@@ -287,6 +294,16 @@ function createCodexCatalogResponse(
   explicitSlugs: ReadonlySet<string>,
   fallback: CodexModel["model_messages"],
 ): Response {
+  if (getConfig().codexMultiAgentV1 === true) {
+    response = {
+      ...response,
+      models: response.models.map((model) =>
+        model.multi_agent_version === "v2" ?
+          { ...model, multi_agent_version: "v1" }
+        : model,
+      ),
+    }
+  }
   const body = serializeCodexModelCatalog(response, {
     headers: c.req.raw.headers,
     modern: isModernCodexClient(c.req.url, c.req.raw.headers),
@@ -360,10 +377,13 @@ export function createSyntheticCodexModel(
     default_verbosity: "medium",
     apply_patch_tool_type: "freeform",
     web_search_tool_type: "text_and_image",
-    supports_search_tool: false,
+    // Also enables deferred Apps/MCP tool discovery in Codex Code Mode.
+    supports_search_tool: true,
     use_responses_lite: true,
+    // Gateway adapters use request-level effort, regardless of template capabilities.
+    supports_reasoning_effort_updates: false,
     tool_mode: "code_mode_only",
-    multi_agent_version: "v2",
+    multi_agent_version: getConfig().codexMultiAgentV1 === true ? "v1" : "v2",
     multi_agent_reasoning_effort: null,
     shell_type: template.shell_type,
     experimental_supported_tools: [],

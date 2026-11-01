@@ -19,7 +19,10 @@ import {
   prepareInteractionHeaders,
 } from "~/lib/api-config"
 import { COMPACT_REQUEST, type CompactType } from "~/lib/compact"
-import { getUpstreamTransportConfig } from "~/lib/config"
+import {
+  getUpstreamTransportConfig,
+  isOutputEncryptedContentDisabled,
+} from "~/lib/config"
 import {
   logCopilotQuotaSnapshots,
   type CopilotQuotaSnapshot,
@@ -109,6 +112,7 @@ export const createResponses = async (
 
   // service_tier is not supported by github copilot
   payload.service_tier = undefined
+  const upstreamPayload = omitUnsupportedCopilotInclude(payload)
 
   consola.debug(`<-- model: ${payload.model}`)
 
@@ -119,7 +123,7 @@ export const createResponses = async (
   if (payload.stream === true && effectiveTransport === "websocket") {
     clientSignal?.throwIfAborted()
     const websocketRequest = prepareResponsesWebSocketRequest(
-      payload,
+      upstreamPayload,
       headers,
       {
         requestId,
@@ -133,13 +137,35 @@ export const createResponses = async (
     return stream
   }
 
-  return await createHttpResponses(payload, headers, {
+  return await createHttpResponses(upstreamPayload, headers, {
     requestId,
     modelCallId,
     start,
     clientSignal,
     reasoningReplayIdentity,
   })
+}
+
+const omitUnsupportedCopilotInclude = (
+  payload: ResponsesPayload,
+): ResponsesPayload => {
+  if (
+    !payload.include?.includes("output.encrypted_content")
+    || !isOutputEncryptedContentDisabled(payload.model)
+  ) {
+    return payload
+  }
+
+  const include = payload.include.filter(
+    (item) => item !== "output.encrypted_content",
+  )
+  const upstreamPayload = { ...payload }
+  if (include.length === 0) {
+    delete upstreamPayload.include
+  } else {
+    upstreamPayload.include = include
+  }
+  return upstreamPayload
 }
 
 interface ResponsesHttpContext {
@@ -372,7 +398,7 @@ const getHeaderValue = (
   return match?.[1]
 }
 
-const createResponsesWebSocketStreamChunk = (
+export const createResponsesWebSocketStreamChunk = (
   data: string,
 ): { data?: string; event?: string; id?: string } => {
   if (data === "[DONE]") {
@@ -394,14 +420,18 @@ const createResponsesWebSocketStreamChunk = (
     if (parsed.type === "response.completed") {
       logCopilotQuotaSnapshots(parsed.copilot_quota_snapshots)
     }
+    // Normal events have no payload changes: forward their original bytes.
+    // Error events still expose the legacy top-level code/message fields.
+    let forwardedData = data
     if (parsed.type === "error" && parsed.error) {
       consola.warn("Copilot responses websocket stream error:", parsed.error)
       parsed.code = parsed.error.code
       parsed.message = parsed.error.message
+      forwardedData = JSON.stringify(parsed)
     }
     return {
       event: typeof parsed.type === "string" ? parsed.type : undefined,
-      data: JSON.stringify(parsed),
+      data: forwardedData,
       id: typeof parsed.id === "string" ? parsed.id : undefined,
     }
   } catch {
