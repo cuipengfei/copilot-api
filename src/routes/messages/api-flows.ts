@@ -33,6 +33,7 @@ import {
 import {
   createCopilotTokenUsageRecorder,
   mergeAnthropicUsage,
+  mergeCopilotUsage,
   normalizeAnthropicUsage,
   normalizeOpenAIUsage,
   normalizeOptionalToken,
@@ -358,67 +359,111 @@ export const handleWithResponsesApi = async (
       })
       let usage: UsageTokens = {}
       let copilotUsage: CopilotUsageTokens | null = null
+      let responseUsage: NonNullable<
+        Parameters<typeof normalizeResponsesUsage>[0]
+      > = {}
       let chunks = 0
       let terminalEventType: ResponseStreamEvent["type"] | undefined
       let loopCompleted = false
 
       try {
-        for await (const chunk of response) {
-          chunks += 1
-          writeStreamLog({ model: responsesPayload.model, chunks, done: false })
-          const eventName = chunk.event
-          if (eventName === "ping") {
-            await writeSSEIfConnected(stream, {
-              event: "ping",
-              data: '{"type":"ping"}',
+        try {
+          for await (const chunk of response) {
+            chunks += 1
+            writeStreamLog({
+              model: responsesPayload.model,
+              chunks,
+              done: false,
             })
-            continue
-          }
-
-          const data = chunk.data
-          if (!data) {
-            continue
-          }
-
-          debugLazy(logger, () => ["Responses raw stream event:", data])
-
-          const responseEvent = JSON.parse(data) as ResponseStreamEvent
-          recordResponsesFirstToken(responseEvent)
-          if (
-            responseEvent.type === "response.completed"
-            || responseEvent.type === "response.failed"
-            || responseEvent.type === "response.incomplete"
-          ) {
-            terminalEventType = responseEvent.type
-            const resolvedCopilotUsage =
-              resolveResponsesStreamCopilotUsage(responseEvent)
-            usage = {
-              ...normalizeResponsesUsage(responseEvent.response.usage),
-              total_nano_aiu: resolvedCopilotUsage.totalNanoAiu,
+            const eventName = chunk.event
+            if (eventName === "ping") {
+              await writeSSEIfConnected(stream, {
+                event: "ping",
+                data: '{"type":"ping"}',
+              })
+              continue
             }
-            copilotUsage = resolvedCopilotUsage.copilotUsage
+
+            const data = chunk.data
+            if (!data || data === "[DONE]") {
+              continue
+            }
+
+            debugLazy(logger, () => ["Responses raw stream event:", data])
+
+            let responseEvent: ResponseStreamEvent
+            try {
+              responseEvent = JSON.parse(data) as ResponseStreamEvent
+            } catch (error) {
+              logger.warn(
+                "Responses stream event is not valid JSON; stopping translation",
+                error,
+              )
+              break
+            }
+            recordResponsesFirstToken(responseEvent)
+            if ("response" in responseEvent) {
+              const nextUsage = responseEvent.response.usage
+              if (nextUsage) {
+                responseUsage = {
+                  ...responseUsage,
+                  ...nextUsage,
+                  input_tokens_details: {
+                    ...responseUsage.input_tokens_details,
+                    ...nextUsage.input_tokens_details,
+                  },
+                }
+              }
+              const resolvedCopilotUsage =
+                resolveResponsesStreamCopilotUsage(responseEvent)
+              usage = mergeAnthropicUsage(usage, {
+                ...(nextUsage ? normalizeResponsesUsage(responseUsage) : {}),
+                cache_creation_input_tokens: normalizeOptionalToken(
+                  responseUsage.input_tokens_details?.cache_write_tokens,
+                ),
+                total_nano_aiu: resolvedCopilotUsage.totalNanoAiu,
+              })
+              if (resolvedCopilotUsage.copilotUsage) {
+                copilotUsage = mergeCopilotUsage(copilotUsage ?? {}, {
+                  ...resolvedCopilotUsage.copilotUsage,
+                  total_nano_aiu: resolvedCopilotUsage.totalNanoAiu,
+                })
+              }
+            }
+            if (
+              responseEvent.type === "response.completed"
+              || responseEvent.type === "response.failed"
+              || responseEvent.type === "response.incomplete"
+            ) {
+              terminalEventType = responseEvent.type
+            }
+
+            const events = translateResponsesStreamEvent(
+              responseEvent,
+              streamState,
+            )
+            for (const event of events) {
+              const eventData = JSON.stringify(event)
+              debugLazy(logger, () => [
+                "Translated Anthropic event:",
+                eventData,
+              ])
+              await writeSSEIfConnected(stream, {
+                event: event.type,
+                data: eventData,
+              })
+            }
+
+            if (streamState.messageCompleted) {
+              logger.debug("Message completed, ending stream")
+              break
+            }
           }
 
-          const events = translateResponsesStreamEvent(
-            responseEvent,
-            streamState,
-          )
-          for (const event of events) {
-            const eventData = JSON.stringify(event)
-            debugLazy(logger, () => ["Translated Anthropic event:", eventData])
-            await writeSSEIfConnected(stream, {
-              event: event.type,
-              data: eventData,
-            })
-          }
-
-          if (streamState.messageCompleted) {
-            logger.debug("Message completed, ending stream")
-            break
-          }
+          loopCompleted = true
+        } catch (error) {
+          logger.warn("Responses stream interrupted:", error)
         }
-
-        loopCompleted = true
 
         if (!streamState.messageCompleted) {
           logger.warn(
@@ -557,13 +602,15 @@ export const handleWithMessagesApi = async (
               || eventName === "message_stop"
             ) {
               messageStopSeen = true
-            } else if (parsedEvent?.type === "error" || eventName === "error") {
+            }
+            if (parsedEvent?.type === "error" || eventName === "error") {
               errorSeen = true
             }
-            await writeSSEIfConnected(stream, {
-              event: eventName,
-              data,
-            })
+            await writeSSEIfConnected(
+              stream,
+              { event: eventName, data },
+              parsedEvent?.type,
+            )
           }
         } catch (error) {
           streamInterrupted = true

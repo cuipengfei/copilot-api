@@ -38,7 +38,7 @@ but got a string with length 408 instead.
    signature: (item.encrypted_content ?? "") + "@" + item.id
    ```
 
-   位置：`src/routes/messages/responses-translation.ts:463`
+   位置：`src/routes/messages/responses-translation/response.ts` 的 reasoning 输出映射。
 3. 因此，Anthropic thinking block 里看到的长尾 `@...`，本质上就是上游原始 `reasoning.id`。
 
 换言之：
@@ -126,7 +126,7 @@ curl 实测结果如下：
 
 > **当解析出的 reasoning id 长度大于 64 时，不把这个 thinking block 翻译成 `ResponseInputReasoning`，也就不再把它回放给 Responses API。**
 
-代码位置：`src/routes/messages/responses-translation.ts`
+代码位置：`src/routes/messages/responses-translation/request.ts`
 
 现有保护逻辑：
 

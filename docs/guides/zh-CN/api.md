@@ -45,6 +45,8 @@ curl http://localhost:4141/admin/config/model-mappings \
 | `GET /v1/models`            | `GET` | 列出 Copilot 模型以及已启用 provider 的 `provider/model-id` 模型。来自 Codex 客户端（`User-Agent` 以 `codex` 开头）的请求返回合并后的 Codex 格式目录，并排除仅输出图片的模型。 |
 | `POST /v1/embeddings`       | `POST` | 创建表示输入文本的向量嵌入。                                                                             |
 
+Chat Completions 流收到 `[DONE]` 或带字符串 `finish_reason` 的 chunk 后视为完成，后续收到的 usage 仍会记账。没有这两种终态信号的流结束时返回 `incomplete_stream`；出现上游错误时，即使有终态信号也按失败处理。Messages 流仍要求对应协议的完成事件，异常 JSON 或中断时保留已收到的 usage。
+
 ### 模型发现来源
 
 `GET /models`、`GET /v1/models` 和 `GET /:provider/v1/models` 从 models.dev 缓存读取 `xai`、`openrouter`、`deepseek`、`kimi`、`dashscope`、`opencode-go` 的模型，不查询这些 provider 的远程模型接口。Kimi 默认使用 `kimi-code-plan-cn`，DashScope 默认使用 `alibaba-cn`；其他官方地址匹配对应目录，显式 `modelsDevProviderId` 优先。
@@ -122,6 +124,8 @@ curl http://localhost:4141/v1/videos/YOUR_REQUEST_ID \
 | ------------------------------------------------------------- | ---- | ---------------------------------------------------------------------------------------------------- |
 | `POST /v1/messages`                                           | `POST` | 为给定对话创建模型响应。支持已配置 provider 的 `provider/model` 别名，包括通过 `openai-compatible` 和 Google Gemini 原生协议（`google`）provider 做翻译。 |
 | `POST /v1/messages/count_tokens`                              | `POST` | 计算一组消息的 token 数。支持已配置 provider 的 `provider/model` 别名。                          |
+
+Token 计数回退到本地估算时，不会把图片的 URL 或 Base64 当作文本计数：`low` 细节的基础估值为每张 85 tokens，`high`、`auto` 或未指定细节为每张 765 tokens，之后应用已配置的模型倍率。实际用量取决于上游模型和图片尺寸，以响应中的 usage 为准。
 
 ### 使用量监控端点
 

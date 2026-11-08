@@ -330,7 +330,8 @@ export interface AnthropicStreamState {
     [openAIToolIndex: number]: {
       id: string
       name: string
-      anthropicBlockIndex: number
+      anthropicBlockIndex?: number
+      arguments?: string
     }
   }
 }

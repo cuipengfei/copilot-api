@@ -3,6 +3,7 @@ import type { Context } from "hono"
 
 import { streamSSE, type SSEMessage } from "hono/streaming"
 
+import { guardChatCompletionsStream } from "~/lib/chat-completions-stream"
 import { resolveMappedModel } from "~/lib/config"
 import { recordChatCompletionFirstToken } from "~/lib/first-token"
 import {
@@ -33,7 +34,6 @@ import {
 import { generateRequestIdFromPayload, getUUID, isNullish } from "~/lib/utils"
 import { handleProviderChatCompletionsForProvider } from "~/routes/provider/chat-completions/handler"
 import type {
-  ChatCompletionChunk,
   ChatCompletionResponse,
   ChatCompletionsPayload,
 } from "~/lib/types/chat-completions"
@@ -43,6 +43,10 @@ import {
 } from "~/services/copilot/create-chat-completions"
 
 const logger = createHandlerLogger("chat-completions-handler")
+
+export const chatCompletionsHandlerDependencies = {
+  createChatCompletions,
+}
 
 export async function handleCompletion(c: Context) {
   let payload = await c.req.json<ChatCompletionsPayload>()
@@ -110,11 +114,12 @@ export async function handleCompletion(c: Context) {
     `IN ${modelLabel} [effort=${effort ?? "unsupported"} (${effortSource})]`,
   )
 
-  const response = await createChatCompletions(payload, {
-    clientSignal: c.req.raw.signal,
-    requestId,
-    sessionId,
-  })
+  const response =
+    await chatCompletionsHandlerDependencies.createChatCompletions(payload, {
+      clientSignal: c.req.raw.signal,
+      requestId,
+      sessionId,
+    })
   const sourceHeaders = getAttachedResponseHeaders(response)
 
   if (isNonStreaming(response)) {
@@ -141,22 +146,20 @@ export async function handleCompletion(c: Context) {
     let sawTerminal = false
     let streamErrored = false
     try {
-      for await (const chunk of response) {
+      for await (const {
+        message: chunk,
+        completion: parsedChunk,
+      } of guardChatCompletionsStream(response)) {
         debugJson(logger, "Streaming chunk:", chunk)
-        const parsedChunk = parseChatCompletionChunk(chunk)
-        const envelope = chunk as SSEMessage
         if (
-          envelope.data === "[DONE]"
+          chunk.data?.trim() === "[DONE]"
           || (parsedChunk?.choices ?? []).some(
             (choice) => typeof choice.finish_reason === "string",
           )
         ) {
           sawTerminal = true
         }
-        if (
-          envelope.event === "error"
-          || (parsedChunk !== null && "error" in parsedChunk)
-        ) {
+        if (chunk.event === "error") {
           streamErrored = true
         }
         if (parsedChunk) {
@@ -177,7 +180,7 @@ export async function handleCompletion(c: Context) {
             copilotUsageToTokens(parsedChunk.copilot_usage),
           )
         }
-        await writeSSEIfConnected(stream, envelope)
+        await writeSSEIfConnected(stream, chunk as SSEMessage)
       }
       completed = sawTerminal && !streamErrored
     } finally {
@@ -190,7 +193,6 @@ export async function handleCompletion(c: Context) {
             true,
           )
         } else if (chunkCount > 0) {
-          // 失败或缺少终态时结束进度行，不输出成功标记。
           writeStreamLog(
             { model: payload.model, chunks: chunkCount, done: false },
             true,
@@ -208,18 +210,3 @@ export async function handleCompletion(c: Context) {
 const isNonStreaming = (
   response: Awaited<ReturnType<typeof createChatCompletions>>,
 ): response is ChatCompletionResponse => Object.hasOwn(response, "choices")
-
-const parseChatCompletionChunk = (
-  chunk: unknown,
-): ChatCompletionChunk | null => {
-  const data = (chunk as { data?: string }).data
-  if (!data || data === "[DONE]") {
-    return null
-  }
-
-  try {
-    return JSON.parse(data) as ChatCompletionChunk
-  } catch {
-    return null
-  }
-}

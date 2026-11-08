@@ -25,6 +25,7 @@ import type {
 import { COMPACT_REQUEST } from "~/lib/compact"
 import * as configModule from "~/lib/config"
 import { installModelsDevCatalog } from "~/lib/models-dev-cache"
+import { requestContext, type RequestTiming } from "~/lib/request-context"
 import { attachResponseHeaders } from "~/lib/response-headers"
 import { closeUsageStore, getTokenUsageEventsPage } from "~/lib/token-usage"
 
@@ -1048,7 +1049,7 @@ test("messages Messages flow ends without an error event on normal completion", 
     (event) => event.event,
   )
 
-  expect(eventTypes).toContain("message_stop")
+  expect(eventTypes.filter((event) => event === "message_stop")).toHaveLength(1)
   expect(eventTypes).not.toContain("error")
 })
 
@@ -1513,6 +1514,459 @@ test("messages Responses flow preserves the configured tool_search alias in non-
   })
 })
 
+test("messages Responses flow stops on invalid JSON, emits an error, and records usage", async () => {
+  const warnings: Array<Array<unknown>> = []
+  createResponses.mockImplementationOnce(() =>
+    Promise.resolve(
+      createResponsesStream([
+        {
+          event: "response.created",
+          data: JSON.stringify({
+            response: {
+              ...createResponsesResult("gpt-test"),
+              status: "in_progress",
+              usage: {
+                input_tokens: 11,
+                output_tokens: 4,
+                total_tokens: 15,
+              },
+            },
+            sequence_number: 1,
+            type: "response.created",
+          }),
+        },
+        { data: "not-json", event: "response.output_text.delta" },
+        {
+          data: JSON.stringify({
+            response: {
+              ...createResponsesResult("gpt-test"),
+              output_text: "should-not-appear",
+              usage: {
+                input_tokens: 99,
+                output_tokens: 99,
+                total_tokens: 198,
+              },
+            },
+            sequence_number: 3,
+            type: "response.completed",
+          }),
+          event: "response.completed",
+        },
+      ]) as unknown as CreateResponsesReturn,
+    ),
+  )
+
+  const payload: AnthropicMessagesPayload = {
+    max_tokens: 128,
+    messages: [{ role: "user", content: "hello" }],
+    model: "gpt-test",
+    stream: true,
+  }
+  const app = new Hono()
+  app.post("/", (c) =>
+    handleWithResponsesApi(c, payload, {
+      logger: {
+        ...logger,
+        warn: (...args: Array<unknown>) => {
+          warnings.push(args)
+        },
+      } as unknown as typeof logger,
+      requestId: "request-invalid-json",
+    }),
+  )
+
+  const response = await app.request("/", { method: "POST" })
+  expect(response.status).toBe(200)
+  const events = parseSseEvents(await response.text())
+
+  expect(events.some((event) => event.event === "message_start")).toBe(true)
+  expect(events.some((event) => event.data.includes("should-not-appear"))).toBe(
+    false,
+  )
+  expect(events.at(-1)?.event).toBe("error")
+  expect(JSON.parse(events.at(-1)?.data ?? "{}")).toEqual({
+    error: {
+      message: "Responses stream ended without completion, retry your request.",
+      type: "api_error",
+    },
+    type: "error",
+  })
+  expect(
+    warnings.some((warning) => String(warning[0]).includes("not valid JSON")),
+  ).toBe(true)
+
+  const usageEvents = await getTokenUsageEventsPage({
+    page: 1,
+    pageSize: 10,
+    period: "today",
+  })
+  expect(usageEvents.items).toHaveLength(1)
+  expect(usageEvents.items[0]).toMatchObject({
+    endpoint: "responses",
+    input_tokens: 11,
+    model: "gpt-test",
+    output_tokens: 4,
+    total_tokens: 15,
+  })
+})
+
+test("messages Responses flow skips a [DONE] sentinel and keeps translating", async () => {
+  createResponses.mockImplementationOnce(() =>
+    Promise.resolve(
+      createResponsesStream([
+        {
+          data: JSON.stringify({
+            response: createResponsesResult("gpt-test"),
+            sequence_number: 1,
+            type: "response.created",
+          }),
+          event: "response.created",
+        },
+        { data: "[DONE]" },
+        {
+          data: JSON.stringify({
+            content_index: 0,
+            delta: "kept",
+            item_id: "item-1",
+            output_index: 0,
+            sequence_number: 2,
+            type: "response.output_text.delta",
+          }),
+          event: "response.output_text.delta",
+        },
+      ]) as unknown as CreateResponsesReturn,
+    ),
+  )
+
+  const payload: AnthropicMessagesPayload = {
+    max_tokens: 128,
+    messages: [{ role: "user", content: "hello" }],
+    model: "gpt-test",
+    stream: true,
+  }
+  const app = new Hono()
+  app.post("/", (c) =>
+    handleWithResponsesApi(c, payload, {
+      logger,
+      requestId: "request-done",
+    }),
+  )
+
+  const response = await app.request("/", { method: "POST" })
+  expect(response.status).toBe(200)
+  const events = parseSseEvents(await response.text())
+  const text = events
+    .filter((event) => event.event === "content_block_delta")
+    .map((event) => event.data)
+    .join("\n")
+
+  expect(text).toContain("kept")
+  expect(events.at(-1)?.event).toBe("error")
+  expect(events.some((event) => event.data.includes("not valid JSON"))).toBe(
+    false,
+  )
+})
+
+test.each(["completed", "failed", "throw", "invalid-json"] as const)(
+  "messages Responses flow retains partial usage and token details on %s",
+  async (ending) => {
+    const warnings: Array<Array<unknown>> = []
+    const tokenDetails = [
+      {
+        batch_size: 1_000_000,
+        cost_per_batch: 25_000_000_000,
+        token_count: 4,
+        token_type: "input",
+      },
+    ]
+    createResponses.mockImplementationOnce(() =>
+      Promise.resolve(
+        (async function* () {
+          await Promise.resolve()
+          yield {
+            event: "response.created",
+            data: JSON.stringify({
+              type: "response.created",
+              sequence_number: 1,
+              response: {
+                ...createResponsesResult("gpt-test"),
+                status: "in_progress",
+                usage: {
+                  input_tokens: 11,
+                  input_tokens_details: {
+                    cached_tokens: 3,
+                    cache_write_tokens: 2,
+                  },
+                  output_tokens: 4,
+                  total_tokens: 15,
+                },
+                copilot_usage: {
+                  token_details: tokenDetails,
+                  total_nano_aiu: 100_000,
+                },
+              },
+            }),
+          }
+          yield {
+            event: "response.in_progress",
+            data: JSON.stringify({
+              type: "response.in_progress",
+              sequence_number: 2,
+              copilot_usage: { total_nano_aiu: 125_000 },
+              response: {
+                ...createResponsesResult("gpt-test"),
+                status: "in_progress",
+                usage: { output_tokens: 6 },
+                copilot_usage: { total_nano_aiu: 999 },
+              },
+            }),
+          }
+          yield {
+            event: "response.in_progress",
+            data: JSON.stringify({
+              type: "response.in_progress",
+              sequence_number: 3,
+              response: {
+                ...createResponsesResult("gpt-test"),
+                status: "in_progress",
+                usage: { input_tokens_details: { cache_write_tokens: 4 } },
+              },
+            }),
+          }
+          yield {
+            event: "response.in_progress",
+            data: JSON.stringify({
+              type: "response.in_progress",
+              sequence_number: 4,
+              response: createResponsesResult("gpt-test"),
+            }),
+          }
+          if (ending === "throw") throw new Error("upstream connection reset")
+          if (ending === "invalid-json") {
+            yield { event: "response.output_text.delta", data: "not-json" }
+            return
+          }
+          yield {
+            event: `response.${ending}`,
+            data: JSON.stringify({
+              type: `response.${ending}`,
+              sequence_number: 5,
+              copilot_usage: {},
+              response: {
+                ...createResponsesResult("gpt-test"),
+                status: ending,
+                usage: {
+                  input_tokens: 13,
+                  total_tokens: 19,
+                  input_tokens_details: { cache_write_tokens: 0 },
+                },
+                copilot_usage: { total_nano_aiu: 150_000 },
+                error:
+                  ending === "failed" ?
+                    { code: "server_error", message: "upstream failed" }
+                  : null,
+              },
+            }),
+          }
+        })() as unknown as CreateResponsesReturn,
+      ),
+    )
+    const app = new Hono()
+    app.post("/", (c) =>
+      handleWithResponsesApi(
+        c,
+        {
+          model: "gpt-test",
+          max_tokens: 128,
+          stream: true,
+          messages: [{ role: "user", content: "hello" }],
+        },
+        {
+          logger: {
+            ...logger,
+            warn: (...args: Array<unknown>) => warnings.push(args),
+          } as unknown as typeof logger,
+          requestId: "request-partial-usage",
+        },
+      ),
+    )
+    const response = await app.request("/", { method: "POST" })
+    const events = parseSseEvents(await response.text())
+    const completed = ending === "completed"
+    const terminal = completed || ending === "failed"
+    expect(
+      events.filter((event) => event.event === "message_stop"),
+    ).toHaveLength(completed ? 1 : 0)
+    expect(events.filter((event) => event.event === "error")).toHaveLength(
+      completed ? 0 : 1,
+    )
+    if (!completed) expect(events.at(-1)?.event).toBe("error")
+    if (ending === "throw" || ending === "invalid-json") {
+      expect(
+        warnings.some((warning) =>
+          String(warning[0]).includes(
+            ending === "throw" ? "interrupted" : "not valid JSON",
+          ),
+        ),
+      ).toBe(true)
+    }
+    const usageEvents = await getTokenUsageEventsPage({
+      page: 1,
+      pageSize: 10,
+      period: "today",
+    })
+    expect(usageEvents.items).toHaveLength(1)
+    expect(usageEvents.items[0]).toMatchObject({
+      endpoint: "responses",
+      input_tokens: terminal ? 10 : 4,
+      output_tokens: 6,
+      total_tokens: terminal ? 19 : 15,
+      cache_read_input_tokens: 3,
+      cache_creation_input_tokens: terminal ? 0 : 4,
+      total_nano_aiu: terminal ? 150_000 : 125_000,
+      nano_cost_input: 100_000,
+    })
+  },
+)
+
+test.each(["throw", "invalid-json", "missing-stop"] as const)(
+  "native Messages retains partial usage and emits one error on %s",
+  async (ending) => {
+    createMessages.mockImplementationOnce(() =>
+      Promise.resolve(
+        (async function* () {
+          await Promise.resolve()
+          yield {
+            event: "message_start",
+            data: JSON.stringify({
+              type: "message_start",
+              message: {
+                ...createMessagesResult("claude-sonnet-4.6"),
+                usage: {
+                  input_tokens: 10,
+                  cache_read_input_tokens: 2,
+                  cache_creation_input_tokens: 3,
+                },
+              },
+            }),
+          }
+          yield {
+            event: "message_delta",
+            data: JSON.stringify({
+              type: "message_delta",
+              delta: { stop_reason: "end_turn", stop_sequence: null },
+              usage: { output_tokens: 4 },
+              copilot_usage: { total_nano_aiu: 123_000 },
+            }),
+          }
+          if (ending === "throw") throw new Error("upstream connection reset")
+          if (ending === "invalid-json") {
+            yield { event: "content_block_delta", data: "not-json" }
+          }
+        })() as unknown as CreateMessagesReturn,
+      ),
+    )
+    const app = new Hono()
+    app.post("/", (c) =>
+      handleWithMessagesApi(
+        c,
+        {
+          model: "claude-sonnet-4.6",
+          max_tokens: 128,
+          stream: true,
+          messages: [{ role: "user", content: "hello" }],
+        },
+        { logger, requestId: "request-native-partial-usage" },
+      ),
+    )
+    const response = await app.request("/", { method: "POST" })
+    const events = parseSseEvents(await response.text())
+    expect(
+      events.filter((event) => event.event === "message_start"),
+    ).toHaveLength(1)
+    expect(
+      events.filter((event) => event.event === "message_delta"),
+    ).toHaveLength(1)
+    expect(events.filter((event) => event.event === "error")).toHaveLength(1)
+    expect(events.some((event) => event.event === "message_stop")).toBe(false)
+    expect(events.at(-1)?.event).toBe("error")
+    const usageEvents = await getTokenUsageEventsPage({
+      page: 1,
+      pageSize: 10,
+      period: "today",
+    })
+    expect(usageEvents.items).toHaveLength(1)
+    expect(usageEvents.items[0]).toMatchObject({
+      endpoint: "messages",
+      input_tokens: 10,
+      output_tokens: 4,
+      cache_read_input_tokens: 2,
+      cache_creation_input_tokens: 3,
+      total_nano_aiu: 123_000,
+    })
+  },
+)
+
+test.each([
+  { event: "message_delta", type: "error", failed: true },
+  { event: "message_stop", type: "error", failed: true },
+  { event: "error", type: "message_stop", failed: true },
+  { event: "error", type: "ping", failed: true },
+  { event: "message_delta", type: "message_stop", failed: false },
+])(
+  "native Messages attributes SSE $event / JSON $type without duplicating events",
+  async ({ event, type, failed }) => {
+    const data = JSON.stringify({
+      type,
+      ...(type === "error" && {
+        error: { type: "overloaded_error", message: "upstream error" },
+      }),
+    })
+    createMessages.mockImplementationOnce(() =>
+      Promise.resolve(
+        createMessagesStream([
+          { event, data },
+        ]) as unknown as CreateMessagesReturn,
+      ),
+    )
+    const timing: RequestTiming = {
+      id: "request-protocol-attribution",
+      firstTokenMs: null,
+      durationMs: null,
+      outcome: null,
+      hasUsage: false,
+      recordFirstToken: () => {},
+    }
+    const app = new Hono()
+    app.post("/", (c) =>
+      requestContext.run(
+        {
+          traceId: "trace-protocol-attribution",
+          startTime: Date.now(),
+          userAgent: "test",
+          sessionAffinity: undefined,
+          parentSessionId: undefined,
+          requestTiming: timing,
+        },
+        () =>
+          handleWithMessagesApi(
+            c,
+            {
+              model: "claude-sonnet-4.6",
+              max_tokens: 128,
+              stream: true,
+              messages: [{ role: "user", content: "hello" }],
+            },
+            { logger, requestId: timing.id },
+          ),
+      ),
+    )
+    const response = await app.request("/", { method: "POST" })
+    expect(parseSseEvents(await response.text())).toEqual([{ event, data }])
+    expect(timing.protocolFailed === true).toBe(failed)
+  },
+)
+
 const createModel = (
   supportedEndpoints: Array<string>,
   options: { reasoningEffort?: Array<string> } = {},
@@ -1560,6 +2014,15 @@ async function* createMessagesStream(
   for (const event of events) {
     await Promise.resolve()
     yield event
+  }
+}
+
+async function* createResponsesStream(
+  chunks: Array<{ data?: string; event?: string }>,
+): AsyncGenerator<{ data?: string; event?: string }> {
+  for (const chunk of chunks) {
+    await Promise.resolve()
+    yield chunk
   }
 }
 

@@ -503,51 +503,74 @@ describe("translateResponsesStreamEvent tool calls", () => {
     })
   })
 
-  test("preserves copilot_usage on terminal message delta", () => {
-    const state = createResponsesStreamState()
-
-    const events = translateResponsesStreamEvent(
-      {
-        type: "response.completed",
-        sequence_number: 1,
-        response: {
-          id: "resp-usage",
-          object: "response",
-          created_at: 0,
-          model: "gpt-5.4-mini",
-          output: [],
-          output_text: "",
-          status: "completed",
-          usage: {
-            input_tokens: 10,
-            output_tokens: 2,
-            total_tokens: 12,
+  test.each(["response.completed", "response.incomplete"] as const)(
+    "prefers response copilot_usage on terminal message delta for %s",
+    (type) => {
+      const state = createResponsesStreamState()
+      const copilotUsage = {
+        total_nano_aiu: 999,
+        token_details: [
+          {
+            batch_size: 1_000_000,
+            cost_per_batch: 25_000_000_000,
+            token_count: 4,
+            token_type: "input",
           },
-          error: null,
-          incomplete_details: null,
-          instructions: null,
-          metadata: null,
-          parallel_tool_calls: false,
-          temperature: null,
-          tool_choice: null,
-          tools: [],
-          top_p: null,
-          copilot_usage: {
-            total_nano_aiu: 999,
+        ],
+      }
+      const events = translateResponsesStreamEvent(
+        {
+          type,
+          sequence_number: 1,
+          copilot_usage: { total_nano_aiu: 123456 },
+          response: {
+            id: "resp-usage",
+            object: "response",
+            created_at: 0,
+            model: "gpt-5.4-mini",
+            output: [],
+            output_text: "",
+            status: type === "response.incomplete" ? "incomplete" : "completed",
+            usage: {
+              input_tokens: 10,
+              output_tokens: 2,
+              total_tokens: 12,
+            },
+            error: null,
+            incomplete_details:
+              type === "response.incomplete" ?
+                { reason: "max_output_tokens" }
+              : null,
+            instructions: null,
+            metadata: null,
+            parallel_tool_calls: false,
+            temperature: null,
+            tool_choice: null,
+            tools: [],
+            top_p: null,
+            copilot_usage: copilotUsage,
           },
         },
-      },
-      state,
-    )
+        state,
+      )
 
-    const messageDelta = events.find((event) => event.type === "message_delta")
-    expect(messageDelta).toMatchObject({
-      type: "message_delta",
-      copilot_usage: {
-        total_nano_aiu: 999,
-      },
-    })
-  })
+      const messageDelta = events.find(
+        (event) => event.type === "message_delta",
+      )
+      expect(messageDelta).toMatchObject({
+        type: "message_delta",
+        copilot_usage: copilotUsage,
+        delta: {
+          stop_reason:
+            type === "response.incomplete" ? "max_tokens" : "end_turn",
+        },
+      })
+      expect(
+        events.filter((event) => event.type === "message_stop"),
+      ).toHaveLength(1)
+      expect(state.messageCompleted).toBe(true)
+    },
+  )
 
   test("preserves top-level copilot_usage on terminal message delta", () => {
     const state = createResponsesStreamState()

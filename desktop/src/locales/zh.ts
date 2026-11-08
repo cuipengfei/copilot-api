@@ -17,6 +17,10 @@ const zh: Locale = {
     size: '图片尺寸',
     quality: '质量',
     count: '图片数量',
+    outputFormat: '输出格式',
+    frameCount: '帧数',
+    frameDurationMs: '每帧时长（毫秒）',
+    gifHint: '请选择支持 GIF 动画的模型，例如 codex/gpt-image-2。',
     auto: '自动',
     low: '低',
     medium: '中',
@@ -337,7 +341,7 @@ const zh: Locale = {
   },
   server: {
     bunFallback:
-      '未检测到 Bun >= 1.4.0，使用内置 Node.js。安装或升级 Bun 后即可启用。',
+      '未检测到 Bun >= 1.4.4，使用内置 Node.js。安装或升级 Bun 后即可启用。',
     runtime: '服务运行时：{{runtime}}',
     spawnFailed: '服务子进程启动失败：{{message}}',
     tokenNotFound: '未找到 token',
@@ -395,14 +399,14 @@ const zh: Locale = {
     sectionStartup: '启动参数',
     serverRuntime: '服务运行时',
     serverRuntimeDesc:
-      '默认优先使用本地 Bun >= 1.4.0，否则使用内置 Node.js。保存后会重启运行中的服务。',
+      '默认优先使用本地 Bun >= 1.4.4，否则使用内置 Node.js。保存后会重启运行中的服务。',
     runtimeBun: 'Bun（推荐）',
     runtimeNode: 'Node.js（内置）',
     bunDetecting: '正在检测本地 Bun…',
     bunAvailable: '已检测到 Bun {{version}}。',
     bunUnsupported:
-      'Bun {{version}} 版本不满足要求。请安装 Bun >= 1.4.0，在此之前使用内置 Node.js。',
-    bunUnavailable: '未检测到 Bun >= 1.4.0，安装前使用内置 Node.js。',
+      'Bun {{version}} 版本不满足要求。请安装 Bun >= 1.4.4，在此之前使用内置 Node.js。',
+    bunUnavailable: '未检测到 Bun >= 1.4.4，安装前使用内置 Node.js。',
     bunProxyNote:
       'Bun 不使用 Electron 的系统代理。需要代理时请在“网络”中配置自定义代理，或选择 Node.js 使用系统代理。',
     oauthApp: 'OAuth App',
@@ -515,6 +519,11 @@ const zh: Locale = {
       claudeTokenMultiplier: {
         label: 'Claude Token 估算系数',
         description: '仅用于本地 Claude count_tokens 估算。',
+      },
+      tokenUsageRetentionDays: {
+        label: 'Token 用量保留天数',
+        description:
+          '保留用量历史的天数。留空表示不删除任何记录。填写正整数后，会在启动时以及每天删除更早的记录。',
       },
       anthropicApiKey: {
         label: 'Anthropic Token 计数密钥',

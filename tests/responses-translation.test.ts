@@ -157,7 +157,7 @@ describe("translateAnthropicMessagesToResponsesPayload", () => {
     ])
   })
 
-  it("keeps reasoning replay when the signature id length is 64 or less", () => {
+  it.each([1, 63, 64])("replays reasoning ids of length %i", (idLength) => {
     const payload = {
       model: "gpt-5.4",
       max_tokens: 1024,
@@ -172,7 +172,7 @@ describe("translateAnthropicMessagesToResponsesPayload", () => {
             {
               type: "thinking",
               thinking: "Thinking about the next answer.",
-              signature: `encrypted-content@${"a".repeat(64)}`,
+              signature: `encrypted@content@${"a".repeat(idLength)}`,
             },
             {
               type: "text",
@@ -192,14 +192,15 @@ describe("translateAnthropicMessagesToResponsesPayload", () => {
 
     const reasoningItem = input[1] as ResponseInputReasoning
     expect(reasoningItem.type).toBe("reasoning")
-    expect(reasoningItem.id).toBe("a".repeat(64))
-    expect(reasoningItem.encrypted_content).toBe("encrypted-content")
+    expect(reasoningItem.id).toBe("a".repeat(idLength))
+    expect(reasoningItem.encrypted_content).toBe("encrypted@content")
     expect(reasoningItem.summary).toEqual([
       { type: "summary_text", text: "Thinking about the next answer." },
     ])
 
     const assistantMessage = input[2] as ResponseInputMessage
     expect(assistantMessage.role).toBe("assistant")
+    expect(assistantMessage.phase).toBe("final_answer")
     expect(assistantMessage.content).toEqual([
       {
         type: "output_text",
@@ -232,7 +233,7 @@ describe("translateAnthropicMessagesToResponsesPayload", () => {
     expect(result.instructions).not.toContain("cch=<stable>;")
   })
 
-  it("drops reasoning replay when the signature id is longer than 64 characters", () => {
+  it.each([65, 128])("drops reasoning ids of length %i", (idLength) => {
     const payload = {
       model: "gpt-5.4",
       max_tokens: 1024,
@@ -247,7 +248,7 @@ describe("translateAnthropicMessagesToResponsesPayload", () => {
             {
               type: "thinking",
               thinking: "Thinking about the next answer.",
-              signature: `encrypted-content@${"a".repeat(65)}`,
+              signature: `encrypted-content@${"a".repeat(idLength)}`,
             },
             {
               type: "text",
@@ -268,6 +269,7 @@ describe("translateAnthropicMessagesToResponsesPayload", () => {
 
     const assistantMessage = input[1] as ResponseInputMessage
     expect(assistantMessage.role).toBe("assistant")
+    expect(assistantMessage.phase).toBe("final_answer")
     expect(assistantMessage.content).toEqual([
       {
         type: "output_text",
@@ -314,39 +316,62 @@ describe("translateAnthropicMessagesToResponsesPayload", () => {
     expect(input[0]?.phase).toBeUndefined()
   })
 
-  it("adds assistant phase for models with intermediary update prompts", () => {
-    const payload = {
-      model: "gpt-5.4",
-      max_tokens: 1024,
-      messages: [
+  it.each(["gpt-5.4", "claude-3-5-sonnet"])(
+    "gates assistant final and commentary phases for %s",
+    (model) => {
+      const result = translateAnthropicMessagesToResponsesPayload({
+        model,
+        max_tokens: 1024,
+        messages: [
+          {
+            role: "assistant",
+            content: [{ type: "text", text: "status update" }],
+          },
+          {
+            role: "assistant",
+            content: [
+              { type: "text", text: "checking tools" },
+              {
+                type: "tool_use",
+                id: "call_1",
+                name: "Read",
+                input: { file_path: "README.md" },
+              },
+            ],
+          },
+          { role: "assistant", content: "final answer" },
+        ],
+      })
+
+      expect(result.input).toEqual([
         {
+          type: "message",
           role: "assistant",
-          content: [{ type: "text", text: "status update" }],
+          content: [{ type: "output_text", text: "status update" }],
+          ...(model === "gpt-5.4" ? { phase: "final_answer" } : {}),
         },
         {
+          type: "message",
           role: "assistant",
-          content: [
-            {
-              type: "text",
-              text: "checking tools",
-            },
-            {
-              type: "tool_use",
-              id: "call_1",
-              name: "Read",
-              input: { file_path: "README.md" },
-            },
-          ],
+          content: [{ type: "output_text", text: "checking tools" }],
+          ...(model === "gpt-5.4" ? { phase: "commentary" } : {}),
         },
-      ],
-    } as unknown as AnthropicMessagesPayload
-
-    const result = translateAnthropicMessagesToResponsesPayload(payload)
-    const input = result.input as Array<ResponseInputMessage>
-
-    expect(input[0]?.phase).toBe("final_answer")
-    expect(input[1]?.phase).toBe("commentary")
-  })
+        {
+          type: "function_call",
+          call_id: "call_1",
+          name: "Read",
+          arguments: JSON.stringify({ file_path: "README.md" }),
+          status: "completed",
+        },
+        {
+          type: "message",
+          role: "assistant",
+          content: "final answer",
+          ...(model === "gpt-5.4" ? { phase: "final_answer" } : {}),
+        },
+      ])
+    },
+  )
 
   it.each([1024, 32768])(
     "uses concise reasoning and omits the output token limit for Grok with max_tokens %i",
@@ -623,7 +648,12 @@ describe("translateAnthropicMessagesToResponsesPayload", () => {
         ],
       })
 
-      expect(result.input).toMatchObject([
+      expect(result.temperature).toBe(1)
+      expect(result.top_p).toBeNull()
+      expect(result.max_output_tokens).toBe(1024)
+      expect(result.reasoning?.summary).toBe("auto")
+      expect(result.include).toEqual(["reasoning.encrypted_content"])
+      expect(result.input).toEqual([
         {
           type: "message",
           role: "user",
@@ -633,8 +663,21 @@ describe("translateAnthropicMessagesToResponsesPayload", () => {
           type: "message",
           role: "assistant",
           content: [{ type: "output_text", text: "Hi" }],
+          ...(model === "gpt-5.4" ? { phase: "final_answer" } : {}),
         },
       ])
+    },
+  )
+
+  it.each([1, 64, 1024, 12800, 32768])(
+    "preserves the explicit output token limit %i",
+    (maxTokens) => {
+      const result = translateAnthropicMessagesToResponsesPayload({
+        model: "gpt-5.4",
+        max_tokens: maxTokens,
+        messages: [{ role: "user", content: "Hello" }],
+      })
+      expect(result.max_output_tokens).toBe(maxTokens)
     },
   )
 
@@ -1488,6 +1531,9 @@ describe("translateResponsesResultToAnthropic", () => {
           + REASONING_SUMMARY_SEPARATOR
           + "**Preparing the tool call**",
       )
+      expect(thinkingBlock.signature).toBe(
+        "encrypted_reasoning_content@reason_1",
+      )
     }
 
     expect(toolUseBlock.type).toBe("tool_use")
@@ -1636,6 +1682,10 @@ describe("translateResponsesResultToAnthropic", () => {
     expect(anthropicResponse.copilot_usage).toEqual({
       total_nano_aiu: 123456,
     })
+    expect(anthropicResponse.usage).toEqual({
+      input_tokens: 12,
+      output_tokens: 3,
+    })
   })
 
   const makeResponsesResult = (
@@ -1659,6 +1709,50 @@ describe("translateResponsesResultToAnthropic", () => {
     tools: [],
     top_p: null,
   })
+
+  it.each([
+    { cachedTokens: 0, cacheWriteTokens: 0, expectedInputTokens: 120 },
+    { cachedTokens: 30, cacheWriteTokens: 20, expectedInputTokens: 70 },
+  ])(
+    "separates cache token usage without losing billing for %j",
+    ({ cachedTokens, cacheWriteTokens, expectedInputTokens }) => {
+      const response = translateResponsesResultToAnthropic({
+        ...makeResponsesResult([]),
+        usage: {
+          input_tokens: 120,
+          output_tokens: 36,
+          total_tokens: 156,
+          input_tokens_details: {
+            cached_tokens: cachedTokens,
+            cache_write_tokens: cacheWriteTokens,
+          },
+        },
+        copilot_usage: { total_nano_aiu: 0 },
+      })
+
+      expect(response.usage).toEqual({
+        input_tokens: expectedInputTokens,
+        output_tokens: 36,
+        cache_read_input_tokens: cachedTokens,
+        cache_creation_input_tokens: cacheWriteTokens,
+      })
+      expect(response.copilot_usage).toEqual({ total_nano_aiu: 0 })
+    },
+  )
+
+  it.each([undefined, null])(
+    "defaults missing usage and billing for %j",
+    (usage) => {
+      const response = translateResponsesResultToAnthropic({
+        ...makeResponsesResult([]),
+        usage,
+        copilot_usage: usage,
+      })
+
+      expect(response.usage).toEqual({ input_tokens: 0, output_tokens: 0 })
+      expect(response.copilot_usage).toBeNull()
+    },
+  )
 
   it("round-trips output compaction through Anthropic thinking without losing the carrier", () => {
     const anthropicResponse = translateResponsesResultToAnthropic(

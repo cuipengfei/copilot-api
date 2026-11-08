@@ -41,6 +41,8 @@ These endpoints mimic the OpenAI API structure.
 | `GET /v1/models`            | `GET`  | Lists Copilot models plus enabled provider models using `provider/model-id` IDs. Requests from Codex clients (`User-Agent` beginning with `codex`) receive the merged Codex-format catalog, excluding image-only models. |
 | `POST /v1/embeddings`       | `POST` | Creates an embedding vector representing the input text.         |
 
+Chat Completions streams are complete after `[DONE]` or a chunk with a string `finish_reason`; usage arriving afterward is still recorded. A stream that ends without either terminal signal emits an `incomplete_stream` error. Upstream errors remain failures even when a terminal signal is present. Messages streams require their protocol completion event, and malformed or interrupted streams retain any usage already received.
+
 ### Model Discovery Sources
 
 `GET /models`, `GET /v1/models`, and `GET /:provider/v1/models` read `xai`, `openrouter`, `deepseek`, `kimi`, `dashscope`, and `opencode-go` models from the models.dev cache without querying those providers' model endpoints. Kimi defaults to `kimi-code-plan-cn` and DashScope to `alibaba-cn`; other official URLs select their matching catalogs. Explicit `modelsDevProviderId` takes priority.
@@ -118,6 +120,8 @@ These endpoints are designed to be compatible with the Anthropic Messages API.
 | -------------------------------- | ------ | ------------------------------------------------------------ |
 | `POST /v1/messages`              | `POST` | Creates a model response for a given conversation. Supports `provider/model` aliases for configured providers, including translation through `openai-compatible` and native Google Gemini (`google`) providers. |
 | `POST /v1/messages/count_tokens` | `POST` | Calculates the number of tokens for a given set of messages. Supports `provider/model` aliases for configured providers. |
+
+When token counting falls back to local estimation, image URLs and Base64 data are not tokenized as text: each image has a base estimate of 85 tokens for `low` detail, or 765 tokens for `high`, `auto`, or unspecified detail, before any configured model multiplier. Actual usage depends on the upstream model and image dimensions; use the response usage for actual token counts.
 
 ### Usage Monitoring Endpoints
 

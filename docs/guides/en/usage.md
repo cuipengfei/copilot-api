@@ -15,7 +15,7 @@ After starting the server, a URL to the Copilot Usage Dashboard will be displaye
 
 The dashboard provides a user-friendly interface to view your Copilot usage data:
 
-> Token usage history requires Bun or Node.js >= 22.13.0. On older Node.js versions the server runs normally but token usage storage is disabled.
+> Token usage history requires Bun >= 1.4.4 or Node.js `^22.23.4 || ^24.22.1 || >=26.12.1`. Built-in `node:sqlite` has existed since 22.13.0; on older Node.js the server still runs, but token usage storage is disabled.
 
 - **API Endpoint URL**: The dashboard is pre-configured to fetch data from your local server endpoint via a URL query parameter. You can manually switch this to any other compatible API endpoint.
 - **API Key Authentication**: If API Key authentication is enabled, enter a raw API key (sent as the `x-api-key` header) or `Authorization: Bearer <key>`. Credentials are remembered in the browser's local storage per endpoint origin, and switching to a different endpoint origin does not automatically send the previous credential.
@@ -84,13 +84,16 @@ output_tokens_per_second = output_tokens / ((duration_ms - first_token_ms) / 100
 This is a request-side estimate using upstream-reported output tokens, including
 whatever reasoning tokens the upstream counts. It includes thinking after the
 observed start, delivery, and client backpressure. `request_outcome` describes
-HTTP/body completion: an SSE protocol error may still close normally and be
-classified as `completed`; it does not certify model success.
+HTTP/body completion and streaming protocol failures: an `error` or
+`response.failed` SSE event is recorded as `error` even when the response closes
+with HTTP 200. A cancellation remains `cancelled`. It does not certify model
+success.
 
 - Per-event speed requires a completed request with exactly one usage row,
   positive output tokens, and positive generation duration. Non-streaming,
   synthetic-from-complete-result, raw passthrough, and unobservable streams have
-  null TTFT/speed. Cancelled, errored, and unfinished requests have null speed.
+  null TTFT/speed. Cancelled, errored (including SSE protocol failures), and
+  unfinished requests have null speed.
 - Model average TTFT counts each valid completed request once. Model speed is
   the sum of eligible output tokens divided by the sum of their generation
   durations, rather than an average of individual rates. A request with multiple

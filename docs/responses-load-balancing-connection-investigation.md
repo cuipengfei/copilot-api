@@ -54,7 +54,7 @@ input item does not belong to this connection
 
 ### 3. `messages -> responses` 路径原本就有 payload-level continuity 线索
 
-`src/routes/messages/responses-translation.ts` 已验证会从 `metadata.user_id` 解析稳定 session 线索，并写入 translated responses payload 的 `prompt_cache_key`。
+`src/routes/messages/responses-translation/request.ts` 已验证会从 `metadata.user_id` 解析稳定 session 线索，并写入 translated responses payload 的 `prompt_cache_key`。
 
 这说明仓内原本就有一种**不依赖 router sticky**、而是依赖 payload 自身连续性语义的成功路径。
 

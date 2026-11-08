@@ -1,20 +1,42 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 
 import { useLanguage } from '../contexts/LanguageContext'
-import {
-  BoundedLogBuffer,
-  LOG_UPDATE_INTERVAL_MS,
-  truncateLogText,
-} from '../../shared/log-buffer'
+import { mergeServerLogs } from '../../shared/server-logs'
 import type { ServerLogRecord } from '../types/ipc'
 
-function normalizeHistory(
-  history: Array<ServerLogRecord>,
-): Array<ServerLogRecord> {
-  return history.flatMap((log) => {
-    const normalized = truncateLogText(log.text)
-    return normalized.length > 0 ? [{ ...log, text: normalized }] : []
-  })
+function usePinnedLogScroll(logs: ReadonlyArray<unknown>, ready: boolean) {
+  const scrollRef = useRef<HTMLDivElement>(null)
+  const followRef = useRef(true)
+
+  const pinToBottom = () => {
+    const node = scrollRef.current
+    if (node && followRef.current) {
+      // Live output follows immediately; restarting smooth animations can lag
+      // indefinitely while the scroll height keeps growing.
+      node.scrollTo({ top: node.scrollHeight, behavior: 'instant' })
+    }
+  }
+
+  useLayoutEffect(() => {
+    pinToBottom()
+  }, [logs, ready])
+
+  const onScroll = () => {
+    const node = scrollRef.current
+    if (!node) return
+
+    const wasFollowing = followRef.current
+    followRef.current =
+      node.scrollHeight - node.scrollTop - node.clientHeight <= 80
+    if (!wasFollowing && followRef.current) pinToBottom()
+  }
+
+  const enableFollow = () => {
+    followRef.current = true
+    pinToBottom()
+  }
+
+  return { scrollRef, onScroll, enableFollow }
 }
 
 export default function ServerLogPanel({
@@ -25,146 +47,65 @@ export default function ServerLogPanel({
   const { t } = useLanguage()
   const [logs, setLogs] = useState<Array<ServerLogRecord>>([])
   const [ready, setReady] = useState(false)
-  const bufferRef = useRef(
-    new BoundedLogBuffer<ServerLogRecord>((log) => log.text),
-  )
-  const publishTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const scrollRef = useRef<HTMLDivElement>(null)
-  const logEndRef = useRef<HTMLDivElement>(null)
-  const followRef = useRef(true)
+  const clearedThroughRef = useRef(0)
+  const { scrollRef, onScroll, enableFollow } = usePinnedLogScroll(logs, ready)
 
   useEffect(() => {
     let active = true
-    let replayReady = false
-    const pendingLive = new BoundedLogBuffer<ServerLogRecord>((log) => log.text)
-
-    const publish = () => {
-      publishTimerRef.current = null
-      setLogs(bufferRef.current.values())
-    }
-    const schedulePublish = () => {
-      if (publishTimerRef.current !== null) return
-      publishTimerRef.current = setTimeout(publish, LOG_UPDATE_INTERVAL_MS)
-    }
-    const append = (log: ServerLogRecord) => {
-      const normalized = truncateLogText(log.text)
-      if (!active || normalized.length === 0) return
-      const normalizedLog = { ...log, text: normalized }
-      if (!replayReady) {
-        pendingLive.append(normalizedLog)
-        return
-      }
-
-      bufferRef.current.append(normalizedLog)
-      schedulePublish()
+    const append = (incoming: Array<ServerLogRecord>) => {
+      setLogs((current) =>
+        mergeServerLogs(current, incoming, clearedThroughRef.current),
+      )
     }
 
-    const unsubscribe = window.electronAPI.onServerLog(append)
+    const unsubscribe = window.electronAPI.onServerLog((log) => {
+      if (active) append([log])
+    })
     void window.electronAPI
       .getLogs()
-      .then((rawHistory) => {
+      .then((history) => {
         if (!active) return
-        const history = normalizeHistory(rawHistory)
-        const watermark = history.at(-1)?.sequence ?? 0
-        const live = pendingLive
-          .values()
-          .filter((log) => log.sequence > watermark)
-        bufferRef.current.clear()
-        for (const log of [...history, ...live]) bufferRef.current.append(log)
-        pendingLive.clear()
-        replayReady = true
+        append(history)
         setReady(true)
-        publish()
       })
       .catch(() => {
-        if (!active) return
-        for (const log of pendingLive.values()) bufferRef.current.append(log)
-        pendingLive.clear()
-        replayReady = true
-        setReady(true)
-        publish()
+        if (active) setReady(true)
       })
 
     return () => {
       active = false
       unsubscribe()
-      if (publishTimerRef.current !== null) {
-        clearTimeout(publishTimerRef.current)
-        publishTimerRef.current = null
-      }
     }
   }, [])
-
-  useEffect(() => {
-    if (followRef.current) logEndRef.current?.scrollIntoView()
-  }, [logs])
 
   const clearLogs = () => {
     void window.electronAPI
       .clearLogs()
       .then((watermark) => {
-        if (publishTimerRef.current !== null) {
-          clearTimeout(publishTimerRef.current)
-          publishTimerRef.current = null
-        }
-        const kept = bufferRef.current
-          .values()
-          .filter((log) => log.sequence > watermark)
-        bufferRef.current.clear()
-        for (const log of kept) bufferRef.current.append(log)
-        setLogs(bufferRef.current.values())
-        followRef.current = true
+        // Lines at or below this sequence were discarded by the main process,
+        // even when their event arrives after the clear click.
+        clearedThroughRef.current = Math.max(
+          clearedThroughRef.current,
+          watermark,
+        )
+        enableFollow()
+        setLogs((current) =>
+          mergeServerLogs(current, [], clearedThroughRef.current),
+        )
       })
       .catch(() => {})
   }
 
-  const content = (
-    <>
-      {!ready ?
-        <span className="text-ink-faint">{t('dashboard.loading')}</span>
-      : logs.length === 0 ?
-        <span className="text-ink-soft">{t('dashboard.noLogs')}</span>
-      : logs.map((log) => (
-          <div key={log.sequence} className="whitespace-pre-wrap break-all">
-            {log.text.trimEnd()}
-          </div>
-        ))
-      }
-      <div ref={logEndRef} />
-    </>
-  )
-
-  if (variant === 'failure') {
-    return (
-      <div className="w-full max-w-2xl bg-black rounded-xl p-4 flex flex-col overflow-hidden min-h-0">
-        <div className="flex items-center justify-between mb-3 shrink-0">
-          <span className="text-[13px] font-semibold text-ink-faint uppercase tracking-wide">
-            {t('dashboard.serverLog')}
-          </span>
-        </div>
-        <div
-          ref={scrollRef}
-          onScroll={() => {
-            const node = scrollRef.current
-            if (!node) return
-            followRef.current =
-              node.scrollHeight - node.scrollTop - node.clientHeight < 24
-          }}
-          className="max-h-60 overflow-y-auto font-mono text-[13px] text-green-400 space-y-0.5 leading-relaxed"
-        >
-          {content}
-        </div>
-      </div>
-    )
-  }
-
-  return (
-    <div className="p-4 h-full flex flex-col">
-      <div className="flex-1 bg-black rounded-xl p-4 flex flex-col overflow-hidden min-h-0">
-        <div className="flex items-center justify-between mb-3 shrink-0">
-          <span className="text-[13px] font-semibold text-ink-faint uppercase tracking-wide">
-            {t('dashboard.serverLog')}
-          </span>
+  const isPage = variant === 'page'
+  const panel = (
+    <div
+      className={`${isPage ? 'flex-1' : 'w-full max-w-2xl'} bg-black rounded-xl p-4 flex flex-col overflow-hidden min-h-0`}
+    >
+      <div className="flex items-center justify-between mb-3 shrink-0">
+        <span className="text-[13px] font-semibold text-ink-faint uppercase tracking-wide">
+          {t('dashboard.serverLog')}
+        </span>
+        {isPage && (
           <button
             type="button"
             onClick={clearLogs}
@@ -173,20 +114,30 @@ export default function ServerLogPanel({
           >
             {t('dashboard.clear')}
           </button>
-        </div>
-        <div
-          ref={scrollRef}
-          onScroll={() => {
-            const node = scrollRef.current
-            if (!node) return
-            followRef.current =
-              node.scrollHeight - node.scrollTop - node.clientHeight < 24
-          }}
-          className="flex-1 overflow-y-auto font-mono text-[13px] text-green-400 space-y-0.5 leading-relaxed"
-        >
-          {content}
-        </div>
+        )}
+      </div>
+      {/* Native scroll anchoring keeps the visible rows in place when older
+          entries are evicted while the reader has stopped following. */}
+      <div
+        ref={scrollRef}
+        onScroll={onScroll}
+        className={`${isPage ? 'flex-1' : 'max-h-60'} overflow-y-auto font-mono text-[13px] text-green-400 space-y-0.5 leading-relaxed`}
+      >
+        {!ready ?
+          <span className="text-ink-faint">{t('dashboard.loading')}</span>
+        : logs.length === 0 ?
+          <span className="text-ink-soft">{t('dashboard.noLogs')}</span>
+        : logs.map((log) => (
+            <div key={log.sequence} className="whitespace-pre-wrap break-all">
+              {log.text.trimEnd()}
+            </div>
+          ))
+        }
       </div>
     </div>
   )
+
+  return isPage ?
+      <div className="p-4 h-full flex flex-col">{panel}</div>
+    : panel
 }

@@ -219,7 +219,7 @@ stdout 同步写入失败时省略该条进度日志，继续原有响应与流�
 
 Responses 的 Chat fallback 持续发送内容与工具调用事件，整体 `response.completed` 或 `response.incomplete` 在上游流结束时发送。上游流内错误及传输异常生成 `response.failed`，保留错误前输出和已收集用量；错误后的上游内容不继续发送。Chat 与 Messages 的成功日志同时检查请求取消信号，取消后仍执行原有用量记录与流关闭流程。
 
-**源码与接入**：[logger.ts](../src/lib/logger.ts)、[server.ts](../src/server.ts)、[Messages handler](../src/routes/messages/handler.ts)、[preprocess.ts](../src/routes/messages/preprocess.ts)、[non-stream-translation.ts](../src/routes/messages/non-stream-translation.ts)、[responses-translation.ts](../src/routes/messages/responses-translation.ts)、[provider Messages handler](../src/routes/provider/messages/handler.ts) 与 [provider Messages local-behavior.ts](../src/routes/provider/messages/local-behavior.ts)。
+**源码与接入**：[logger.ts](../src/lib/logger.ts)、[server.ts](../src/server.ts)、[Messages handler](../src/routes/messages/handler.ts)、[preprocess.ts](../src/routes/messages/preprocess.ts)、[non-stream-translation.ts](../src/routes/messages/non-stream-translation.ts)、[Responses request translation](../src/routes/messages/responses-translation/request.ts)、[provider Messages handler](../src/routes/provider/messages/handler.ts) 与 [provider Messages local-behavior.ts](../src/routes/provider/messages/local-behavior.ts)。
 
 **验证入口**：[logger.test.ts](../tests/logger.test.ts)、[logger-local.test.ts](../tests/logger-local.test.ts)、[models-log.test.ts](../tests/models-log.test.ts) 与 [translation-drop-observation.test.ts](../tests/translation-drop-observation.test.ts)。测试调用实际 handler/service，仅隔离上游；日志断言同时覆盖 chunk 进度行、正常完成行与失败/取消不写 `✓`，不能只断言最终日志。本地日志观察使用实际转换结果，转换算法继续由原模块负责。
 
@@ -227,7 +227,7 @@ Responses 的 Chat fallback 持续发送内容与工具调用事件，整体 `re
 
 **行为**：Messages 转 Responses 时，只重放具有有效 signature 且 reasoning ID 长度不超过 64 的 thinking 内容；缺失 signature 或超过长度限制的内容按原规则处理并保留诊断。assistant phase 在模型配置含 `## Intermediary updates` extra prompt 或为 Grok 模型时设置；请求显式指定的 effort 优先，缺省用 `getReasoningEffortForModel` 的配置默认值，`max` 映射为 `xhigh`。Grok 使用 `concise` reasoning summary，并保留文本、图像、工具调用与 phase（commentary/final_answer）。
 
-**源码与接入**：[responses-translation.ts](../src/routes/messages/responses-translation.ts) 的 `createReasoningContent`、`shouldApplyPhase` 与 effort 映射。
+**源码与接入**：[Responses request translation](../src/routes/messages/responses-translation/request.ts) 的 `createReasoningContent`、`shouldApplyPhase` 与 effort 映射。
 
 **验证入口**：[responses-translation.test.ts](../tests/responses-translation.test.ts) 覆盖 reasoning ID 的 64/65 字符边界、phase 配置条件、显式 effort、Grok 内容保留、compaction 的双向回放与工具参数边界；[reasoning-effort-local.test.ts](../tests/reasoning-effort-local.test.ts) 覆盖本地 effort 映射与日志值解析；[reasoning-effort.test.ts](../tests/reasoning-effort.test.ts) 保留上游 effort 归一化用例。
 
@@ -235,7 +235,7 @@ Responses 的 Chat fallback 持续发送内容与工具调用事件，整体 `re
 
 **行为**：Responses 转 Messages 写入 ephemeral cache breakpoint 时，跳过 thinking 与 redacted thinking 尾部内容；Messages 预处理读取和写入 cache control 时继续跳过 redacted thinking。已有类型定义保留 `redacted_thinking`。
 
-**源码与接入**：[messages-translation.ts](../src/routes/responses/messages-translation.ts)、[preprocess.ts](../src/routes/messages/preprocess.ts) 与 [anthropic.ts](../src/lib/types/anthropic.ts)。
+**源码与接入**：[Messages request translation](../src/routes/responses/messages-translation/to-messages.ts)、[preprocess.ts](../src/routes/messages/preprocess.ts) 与 [anthropic.ts](../src/lib/types/anthropic.ts)。
 
 **验证范围**：功能清单调查未找到独立覆盖所有缓存保护条件的测试；保留现有请求翻译和缓存测试。
 

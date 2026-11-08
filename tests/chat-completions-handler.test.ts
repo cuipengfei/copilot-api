@@ -1,4 +1,5 @@
 import {
+  afterAll,
   afterEach,
   beforeEach,
   describe,
@@ -10,11 +11,31 @@ import {
 import consola from "consola"
 import { Hono } from "hono"
 import { SSEStreamingApi } from "hono/streaming"
+import { mkdtempSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
+import path from "node:path"
 
-import { state } from "../src/lib/state"
-import * as configPolicy from "../src/lib/config"
-import { closeUsageStore } from "../src/lib/token-usage"
-import { completionRoutes } from "../src/routes/chat-completions/route"
+import type { RequestTiming } from "~/lib/request-context"
+import type { ChatCompletionChunk } from "~/lib/types/chat-completions"
+
+const originalHome = process.env.COPILOT_API_HOME
+const testHome = mkdtempSync(path.join(tmpdir(), "copilot-api-chat-"))
+process.env.COPILOT_API_HOME = testHome
+
+// PATHS snapshots COPILOT_API_HOME at import, so load app modules after fixture setup.
+const { state } = await import("../src/lib/state")
+const configPolicy = await import("../src/lib/config")
+const { closeUsageStore, getTokenUsageEventsPage } =
+  await import("~/lib/token-usage")
+const { chatCompletionsHandlerDependencies, handleCompletion } =
+  await import("~/routes/chat-completions/handler")
+const { completionRoutes } =
+  await import("../src/routes/chat-completions/route")
+const { requestContext } = await import("~/lib/request-context")
+const { requestEventsMiddleware } = await import("~/lib/request-events")
+const { traceIdMiddleware } = await import("~/lib/trace")
+const originalCreateChatCompletions =
+  chatCompletionsHandlerDependencies.createChatCompletions
 
 const originalFetch = globalThis.fetch
 const originalState = {
@@ -27,6 +48,7 @@ const originalState = {
 const originalNoColor = process.env.NO_COLOR
 
 const DB_PATH_ENV = "COPILOT_API_SQLITE_DB_PATH"
+const originalDbPath = process.env[DB_PATH_ENV]
 const PREMIUM_HEADER =
   "ent=300&ov=0.0&ovPerm=false&rem=35.5&rst=2026-04-01T00%3A00%3A00Z"
 const RATE_LIMIT_HEADER = "rem=5.7&rst=2026-04-21T06%3A35%3A37Z"
@@ -141,13 +163,9 @@ const captureStdout = () => {
 const streamLogWrites = (writes: string[]) =>
   writes.filter((write) => write.includes("↪ gpt-test"))
 
-const flushMicrotasks = async (turns: number) => {
-  for (let index = 0; index < turns; index++) {
-    await Promise.resolve()
-  }
-}
-
 beforeEach(async () => {
+  chatCompletionsHandlerDependencies.createChatCompletions =
+    originalCreateChatCompletions
   process.env.NO_COLOR = "1"
   process.env[DB_PATH_ENV] = ":memory:"
   await closeUsageStore()
@@ -159,19 +177,35 @@ beforeEach(async () => {
 })
 
 afterEach(async () => {
+  chatCompletionsHandlerDependencies.createChatCompletions =
+    originalCreateChatCompletions
   if (originalNoColor === undefined) {
     Reflect.deleteProperty(process.env, "NO_COLOR")
   } else {
     process.env.NO_COLOR = originalNoColor
   }
   await closeUsageStore()
-  Reflect.deleteProperty(process.env, DB_PATH_ENV)
+  if (originalDbPath === undefined) {
+    Reflect.deleteProperty(process.env, DB_PATH_ENV)
+  } else {
+    process.env[DB_PATH_ENV] = originalDbPath
+  }
   state.accountType = originalState.accountType
   state.copilotToken = originalState.copilotToken
   state.verbose = originalState.verbose
   state.vsCodeVersion = originalState.vsCodeVersion
   state.models = originalState.models
   ;(globalThis as unknown as { fetch: typeof fetch }).fetch = originalFetch
+})
+
+afterAll(async () => {
+  await closeUsageStore()
+  if (originalHome === undefined) {
+    Reflect.deleteProperty(process.env, "COPILOT_API_HOME")
+  } else {
+    process.env.COPILOT_API_HOME = originalHome
+  }
+  rmSync(testHome, { recursive: true, force: true })
 })
 
 describe("chat completions handler logging", () => {
@@ -556,6 +590,13 @@ describe("chat completions handler logging", () => {
     )
     const infoSpy = spyOn(consola, "info")
     const stdout = captureStdout()
+    const close = Reflect.get(SSEStreamingApi.prototype, "close")
+    const closeSettled = Promise.withResolvers<void>()
+    const closeSpy = spyOn(SSEStreamingApi.prototype, "close")
+    closeSpy.mockImplementation(async function (this: SSEStreamingApi) {
+      await close.call(this)
+      closeSettled.resolve()
+    })
     try {
       const response = await postChat({
         model: "gpt-test",
@@ -566,14 +607,16 @@ describe("chat completions handler logging", () => {
       await reader.read()
       await reader.cancel()
       gate.resolve()
-      await flushMicrotasks(1000)
+      await closeSettled.promise
 
       expect(streamLogWrites(stdout.writes).some((w) => w.includes("✓"))).toBe(
         false,
       )
     } finally {
+      gate.resolve()
       stdout.restore()
       infoSpy.mockRestore()
+      closeSpy.mockRestore()
     }
   })
 
@@ -646,6 +689,16 @@ describe("chat completions handler logging", () => {
       expect(body).toContain('"total_tokens":17')
       expect(body).toContain("[DONE]")
       expect(streamClosed).toBe(true)
+      const events = await getTokenUsageEventsPage({
+        page: 1,
+        pageSize: 10,
+        period: "today",
+      })
+      expect(events.items).toHaveLength(1)
+      expect(events.items[0]).toMatchObject({
+        input_tokens: 12,
+        output_tokens: 5,
+      })
     } finally {
       gate.resolve()
       stdout.restore()
@@ -679,7 +732,6 @@ describe("chat completions handler logging", () => {
 
       const logs = streamLogWrites(stdout.writes)
       expect(logs.some((write) => write.includes("✓"))).toBe(false)
-      expect(logs.at(-1)?.endsWith("\n")).toBe(true)
     } finally {
       stdout.restore()
       infoSpy.mockRestore()
@@ -707,6 +759,8 @@ describe("chat completions handler logging", () => {
       const text = await response.text()
       expect(text).toContain('"content":"he"')
       expect(text).not.toContain("[DONE]")
+      expect(text).toContain("event: error")
+      expect(text).toContain('"code":"incomplete_stream"')
 
       const logs = streamLogWrites(stdout.writes)
       expect(logs.some((write) => write.includes("✓"))).toBe(false)
@@ -719,44 +773,438 @@ describe("chat completions handler logging", () => {
     }
   })
 
-  test("accepts a finish_reason chunk as the terminal event", async () => {
-    const finishChunk = {
-      id: "chatcmpl-stream",
-      object: "chat.completion.chunk",
-      created: 0,
-      model: "gpt-test",
-      choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
-    }
-    installFetch(
-      mock(() =>
-        Promise.resolve(
-          streamingResponse(
-            `data: ${JSON.stringify(contentChunk("he"))}\n\ndata: ${JSON.stringify(finishChunk)}\n\n`,
+  test.each(["stop", "tool_calls", ""])(
+    "accepts string finish_reason %j as the terminal event without DONE",
+    async (finishReason) => {
+      const finishChunk = {
+        id: "chatcmpl-stream",
+        object: "chat.completion.chunk",
+        created: 0,
+        model: "gpt-test",
+        choices: [{ index: 0, delta: {}, finish_reason: finishReason }],
+      }
+      installFetch(
+        mock(() =>
+          Promise.resolve(
+            streamingResponse(
+              `data: ${JSON.stringify(contentChunk("he"))}\n\ndata: ${JSON.stringify(finishChunk)}\n\n`,
+            ),
           ),
         ),
+      )
+      const infoSpy = spyOn(consola, "info")
+      const stdout = captureStdout()
+      try {
+        const response = await postChat({
+          model: "gpt-test",
+          stream: true,
+          messages: [{ role: "user", content: "hello" }],
+        })
+
+        expect(response.status).toBe(200)
+        const text = await response.text()
+        expect(text).toContain('"content":"he"')
+        expect(text).toContain(JSON.stringify(finishChunk))
+        expect(text).not.toContain("incomplete_stream")
+
+        const logs = streamLogWrites(stdout.writes)
+        const final = logs.at(-1) as string
+        expect(final).toStartWith("\x1b[2K\r↪ gpt-test 2 ✓")
+        expect(final.endsWith("\n")).toBe(true)
+      } finally {
+        stdout.restore()
+        infoSpy.mockRestore()
+      }
+    },
+  )
+})
+
+describe("native chat completions usage and outcomes", () => {
+  const createChatCompletions = mock(originalCreateChatCompletions)
+  let requestTiming: RequestTiming | undefined
+
+  beforeEach(() => {
+    createChatCompletions.mockReset()
+    requestTiming = undefined
+    chatCompletionsHandlerDependencies.createChatCompletions =
+      createChatCompletions
+  })
+
+  test("native chat completions stream records usage when the upstream iterator throws", async () => {
+    createChatCompletions.mockImplementationOnce(() =>
+      Promise.resolve(
+        streamChunks([
+          chunk({
+            content: "partial",
+            usage: {
+              completion_tokens: 2,
+              prompt_tokens: 5,
+              total_tokens: 7,
+            },
+          }),
+          { error: new Error("upstream connection reset") },
+        ]),
       ),
     )
-    const infoSpy = spyOn(consola, "info")
+    const response = await requestCompletion()
+    expect(response.status).toBe(200)
+    const body = await response.text()
+    expect(body).toContain("partial")
+    expect(body).toContain("event: error")
+    expect(body).toContain('"code":"upstream_stream_error"')
+    expect(body).not.toContain("[DONE]")
+    expect(requestTiming?.outcome).toBe("error")
+
+    const usageEvents = await getTokenUsageEventsPage({
+      page: 1,
+      pageSize: 10,
+      period: "today",
+    })
+    expect(usageEvents.items).toHaveLength(1)
+    expect(usageEvents.items[0]).toMatchObject({
+      endpoint: "chat_completions",
+      input_tokens: 5,
+      model: "gpt-test",
+      output_tokens: 2,
+      total_tokens: 7,
+    })
+  })
+
+  test("native chat completions stream records usage after an invalid JSON chunk", async () => {
+    createChatCompletions.mockImplementationOnce(() =>
+      Promise.resolve(
+        streamChunks([
+          { data: "not-json" },
+          chunk({
+            content: "after",
+            usage: {
+              completion_tokens: 3,
+              prompt_tokens: 8,
+              total_tokens: 11,
+            },
+          }),
+          { data: "[DONE]" },
+        ]),
+      ),
+    )
+
+    const response = await requestCompletion()
+    expect(response.status).toBe(200)
+    const body = await response.text()
+    expect(body).toContain("after")
+    expect(body).not.toContain("event: error")
+    expect(requestTiming?.outcome).toBe("completed")
+
+    const usageEvents = await getTokenUsageEventsPage({
+      page: 1,
+      pageSize: 10,
+      period: "today",
+    })
+    expect(usageEvents.items).toHaveLength(1)
+    expect(usageEvents.items[0]).toMatchObject({
+      input_tokens: 8,
+      output_tokens: 3,
+      total_tokens: 11,
+    })
+  })
+
+  test("native chat completions reports missing terminal events and retains partial usage", async () => {
+    createChatCompletions.mockResolvedValueOnce(
+      streamChunks([
+        chunk({
+          content: "partial",
+          usage: { prompt_tokens: 6, completion_tokens: 3, total_tokens: 9 },
+        }),
+      ]),
+    )
+    const response = await requestCompletion()
+    const body = await response.text()
+    expect(body).toContain("partial")
+    expect(body).toContain("event: error")
+    expect(body).toContain('"code":"incomplete_stream"')
+    expect(requestTiming?.outcome).toBe("error")
+    const events = await getTokenUsageEventsPage({
+      page: 1,
+      pageSize: 10,
+      period: "today",
+    })
+    expect(events.items).toHaveLength(1)
+    expect(events.items[0]).toMatchObject({ input_tokens: 6, output_tokens: 3 })
+  })
+
+  test("native chat completions tracks JSON-only errors as failures even after DONE", async () => {
+    createChatCompletions.mockResolvedValueOnce(
+      streamChunks([
+        { data: '{"error":{"message":"overloaded","type":"api_error"}}' },
+        { data: "[DONE]" },
+        chunk({
+          content: "",
+          usage: { prompt_tokens: 6, completion_tokens: 3, total_tokens: 9 },
+        }),
+      ]),
+    )
     const stdout = captureStdout()
     try {
-      const response = await postChat({
-        model: "gpt-test",
-        stream: true,
-        messages: [{ role: "user", content: "hello" }],
+      const response = await requestCompletion()
+      const body = await response.text()
+      expect(body).toContain("event: error")
+      expect(body).toContain("overloaded")
+      expect(body).toContain("[DONE]")
+      expect(body).not.toContain("incomplete_stream")
+      expect(requestTiming?.outcome).toBe("error")
+      expect(
+        streamLogWrites(stdout.writes).some((write) => write.includes("✓")),
+      ).toBe(false)
+      const events = await getTokenUsageEventsPage({
+        page: 1,
+        pageSize: 10,
+        period: "today",
       })
-
-      expect(response.status).toBe(200)
-      const text = await response.text()
-      expect(text).toContain('"content":"he"')
-      expect(text).toContain('"finish_reason":"stop"')
-
-      const logs = streamLogWrites(stdout.writes)
-      const final = logs.at(-1) as string
-      expect(final).toStartWith("\x1b[2K\r↪ gpt-test 2 ✓")
-      expect(final.endsWith("\n")).toBe(true)
+      expect(events.items).toHaveLength(1)
+      expect(events.items[0]).toMatchObject({
+        input_tokens: 6,
+        output_tokens: 3,
+      })
     } finally {
       stdout.restore()
-      infoSpy.mockRestore()
     }
   })
+
+  test("native chat completions drains final usage after the client disconnects", async () => {
+    const { promise: usageReady, resolve: releaseUsage } =
+      Promise.withResolvers<void>()
+    const { promise: upstreamFinished, resolve: finishUpstream } =
+      Promise.withResolvers<void>()
+    async function* upstream() {
+      try {
+        yield { data: '{"choices":[{"delta":{"content":"partial"}}]}' }
+        await usageReady
+        yield chunk({
+          content: "",
+          usage: { prompt_tokens: 12, completion_tokens: 7, total_tokens: 19 },
+        })
+        yield { data: "[DONE]" }
+      } finally {
+        finishUpstream()
+      }
+    }
+    createChatCompletions.mockResolvedValueOnce(upstream())
+    const stdout = captureStdout()
+    const close = Reflect.get(SSEStreamingApi.prototype, "close")
+    const closeSettled = Promise.withResolvers<void>()
+    const closeSpy = spyOn(SSEStreamingApi.prototype, "close")
+    closeSpy.mockImplementation(async function (this: SSEStreamingApi) {
+      await close.call(this)
+      closeSettled.resolve()
+    })
+    try {
+      const response = await requestCompletion()
+      const reader = response.body!.getReader()
+      try {
+        expect((await reader.read()).done).toBe(false)
+        await reader.cancel()
+      } finally {
+        releaseUsage()
+      }
+      await upstreamFinished
+      await closeSettled.promise
+      expect(requestTiming?.hasUsage).toBe(true)
+      expect(requestTiming?.outcome).toBe("cancelled")
+      expect(
+        streamLogWrites(stdout.writes).some((write) => write.includes("✓")),
+      ).toBe(false)
+      const events = await getTokenUsageEventsPage({
+        page: 1,
+        pageSize: 10,
+        period: "today",
+      })
+      expect(events.items).toHaveLength(1)
+      expect(events.items[0]).toMatchObject({
+        input_tokens: 12,
+        output_tokens: 7,
+      })
+    } finally {
+      releaseUsage()
+      stdout.restore()
+      closeSpy.mockRestore()
+    }
+  })
+
+  test.each(["stop", "tool_calls", ""])(
+    "native chat completions accepts a finish_reason-only stream (%j)",
+    async (finishReason) => {
+      createChatCompletions.mockResolvedValueOnce(
+        streamChunks([
+          {
+            data: JSON.stringify({
+              choices: [{ index: 0, delta: {}, finish_reason: finishReason }],
+            }),
+          },
+        ]),
+      )
+      const stdout = captureStdout()
+      try {
+        const response = await requestCompletion()
+        const body = await response.text()
+        expect(body).toContain('"finish_reason":')
+        expect(body).not.toContain("event: error")
+        expect(body).not.toContain("[DONE]")
+        expect(requestTiming?.outcome).toBe("completed")
+        const logs = streamLogWrites(stdout.writes)
+        expect(logs.filter((write) => write.includes("✓"))).toHaveLength(1)
+        expect(logs.at(-1)).toStartWith("\x1b[2K\r↪ gpt-test 1 ✓")
+      } finally {
+        stdout.restore()
+      }
+    },
+  )
+
+  test.each([
+    { value: [] },
+    { value: {} },
+    { value: { choices: {} } },
+    { value: { choices: [null] } },
+    { value: { choices: [42] } },
+  ])(
+    "native chat completions drains usage after unsafe JSON shape %j",
+    async ({ value }) => {
+      createChatCompletions.mockResolvedValueOnce(
+        streamChunks([
+          { data: JSON.stringify(value) },
+          chunk({
+            content: "after",
+            usage: { prompt_tokens: 8, completion_tokens: 3, total_tokens: 11 },
+          }),
+          { data: "[DONE]" },
+        ]),
+      )
+      const response = await requestCompletion()
+      const body = await response.text()
+      expect(body).toContain(JSON.stringify(value))
+      expect(body).toContain("after")
+      expect(body).not.toContain("event: error")
+      expect(requestTiming?.outcome).toBe("completed")
+      const events = await getTokenUsageEventsPage({
+        page: 1,
+        pageSize: 10,
+        period: "today",
+      })
+      expect(events.items).toHaveLength(1)
+      expect(events.items[0]).toMatchObject({
+        input_tokens: 8,
+        output_tokens: 3,
+      })
+    },
+  )
+
+  test("native chat completions retains Copilot details while draining usage after finish_reason", async () => {
+    createChatCompletions.mockResolvedValueOnce(
+      streamChunks([
+        {
+          data: JSON.stringify({
+            choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }],
+            copilot_usage: {
+              token_details: [
+                {
+                  token_type: "input",
+                  token_count: 8,
+                  batch_size: 1_000_000,
+                  cost_per_batch: 25_000_000_000,
+                },
+              ],
+            },
+          }),
+        },
+        {
+          data: JSON.stringify({
+            choices: [],
+            usage: {
+              prompt_tokens: 12,
+              completion_tokens: 5,
+              total_tokens: 17,
+              prompt_tokens_details: { cached_tokens: 4 },
+            },
+            copilot_usage: { total_nano_aiu: 1_612_500 },
+          }),
+        },
+      ]),
+    )
+    const response = await requestCompletion()
+    const body = await response.text()
+    expect(body).toContain('"total_tokens":17')
+    expect(body).not.toContain("incomplete_stream")
+    expect(requestTiming?.outcome).toBe("completed")
+    const events = await getTokenUsageEventsPage({
+      page: 1,
+      pageSize: 10,
+      period: "today",
+    })
+    expect(events.items).toHaveLength(1)
+    expect(events.items[0]).toMatchObject({
+      input_tokens: 8,
+      cache_read_input_tokens: 4,
+      output_tokens: 5,
+      total_tokens: 17,
+      total_nano_aiu: 1_612_500,
+      nano_cost_input: 200_000,
+    })
+  })
+
+  const requestCompletion = async (): Promise<Response> => {
+    const app = new Hono()
+    app.use(traceIdMiddleware)
+    app.use(requestEventsMiddleware(undefined, 4141))
+    app.use(async (_c, next) => {
+      requestTiming = requestContext.getStore()?.requestTiming
+      await next()
+    })
+    app.post("/v1/chat/completions", handleCompletion)
+    return app.request("/v1/chat/completions", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        messages: [{ role: "user", content: "hello" }],
+        model: "gpt-test",
+        stream: true,
+      }),
+    })
+  }
+
+  const chunk = (input: {
+    content: string
+    usage: {
+      completion_tokens: number
+      prompt_tokens: number
+      total_tokens: number
+    }
+  }): { data: string } => {
+    const payload: ChatCompletionChunk = {
+      choices: [
+        {
+          delta: { content: input.content },
+          finish_reason: null,
+          index: 0,
+          logprobs: null,
+        },
+      ],
+      created: 0,
+      id: "chatcmpl-test",
+      model: "gpt-test",
+      object: "chat.completion.chunk",
+      usage: input.usage,
+    }
+    return { data: JSON.stringify(payload) }
+  }
+
+  async function* streamChunks(
+    chunks: Array<{ data?: string; error?: Error }>,
+  ): AsyncGenerator<{ data: string }> {
+    for (const chunk of chunks) {
+      await Promise.resolve()
+      if (chunk.error) {
+        throw chunk.error
+      }
+      yield { data: chunk.data ?? "" }
+    }
+  }
 })

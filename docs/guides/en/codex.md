@@ -25,8 +25,8 @@ model_provider = "copilot_api"
 model_reasoning_summary = "auto"
 plan_mode_reasoning_effort = "max"
 # Adjust the context window and auto-compaction threshold (in tokens) as needed.
-# Under OpenAI API pricing, GPT models such as gpt-6.1-sol charge 2x input and
-# cache rates and 1.5x output rates when input exceeds 272000 tokens.
+# ChatGPT-signed-in Codex has no long-context surcharge above 272000 tokens.
+# API-key usage follows separate OpenAI API pricing.
 model_context_window = 400000
 # Sandbox policy. Use "workspace-write" to restrict it.
 sandbox_mode = "danger-full-access"
@@ -77,7 +77,37 @@ enabled = false
 >
 > Sign in to Codex with ChatGPT or an API key before use. `requires_openai_auth = true` shows account information in the UI, plus quota usage and subscription details for ChatGPT sign-in; request authentication still prioritizes `env_key`. To bypass account restrictions in the Codex client, try setting it to `false`. Note that `false` also hides Remote (**Control this Mac** under **Settings → Connections**) in the desktop app ([openai/codex#36879](https://github.com/openai/codex/issues/36879)).
 >
-> Set `GITHUB_COPILOT_API_KEY` as a system-level user environment variable so the Codex app can read it too. Use one of the [gateway API keys](cli.md#auth-command-options), or any non-empty placeholder when none are configured; if it is unset, Codex fails with a `Missing environment variable` error.
+> `GITHUB_COPILOT_API_KEY` authenticates requests to the gateway. Use one of the [gateway API keys](cli.md#auth-command-options), or any non-empty placeholder when none are configured; if it is unset, Codex fails with a `Missing environment variable` error.
+
+### Set the `GITHUB_COPILOT_API_KEY` Environment Variable
+
+Use `dummy` as a placeholder if gateway API key authentication is disabled; otherwise use your actual gateway API key.
+
+**macOS (Terminal):**
+
+```sh
+launchctl setenv GITHUB_COPILOT_API_KEY dummy
+```
+
+This sets the variable for your current login session, including apps subsequently launched from Dock or Finder. Fully quit (`⌘Q`) and reopen Codex; for CLI use, fully quit and reopen your terminal app as well. Run the command again after logging out or restarting macOS.
+
+**Linux (Terminal):**
+
+Add the following line to your shell startup file (`~/.bashrc` for Bash or `~/.zshrc` for Zsh), then open a new terminal:
+
+```sh
+export GITHUB_COPILOT_API_KEY=dummy
+```
+
+The setting persists across new terminal sessions. Fully quit and reopen Codex after changing an existing value.
+
+**Windows (Command Prompt / PowerShell):**
+
+```sh
+setx GITHUB_COPILOT_API_KEY dummy
+```
+
+This saves a user environment variable. Fully quit and reopen Codex or your terminal to pick up the new value.
 
 ### Auto Review Model Mapping
 
@@ -119,6 +149,8 @@ Codex's model picker includes models from the gateway's configured providers:
 
 ### Codex Provider Price Estimates
 
-Costs shown for the built-in `codex` provider are price estimates based on [OpenAI API pricing](https://developers.openai.com/api/docs/pricing), not actual Codex subscription charges or allowance consumption. The request's `service_tier` determines the uniform multiplier: `fast` / `priority` use 2×, and `ultrafast` uses 6×, without filtering by model. Other tiers use Standard prices. An upstream response reporting `default` does not override the requested tier.
+Costs shown for the built-in `codex` provider are **USD estimates** using the standard model rates in the [ChatGPT Enterprise token-based rate card](https://help.openai.com/en/articles/20001415-chatgpt-rate-card-enterprise-token-based-pricing), not actual subscription charges, credit deductions, or allowance consumption. For **Codex signed in with ChatGPT**, the same input, cached-input, and output rates apply even above 272K input tokens: **there is no long-context surcharge** and Codex does not charge for cache writes. The [credit-based Enterprise rate card](https://help.openai.com/en/articles/11481834-chatgpt-rate-card-business-enterpriseedu-credit-based-pricing) confirms the same long-context exception. Codex using an API key instead follows [OpenAI API pricing](https://developers.openai.com/api/docs/pricing), including any applicable long-context charges.
+
+For these USD estimates, the request's `service_tier` determines the uniform multiplier: `fast` / `priority` use 2×, and `ultrafast` uses 6×, without filtering by model. Other tiers use Standard prices. Included subscription allowances and credits may use different multipliers. An upstream response reporting `default` does not override the requested tier.
 
 ---

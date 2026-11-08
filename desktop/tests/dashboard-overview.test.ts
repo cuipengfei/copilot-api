@@ -77,6 +77,7 @@ let onServerLog: ReturnType<
   typeof mock<(callback: (log: ServerLogRecord) => void) => () => void>
 >
 let serverStatusListener: ((status: ServerStatus) => void) | null
+let logListener: ((log: ServerLogRecord) => void) | null
 let logUnsubscribeCount = 0
 let openAuthConfig: ReturnType<
   typeof mock<(returnTab: 'dashboard' | 'providers') => void>
@@ -114,8 +115,13 @@ beforeEach(async () => {
   )
   getLogs = mock(() => Promise.resolve([]))
   logUnsubscribeCount = 0
-  onServerLog = mock((_callback: (log: ServerLogRecord) => void) => () => {
-    logUnsubscribeCount += 1
+  logListener = null
+  onServerLog = mock((callback: (log: ServerLogRecord) => void) => {
+    logListener = callback
+    return () => {
+      logUnsubscribeCount += 1
+      if (logListener === callback) logListener = null
+    }
   })
   serverStatusListener = null
   currentAuthMode = 'provider'
@@ -284,7 +290,7 @@ async function clickButton(label: string) {
 }
 
 describe('dashboard overview', () => {
-  test('subscribes to logs only while the log panel is visible', async () => {
+  test('streams logs during a restart and refreshes history when startup finishes', async () => {
     getLogs.mockResolvedValue([{ sequence: 1, text: 'initial log' }])
     await render('provider')
 
@@ -306,17 +312,26 @@ describe('dashboard overview', () => {
     expect(getLogs).toHaveBeenCalledTimes(2)
     expect(container.textContent).toContain('latest hidden log')
 
+    const emitLog = logListener
     await act(async () => {
       serverStatusListener?.({ running: false, restarting: true })
     })
-    expect(logUnsubscribeCount).toBe(2)
+    expect(container.textContent).toContain('Server logs')
+    expect(container.textContent).toContain('latest hidden log')
+    expect(logUnsubscribeCount).toBe(1)
 
-    getLogs.mockResolvedValue([{ sequence: 3, text: 'new server run' }])
+    await act(async () => {
+      emitLog?.({ sequence: 3, text: 'starting new server' })
+    })
+    expect(container.textContent).toContain('starting new server')
+
+    getLogs.mockResolvedValue([{ sequence: 4, text: 'new server run' }])
     await act(async () => {
       serverStatusListener?.({ running: true, port: 4141 })
     })
     await act(async () => {})
     expect(getLogs).toHaveBeenCalledTimes(3)
+    expect(logUnsubscribeCount).toBe(2)
     expect(container.textContent).toContain('new server run')
     expect(container.textContent).not.toContain('latest hidden log')
   })
@@ -464,6 +479,67 @@ describe('dashboard overview', () => {
       container.querySelector('[role="tab"][aria-selected="true"]')
         ?.textContent,
     ).toBe('Token usage')
+  })
+
+  test('reserves the left dashboard cards while the first load is in flight', async () => {
+    const usage = Promise.withResolvers<TokenUsageSummary>()
+    const providers = Promise.withResolvers<ProviderManagementConfig>()
+    fetchUsageSummary.mockImplementation(() => usage.promise)
+    getProviderConfig.mockImplementation(() => providers.promise)
+
+    await render()
+
+    const usageCard = cardByTitle('Usage snapshot')
+    expect(usageCard.textContent).not.toContain('No token usage recorded')
+    expect(usageCard.querySelector('.grid')?.childElementCount).toBe(4)
+    expect(usageCard.querySelector('.grid')?.getAttribute('aria-label')).toBe(
+      'Loading…',
+    )
+
+    const providerCard = cardByTitle('Providers')
+    expect(providerCard.textContent).not.toContain('dashscope')
+    expect(
+      [...providerCard.querySelectorAll('div')].some((node) =>
+        node.className.includes('h-[140px]'),
+      ),
+    ).toBe(true)
+    expect(
+      [...(usageCard.parentElement?.children ?? [])].map(
+        (node) => node.querySelector('h3')?.textContent,
+      ),
+    ).toEqual(['Usage snapshot', 'Providers', 'Service address'])
+
+    await act(async () => {
+      usage.resolve(structuredClone(summary))
+      providers.resolve(structuredClone(providerConfig))
+    })
+
+    expect(usageCard.textContent).toContain('Requests')
+    expect(usageCard.querySelector('.grid')?.childElementCount).toBe(4)
+    expect(usageCard.textContent).not.toContain('No token usage recorded')
+    expect(providerCard.textContent).toContain('dashscope')
+  })
+
+  test('shows the empty usage snapshot only after the first load finds nothing', async () => {
+    fetchUsageSummary.mockImplementation(() => Promise.resolve(null))
+
+    await render()
+
+    const usageCard = cardByTitle('Usage snapshot')
+    expect(usageCard.textContent).toContain('No token usage recorded')
+    expect(usageCard.querySelector('.grid')?.childElementCount).toBe(1)
+  })
+
+  test('hides the provider overview when the first config load fails', async () => {
+    getProviderConfig.mockImplementation(() =>
+      Promise.reject(new Error('no config')),
+    )
+
+    await render()
+
+    expect(
+      [...container.querySelectorAll('h3')].map((node) => node.textContent),
+    ).not.toContain('Providers')
   })
 
   test('keeps the provider overview visible with Copilot as the only provider', async () => {

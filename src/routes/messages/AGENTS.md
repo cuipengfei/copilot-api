@@ -11,7 +11,7 @@
 | Branch ordering | `handler.ts` | compact detection → `sanitizeIdeTools` → `parseSubagentMarkerFromFirstUser` → native messages → warmup/small model → mergeToolResult → responses/chat |
 | Native passthrough | `handler.ts`, `~/services/copilot/create-messages.ts` | raw SSE passthrough，不能重建事件语义 |
 | OpenAI translation | `non-stream-translation.ts`, `stream-translation.ts` | chat completions 路径 |
-| Responses translation | `responses-translation.ts`, `responses-stream-translation.ts` | Copilot Responses API 路径 |
+| Responses translation | `responses-translation/`, `responses-stream-translation/` | Copilot Responses API 路径 |
 | Token counting | `count-tokens-handler.ts` | Claude/Grok 工具 token 补偿逻辑 |
 
 ## Critical Invariants

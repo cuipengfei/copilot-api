@@ -3,6 +3,7 @@ import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import {
+  CODEX_CLI_VERSION,
   createMediaStudioClient,
   mediaFileExtension,
   parseCreatedImages,
@@ -49,6 +50,10 @@ const client = () =>
     getHeaders: () => Promise.resolve({ 'x-api-key': 'gateway-key' }),
     fetch: fetchMock,
   })
+const escapedCodexCliVersion = CODEX_CLI_VERSION.replaceAll('.', '\\.')
+const codexCliUserAgentPattern = new RegExp(
+  `^codex_cli_rs/${escapedCodexCliVersion} \\(.+; .+\\) unknown$`,
+)
 
 beforeEach(() => {
   fetchMock.mockClear()
@@ -81,10 +86,15 @@ describe('media requests', () => {
     expect(fetchMock.mock.calls[0][0]).toBe(
       'http://[::1]:5151/v1/images/generations',
     )
-    expect(fetchMock.mock.calls[0][1]?.headers).toEqual({
+    expect(fetchMock.mock.calls[0][1]?.headers).toMatchObject({
       'x-api-key': 'gateway-key',
       'content-type': 'application/json',
+      originator: 'codex_cli_rs',
+      version: CODEX_CLI_VERSION,
     })
+    expect(
+      new Headers(fetchMock.mock.calls[0][1]?.headers).get('user-agent'),
+    ).toMatch(codexCliUserAgentPattern)
     expect(JSON.parse(fetchMock.mock.calls[0][1]?.body as string)).toEqual({
       model: 'gpt-image-2',
       prompt: 'A boat',
@@ -98,6 +108,169 @@ describe('media requests', () => {
     expect(fetchMock.mock.calls[0][0]).toBe(
       'http://[::1]:5151/codex/v1/images/generations',
     )
+  })
+  test.each(['default', 'codex'] as const)(
+    'generates GIFs with default animation options through %s',
+    async (provider) => {
+      response = () => Response.json({ data: [{ b64_json: 'R0lGODlh' }] })
+      const result = await client().createImages('gif', {
+        ...imageInput,
+        provider,
+        outputFormat: 'gif',
+      })
+      expect(fetchMock.mock.calls[0][0]).toBe(
+        `http://[::1]:5151${provider === 'codex' ? '/codex' : ''}/v1/images/generations`,
+      )
+      expect(JSON.parse(fetchMock.mock.calls[0][1]?.body as string)).toEqual({
+        model: 'gpt-image-2',
+        prompt: 'A boat',
+        size: '1024x1024',
+        quality: 'high',
+        n: 2,
+        output_format: 'gif',
+        frame_count: 9,
+        frame_duration_ms: 200,
+      })
+      expect(result[0].url).toBe('data:image/gif;base64,R0lGODlh')
+      expect(mediaFileExtension({ kind: 'image', url: result[0].url })).toBe(
+        'gif',
+      )
+    },
+  )
+  test.each([
+    [2, 20],
+    [64, 2000],
+    [16, 125],
+  ])(
+    'sends GIF animation options %i / %i',
+    async (frameCount, frameDurationMs) => {
+      await client().createImages('gif', {
+        ...imageInput,
+        outputFormat: 'gif',
+        frameCount,
+        frameDurationMs,
+      })
+      expect(
+        JSON.parse(fetchMock.mock.calls[0][1]?.body as string),
+      ).toMatchObject({
+        output_format: 'gif',
+        frame_count: frameCount,
+        frame_duration_ms: frameDurationMs,
+      })
+    },
+  )
+  test.each([
+    { frameCount: 1 },
+    { frameCount: 65 },
+    { frameCount: 2.5 },
+    { frameCount: Number.NaN },
+    { frameCount: null },
+    { frameDurationMs: 19 },
+    { frameDurationMs: 2001 },
+    { frameDurationMs: 20.5 },
+    { frameDurationMs: Number.NaN },
+    { frameDurationMs: '200' },
+  ])(
+    'rejects invalid GIF animation options before fetching %#',
+    async (override) => {
+      await expect(
+        client().createImages('gif', {
+          ...imageInput,
+          outputFormat: 'gif',
+          ...override,
+        } as ImageCreationInput),
+      ).rejects.toThrow('Invalid GIF animation options')
+      expect(fetchMock).not.toHaveBeenCalled()
+    },
+  )
+  test('rejects GIF output for image edits before fetching', async () => {
+    await expect(
+      client().createImages('gif', {
+        ...imageInput,
+        mode: 'edit',
+        outputFormat: 'gif',
+        images: [image],
+      }),
+    ).rejects.toThrow('GIF output is only supported for image generation')
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+  test.each([
+    { provider: 'xai' },
+    { model: 'xai/grok-imagine-image-2.0' },
+    { model: ' grok-imagine-image-2.0 ' },
+  ] as const)(
+    'rejects xAI GIF requests instead of silently returning a still image %#',
+    async (override) => {
+      await expect(
+        client().createImages('gif', {
+          ...imageInput,
+          outputFormat: 'gif',
+          ...override,
+        }),
+      ).rejects.toThrow('xAI image generation does not support GIF output')
+      expect(fetchMock).not.toHaveBeenCalled()
+    },
+  )
+  test.each([
+    'gpt-image-2.5-flare',
+    ' gpt-image-2.5-flare-2026-09-08 ',
+    'github-copilot/gpt-image-2.5-flare',
+    'github-copilot/gpt-image-2.5-flare-2026-09-08',
+  ])('rejects GIF but permits PNG for %s', async (model) => {
+    await expect(
+      client().createImages('gif', {
+        ...imageInput,
+        model,
+        outputFormat: 'gif',
+      }),
+    ).rejects.toThrow('GPT Image 2.5 Flare does not support GIF output')
+    expect(fetchMock).not.toHaveBeenCalled()
+
+    await client().createImages('png', {
+      ...imageInput,
+      model,
+      outputFormat: 'png',
+    })
+    expect(JSON.parse(fetchMock.mock.calls[0][1]?.body as string)).toEqual({
+      model: model.trim(),
+      prompt: 'A boat',
+      size: '1024x1024',
+      quality: 'high',
+      n: 2,
+    })
+  })
+  test.each(['codex/gpt-image-2', 'custom/animated-image'])(
+    'forwards GIF options for %s',
+    async (model) => {
+      await client().createImages('gif', {
+        ...imageInput,
+        model,
+        outputFormat: 'gif',
+      })
+      expect(
+        JSON.parse(fetchMock.mock.calls[0][1]?.body as string),
+      ).toMatchObject({
+        model,
+        output_format: 'gif',
+        frame_count: 9,
+        frame_duration_ms: 200,
+      })
+    },
+  )
+  test('keeps PNG requests unchanged even with stale animation options', async () => {
+    await client().createImages('png', {
+      ...imageInput,
+      outputFormat: 'png',
+      frameCount: 0,
+      frameDurationMs: 0,
+    })
+    expect(JSON.parse(fetchMock.mock.calls[0][1]?.body as string)).toEqual({
+      model: 'gpt-image-2',
+      prompt: 'A boat',
+      size: '1024x1024',
+      quality: 'high',
+      n: 2,
+    })
   })
   test.each(['default', 'codex'] as const)(
     'sends multiple edit images as JSON to %s',
@@ -120,10 +293,15 @@ describe('media requests', () => {
       expect(fetchMock.mock.calls[0][0]).toBe(
         `http://[::1]:5151${provider === 'codex' ? '/codex' : ''}/v1/images/edits`,
       )
-      expect(init.headers).toEqual({
+      expect(init.headers).toMatchObject({
         'x-api-key': 'gateway-key',
         'content-type': 'application/json',
+        originator: 'codex_cli_rs',
+        version: CODEX_CLI_VERSION,
       })
+      expect(new Headers(init.headers).get('user-agent')).toMatch(
+        codexCliUserAgentPattern,
+      )
       expect(JSON.parse(init.body as string)).toEqual({
         model: 'gpt-image-2',
         prompt: 'A boat',
@@ -176,6 +354,8 @@ describe('media requests', () => {
     { n: 1.5 },
     { size: 'bad' },
     { quality: 'bad' },
+    { outputFormat: 'jpeg' },
+    { outputFormat: null },
     { provider: 'bad' },
     { mode: 'bad' },
     { mode: 'edit' },
@@ -204,6 +384,10 @@ describe('media requests', () => {
     expect(await api.createVideo('one', videoInput)).toMatchObject({
       requestId: 'job id',
       status: 'pending',
+    })
+    expect(fetchMock.mock.calls[0][1]?.headers).toEqual({
+      'x-api-key': 'gateway-key',
+      'content-type': 'application/json',
     })
     expect(JSON.parse(fetchMock.mock.calls[0][1]?.body as string)).toEqual({
       model: 'xai/grok-imagine-video-1.5',
