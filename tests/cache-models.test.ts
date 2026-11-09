@@ -16,49 +16,7 @@ describe("cacheModels", () => {
     state.models = undefined
   })
 
-  test("stores picker-enabled, embedding, and supported decisions models unless policy-disabled", async () => {
-    await cacheModels()
-
-    expect(state.models).not.toBeNull()
-    expect(state.models?.data.length).toBeGreaterThan(0)
-    expect(
-      state.models?.data.every(
-        (model) =>
-          model.policy?.state !== "disabled"
-          && (model.model_picker_enabled
-            || model.capabilities.type === "embeddings"
-            || (model.capabilities.type === "decisions"
-              && (model.supported_endpoints?.includes("/v1/decisions")
-                ?? false))),
-      ),
-    ).toBe(true)
-
-    const expectedCount = (
-      rawModelsResponse.data as Array<{
-        capabilities?: { type?: string }
-        model_picker_enabled?: boolean
-        policy?: { state?: string }
-        supported_endpoints?: Array<string>
-      }>
-    ).filter(
-      (model) =>
-        model.policy?.state !== "disabled"
-        && (model.model_picker_enabled
-          || model.capabilities?.type === "embeddings"
-          || (model.capabilities?.type === "decisions"
-            && (model.supported_endpoints?.includes("/v1/decisions")
-              ?? false))),
-    ).length
-
-    expect(state.models?.data.length).toBe(expectedCount)
-    expect(
-      state.models?.data.some(
-        (model) => model.capabilities.type === "embeddings",
-      ),
-    ).toBe(true)
-  })
-
-  test("admits hidden decisions model on /v1/decisions while rejecting hidden chat models and disabled decisions models", async () => {
+  test("admits all decisions models regardless of policy or endpoints while excluding hidden chat models", async () => {
     const baseModel = rawModelsResponse
       .data[0] as ModelsResponse["data"][number]
     await cacheModels(() =>
@@ -106,6 +64,22 @@ describe("cacheModels", () => {
           },
           {
             ...baseModel,
+            id: "decisions-alternative-endpoint",
+            model_picker_enabled: false,
+            policy: undefined,
+            supported_endpoints: ["/decisions"],
+            capabilities: { ...baseModel.capabilities, type: "decisions" },
+          },
+          {
+            ...baseModel,
+            id: "decisions-missing-endpoints",
+            model_picker_enabled: false,
+            policy: undefined,
+            supported_endpoints: undefined,
+            capabilities: { ...baseModel.capabilities, type: "decisions" },
+          },
+          {
+            ...baseModel,
             id: "gpt-4o-hidden-legacy",
             name: "Hidden Legacy Chat",
             model_picker_enabled: false,
@@ -122,6 +96,10 @@ describe("cacheModels", () => {
 
     expect(state.models?.data.map((m) => m.id)).toEqual([
       "gpt-6-luna-decisions",
+      "gpt-6-luna-decisions-disabled",
+      "gpt-6-luna-decisions-no-endpoint",
+      "decisions-alternative-endpoint",
+      "decisions-missing-endpoints",
     ])
   })
 })

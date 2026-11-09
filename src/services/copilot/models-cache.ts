@@ -36,12 +36,10 @@ const refreshModels = async (fetcher: ModelsFetcher, generation: number) => {
     ...models,
     data: models.data.filter(
       (model) =>
-        model.policy?.state !== "disabled"
-        && (model.model_picker_enabled
-          || model.capabilities.type === "embeddings"
-          || (model.capabilities.type === "decisions"
-            && (model.supported_endpoints?.includes("/v1/decisions")
-              ?? false))),
+        model.capabilities.type === "decisions"
+        || (model.policy?.state !== "disabled"
+          && (model.model_picker_enabled
+            || model.capabilities.type === "embeddings")),
     ),
   }
   const nextIds = state.models.data.map((m) => m.id)

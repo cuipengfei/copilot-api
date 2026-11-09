@@ -16,7 +16,7 @@
 ## Critical Invariants
 
 - Copilot 已启用、其他 provider 清单为空且 `state.models` 未加载时，先 `await cacheModels()`。
-- `cacheModels()` 保留 picker-enabled、`embeddings` 及声明 `/v1/decisions` 端点的 `decisions` 模型，并排除 policy-disabled 模型；路由复用该缓存结果。
+- `cacheModels()` 无条件保留 `decisions` 模型，不检查其 policy 或端点名称；其他类型仅保留非 policy-disabled 的 picker-enabled 或 `embeddings` 模型，路由复用该缓存结果。
 - `buildLimits()` 要对 `caps.limits ?? {}` 做防御性处理；某些模型（特别是 embeddings / decisions）在运行时可能没有完整 limits
 - 普通客户端返回顺序由 `sortModels()` 决定：`chat` 优先于 `completion` / `embeddings` / `decisions`，同类型内 premium 优先，再按 `max_prompt` / `context_window` 降序；其他客户端保留各自展示顺序。
 
