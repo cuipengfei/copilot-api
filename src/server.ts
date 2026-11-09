@@ -15,6 +15,7 @@ import { requestEventsMiddleware } from "./lib/request-events"
 import { alphaSearchRoutes } from "./routes/alpha-search/route"
 import { completionRoutes } from "./routes/chat-completions/route"
 import { configRoutes } from "./routes/admin/config/route"
+import { decisionRoutes } from "./routes/decisions/route"
 import { embeddingRoutes } from "./routes/embeddings/route"
 import { imageRoutes } from "./routes/images/route"
 import { messageRoutes } from "./routes/messages/route"
@@ -103,6 +104,7 @@ export function createServer(options: CreateServerOptions = {}): Hono {
   server.route("/admin/config", configRoutes)
   server.route("/models", modelRoutes)
   server.route("/embeddings", embeddingRoutes)
+  server.route("/decisions", decisionRoutes)
   server.route("/usage", usageRoute)
   server.route("/token-usage", tokenUsageRoute)
   server.route("/responses", responsesRoutes)
@@ -114,6 +116,7 @@ export function createServer(options: CreateServerOptions = {}): Hono {
   server.route("/v1/chat/completions", completionRoutes)
   server.route("/v1/models", modelRoutes)
   server.route("/v1/embeddings", embeddingRoutes)
+  server.route("/v1/decisions", decisionRoutes)
   server.route("/v1/responses", responsesRoutes)
   server.route("/v1/alpha/search", alphaSearchRoutes)
   server.route("/v1/images", imageRoutes)

@@ -13,6 +13,7 @@
 | Responses upstream | `create-responses.ts` | Copilot Responses API |
 | Models metadata | `get-models.ts` | capability / limits / supported_endpoints；按模型暴露 `reasoning_effort` 支持值（含 `xhigh`） |
 | Embeddings | `create-embeddings.ts` | OpenAI-compatible embeddings |
+| Decisions | `create-decisions.ts` | OpenAI Decisions API (`/v1/decisions`) |
 
 ## Project-Specific Conventions
 

@@ -18,6 +18,7 @@ export type TokenUsageSource = "copilot" | "provider"
 
 export type TokenUsageEndpoint =
   | "chat_completions"
+  | "decisions"
   | "embeddings"
   | "images_generations"
   | "images_edits"
@@ -25,7 +26,6 @@ export type TokenUsageEndpoint =
   | "provider_messages"
   | "responses"
   | "videos_generations"
-
 export type TokenUsagePeriod =
   | "today"
   | "this_week"

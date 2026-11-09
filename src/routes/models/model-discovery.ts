@@ -515,6 +515,7 @@ const MODEL_TYPE_ORDER: Record<string, number> = {
   chat: 0,
   completion: 1,
   embeddings: 2,
+  decisions: 3,
 }
 
 export function sortModels(models: Array<ClientModel>): Array<ClientModel> {
