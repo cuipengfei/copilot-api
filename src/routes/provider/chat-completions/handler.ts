@@ -3,7 +3,10 @@ import type { Context } from "hono"
 
 import { streamSSE } from "hono/streaming"
 
-import { guardChatCompletionsStream } from "~/lib/chat-completions-stream"
+import {
+  getChatCompletionFailure,
+  guardChatCompletionsStream,
+} from "~/lib/chat-completions-stream"
 import {
   type ModelConfig,
   type ResolvedProviderConfig,
@@ -18,11 +21,17 @@ import { HTTPError } from "~/lib/error"
 import { recordChatCompletionFirstToken } from "~/lib/first-token"
 import { createHandlerLogger, debugJson } from "~/lib/logger"
 import { resolveProviderConfig } from "~/lib/provider-resolver"
-import { applyForwardableResponseHeaders } from "~/lib/response-headers"
+import {
+  applyForwardableResponseHeaders,
+  jsonWithForwardedHeaders,
+} from "~/lib/response-headers"
 import { writeSSEIfConnected } from "~/lib/sse"
 import {
+  copilotUsageToTokens,
   createProviderTokenUsageRecorder,
   normalizeOpenAIUsage,
+  mergeCopilotUsage,
+  type CopilotUsageTokens,
   type UsageTokens,
 } from "~/lib/token-usage"
 import type {
@@ -73,11 +82,6 @@ export async function handleProviderChatCompletionsForProvider(
   applyDashScopePreserveThinkingDefault(payload, providerConfig)
   applyProviderContextCache(payload, modelConfig, providerConfig)
 
-  debugJson(logger, "provider.chat_completions.request", {
-    payload,
-    provider,
-  })
-
   const upstreamResponse = await forwardProviderChatCompletions(
     providerConfig,
     payload,
@@ -116,7 +120,30 @@ export async function handleProviderChatCompletionsForProvider(
   const responseBody = (await upstreamResponse
     .clone()
     .json()) as ChatCompletionResponse
-  recordUsage(normalizeOpenAIUsage(responseBody.usage))
+  if (responseBody.copilot_usage) {
+    recordUsage(
+      normalizeOpenAIUsage(responseBody.usage),
+      responseBody.copilot_usage,
+    )
+  } else {
+    recordUsage(normalizeOpenAIUsage(responseBody.usage))
+  }
+  const failure = getChatCompletionFailure(responseBody)
+  if (failure) {
+    logger.error("Provider chat completion failed", {
+      provider,
+      type: failure.type,
+      code: failure.code,
+      message: failure.message,
+    })
+    return jsonWithForwardedHeaders(
+      { error: failure },
+      upstreamResponse.headers,
+      {
+        status: 502,
+      },
+    )
+  }
 
   debugJson(logger, "provider.chat_completions.response", responseBody)
   return createProviderProxyResponse(upstreamResponse)
@@ -164,7 +191,10 @@ const streamProviderChatCompletions = (
   upstreamResponse: Response,
   options: {
     provider: string
-    recordUsage: (usage: UsageTokens) => void
+    recordUsage: (
+      usage: UsageTokens,
+      copilotUsage?: CopilotUsageTokens | null,
+    ) => void
   },
 ): Response => {
   logger.debug("provider.chat_completions.streaming", {
@@ -173,16 +203,33 @@ const streamProviderChatCompletions = (
   applyForwardableResponseHeaders(c, upstreamResponse.headers)
   return streamSSE(c, async (stream) => {
     let usage: UsageTokens = {}
+    let copilotUsage: CopilotUsageTokens | undefined
 
     try {
       for await (const {
         message: chunk,
         completion: parsedChunk,
+        failure,
       } of guardChatCompletionsStream(events(upstreamResponse))) {
-        debugJson(logger, "provider.chat_completions.stream_chunk", chunk)
+        if (failure) {
+          logger.error("Provider chat completion failed", {
+            provider: options.provider,
+            type: failure.type,
+            code: failure.code,
+            message: failure.message,
+          })
+        } else {
+          debugJson(logger, "provider.chat_completions.stream_chunk", chunk)
+        }
         recordChatCompletionFirstToken(parsedChunk)
         if (parsedChunk?.usage) {
           usage = normalizeOpenAIUsage(parsedChunk.usage)
+        }
+        if (parsedChunk?.copilot_usage) {
+          copilotUsage = mergeCopilotUsage(
+            copilotUsage ?? {},
+            copilotUsageToTokens(parsedChunk.copilot_usage),
+          )
         }
 
         await writeSSEIfConnected(stream, {
@@ -191,7 +238,11 @@ const streamProviderChatCompletions = (
         })
       }
     } finally {
-      options.recordUsage(usage)
+      if (copilotUsage) {
+        options.recordUsage(usage, copilotUsage)
+      } else {
+        options.recordUsage(usage)
+      }
     }
   })
 }

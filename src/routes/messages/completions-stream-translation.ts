@@ -1,4 +1,9 @@
 import {
+  getChatCompletionFailure,
+  type ChatCompletionFailure,
+} from "~/lib/chat-completions-stream"
+import { mergeCopilotUsage } from "~/lib/token-usage"
+import {
   type ChatCompletionChunk,
   type Choice,
   type Delta,
@@ -26,12 +31,25 @@ export function translateChunkToAnthropicEvents(
   state: AnthropicStreamState,
 ): Array<AnthropicStreamEventData> {
   const events: Array<AnthropicStreamEventData> = []
+  if (state.failureEmitted) {
+    return events
+  }
+  const failure = getChatCompletionFailure(chunk)
 
   if (chunk.copilot_usage) {
-    state.latestCopilotUsage = chunk.copilot_usage
+    state.latestCopilotUsage = mergeCopilotUsage(
+      state.latestCopilotUsage ?? {},
+      chunk.copilot_usage,
+    )
+  }
+  if (chunk.usage) {
+    state.latestUsage = getAnthropicUsageFromOpenAIChunk(chunk)
   }
 
-  if (chunk.choices.length === 0) {
+  if (!chunk.choices?.length) {
+    if (failure) {
+      return flushPendingAnthropicStreamEvents(state, failure)
+    }
     // Empty-choices chunks without usage are metadata-only events (e.g.
     // inference cost) that may arrive before the final usage chunk. Only
     // complete the pending message when usage is present; otherwise wait
@@ -53,16 +71,51 @@ export function translateChunkToAnthropicEvents(
 
   handleToolCalls(delta, state, events)
 
-  handleFinish(choice, state, { events, chunk })
+  if (failure) {
+    events.push(...flushPendingAnthropicStreamEvents(state, failure))
+  } else {
+    handleFinish(choice, state, { events, chunk })
+  }
 
   return events
 }
 
 export function flushPendingAnthropicStreamEvents(
   state: AnthropicStreamState,
+  failure?: ChatCompletionFailure,
 ): Array<AnthropicStreamEventData> {
   const events: Array<AnthropicStreamEventData> = []
-  completePendingMessage(state, events)
+  if (state.failureEmitted) {
+    return events
+  }
+  if (!failure) {
+    completePendingMessage(state, events)
+    return events
+  }
+
+  state.failureEmitted = true
+  state.pendingMessageDelta = undefined
+  state.messageCompleted = false
+  closeThinkingBlockIfOpen(state, events)
+  if (state.contentBlockOpen) {
+    events.push({ type: "content_block_stop", index: state.contentBlockIndex })
+    state.contentBlockOpen = false
+    state.contentBlockIndex++
+  }
+  flushPendingToolCalls(state, events)
+  flushDeferredContent(state, events)
+  if (
+    state.messageStartSent
+    && (state.latestUsage || state.latestCopilotUsage)
+  ) {
+    events.push({
+      type: "message_delta",
+      delta: { stop_reason: null, stop_sequence: null },
+      usage: state.latestUsage,
+      copilot_usage: state.latestCopilotUsage,
+    })
+  }
+  events.push(translateErrorToAnthropicErrorEvent(failure))
   return events
 }
 
@@ -537,13 +590,24 @@ function closeThinkingBlockIfOpen(
   }
 }
 
-export function translateErrorToAnthropicErrorEvent(): AnthropicStreamEventData {
+export function translateErrorToAnthropicErrorEvent(
+  failure?: ChatCompletionFailure,
+): AnthropicStreamEventData {
+  if (
+    failure?.type === "api_error"
+    && (failure.code === "incomplete_stream"
+      || failure.code === "upstream_stream_error")
+  ) {
+    failure = undefined
+  }
   return {
     type: "error",
     error: {
       type: "api_error",
+      ...(failure?.code && { code: failure.code }),
       message:
-        "An unexpected error occurred during streaming, retry your request.",
+        failure?.message
+        ?? "An unexpected error occurred during streaming, retry your request.",
     },
   }
 }

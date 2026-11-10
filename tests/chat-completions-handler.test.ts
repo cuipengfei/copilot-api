@@ -8,7 +8,7 @@ import {
   spyOn,
   test,
 } from "bun:test"
-import consola from "consola"
+import consola, { type ConsolaInstance } from "consola"
 import { Hono } from "hono"
 import { SSEStreamingApi } from "hono/streaming"
 import { mkdtempSync, rmSync } from "node:fs"
@@ -27,8 +27,18 @@ const { state } = await import("../src/lib/state")
 const configPolicy = await import("../src/lib/config")
 const { closeUsageStore, getTokenUsageEventsPage } =
   await import("~/lib/token-usage")
+let handlerLogger: ConsolaInstance | undefined
+const withTag = consola.withTag.bind(consola)
+// The handler must load after this spy to expose its real logger without mocking logs.
+const loggerFactory = spyOn(consola, "withTag").mockImplementation((tag) => {
+  const logger = withTag(tag)
+  if (tag === "chat-completions-handler") handlerLogger = logger
+  return logger
+})
 const { chatCompletionsHandlerDependencies, handleCompletion } =
-  await import("~/routes/chat-completions/handler")
+  await import("~/routes/chat-completions/handler").finally(() => {
+    loggerFactory.mockRestore()
+  })
 const { completionRoutes } =
   await import("../src/routes/chat-completions/route")
 const { requestContext } = await import("~/lib/request-context")
@@ -209,6 +219,111 @@ afterAll(async () => {
 })
 
 describe("chat completions handler logging", () => {
+  test.each([true, false])(
+    "keeps upstream credentials and request bodies out of real debug and failure logs (stream=%s)",
+    async (stream) => {
+      if (!handlerLogger) {
+        throw new Error("Chat completion logger was not captured")
+      }
+      const bearerToken = "sk-synthetic-failure-log-token"
+      const editsSession = "synthetic-failure-log-edits-session"
+      const privateBody = "SYNTHETIC_PRIVATE_FAILURE_REQUEST_BODY"
+      const failure = {
+        ...(stream ? usageChunk : createChatCompletionJson()),
+        error: {
+          type: "api_error",
+          code: "capacity_exhausted",
+          message: `Generation capacity exhausted. Authorization: Bearer ${bearerToken}; Copilot-Edits-Session: ${editsSession}; request: ${privateBody}`,
+          headers: {
+            Authorization: `Bearer ${bearerToken}`,
+            "Copilot-Edits-Session": editsSession,
+          },
+          request: { body: privateBody },
+        },
+      }
+      installFetch(
+        mock(() =>
+          Promise.resolve(
+            stream ?
+              streamingResponse(sseBody([contentChunk("partial"), failure]))
+            : Response.json(failure),
+          ),
+        ),
+      )
+      const logs: Array<{ type: string; text: string }> = []
+      const reporter = {
+        log: (logObj: { type: string; args: Array<unknown> }) => {
+          logs.push({ type: logObj.type, text: JSON.stringify(logObj.args) })
+        },
+      }
+      const previousLevel = consola.level
+      const previousHandlerLevel = handlerLogger.level
+      const previousVerbose = state.verbose
+      consola.level = 5
+      handlerLogger.level = 5
+      state.verbose = true
+      consola.addReporter(reporter)
+      handlerLogger.addReporter(reporter)
+      const stdout = captureStdout()
+      const stderrWrites: string[] = []
+      const stderr = spyOn(process.stderr, "write").mockImplementation(
+        (chunk: string | Uint8Array) => {
+          stderrWrites.push(
+            typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk),
+          )
+          return true
+        },
+      )
+      try {
+        const response = await postChat({
+          model: "gpt-test",
+          stream,
+          messages: [{ role: "user", content: privateBody }],
+        })
+        expect(response.status).toBe(stream ? 200 : 502)
+        const body = await response.text()
+        expect(body).toContain("Generation capacity exhausted")
+        expect(body).toContain("capacity_exhausted")
+        expect(body).toContain("api_error")
+        if (stream) {
+          expect(body).toContain("event: error")
+          expect(body).not.toContain("[DONE]")
+        }
+        expect(
+          logs.some(
+            (log) =>
+              log.type === "debug" && log.text.includes("Set max_tokens to:"),
+          ),
+        ).toBe(true)
+        expect(
+          logs.some(
+            (log) =>
+              log.type === "error"
+              && log.text.includes("capacity_exhausted")
+              && log.text.includes("Generation capacity exhausted"),
+          ),
+        ).toBe(true)
+        const output = [
+          ...logs.map((log) => log.text),
+          ...stdout.writes,
+          ...stderrWrites,
+        ].join("\n")
+        for (const secret of [bearerToken, editsSession, privateBody]) {
+          expect(output.includes(secret)).toBe(false)
+          expect(body.includes(secret)).toBe(false)
+        }
+      } finally {
+        stderr.mockRestore()
+        stdout.restore()
+        handlerLogger.removeReporter(reporter)
+        consola.removeReporter(reporter)
+        handlerLogger.level = previousHandlerLevel
+        consola.level = previousLevel
+        state.verbose = previousVerbose
+      }
+    },
+  )
+
   test.each(["progress", "completion"] as const)(
     "stdout %s 写入失败时保留完整 SSE 并关闭流",
     async (phase) => {
@@ -949,7 +1064,6 @@ describe("native chat completions usage and outcomes", () => {
       const body = await response.text()
       expect(body).toContain("event: error")
       expect(body).toContain("overloaded")
-      expect(body).toContain("[DONE]")
       expect(body).not.toContain("incomplete_stream")
       expect(requestTiming?.outcome).toBe("error")
       expect(
@@ -1150,7 +1264,238 @@ describe("native chat completions usage and outcomes", () => {
     })
   })
 
-  const requestCompletion = async (): Promise<Response> => {
+  test.each(["same-message", "trailing", "repeated"] as const)(
+    "HTTP 200 finish_reason:error fails the request and records %s usage once",
+    async (placement) => {
+      chatCompletionsHandlerDependencies.createChatCompletions =
+        originalCreateChatCompletions
+      const usage = {
+        ...usageChunk.usage,
+        prompt_tokens_details: { cached_tokens: 4 },
+      }
+      const copilotUsage = {
+        total_nano_aiu: 1_612_500,
+        token_details: [
+          {
+            token_type: "input",
+            token_count: 8,
+            batch_size: 1_000_000,
+            cost_per_batch: 25_000_000_000,
+          },
+        ],
+      }
+      const failure = {
+        ...contentChunk(""),
+        choices: [{ index: 0, delta: {}, finish_reason: "error" }],
+        ...(placement === "same-message" ?
+          { usage, copilot_usage: copilotUsage }
+        : {}),
+      }
+      const billedUsage = {
+        ...usageChunk,
+        usage,
+        copilot_usage: copilotUsage,
+      }
+      const failures = placement === "repeated" ? [failure, failure] : [failure]
+      const trailingUsage =
+        placement === "same-message" ? []
+        : placement === "repeated" ? [billedUsage, billedUsage]
+        : [billedUsage]
+      const body =
+        sseBody([contentChunk("partial"), ...failures])
+        + trailingUsage
+          .map((value) => `data: ${JSON.stringify(value)}\n\n`)
+          .join("")
+      installFetch(mock(() => Promise.resolve(streamingResponse(body))))
+      const stdout = captureStdout()
+      try {
+        const response = await requestCompletion()
+        expect(response.status).toBe(200)
+        const text = await response.text()
+        expect(text).toContain("partial")
+        expect(text.match(/event: error/g) ?? []).toHaveLength(1)
+        const errorFrame = text
+          .split("\n\n")
+          .find((frame) => frame.includes("event: error"))
+        const errorData = errorFrame
+          ?.split("\n")
+          .find((line) => line.startsWith("data: "))
+          ?.slice(6)
+        const error = JSON.parse(errorData ?? "{}") as {
+          error?: { message?: string }
+        }
+        expect(error.error?.message?.trim().length).toBeGreaterThan(0)
+        expect(requestTiming?.outcome).toBe("error")
+        expect(
+          streamLogWrites(stdout.writes).some((write) => write.includes("✓")),
+        ).toBe(false)
+        expect(response.headers.get("x-usage-ratelimit-session")).toBe(
+          RATE_LIMIT_HEADER,
+        )
+        const events = await getTokenUsageEventsPage({
+          page: 1,
+          pageSize: 10,
+          period: "today",
+        })
+        expect(events.items).toHaveLength(1)
+        expect(events.items[0]).toMatchObject({
+          endpoint: "chat_completions",
+          request_outcome: "error",
+          input_tokens: 8,
+          cache_read_input_tokens: 4,
+          output_tokens: 5,
+          total_tokens: 17,
+          total_nano_aiu: 1_612_500,
+          nano_cost_input: 200_000,
+        })
+      } finally {
+        stdout.restore()
+      }
+    },
+  )
+
+  test.each(["json_error", "sse_error"] as const)(
+    "HTTP 200 %s preserves safe details and same-message billing without duplicate errors",
+    async (kind) => {
+      chatCompletionsHandlerDependencies.createChatCompletions =
+        originalCreateChatCompletions
+      const failure = {
+        ...usageChunk,
+        copilot_usage: { total_nano_aiu: 1_612_500 },
+        error: {
+          type: "api_error",
+          code: "capacity_exhausted",
+          message:
+            "Generation capacity exhausted. Authorization: Bearer sk-fixture-secret; Copilot-Edits-Session: edits-fixture-secret",
+          headers: {
+            Authorization: "Bearer sk-fixture-secret",
+            "Copilot-Edits-Session": "edits-fixture-secret",
+          },
+        },
+      }
+      const frame = `${kind === "sse_error" ? "event: error\n" : ""}data: ${JSON.stringify(failure)}\n\n`
+      installFetch(
+        mock(() =>
+          Promise.resolve(
+            streamingResponse(
+              `data: ${JSON.stringify(contentChunk("partial"))}\n\n${frame}${frame}data: [DONE]\n\n`,
+            ),
+          ),
+        ),
+      )
+      const stdout = captureStdout()
+      try {
+        const response = await requestCompletion()
+        expect(response.status).toBe(200)
+        const body = await response.text()
+        expect(body).toContain("partial")
+        expect(body.match(/event: error/g) ?? []).toHaveLength(1)
+        expect(body).toContain("Generation capacity exhausted")
+        expect(body).toContain("capacity_exhausted")
+        expect(body).toContain("api_error")
+        expect(body).not.toContain("sk-fixture-secret")
+        expect(body).not.toContain("edits-fixture-secret")
+        expect(requestTiming?.outcome).toBe("error")
+        expect(
+          streamLogWrites(stdout.writes).some((write) => write.includes("✓")),
+        ).toBe(false)
+        const events = await getTokenUsageEventsPage({
+          page: 1,
+          pageSize: 10,
+          period: "today",
+        })
+        expect(events.items).toHaveLength(1)
+        expect(events.items[0]).toMatchObject({
+          request_outcome: "error",
+          input_tokens: 12,
+          output_tokens: 5,
+          total_tokens: 17,
+          total_nano_aiu: 1_612_500,
+        })
+      } finally {
+        stdout.restore()
+      }
+    },
+  )
+
+  test.each(["finish_reason", "json_error"] as const)(
+    "non-streaming HTTP 200 %s returns a failed HTTP result and bills consumed usage once",
+    async (kind) => {
+      chatCompletionsHandlerDependencies.createChatCompletions =
+        originalCreateChatCompletions
+      const upstream = createChatCompletionJson()
+      upstream.choices[0].finish_reason =
+        kind === "finish_reason" ? "error" : "stop"
+      installFetch(
+        mock(() =>
+          Promise.resolve(
+            new Response(
+              JSON.stringify({
+                ...upstream,
+                ...(kind === "json_error" ?
+                  {
+                    error: {
+                      type: "api_error",
+                      code: "capacity_exhausted",
+                      message: "Generation capacity exhausted",
+                    },
+                  }
+                : {}),
+              }),
+              {
+                status: 200,
+                headers: {
+                  "content-type": "application/json",
+                  "x-usage-ratelimit-session": RATE_LIMIT_HEADER,
+                },
+              },
+            ),
+          ),
+        ),
+      )
+      const stdout = captureStdout()
+      try {
+        const response = await requestCompletion(false)
+        const body = (await response.json()) as {
+          error?: { message?: string; type?: string; code?: string }
+        }
+        expect(response.status).toBeGreaterThanOrEqual(400)
+        expect(response.status).toBeLessThan(600)
+        expect(body.error?.message?.trim().length).toBeGreaterThan(0)
+        if (kind === "json_error") {
+          expect(body.error).toMatchObject({
+            type: "api_error",
+            code: "capacity_exhausted",
+            message: "Generation capacity exhausted",
+          })
+        }
+        expect(response.headers.get("x-usage-ratelimit-session")).toBe(
+          RATE_LIMIT_HEADER,
+        )
+        expect(requestTiming?.outcome).toBe("error")
+        expect(
+          streamLogWrites(stdout.writes).some((write) => write.includes("✓")),
+        ).toBe(false)
+        const events = await getTokenUsageEventsPage({
+          page: 1,
+          pageSize: 10,
+          period: "today",
+        })
+        expect(events.items).toHaveLength(1)
+        expect(events.items[0]).toMatchObject({
+          request_outcome: "error",
+          input_tokens: 12,
+          output_tokens: 5,
+          total_tokens: 17,
+          total_nano_aiu: 1_612_500,
+        })
+      } finally {
+        stdout.restore()
+      }
+    },
+  )
+
+  const requestCompletion = async (stream = true): Promise<Response> => {
     const app = new Hono()
     app.use(traceIdMiddleware)
     app.use(requestEventsMiddleware(undefined, 4141))
@@ -1165,7 +1510,7 @@ describe("native chat completions usage and outcomes", () => {
       body: JSON.stringify({
         messages: [{ role: "user", content: "hello" }],
         model: "gpt-test",
-        stream: true,
+        stream,
       }),
     })
   }

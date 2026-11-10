@@ -720,3 +720,203 @@ describe("dashscope preserve_thinking default on chat completions route", () => 
     expect(body).not.toHaveProperty("preserve_thinking")
   })
 })
+
+describe("provider chat generation failures", () => {
+  const databaseEnv = "COPILOT_API_SQLITE_DB_PATH"
+  let originalDatabasePath: string | undefined
+
+  beforeEach(async () => {
+    restoreTokenUsageRecorder()
+    restoreTokenUsageRecorder = () => {}
+    originalDatabasePath = process.env[databaseEnv]
+    await actualTokenUsageModule.closeUsageStore()
+    process.env[databaseEnv] = ":memory:"
+  })
+
+  afterEach(async () => {
+    await actualTokenUsageModule.closeUsageStore()
+    if (originalDatabasePath === undefined) {
+      Reflect.deleteProperty(process.env, databaseEnv)
+    } else {
+      process.env[databaseEnv] = originalDatabasePath
+    }
+  })
+
+  test.each(["finish_reason", "json_error", "sse_error"] as const)(
+    "provider HTTP 200 %s emits one safe failure and retains same-message usage once",
+    async (kind) => {
+      const failure = {
+        choices:
+          kind === "finish_reason" ?
+            [{ index: 0, delta: {}, finish_reason: "error" }]
+          : [],
+        ...(kind !== "finish_reason" ?
+          {
+            error: {
+              type: "api_error",
+              code: "capacity_exhausted",
+              message:
+                "Generation capacity exhausted. Authorization: Bearer test-token; Copilot-Edits-Session: edits-provider-fixture-secret",
+              headers: {
+                Authorization: "Bearer test-token",
+                "Copilot-Edits-Session": "edits-provider-fixture-secret",
+              },
+            },
+          }
+        : {}),
+        usage: { prompt_tokens: 8, completion_tokens: 2, total_tokens: 10 },
+      }
+      const frame = `${kind === "sse_error" ? "event: error\n" : ""}data: ${JSON.stringify(failure)}\n\n`
+      fetchMock.mockResolvedValueOnce(
+        new Response(`${frame}${frame}data: [DONE]\n\n`, {
+          status: 200,
+          headers: {
+            "content-type": "text/event-stream",
+            "x-usage-ratelimit-session": "rem=5",
+          },
+        }),
+      )
+      const response = await createApp().request("/v1/chat/completions", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "dash/qwen-plus",
+          stream: true,
+          messages: [{ role: "user", content: "hello" }],
+        }),
+      })
+      expect(response.status).toBe(200)
+      const body = await response.text()
+      expect(body.match(/event: error/g) ?? []).toHaveLength(1)
+      if (kind !== "finish_reason") {
+        expect(body).toContain("Generation capacity exhausted")
+        expect(body).toContain("capacity_exhausted")
+        expect(body).toContain("api_error")
+      }
+      expect(body).not.toContain("test-token")
+      expect(body).not.toContain("edits-provider-fixture-secret")
+      expect(response.headers.get("x-usage-ratelimit-session")).toBe("rem=5")
+      expect(requestTiming?.outcome).toBe("error")
+      const events = await actualTokenUsageModule.getTokenUsageEventsPage({
+        page: 1,
+        pageSize: 10,
+        period: "today",
+      })
+      expect(events.items).toHaveLength(1)
+      expect(events.items[0]).toMatchObject({
+        source: "provider",
+        provider_name: "dash",
+        request_outcome: "error",
+        input_tokens: 8,
+        output_tokens: 2,
+        total_tokens: 10,
+      })
+    },
+  )
+
+  test("provider finish_reason:error drains repeated usage after DONE without duplicate failures or billing", async () => {
+    const failure = {
+      choices: [{ index: 0, delta: {}, finish_reason: "error" }],
+    }
+    const usage = {
+      choices: [],
+      usage: { prompt_tokens: 8, completion_tokens: 2, total_tokens: 10 },
+    }
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        `data: ${JSON.stringify(failure)}\n\ndata: [DONE]\n\ndata: ${JSON.stringify(usage)}\n\ndata: ${JSON.stringify(usage)}\n\n`,
+        { headers: { "content-type": "text/event-stream" } },
+      ),
+    )
+    const response = await createApp().request("/v1/chat/completions", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "dash/qwen-plus",
+        stream: true,
+        messages: [{ role: "user", content: "hello" }],
+      }),
+    })
+    const body = await response.text()
+    expect(body.match(/event: error/g) ?? []).toHaveLength(1)
+    expect(requestTiming?.outcome).toBe("error")
+    const events = await actualTokenUsageModule.getTokenUsageEventsPage({
+      page: 1,
+      pageSize: 10,
+      period: "today",
+    })
+    expect(events.items).toHaveLength(1)
+    expect(events.items[0]).toMatchObject({
+      request_outcome: "error",
+      input_tokens: 8,
+      output_tokens: 2,
+      total_tokens: 10,
+    })
+  })
+
+  test.each(["finish_reason", "json_error"] as const)(
+    "provider non-streaming HTTP 200 %s returns a failed HTTP result and retains usage once",
+    async (kind) => {
+      fetchMock.mockResolvedValueOnce(
+        Response.json({
+          id: "chatcmpl-provider-failed",
+          object: "chat.completion",
+          created: 0,
+          model: "qwen-plus",
+          choices: [
+            {
+              index: 0,
+              message: { role: "assistant", content: "" },
+              finish_reason: kind === "finish_reason" ? "error" : "stop",
+            },
+          ],
+          ...(kind === "json_error" ?
+            {
+              error: {
+                type: "api_error",
+                code: "capacity_exhausted",
+                message: "Generation capacity exhausted",
+              },
+            }
+          : {}),
+          usage: { prompt_tokens: 8, completion_tokens: 2, total_tokens: 10 },
+        }),
+      )
+      const response = await createApp().request("/v1/chat/completions", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "dash/qwen-plus",
+          stream: false,
+          messages: [{ role: "user", content: "hello" }],
+        }),
+      })
+      const body = (await response.json()) as {
+        error?: { message?: string; type?: string; code?: string }
+      }
+      expect(response.status).toBeGreaterThanOrEqual(400)
+      expect(response.status).toBeLessThan(600)
+      expect(body.error?.message?.trim().length).toBeGreaterThan(0)
+      if (kind === "json_error") {
+        expect(body.error).toMatchObject({
+          type: "api_error",
+          code: "capacity_exhausted",
+          message: "Generation capacity exhausted",
+        })
+      }
+      expect(requestTiming?.outcome).toBe("error")
+      const events = await actualTokenUsageModule.getTokenUsageEventsPage({
+        page: 1,
+        pageSize: 10,
+        period: "today",
+      })
+      expect(events.items).toHaveLength(1)
+      expect(events.items[0]).toMatchObject({
+        request_outcome: "error",
+        input_tokens: 8,
+        output_tokens: 2,
+        total_tokens: 10,
+      })
+    },
+  )
+})

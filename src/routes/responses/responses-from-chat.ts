@@ -1,9 +1,14 @@
 import consola from "consola"
 
+import {
+  getChatCompletionFailure,
+  type ChatCompletionFailure,
+} from "~/lib/chat-completions-stream"
 import { mergeCopilotUsage } from "~/lib/token-usage"
 
 import type {
   ChatCompletionChunk,
+  ChatCompletionErrorResponse,
   ChatCompletionsPayload,
   ChatCompletionResponse,
   ContentPart,
@@ -57,6 +62,7 @@ export interface ChatCompletionToResponsesStreamState {
   doneOutputItemIds: Set<string>
   nextOutputIndex: number
   pendingStatus?: ResponseStatus
+  failure?: ChatCompletionFailure
   toolCalls: Map<number, ChatToolCallStreamState>
   latestCopilotUsage?: ChatCompletionChunk["copilot_usage"]
   latestUsage?: ChatCompletionChunk["usage"]
@@ -111,6 +117,8 @@ export const translateChatCompletionChunkToResponsesStreamEvents = (
 ): Array<ResponseStreamEvent> => {
   const events: Array<ResponseStreamEvent> = []
   rememberChunkMetadata(chunk, state)
+  if (state.terminalEmitted || state.failure) return events
+  state.failure = getChatCompletionFailure(chunk) ?? undefined
 
   if (!state.responseCreated) {
     events.push({
@@ -121,10 +129,9 @@ export const translateChatCompletionChunkToResponsesStreamEvents = (
     state.responseCreated = true
   }
 
-  // 整体终态只在 EOF flush 产出：usage-only chunk 不提前关闭错误处理机会。
-  if (chunk.choices.length === 0) return events
-
-  const choice = chunk.choices[0]
+  // 尾随错误仍可将已开启的输出项关闭为 incomplete。
+  const choice = chunk.choices?.[0]
+  if (!choice) return events
   const { delta } = choice
 
   if (delta.content && delta.content.length > 0) {
@@ -170,49 +177,57 @@ export const translateChatCompletionChunkToResponsesStreamEvents = (
     }
   }
 
-  if (choice.finish_reason) {
-    events.push(...buildFinishEvents(choice.finish_reason, state))
+  if (choice.finish_reason && !state.failure) {
+    state.pendingStatus = mapFinishReasonToStatus(choice.finish_reason)
   }
 
   return events
 }
 
-// 整体 completed/incomplete 只在 EOF flush 确认，finish/usage 到达后仍保留错误处理机会。
+// EOF 后再关闭输出项，失败结果包含完整尾随用量。
 export const flushChatCompletionToResponsesStreamEvents = (
   state: ChatCompletionToResponsesStreamState,
 ): Array<ResponseStreamEvent> => {
-  if (!state.pendingStatus || state.terminalEmitted) {
+  const status = state.failure ? "incomplete" : state.pendingStatus
+  if (state.terminalEmitted || !status) {
     return []
   }
 
-  const response = buildResponsesResultFromStreamState(
-    state,
-    state.pendingStatus,
-  )
+  const events = buildFinishEvents(status, state)
+  if (state.failure) {
+    events.push(
+      translateChatCompletionStreamErrorToResponsesEvent(state.failure, state),
+    )
+    return events
+  }
+
+  const response = buildResponsesResultFromStreamState(state, status)
   state.terminalEmitted = true
-  return [
-    {
-      type:
-        response.status === "incomplete" ?
-          "response.incomplete"
-        : "response.completed",
-      sequence_number: nextSequenceNumber(state),
-      response,
-    },
-  ]
+  events.push({
+    type:
+      status === "incomplete" ? "response.incomplete" : "response.completed",
+    sequence_number: nextSequenceNumber(state),
+    response,
+  })
+  return events
 }
 
 export const translateChatCompletionStreamErrorToResponsesEvent = (
   error: unknown,
   state: ChatCompletionToResponsesStreamState = createChatCompletionToResponsesStreamState(),
 ): ResponseStreamEvent => {
-  let message =
-    "An unexpected error occurred during chat completions streaming."
-  if (error instanceof Error) {
-    message = error.message
-  } else if (typeof error === "string") {
-    message = error
-  }
+  const failure = state.failure
+    ?? getChatCompletionFailure(
+      { error: error instanceof Error ? error.message : error },
+      "error",
+    ) ?? {
+      code: null,
+      message:
+        "An unexpected error occurred during chat completions streaming.",
+      type: "api_error",
+    }
+  state.failure = failure
+  state.terminalEmitted = true
 
   if (!state.responseId) {
     state.responseId = "resp_chatcmpl_failed"
@@ -221,10 +236,7 @@ export const translateChatCompletionStreamErrorToResponsesEvent = (
   return {
     type: "response.failed",
     sequence_number: nextSequenceNumber(state),
-    response: buildResponsesResultFromStreamState(state, "failed", {
-      code: null,
-      message,
-    }),
+    response: buildResponsesResultFromStreamState(state, "failed", failure),
   }
 }
 
@@ -448,26 +460,35 @@ const isFunctionCallOutputItem = (
   && (typeof item.output === "string" || Array.isArray(item.output))
 
 export const translateChatCompletionToResponsesResult = (
-  response: ChatCompletionResponse,
+  response: ChatCompletionResponse | ChatCompletionErrorResponse,
 ): ResponsesResult => {
-  const choice = response.choices[0]
-  const finishReason = choice.finish_reason
-  const status = mapFinishReasonToStatus(finishReason)
-  const outputText = choice.message.content ?? ""
-  const output = mapChoiceToOutputItems(response.id, choice, status)
+  const failure = getChatCompletionFailure(response)
+  const choice = response.choices?.[0]
+  const finishReason = choice?.finish_reason
+  const status = failure ? "failed" : mapFinishReasonToStatus(finishReason)
+  const outputText = choice?.message.content ?? ""
+  const output =
+    choice ?
+      mapChoiceToOutputItems(
+        response.id ?? "chatcmpl_failed",
+        choice,
+        failure ? "incomplete" : mapFinishReasonToStatus(finishReason),
+        failure ? "incomplete" : "completed",
+      )
+    : []
 
   return {
-    id: `resp_${response.id}`,
+    id: response.id ? `resp_${response.id}` : "resp_chatcmpl_failed",
     object: "response",
-    created_at: response.created,
-    model: response.model,
+    created_at: response.created ?? 0,
+    model: response.model ?? "",
     output,
     output_text: outputText,
     status,
     copilot_usage: response.copilot_usage ?? null,
     usage: mapUsage(response.usage),
-    error: null,
-    incomplete_details: mapIncompleteDetails(finishReason),
+    error: failure,
+    incomplete_details: failure ? null : mapIncompleteDetails(finishReason),
     instructions: null,
     metadata: null,
     parallel_tool_calls: true,
@@ -482,6 +503,7 @@ const mapChoiceToOutputItems = (
   responseId: string,
   choice: ChatCompletionResponse["choices"][number],
   status: ResponseStatus,
+  toolStatus: ResponseStatus,
 ): Array<ResponseOutputItem> => {
   const items: Array<ResponseOutputItem> = []
   const content = choice.message.content
@@ -496,7 +518,7 @@ const mapChoiceToOutputItems = (
   }
 
   for (const toolCall of choice.message.tool_calls ?? []) {
-    items.push(createFunctionCallOutput(toolCall))
+    items.push(createFunctionCallOutput(toolCall, toolStatus))
   }
 
   return items
@@ -525,13 +547,14 @@ const createMessageOutput = (
 
 const createFunctionCallOutput = (
   toolCall: ToolCall,
+  status: ResponseStatus,
 ): ResponseOutputFunctionCall => ({
   id: `fc_${toolCall.id}`,
   type: "function_call",
   call_id: toolCall.id,
   name: toolCall.function.name,
   arguments: toolCall.function.arguments,
-  status: "completed",
+  status,
 })
 
 const mapFinishReasonToStatus = (
@@ -583,10 +606,12 @@ const rememberChunkMetadata = (
   chunk: ChatCompletionChunk,
   state: ChatCompletionToResponsesStreamState,
 ): void => {
-  state.chatCompletionId = chunk.id
-  state.responseId = `resp_${chunk.id}`
-  state.createdAt = chunk.created
-  state.model = chunk.model
+  if (chunk.id) {
+    state.chatCompletionId = chunk.id
+    state.responseId = `resp_${chunk.id}`
+  }
+  if (chunk.created !== undefined) state.createdAt = chunk.created
+  if (chunk.model) state.model = chunk.model
   if (chunk.copilot_usage) {
     state.latestCopilotUsage = mergeCopilotUsage(
       state.latestCopilotUsage ?? {},
@@ -656,7 +681,7 @@ const ensureToolCall = (
 }
 
 const buildFinishEvents = (
-  finishReason: ChatCompletionChunk["choices"][number]["finish_reason"],
+  status: ResponseStatus,
   state: ChatCompletionToResponsesStreamState,
 ): Array<ResponseStreamEvent> => {
   const events: Array<ResponseStreamEvent> = []
@@ -672,10 +697,7 @@ const buildFinishEvents = (
         text: state.outputText,
       },
       ...emitOutputItemDone(
-        buildTextMessageItem(
-          state,
-          mapFinishReasonToStatus(finishReason ?? undefined),
-        ),
+        buildTextMessageItem(state, status),
         state,
         state.textOutputIndex,
       ),
@@ -688,6 +710,11 @@ const buildFinishEvents = (
       continue
     }
     events.push(
+      ...emitOutputItemAdded(
+        buildFunctionCallItem(toolCallState, "in_progress"),
+        state,
+        toolCallState.outputIndex,
+      ),
       {
         type: "response.function_call_arguments.done",
         sequence_number: nextSequenceNumber(state),
@@ -697,10 +724,7 @@ const buildFinishEvents = (
         arguments: toolCallState.arguments,
       },
       ...emitOutputItemDone(
-        buildFunctionCallItem(
-          toolCallState,
-          mapFinishReasonToStatus(finishReason ?? undefined),
-        ),
+        buildFunctionCallItem(toolCallState, status),
         state,
         toolCallState.outputIndex,
       ),
@@ -708,7 +732,6 @@ const buildFinishEvents = (
     toolCallState.doneEmitted = true
   }
 
-  state.pendingStatus = mapFinishReasonToStatus(finishReason ?? undefined)
   return events
 }
 
@@ -743,7 +766,8 @@ const buildOutputItemsFromStreamState = (
   status: ResponsesResult["status"],
 ): Array<ResponseOutputItem> => {
   const items: Array<ResponseOutputItem> = []
-  const outputStatus = status === "incomplete" ? "incomplete" : "completed"
+  const outputStatus =
+    status === "incomplete" || status === "failed" ? "incomplete" : "completed"
 
   if (state.textOutputIndex !== undefined && state.outputText.length > 0) {
     items.push(buildTextMessageItem(state, outputStatus))

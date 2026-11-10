@@ -1,9 +1,10 @@
 import { type AnthropicResponse } from "~/lib/types/anthropic"
 
 export function mapOpenAIStopReasonToAnthropic(
-  finishReason: "stop" | "length" | "tool_calls" | "content_filter" | null,
+  finishReason:
+    "stop" | "length" | "tool_calls" | "content_filter" | "error" | null,
 ): AnthropicResponse["stop_reason"] {
-  if (finishReason === null) {
+  if (finishReason === null || finishReason === "error") {
     return null
   }
   const stopReasonMap = {

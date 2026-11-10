@@ -124,6 +124,18 @@ Gemini 模型经 [create-chat-completions.ts](../src/services/copilot/create-cha
 
 [Messages api-flows.ts](../src/routes/messages/api-flows.ts) 继续在 route 层无条件调用共享 helper，因此非 Gemini 模型保持该入口的现有标记行为。Gemini metadata 判定只作用于 Copilot Chat 上游，不影响其他 provider。标记不保证缓存命中、配额降低或费用节省。
 
+#### Chat 生成失败
+
+Chat Completions 的 `finish_reason: "error"`、非空顶层 `error` 和 SSE `event: error` 均表示生成失败。仅存在 `copilot_errors` 不自动判定整次请求失败。错误原因来自上游；没有具体原因时保留通用失败，不推断 Gemini 内部原因。
+
+流式失败继续收集同一消息及后续消息中的 `usage`、`copilot_usage`，三个入口均只记录一次请求用量。Chat Completions 在唯一错误事件之前发送汇总用量；Responses 的 Chat fallback 输出包含已接收用量的 `response.failed`。
+
+Messages 的 Chat fallback 关闭已开启内容块后输出一次 Anthropic 错误，不发送 `message_stop`。已经发送 `message_start` 且收到用量时，错误之前的 `message_delta` 携带汇总用量，`stop_reason` 为 `null`；尚未发送 `message_start` 时只发送错误，服务器仍保存已收到的用量。
+
+配置的 OpenAI-compatible provider 在 Chat Completions 和 Messages 入口同样遵循以上失败处理规则。非流式生成失败返回 HTTP 502 与对应协议的错误结果。
+
+失败请求的 `request_outcome` 为 `error`，终端不显示完成标记。错误日志保留上游提供的脱敏原因和错误分类，不输出完整上游错误对象及其中的请求正文或凭据。生成失败不会在代理内部触发重试，也不会改变缓存或 `tool_choice`。
+
 ### Responses API
 
 ```typescript
@@ -915,7 +927,7 @@ interface IChatModelCapabilities {
 | 字段                                         | 官方 | 我们    | 状态              |
 | -------------------------------------------- | ---- | ------- | ----------------- |
 | `finish_reason: function_call`               | ✅   | ❌ 缺失 | ⚠️ 已废弃，可忽略 |
-| `finish_reason: error`                       | ✅   | ❌ 缺失 | ⚠️ 建议添加       |
+| `finish_reason: error`                       | ✅   | ✅      | ✅ 已支持         |
 | `completion_tokens_details.reasoning_tokens` | ✅   | ❌ 缺失 | ⚠️ 建议添加       |
 | `thinking_budget`                            | ✅   | ✅      | ✅                |
 | `reasoning_text/opaque`                      | ✅   | ✅      | ✅                |

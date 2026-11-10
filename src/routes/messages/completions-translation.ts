@@ -3,6 +3,7 @@ import consola from "consola"
 import type { ToolContentSupportType } from "~/lib/config"
 import type { Model } from "~/lib/types/models"
 
+import { getChatCompletionFailure } from "~/lib/chat-completions-stream"
 import { state } from "~/lib/state"
 import {
   type ChatCompletionResponse,
@@ -622,6 +623,11 @@ function translateParallelToolCalls(
 export function translateToAnthropic(
   response: ChatCompletionResponse,
 ): AnthropicResponse {
+  const failure = getChatCompletionFailure(response)
+  if (failure) {
+    throw new Error(failure.message)
+  }
+
   // Merge content from all choices
   const assistantContentBlocks: Array<AnthropicAssistantContentBlock> = []
   let stopReason = response.choices[0]?.finish_reason ?? null

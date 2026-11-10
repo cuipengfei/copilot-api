@@ -3,7 +3,10 @@ import type { Context } from "hono"
 
 import { streamSSE, type SSEMessage } from "hono/streaming"
 
-import { guardChatCompletionsStream } from "~/lib/chat-completions-stream"
+import {
+  getChatCompletionFailure,
+  guardChatCompletionsStream,
+} from "~/lib/chat-completions-stream"
 import { resolveMappedModel } from "~/lib/config"
 import { recordChatCompletionFirstToken } from "~/lib/first-token"
 import {
@@ -31,12 +34,14 @@ import {
   getAttachedResponseHeaders,
   jsonWithForwardedHeaders,
 } from "~/lib/response-headers"
-import { generateRequestIdFromPayload, getUUID, isNullish } from "~/lib/utils"
+import {
+  generateRequestIdFromPayload,
+  getUUID,
+  isAsyncIterable,
+  isNullish,
+} from "~/lib/utils"
 import { handleProviderChatCompletionsForProvider } from "~/routes/provider/chat-completions/handler"
-import type {
-  ChatCompletionResponse,
-  ChatCompletionsPayload,
-} from "~/lib/types/chat-completions"
+import type { ChatCompletionsPayload } from "~/lib/types/chat-completions"
 import {
   createChatCompletions,
   resolveChatCompletionsReasoningEffort,
@@ -69,8 +74,6 @@ export async function handleCompletion(c: Context) {
       provider: providerModelAlias.provider,
     })
   }
-
-  debugJson(logger, "Request payload:", payload)
 
   const selectedModel = findEndpointModel(payload.model)
   payload.model = selectedModel?.id ?? payload.model
@@ -122,12 +125,23 @@ export async function handleCompletion(c: Context) {
     })
   const sourceHeaders = getAttachedResponseHeaders(response)
 
-  if (isNonStreaming(response)) {
-    debugJson(logger, "Non-streaming response:", response)
+  if (!isAsyncIterable(response)) {
     recordUsage(
       normalizeOpenAIUsage(response.usage),
       response.copilot_usage ?? null,
     )
+    const failure = getChatCompletionFailure(response)
+    if (failure) {
+      logger.error("Chat completion failed", {
+        type: failure.type,
+        code: failure.code,
+        message: failure.message,
+      })
+      return jsonWithForwardedHeaders({ error: failure }, sourceHeaders, {
+        status: 502,
+      })
+    }
+    debugJson(logger, "Non-streaming response:", response)
     const premium = getAttachedPremiumInfo(response)
     writeStreamLog(
       { model: payload.model, chunks: 0, done: true, premium },
@@ -149,8 +163,17 @@ export async function handleCompletion(c: Context) {
       for await (const {
         message: chunk,
         completion: parsedChunk,
+        failure,
       } of guardChatCompletionsStream(response)) {
-        debugJson(logger, "Streaming chunk:", chunk)
+        if (failure) {
+          logger.error("Chat completion failed", {
+            type: failure.type,
+            code: failure.code,
+            message: failure.message,
+          })
+        } else {
+          debugJson(logger, "Streaming chunk:", chunk)
+        }
         if (
           chunk.data?.trim() === "[DONE]"
           || (parsedChunk?.choices ?? []).some(
@@ -206,7 +229,3 @@ export async function handleCompletion(c: Context) {
     }
   })
 }
-
-const isNonStreaming = (
-  response: Awaited<ReturnType<typeof createChatCompletions>>,
-): response is ChatCompletionResponse => Object.hasOwn(response, "choices")

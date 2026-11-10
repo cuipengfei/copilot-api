@@ -302,6 +302,7 @@ export interface AnthropicErrorEvent {
   type: "error"
   error: {
     type: string
+    code?: string
     message: string
   }
 }
@@ -323,6 +324,8 @@ export interface AnthropicStreamState {
   contentBlockIndex: number
   contentBlockOpen: boolean
   thinkingBlockOpen: boolean
+  failureEmitted?: boolean
+  latestUsage?: AnthropicMessageDeltaEvent["usage"]
   latestCopilotUsage?: CopilotUsage | null
   pendingMessageDelta?: AnthropicMessageDeltaEvent
   deferredContent?: string

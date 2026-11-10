@@ -238,6 +238,68 @@ describe("messages Chat Completions stream log", () => {
     expect(entries[2].endsWith(" 2\n")).toBe(true)
   })
 
+  test.each(["finish_reason", "top_level"] as const)(
+    "does not mark completion after an upstream %s generation failure",
+    async (failure) => {
+      const failedChunk = {
+        ...createChatChunk("gpt-test", {}),
+        choices:
+          failure === "finish_reason" ?
+            [{ delta: {}, finish_reason: "error", index: 0, logprobs: null }]
+          : [],
+        ...(failure === "top_level" && {
+          error: {
+            type: "server_error",
+            code: "generation_failed",
+            message: "The model could not generate a completion",
+          },
+        }),
+      }
+      messagesApiFlowDependencies.createChatCompletions = () =>
+        Promise.resolve(
+          messagesStream(
+            [
+              createChatChunk("gpt-test", { content: "partial" }),
+              failedChunk,
+              {
+                ...createChatChunk("gpt-test", {}),
+                choices: [],
+                usage: {
+                  prompt_tokens: 12,
+                  completion_tokens: 5,
+                  total_tokens: 17,
+                },
+              },
+            ].map((chunk) => ({
+              event: "message",
+              data: JSON.stringify(chunk),
+            })),
+          ),
+        )
+      const logs = captureStreamLogs()
+      try {
+        const app = new Hono()
+        app.post("/", (c) =>
+          handleWithChatCompletions(c, createStreamPayload("gpt-test"), {
+            logger,
+            requestId: "request-generation-failed",
+          }),
+        )
+
+        const response = await app.request("/", { method: "POST" })
+        const body = await response.text()
+
+        expect(body).toContain("event: error")
+        expect(body).not.toContain("event: message_stop")
+      } finally {
+        logs.restore()
+      }
+
+      expect(logs.entries().length).toBeGreaterThan(0)
+      expect(logs.entries().some((entry) => entry.includes("✓"))).toBe(false)
+    },
+  )
+
   test("does not mark completion when the request signal aborts mid-stream", async () => {
     const gate = Promise.withResolvers<void>()
     messagesApiFlowDependencies.createChatCompletions = () =>

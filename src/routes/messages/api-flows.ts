@@ -7,6 +7,11 @@ import type { CompactType } from "~/lib/compact"
 import type { SubagentMarker } from "~/lib/subagent"
 import type { Model } from "~/lib/types/models"
 
+import {
+  getChatCompletionFailure,
+  guardChatCompletionsStream,
+  type ChatCompletionFailure,
+} from "~/lib/chat-completions-stream"
 import { getRawProviderConfig } from "~/lib/config"
 import {
   recordAnthropicFirstToken,
@@ -58,10 +63,7 @@ import {
   getResponsesTransportForModel,
   getResponsesRequestOptions,
 } from "~/routes/responses/utils"
-import type {
-  ChatCompletionChunk,
-  ChatCompletionResponse,
-} from "~/lib/types/chat-completions"
+import type { ChatCompletionResponse } from "~/lib/types/chat-completions"
 import type {
   ResponsesResult,
   ResponseStreamEvent,
@@ -73,6 +75,7 @@ import { createResponses as createCopilotResponses } from "~/services/copilot/cr
 
 import {
   type AnthropicMessagesPayload,
+  type AnthropicMessageDeltaEvent,
   type AnthropicStreamEventData,
   type AnthropicStreamState,
   type CopilotUsage,
@@ -187,15 +190,25 @@ export const handleWithChatCompletions = async (
   )
   const sourceHeaders = getAttachedResponseHeaders(response)
 
-  if (isNonStreaming(response)) {
+  if (!isAsyncIterable(response)) {
+    recordUsage(normalizeOpenAIUsage(response.usage), response.copilot_usage)
+    const failure = getChatCompletionFailure(response)
+    if (failure) {
+      logger.warn("Chat completions generation failed", {
+        type: failure.type,
+        code: failure.code,
+        message: failure.message,
+      })
+      return jsonWithForwardedHeaders(
+        translateErrorToAnthropicErrorEvent(failure),
+        sourceHeaders,
+        { status: 502 },
+      )
+    }
     debugJson(logger, "Non-streaming response from Copilot:", response)
-    recordUsage({
-      ...normalizeOpenAIUsage(response.usage),
-      total_nano_aiu: normalizeOptionalToken(
-        response.copilot_usage?.total_nano_aiu,
-      ),
-    })
-    const anthropicResponse = translateToAnthropic(response)
+    const anthropicResponse = translateToAnthropic(
+      response as ChatCompletionResponse,
+    )
     debugJson(logger, "Translated Anthropic response:", anthropicResponse)
     return jsonWithForwardedHeaders(anthropicResponse, sourceHeaders)
   }
@@ -204,6 +217,9 @@ export const handleWithChatCompletions = async (
   applyForwardableResponseHeaders(c, sourceHeaders)
   return streamSSE(c, async (stream) => {
     let usage: UsageTokens = {}
+    let copilotUsage: CopilotUsageTokens = {}
+    let failure: ChatCompletionFailure | undefined
+    let terminalEvent: AnthropicMessageDeltaEvent | undefined
     let chunks = 0
     let streamInterrupted = false
     let loopCompleted = false
@@ -218,31 +234,47 @@ export const handleWithChatCompletions = async (
 
     try {
       try {
-        for await (const rawEvent of response) {
-          debugJson(logger, "Copilot raw stream event:", rawEvent)
-          if (rawEvent.data === "[DONE]") {
-            break
-          }
-
-          if (!rawEvent.data) {
+        for await (const guarded of guardChatCompletionsStream(response, {
+          reportPostFinishErrors: true,
+        })) {
+          if (guarded.failure) {
+            failure = guarded.failure
+            streamInterrupted = true
+            logger.warn("Chat completions generation failed", {
+              type: failure.type,
+              code: failure.code,
+              message: failure.message,
+            })
             continue
           }
-
-          const chunk = JSON.parse(rawEvent.data) as ChatCompletionChunk
+          const { message: rawEvent, completion: chunk } = guarded
+          if (!chunk || !rawEvent.data || rawEvent.data === "[DONE]") {
+            continue
+          }
+          debugJson(logger, "Copilot raw stream event:", rawEvent)
           chunks += 1
           writeStreamLog({ model: openAIPayload.model, chunks, done: false })
           recordChatCompletionFirstToken(chunk)
-          if (chunk.usage || chunk.copilot_usage) {
-            usage = mergeAnthropicUsage(usage, {
-              ...normalizeOpenAIUsage(chunk.usage),
-              total_nano_aiu: normalizeOptionalToken(
-                chunk.copilot_usage?.total_nano_aiu,
-              ),
-            })
+          if (chunk.usage) {
+            usage = mergeAnthropicUsage(
+              usage,
+              normalizeOpenAIUsage(chunk.usage),
+            )
+          }
+          if (chunk.copilot_usage) {
+            copilotUsage = mergeCopilotUsage(copilotUsage, chunk.copilot_usage)
           }
           const events = translateChunkToAnthropicEvents(chunk, streamState)
 
           for (const event of events) {
+            // A tool-call finish can be followed by more output or a failure.
+            if (event.type === "message_delta") {
+              terminalEvent = event
+              continue
+            }
+            if (event.type === "message_stop") {
+              continue
+            }
             const eventData = JSON.stringify(event)
             debugLazy(logger, () => ["Translated Anthropic event:", eventData])
             await writeSSEIfConnected(stream, {
@@ -251,21 +283,30 @@ export const handleWithChatCompletions = async (
             })
           }
         }
-      } catch (error) {
+      } catch {
         streamInterrupted = true
-        logger.warn("Chat completions stream interrupted:", error)
+        logger.warn("Chat completions stream interrupted")
       }
 
-      for (const event of flushPendingAnthropicStreamEvents(streamState)) {
+      const finalEvents = flushPendingAnthropicStreamEvents(
+        streamState,
+        failure,
+      )
+      if (!failure && finalEvents.length === 0 && terminalEvent) {
+        finalEvents.push(terminalEvent, { type: "message_stop" })
+      }
+      for (const event of finalEvents) {
         const eventData = JSON.stringify(event)
-        debugLazy(logger, () => ["Translated Anthropic event:", eventData])
+        if (event.type !== "error") {
+          debugLazy(logger, () => ["Translated Anthropic event:", eventData])
+        }
         await writeSSEIfConnected(stream, {
           event: event.type,
           data: eventData,
         })
       }
 
-      if (!streamState.messageCompleted) {
+      if (!streamState.messageCompleted && !streamState.failureEmitted) {
         logger.warn(
           "Chat completions stream ended without completion; sending error event",
         )
@@ -278,7 +319,7 @@ export const handleWithChatCompletions = async (
       loopCompleted = true
     } finally {
       try {
-        recordUsage(usage)
+        recordUsage(usage, copilotUsage)
         finishMessagesStreamLog({
           response,
           model: openAIPayload.model,
@@ -660,10 +701,6 @@ export const handleWithMessagesApi = async (
   })
   return jsonWithForwardedHeaders(response, sourceHeaders)
 }
-
-const isNonStreaming = (
-  response: Awaited<ReturnType<typeof createCopilotChatCompletions>>,
-): response is ChatCompletionResponse => Object.hasOwn(response, "choices")
 
 const createCopilotUsageRecorder = (options: {
   endpoint: TokenUsageEndpoint

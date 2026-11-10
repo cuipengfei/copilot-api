@@ -319,6 +319,166 @@ describe("translateChatCompletionChunkToResponsesStreamEvents tools", () => {
   })
 })
 
+describe("Chat completion generation failures in Responses streams", () => {
+  it.each([
+    { signal: "finish_reason:error", trailingUsage: false },
+    { signal: "finish_reason:error", trailingUsage: true },
+    { signal: "top-level error", trailingUsage: false },
+    { signal: "top-level error", trailingUsage: true },
+  ])("fails once without completing partial outputs for %p", (failure) => {
+    const state = createChatCompletionToResponsesStreamState()
+    const upstreamError = {
+      code: "generation_failed",
+      message: "The upstream generator could not finish this completion.",
+      type: "server_error",
+    }
+    const partial = chunk({
+      choices: [
+        {
+          index: 0,
+          delta: {
+            content: "Partial answer",
+            tool_calls: [
+              {
+                index: 0,
+                id: "call_partial",
+                type: "function",
+                function: { name: "lookup_weather", arguments: '{"city":' },
+              },
+            ],
+          },
+          finish_reason: null,
+          logprobs: null,
+        },
+      ],
+    })
+    const failed = Object.assign(
+      chunk({
+        choices:
+          failure.signal === "finish_reason:error" ?
+            [
+              {
+                index: 0,
+                delta: {},
+                finish_reason: "error",
+                logprobs: null,
+              },
+            ]
+          : [],
+        usage: { prompt_tokens: 11, completion_tokens: 2, total_tokens: 13 },
+        copilot_usage: { total_nano_aiu: 1_500_000 },
+      }),
+      {
+        error: failure.signal === "top-level error" ? upstreamError : undefined,
+      },
+    )
+    const inputs = [partial, failed, failed]
+    if (failure.trailingUsage) {
+      inputs.push(
+        chunk({
+          usage: { prompt_tokens: 17, completion_tokens: 4, total_tokens: 21 },
+          copilot_usage: { total_nano_aiu: 2_500_000 },
+        }),
+      )
+    }
+    const events = inputs.flatMap((input) =>
+      translateChatCompletionChunkToResponsesStreamEvents(input, state),
+    )
+    const lateEvents = translateChatCompletionChunkToResponsesStreamEvents(
+      chunk({
+        choices: [
+          {
+            index: 0,
+            delta: {
+              content: "hidden after failure",
+              tool_calls: [
+                {
+                  index: 0,
+                  function: { arguments: '"hidden after failure"}' },
+                },
+              ],
+            },
+            finish_reason: "stop",
+            logprobs: null,
+          },
+        ],
+      }),
+      state,
+    )
+    events.push(
+      ...lateEvents,
+      ...flushChatCompletionToResponsesStreamEvents(state),
+      ...flushChatCompletionToResponsesStreamEvents(state),
+    )
+
+    expect(
+      events
+        .filter((event) =>
+          [
+            "response.completed",
+            "response.incomplete",
+            "response.failed",
+          ].includes(event.type),
+        )
+        .map((event) => event.type),
+    ).toEqual(["response.failed"])
+    const terminal = events.find((event) => event.type === "response.failed")
+    expect(terminal?.response).toMatchObject({
+      status: "failed",
+      output_text: "Partial answer",
+      usage:
+        failure.trailingUsage ?
+          { input_tokens: 17, output_tokens: 4, total_tokens: 21 }
+        : { input_tokens: 11, output_tokens: 2, total_tokens: 13 },
+      copilot_usage: {
+        total_nano_aiu: failure.trailingUsage ? 2_500_000 : 1_500_000,
+      },
+      output: [
+        expect.objectContaining({ type: "message", status: "incomplete" }),
+        expect.objectContaining({
+          type: "function_call",
+          call_id: "call_partial",
+          arguments: '{"city":',
+          status: "incomplete",
+        }),
+      ],
+    })
+    expect(typeof terminal?.response.error?.message).toBe("string")
+    expect(terminal?.response.error?.message.length).toBeGreaterThan(0)
+    if (failure.signal === "top-level error") {
+      expect(terminal?.response.error).toMatchObject({
+        code: upstreamError.code,
+        message: upstreamError.message,
+      })
+    }
+    expect(lateEvents.map((event) => event.type)).not.toContain(
+      "response.output_text.delta",
+    )
+    expect(lateEvents.map((event) => event.type)).not.toContain(
+      "response.function_call_arguments.delta",
+    )
+    const added = events.filter(
+      (event) => event.type === "response.output_item.added",
+    )
+    expect(added).toHaveLength(2)
+    for (const event of added) {
+      const done = events.filter(
+        (candidate) =>
+          candidate.type === "response.output_item.done"
+          && candidate.item.id === event.item.id,
+      )
+      expect(done).toHaveLength(1)
+      expect(done[0]).toMatchObject({ item: { status: "incomplete" } })
+    }
+    expect(events.at(-1)?.type).toBe("response.failed")
+    for (let index = 1; index < events.length; index++) {
+      expect(events[index].sequence_number).toBeGreaterThan(
+        events[index - 1].sequence_number,
+      )
+    }
+  })
+})
+
 describe("translateChatCompletionStreamErrorToResponsesEvent", () => {
   it("maps stream failures into response.failed", () => {
     const state = createChatCompletionToResponsesStreamState()

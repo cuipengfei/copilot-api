@@ -1,10 +1,16 @@
+import type { ServerSentEventMessage } from "fetch-event-stream"
 import type { Context } from "hono"
 import { streamSSE } from "hono/streaming"
 
-import { writeStreamLog } from "~/lib/logger"
+import {
+  getChatCompletionFailure,
+  guardChatCompletionsStream,
+} from "~/lib/chat-completions-stream"
+import { createHandlerLogger, writeStreamLog } from "~/lib/logger"
 import {
   applyForwardableResponseHeaders,
   getAttachedResponseHeaders,
+  jsonWithForwardedHeaders,
 } from "~/lib/response-headers"
 import { writeSSEIfConnected } from "~/lib/sse"
 import type { SubagentMarker } from "~/lib/subagent"
@@ -16,10 +22,7 @@ import {
   type CopilotUsageTokens,
   type UsageTokens,
 } from "~/lib/token-usage"
-import type {
-  ChatCompletionChunk,
-  ChatCompletionResponse,
-} from "~/lib/types/chat-completions"
+import type { ChatCompletionResponse } from "~/lib/types/chat-completions"
 import type {
   ResponseStreamEvent,
   ResponsesPayload,
@@ -32,11 +35,12 @@ import {
   createChatCompletionToResponsesStreamState,
   flushChatCompletionToResponsesStreamEvents,
   translateChatCompletionChunkToResponsesStreamEvents,
-  translateChatCompletionStreamErrorToResponsesEvent,
   translateChatCompletionToResponsesResult,
   translateResponsesToChatCompletions,
 } from "./responses-from-chat"
 import { compactInputByLatestCompaction } from "./utils"
+
+const logger = createHandlerLogger("responses-chat-handler")
 
 export const responsesChatDependencies = {
   createChatCompletions,
@@ -51,85 +55,6 @@ const isChatCompletionResponse = (
     && "object" in value
     && value.object === "chat.completion"
   )
-}
-
-const isChatCompletionChunkShape = (
-  value: object,
-): value is ChatCompletionChunk => {
-  // 真实上游 chunk 必有 choices 数组（usage-only chunk 可能 choices: []）。
-  // 不依赖 object 字段：Copilot 上游实际 chunk 无 "chat.completion.chunk"。
-  return "choices" in value && Array.isArray(value.choices)
-}
-
-type StreamError = { message?: string }
-
-type ParsedChatStreamEvent =
-  { chunk: ChatCompletionChunk } | { error: StreamError }
-
-const readErrorMessage = (value: unknown): string | undefined => {
-  if (typeof value === "string") {
-    const text = value.trim()
-    if (!text) return undefined
-    try {
-      return readErrorMessage(JSON.parse(text))
-    } catch {
-      // 纯文本 / 非法 JSON 正文本身就是错误文本。
-      return text
-    }
-  }
-  if (typeof value === "object" && value !== null) {
-    const record = value as Record<string, unknown>
-    if (typeof record.message === "string" && record.message.trim()) {
-      return record.message
-    }
-    if (record.error !== undefined) return readErrorMessage(record.error)
-  }
-  return undefined
-}
-
-const readPayloadError = (payload: unknown): StreamError | undefined => {
-  if (typeof payload !== "object" || payload === null) return undefined
-  const { error } = payload as { error?: unknown }
-  if (error === undefined || error === null) return undefined
-  return { message: readErrorMessage(error) }
-}
-
-const parseChatStreamEvent = (
-  value: unknown,
-): ParsedChatStreamEvent | undefined => {
-  if (typeof value !== "object" || value === null) return undefined
-  // createChatCompletions 流式返回 fetch-event-stream envelope
-  // （{ event?: "error", data: "<json>" }）；data 缺失时容忍裸事件。
-  const record = value as Record<string, unknown>
-  const isErrorEvent = record.event === "error"
-  const data = "data" in record ? record.data : value
-
-  let payload: unknown = data
-  if (typeof data === "string") {
-    if (data === "" || data === "[DONE]") {
-      return isErrorEvent ? { error: {} } : undefined
-    }
-    try {
-      payload = JSON.parse(data)
-    } catch {
-      return isErrorEvent ? { error: { message: data } } : undefined
-    }
-  }
-
-  // 错误优先于 choices 识别；无 choices 的 error 载荷同样失败。
-  const error =
-    isErrorEvent ?
-      { message: readErrorMessage(payload) }
-    : readPayloadError(payload)
-  if (error) return { error }
-
-  return (
-      typeof payload === "object"
-        && payload !== null
-        && isChatCompletionChunkShape(payload)
-    ) ?
-      { chunk: payload }
-    : undefined
 }
 
 export async function handleResponsesViaChatCompletions(
@@ -158,14 +83,26 @@ export async function handleResponsesViaChatCompletions(
       subagentMarker: options.subagentMarker,
     },
   )
-  applyForwardableResponseHeaders(c, getAttachedResponseHeaders(chatResponse))
+  const upstreamHeaders = getAttachedResponseHeaders(chatResponse)
+  applyForwardableResponseHeaders(c, upstreamHeaders)
 
-  if (!options.payload.stream) {
-    if (!isChatCompletionResponse(chatResponse)) {
+  if (!isAsyncIterable<ServerSentEventMessage>(chatResponse)) {
+    const failure = getChatCompletionFailure(chatResponse)
+    if (failure) {
+      logger.error("Chat completion failed", {
+        type: failure.type,
+        code: failure.code,
+        message: failure.message,
+      })
+    }
+    if (
+      !failure
+      && (options.payload.stream || !isChatCompletionResponse(chatResponse))
+    ) {
       return c.json(
         {
           error: {
-            message: "Chat Completions fallback returned a stream",
+            message: "Chat Completions fallback did not return a completion",
             type: "invalid_request_error",
           },
         },
@@ -176,14 +113,18 @@ export async function handleResponsesViaChatCompletions(
       normalizeOpenAIUsage(chatResponse.usage),
       copilotUsageToTokens(chatResponse.copilot_usage),
     )
-    return c.json(translateChatCompletionToResponsesResult(chatResponse))
+    const result = translateChatCompletionToResponsesResult(chatResponse)
+    result.model ||= options.payload.model
+    return jsonWithForwardedHeaders(result, upstreamHeaders, {
+      status: failure ? 502 : 200,
+    })
   }
 
-  if (!isAsyncIterable<ChatCompletionChunk>(chatResponse)) {
+  if (!options.payload.stream) {
     return c.json(
       {
         error: {
-          message: "Chat Completions fallback did not return a stream",
+          message: "Chat Completions fallback returned a stream",
           type: "invalid_request_error",
         },
       },
@@ -195,7 +136,6 @@ export async function handleResponsesViaChatCompletions(
     const state = createChatCompletionToResponsesStreamState()
     let chunkCount = 0
     let terminalEventType: ResponseStreamEvent["type"] | undefined
-    let streamError: Error | undefined
     let streamErrored = false
     let usage: UsageTokens = {}
     let copilotUsage: CopilotUsageTokens = {}
@@ -210,16 +150,22 @@ export async function handleResponsesViaChatCompletions(
     }
 
     try {
-      for await (const rawEvent of chatResponse) {
-        const parsed = parseChatStreamEvent(rawEvent)
-        if (!parsed) continue
-        if ("error" in parsed) {
-          streamError ??= new Error(
-            parsed.error.message ?? "Upstream Chat Completions stream error",
-          )
+      for await (const {
+        completion: chunk,
+        failure,
+      } of guardChatCompletionsStream(chatResponse, {
+        reportPostFinishErrors: true,
+      })) {
+        if (failure) {
+          state.failure ??= failure
+          logger.error("Chat completion failed", {
+            type: failure.type,
+            code: failure.code,
+            message: failure.message,
+          })
           continue
         }
-        const { chunk } = parsed
+        if (!chunk) continue
         chunkCount++
         writeStreamLog({
           model: options.payload.model,
@@ -235,16 +181,6 @@ export async function handleResponsesViaChatCompletions(
             copilotUsageToTokens(chunk.copilot_usage),
           )
         }
-        if (streamError) {
-          if (chunk.usage) state.latestUsage = chunk.usage
-          if (chunk.copilot_usage) {
-            state.latestCopilotUsage = mergeCopilotUsage(
-              state.latestCopilotUsage ?? {},
-              chunk.copilot_usage,
-            )
-          }
-          continue
-        }
         for (const event of translateChatCompletionChunkToResponsesStreamEvents(
           chunk,
           state,
@@ -256,7 +192,6 @@ export async function handleResponsesViaChatCompletions(
           })
         }
       }
-      if (streamError) throw streamError
 
       for (const event of flushChatCompletionToResponsesStreamEvents(state)) {
         rememberTerminalEvent(event.type)
@@ -268,14 +203,18 @@ export async function handleResponsesViaChatCompletions(
     } catch (error) {
       streamErrored = true
       if (!state.terminalEmitted) {
-        const event = translateChatCompletionStreamErrorToResponsesEvent(
-          error,
-          state,
-        )
-        await writeSSEIfConnected(stream, {
-          event: event.type,
-          data: JSON.stringify(event),
-        })
+        state.failure ??=
+          getChatCompletionFailure(
+            { error: error instanceof Error ? error.message : error },
+            "error",
+          ) ?? undefined
+        for (const event of flushChatCompletionToResponsesStreamEvents(state)) {
+          rememberTerminalEvent(event.type)
+          await writeSSEIfConnected(stream, {
+            event: event.type,
+            data: JSON.stringify(event),
+          })
+        }
       }
     } finally {
       try {

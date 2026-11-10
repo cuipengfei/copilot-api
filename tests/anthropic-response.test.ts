@@ -263,6 +263,39 @@ describe("OpenAI to Anthropic Non-Streaming Response Translation", () => {
       output_tokens: 10,
     })
   })
+
+  test.each(["finish_reason", "top_level"] as const)(
+    "rejects an upstream %s generation failure instead of returning a successful message",
+    (failure) => {
+      const upstreamError = {
+        type: "server_error",
+        code: "generation_failed",
+        message: "The model could not generate a completion",
+      }
+      const response = {
+        id: "chatcmpl-generation-failed",
+        object: "chat.completion",
+        created: 0,
+        model: "gpt-test",
+        choices: [
+          {
+            index: 0,
+            message: { role: "assistant", content: "partial" },
+            finish_reason: failure === "finish_reason" ? "error" : "stop",
+            logprobs: null,
+          },
+        ],
+        ...(failure === "top_level" && { error: upstreamError }),
+      } as unknown as ChatCompletionResponse
+
+      expect(() => translateToAnthropic(response)).toThrow(Error)
+      if (failure === "top_level") {
+        expect(() => translateToAnthropic(response)).toThrow(
+          upstreamError.message,
+        )
+      }
+    },
+  )
 })
 
 describe("OpenAI to Anthropic Streaming Response Translation", () => {

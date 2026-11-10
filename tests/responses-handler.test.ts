@@ -11,6 +11,8 @@ import { Hono, type Context } from "hono"
 import { SSEStreamingApi } from "hono/streaming"
 
 import { attachResponseHeaders } from "../src/lib/response-headers"
+import { requestEventsMiddleware } from "~/lib/request-events"
+import type { TokenUsageEventRecord } from "~/lib/token-usage"
 import type {
   AnthropicMessagesPayload,
   AnthropicResponse,
@@ -22,6 +24,7 @@ import type {
 } from "~/lib/types/chat-completions"
 import type {
   ResponseInputReasoning,
+  ResponseStreamEvent,
   ResponsesResult,
 } from "~/lib/types/responses"
 import type { CompletionPayloadOptions } from "~/routes/messages/handler"
@@ -3324,4 +3327,279 @@ describe("Responses Chat fallback 带内错误", () => {
       cleanup.mockRestore()
     }
   })
+})
+
+describe("Responses Chat fallback generation failures", () => {
+  const model = "chat-fallback-test"
+  const metadata = {
+    id: "chatcmpl-generation-failure",
+    object: "chat.completion.chunk",
+    model,
+    created: 0,
+  }
+  const upstreamError = {
+    code: "generation_failed",
+    message: "The upstream generator could not finish this completion.",
+    type: "server_error",
+  }
+  const errorUsage = {
+    prompt_tokens: 11,
+    completion_tokens: 2,
+    total_tokens: 13,
+    prompt_tokens_details: { cached_tokens: 3 },
+  }
+  const errorCost = {
+    total_nano_aiu: 1_500_000,
+    token_details: [
+      { batch_size: 1, cost_per_batch: 2, token_count: 8, token_type: "input" },
+      {
+        batch_size: 1,
+        cost_per_batch: 3,
+        token_count: 2,
+        token_type: "output",
+      },
+    ],
+  }
+  let app: Hono
+
+  beforeEach(() => {
+    state.models!.data[0].id = model
+    state.models!.data[0].supported_endpoints = ["/chat/completions"]
+    app = new Hono()
+    app.use(traceIdMiddleware)
+    app.use(requestEventsMiddleware(undefined, 0))
+    app.route("/v1/responses", responsesRoutes)
+    app.route("/token-usage", tokenUsageRoute)
+  })
+
+  test.each([
+    { signal: "finish_reason:error", trailingUsage: false },
+    { signal: "finish_reason:error", trailingUsage: true },
+    { signal: "top-level error", trailingUsage: false },
+    { signal: "top-level error", trailingUsage: true },
+  ])(
+    "streams one failed terminal and records error usage once for %p",
+    async (failure) => {
+      const failurePayload = {
+        ...(failure.signal === "finish_reason:error" ?
+          {
+            ...metadata,
+            choices: [
+              { index: 0, delta: {}, finish_reason: "error", logprobs: null },
+            ],
+          }
+        : { error: upstreamError }),
+        usage: errorUsage,
+        copilot_usage: errorCost,
+      }
+      const payloads: Array<Record<string, unknown>> = [
+        {
+          ...metadata,
+          choices: [
+            {
+              index: 0,
+              delta: { content: "Partial answer" },
+              finish_reason: null,
+              logprobs: null,
+            },
+          ],
+        },
+        failurePayload,
+        failurePayload,
+      ]
+      if (failure.trailingUsage) {
+        payloads.push({
+          ...metadata,
+          choices: [],
+          usage: {
+            prompt_tokens: 17,
+            completion_tokens: 4,
+            total_tokens: 21,
+            prompt_tokens_details: { cached_tokens: 5 },
+          },
+          copilot_usage: {
+            total_nano_aiu: 2_500_000,
+            token_details: [
+              {
+                batch_size: 1,
+                cost_per_batch: 2,
+                token_count: 12,
+                token_type: "input",
+              },
+              {
+                batch_size: 1,
+                cost_per_batch: 3,
+                token_count: 4,
+                token_type: "output",
+              },
+            ],
+          },
+        })
+      }
+      payloads.push({
+        ...metadata,
+        choices: [
+          {
+            index: 0,
+            delta: { content: "hidden after failure" },
+            finish_reason: "stop",
+            logprobs: null,
+          },
+        ],
+      })
+      responsesChatDependencies.createChatCompletions = mock(() =>
+        Promise.resolve(
+          streamChunks([
+            ...payloads.map((payload) => ({ data: JSON.stringify(payload) })),
+            { data: "[DONE]" },
+          ]),
+        ),
+      )
+      const stdout = captureStreamLogs()
+      try {
+        const response = await app.request("/v1/responses", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ model, input: "hello", stream: true }),
+        })
+        expect(response.status).toBe(200)
+        const body = await response.text()
+        const events = body
+          .split("\n")
+          .filter((line) => line.startsWith("data: "))
+          .map((line) => JSON.parse(line.slice(6)) as ResponseStreamEvent)
+        expect(
+          events
+            .filter((event) =>
+              [
+                "response.completed",
+                "response.incomplete",
+                "response.failed",
+              ].includes(event.type),
+            )
+            .map((event) => event.type),
+        ).toEqual(["response.failed"])
+        const terminal = events.find(
+          (event) => event.type === "response.failed",
+        )
+        expect(terminal?.response).toMatchObject({
+          status: "failed",
+          output_text: "Partial answer",
+          usage: {
+            input_tokens: failure.trailingUsage ? 17 : 11,
+            output_tokens: failure.trailingUsage ? 4 : 2,
+            total_tokens: failure.trailingUsage ? 21 : 13,
+            input_tokens_details: {
+              cached_tokens: failure.trailingUsage ? 5 : 3,
+            },
+          },
+          copilot_usage: {
+            total_nano_aiu: failure.trailingUsage ? 2_500_000 : 1_500_000,
+          },
+        })
+        expect(typeof terminal?.response.error?.message).toBe("string")
+        expect(terminal?.response.error?.message.length).toBeGreaterThan(0)
+        if (failure.signal === "top-level error") {
+          expect(terminal?.response.error).toMatchObject({
+            code: upstreamError.code,
+            message: upstreamError.message,
+          })
+        }
+        expect(body).not.toContain("hidden after failure")
+        expect(stdout.entries().some((entry) => entry.includes("✓"))).toBe(
+          false,
+        )
+
+        const pageResponse = await app.request(
+          "/token-usage/events?period=day&page=1&page_size=10",
+        )
+        const page = (await pageResponse.json()) as {
+          items: Array<TokenUsageEventRecord>
+        }
+        expect(page.items).toHaveLength(1)
+        expect(page.items[0]).toMatchObject({
+          endpoint: "responses",
+          model,
+          request_outcome: "error",
+          input_tokens: failure.trailingUsage ? 12 : 8,
+          cache_read_input_tokens: failure.trailingUsage ? 5 : 3,
+          output_tokens: failure.trailingUsage ? 4 : 2,
+          total_tokens: failure.trailingUsage ? 21 : 13,
+          total_nano_aiu: failure.trailingUsage ? 2_500_000 : 1_500_000,
+          nano_cost_input: failure.trailingUsage ? 24 : 16,
+          nano_cost_output: failure.trailingUsage ? 12 : 6,
+        })
+      } finally {
+        stdout.restore()
+      }
+    },
+  )
+
+  test.each(["finish_reason:error", "top-level error"])(
+    "returns an HTTP failure and records usage once for nonstream %s",
+    async (signal) => {
+      const upstream = {
+        ...(signal === "finish_reason:error" ?
+          {
+            ...metadata,
+            object: "chat.completion",
+            choices: [
+              {
+                index: 0,
+                message: { role: "assistant", content: "Partial answer" },
+                finish_reason: "error",
+                logprobs: null,
+              },
+            ],
+          }
+        : { error: upstreamError }),
+        usage: errorUsage,
+        copilot_usage: errorCost,
+      }
+      responsesChatDependencies.createChatCompletions = mock(() =>
+        Promise.resolve(upstream),
+      ) as typeof responsesChatDependencies.createChatCompletions
+
+      const response = await app.request("/v1/responses", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ model, input: "hello", stream: false }),
+      })
+      expect(response.status).toBeGreaterThanOrEqual(500)
+      expect(response.status).toBeLessThan(600)
+      const body = (await response.json()) as {
+        status?: string
+        error?: { code?: string; message?: string }
+      }
+      expect(body.status).not.toBe("completed")
+      expect(typeof body.error?.message).toBe("string")
+      expect(body.error?.message?.length).toBeGreaterThan(0)
+      if (signal === "top-level error") {
+        expect(body.error).toMatchObject({
+          code: upstreamError.code,
+          message: upstreamError.message,
+        })
+      }
+
+      const pageResponse = await app.request(
+        "/token-usage/events?period=day&page=1&page_size=10",
+      )
+      const page = (await pageResponse.json()) as {
+        items: Array<TokenUsageEventRecord>
+      }
+      expect(page.items).toHaveLength(1)
+      expect(page.items[0]).toMatchObject({
+        endpoint: "responses",
+        model,
+        request_outcome: "error",
+        input_tokens: 8,
+        cache_read_input_tokens: 3,
+        output_tokens: 2,
+        total_tokens: 13,
+        total_nano_aiu: 1_500_000,
+        nano_cost_input: 16,
+        nano_cost_output: 6,
+      })
+    },
+  )
 })

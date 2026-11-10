@@ -14,7 +14,7 @@ import type { AnthropicMessagesPayload } from "~/lib/types/anthropic"
 import type { ChatCompletionResponse } from "~/lib/types/chat-completions"
 import type { ResponsesPayload, ResponsesResult } from "~/lib/types/responses"
 import { UpstreamStreamInactivityTimeoutError } from "~/lib/error"
-import type { UsageTokens } from "~/lib/token-usage"
+import type { CopilotUsageTokens, UsageTokens } from "~/lib/token-usage"
 
 const actualConfigModule = await import("~/lib/config")
 const actualTokenUsageModule = await import("~/lib/token-usage")
@@ -23,8 +23,13 @@ let providerConfig: ResolvedProviderConfig | null = null
 let upstreamResponseFactory: () => Response
 
 const recordedUsages: Array<UsageTokens> = []
-const providerTokenUsageRecorder = (usage: UsageTokens): void => {
+const recordedCopilotUsages: Array<CopilotUsageTokens | null | undefined> = []
+const providerTokenUsageRecorder = (
+  usage: UsageTokens,
+  copilotUsage?: CopilotUsageTokens | null,
+): void => {
   recordedUsages.push(usage)
+  recordedCopilotUsages.push(copilotUsage)
 }
 let restoreTokenUsageRecorder = () => {}
 
@@ -194,6 +199,7 @@ beforeEach(() => {
   restoreTokenUsageRecorder = () => recorder.mockRestore()
   providerConfig = createProviderConfig()
   recordedUsages.length = 0
+  recordedCopilotUsages.length = 0
   upstreamResponseFactory = () =>
     new Response(JSON.stringify(createThinkingResponse()), {
       headers: { "content-type": "application/json" },
@@ -608,6 +614,301 @@ describe("provider Messages Anthropic forwarding", () => {
 
     expect(eventTypes).toContain("message_stop")
     expect(eventTypes).not.toContain("error")
+  })
+})
+
+describe("provider Messages OpenAI-compatible failures", () => {
+  const chunkMetadata = {
+    id: "chatcmpl-provider-failure",
+    object: "chat.completion.chunk",
+    created: 0,
+    model: "claude-sonnet-4",
+  }
+  const upstreamError = {
+    message:
+      "Model capacity exhausted; authorization: Bearer sk-provider-secret; request_body: private",
+    code: "provider_overloaded",
+    type: "overloaded_error",
+  }
+  const expectedError = {
+    type: "error",
+    error: {
+      type: "api_error",
+      message: "Model capacity exhausted",
+      code: "provider_overloaded",
+    },
+  }
+  const failureUsage = {
+    prompt_tokens: 5,
+    completion_tokens: 2,
+    total_tokens: 7,
+  }
+  const finalUsage = {
+    prompt_tokens: 11,
+    completion_tokens: 7,
+    total_tokens: 18,
+    prompt_tokens_details: {
+      cached_tokens: 3,
+      cache_creation_input_tokens: 2,
+    },
+  }
+  const finalCopilotUsage: CopilotUsageTokens = { total_nano_aiu: 9000 }
+  const expectedRecordedUsage: UsageTokens = {
+    cache_creation_input_tokens: 2,
+    cache_read_input_tokens: 3,
+    input_tokens: 6,
+    output_tokens: 7,
+    total_tokens: 18,
+  }
+
+  beforeEach(() => {
+    providerConfig = { ...createProviderConfig(), type: "openai-compatible" }
+  })
+
+  test.each([
+    {
+      name: "finish_reason:error retaining its text delta",
+      delta: { content: "partial answer" },
+      failure: {
+        ...chunkMetadata,
+        choices: [
+          {
+            index: 0,
+            delta: { content: "last fragment" },
+            finish_reason: "error",
+          },
+        ],
+        copilot_errors: [upstreamError],
+      },
+      failureEvent: "message",
+      finishFirst: false,
+      expectedBlock: { type: "text", text: "" },
+      expectedDeltas: [
+        { type: "text_delta", text: "partial answer" },
+        { type: "text_delta", text: "last fragment" },
+      ],
+    },
+    {
+      name: "SSE error after tool content",
+      delta: {
+        tool_calls: [
+          {
+            index: 0,
+            id: "call_weather",
+            type: "function",
+            function: { name: "weather", arguments: '{"city":"Paris"}' },
+          },
+        ],
+      },
+      failure: upstreamError,
+      failureEvent: "error",
+      finishFirst: false,
+      expectedBlock: {
+        type: "tool_use",
+        id: "call_weather",
+        name: "weather",
+        input: {},
+      },
+      expectedDeltas: [
+        { type: "input_json_delta", partial_json: '{"city":"Paris"}' },
+      ],
+    },
+    {
+      name: "top-level error after a finish with usage",
+      delta: { content: "partial answer" },
+      failure: { error: upstreamError },
+      failureEvent: "message",
+      finishFirst: true,
+      expectedBlock: { type: "text", text: "" },
+      expectedDeltas: [{ type: "text_delta", text: "partial answer" }],
+    },
+  ])(
+    "emits one error and final usage for $name",
+    async ({
+      delta,
+      failure,
+      failureEvent,
+      finishFirst,
+      expectedBlock,
+      expectedDeltas,
+    }) => {
+      const frames = [
+        `data: ${JSON.stringify({
+          ...chunkMetadata,
+          choices: [{ index: 0, delta, finish_reason: null }],
+        })}`,
+        ...(finishFirst ?
+          [
+            `data: ${JSON.stringify({
+              ...chunkMetadata,
+              choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+              usage: failureUsage,
+            })}`,
+          ]
+        : []),
+        `event: ${failureEvent}\ndata: ${JSON.stringify({
+          ...failure,
+          usage: failureUsage,
+          copilot_usage: { total_nano_aiu: 1000 },
+        })}`,
+        `data: ${JSON.stringify({
+          ...chunkMetadata,
+          choices: [],
+          usage: { prompt_tokens: 9, completion_tokens: 4, total_tokens: 13 },
+          copilot_usage: { total_nano_aiu: 2000 },
+        })}`,
+        "data: [DONE]",
+        `data: ${JSON.stringify({
+          ...chunkMetadata,
+          choices: [],
+          usage: finalUsage,
+          copilot_usage: finalCopilotUsage,
+        })}`,
+      ]
+      upstreamResponseFactory = () =>
+        new Response(`${frames.join("\n\n")}\n\n`, {
+          headers: { "content-type": "text/event-stream" },
+        })
+
+      const response = await createApp().request("/openrouter/v1/messages", {
+        body: JSON.stringify(createMessagesPayload({ stream: true })),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      })
+
+      expect(response.status).toBe(200)
+      const events = parseStreamData(await response.text())
+      expect(fetchMock).toHaveBeenCalledTimes(1)
+      expect(
+        events.filter((event) => event.type === "message_start"),
+      ).toHaveLength(1)
+      expect(events.filter((event) => event.type === "error")).toEqual([
+        expectedError,
+      ])
+      expect(events.at(-1)).toEqual(expectedError)
+      expect(events.map((event) => event.type)).not.toContain("message_stop")
+      const blockStarts = events.filter(
+        (event) => event.type === "content_block_start",
+      )
+      expect(blockStarts.map((event) => event.index)).toEqual([0])
+      expect(blockStarts[0]?.content_block).toEqual(expectedBlock)
+      expect(
+        events
+          .filter((event) => event.type === "content_block_delta")
+          .map((event) => event.delta),
+      ).toEqual([...expectedDeltas])
+      expect(
+        events
+          .filter((event) => event.type === "content_block_stop")
+          .map((event) => event.index),
+      ).toEqual([0])
+      expect(events.filter((event) => event.type === "message_delta")).toEqual([
+        {
+          type: "message_delta",
+          delta: { stop_reason: null, stop_sequence: null },
+          usage: {
+            cache_creation_input_tokens: 2,
+            cache_read_input_tokens: 3,
+            input_tokens: 6,
+            output_tokens: 7,
+          },
+          copilot_usage: finalCopilotUsage,
+        },
+      ])
+      const usageIndex = events.findIndex(
+        (event) => event.type === "message_delta",
+      )
+      expect(
+        events.findIndex((event) => event.type === "content_block_stop"),
+      ).toBeLessThan(usageIndex)
+      expect(usageIndex).toBeLessThan(
+        events.findIndex((event) => event.type === "error"),
+      )
+      expect(recordedUsages).toEqual([expectedRecordedUsage])
+      expect(recordedCopilotUsages).toEqual([finalCopilotUsage])
+    },
+  )
+
+  test("emits only error before message_start while recording drained usage", async () => {
+    const frames = [
+      {
+        error: upstreamError,
+        usage: failureUsage,
+        copilot_usage: { total_nano_aiu: 1000 },
+      },
+      { ...chunkMetadata, choices: [], usage: finalUsage },
+      "[DONE]",
+      { ...chunkMetadata, choices: [], copilot_usage: finalCopilotUsage },
+    ]
+    upstreamResponseFactory = () =>
+      new Response(
+        frames
+          .map(
+            (frame) =>
+              `data: ${typeof frame === "string" ? frame : JSON.stringify(frame)}\n\n`,
+          )
+          .join(""),
+        { headers: { "content-type": "text/event-stream" } },
+      )
+
+    const response = await createApp().request("/openrouter/v1/messages", {
+      body: JSON.stringify(createMessagesPayload({ stream: true })),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    })
+
+    expect(response.status).toBe(200)
+    expect(parseStreamData(await response.text())).toEqual([expectedError])
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(recordedUsages).toEqual([expectedRecordedUsage])
+    expect(recordedCopilotUsages).toEqual([finalCopilotUsage])
+  })
+
+  test.each([
+    {
+      name: "finish_reason:error",
+      body: {
+        ...chunkMetadata,
+        object: "chat.completion",
+        choices: [
+          {
+            index: 0,
+            message: { role: "assistant", content: "partial answer" },
+            finish_reason: "error",
+            logprobs: null,
+          },
+        ],
+        copilot_errors: [upstreamError],
+      },
+    },
+    { name: "top-level error without choices", body: { error: upstreamError } },
+  ])("returns Anthropic 502 with quota headers for $name", async ({ body }) => {
+    upstreamResponseFactory = () =>
+      Response.json(
+        { ...body, usage: finalUsage, copilot_usage: finalCopilotUsage },
+        {
+          headers: {
+            "x-ratelimit-remaining-tokens": "17",
+            "retry-after": "3",
+            "x-request-id": "provider-failure",
+          },
+        },
+      )
+
+    const response = await createApp().request("/openrouter/v1/messages", {
+      body: JSON.stringify(createMessagesPayload()),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    })
+
+    expect(response.status).toBe(502)
+    expect(await response.json()).toEqual(expectedError)
+    expect(response.headers.get("x-ratelimit-remaining-tokens")).toBe("17")
+    expect(response.headers.get("retry-after")).toBe("3")
+    expect(response.headers.get("x-request-id")).toBe("provider-failure")
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(recordedUsages).toEqual([expectedRecordedUsage])
+    expect(recordedCopilotUsages).toEqual([finalCopilotUsage])
   })
 })
 

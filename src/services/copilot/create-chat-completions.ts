@@ -5,6 +5,7 @@ import { randomUUID } from "node:crypto"
 import type { CompactType } from "~/lib/compact"
 import type { SubagentMarker } from "~/lib/subagent"
 import type {
+  ChatCompletionErrorResponse,
   ChatCompletionResponse,
   ChatCompletionsPayload,
 } from "~/lib/types/chat-completions"
@@ -183,9 +184,10 @@ export const createChatCompletions = async (
     )
   }
 
-  const result = (await okResponse.json()) as ChatCompletionResponse
+  const result = (await okResponse.json()) as
+    ChatCompletionResponse | ChatCompletionErrorResponse
   const finishReason =
-    result.choices.length > 0 ? result.choices[0].finish_reason : "stop"
+    result.choices?.length ? result.choices[0].finish_reason : "stop"
   trackResponseSuccess({
     model: payload.model,
     durationMs: Date.now() - start,

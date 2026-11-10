@@ -93,21 +93,6 @@ describe("native chat completion stream completion checks", () => {
     expect(result[1].data).not.toContain("implementation details")
   })
 
-  test.each([
-    { event: "error", data: "upstream failure" },
-    { event: "error" },
-    { data: '{"error":{"message":"rate limited","type":"rate_limit"}}' },
-  ])(
-    "forwards existing upstream errors without duplicates: %j",
-    async (chunk) => {
-      const expected = [{ ...chunk, event: "error" }]
-      expect(await collect([chunk])).toEqual(expected)
-      expect(await collect([chunk], new Error("connection reset"))).toEqual(
-        expected,
-      )
-    },
-  )
-
   test("preserves malformed JSON, comments and non-error JSON", async () => {
     const chunks = [
       { comment: "keepalive" },
@@ -121,10 +106,25 @@ describe("native chat completion stream completion checks", () => {
     expect(await collect(chunks)).toEqual(chunks)
   })
 
-  test("still honors explicit error events when the JSON error field is null", async () => {
-    const chunk = { event: "error", data: '{"error":null}' }
-    expect(await collect([chunk])).toEqual([chunk])
-  })
+  test.each([{ event: "error" }, { event: "error", data: '{"error":null}' }])(
+    "normalizes explicit errors without details into one structured error: %j",
+    async (chunk) => {
+      for (const failure of [undefined, new Error("connection reset")]) {
+        const result = await collect(
+          [chunk, chunk, { data: "[DONE]" }],
+          failure,
+        )
+        expect(result).toHaveLength(1)
+        expect(result[0]?.event).toBe("error")
+        const payload = JSON.parse(result[0]?.data ?? "{}") as {
+          error?: { message?: string; type?: string }
+        }
+        expect(typeof payload.error?.type).toBe("string")
+        expect(typeof payload.error?.message).toBe("string")
+        expect(payload.error?.message?.trim().length).toBeGreaterThan(0)
+      }
+    },
+  )
 
   test.each(["stop", "length", "tool_calls", "content_filter", ""])(
     "accepts string finish_reason %j without DONE and keeps draining usage",
@@ -154,18 +154,230 @@ describe("native chat completion stream completion checks", () => {
     expect(await collect(chunks)).toEqual(chunks)
   })
 
-  test("preserves an error followed by DONE and late usage without another error", async () => {
-    const chunks = [
-      { data: '{"error":{"message":"overloaded"}}' },
-      { data: "[DONE]" },
-      { data: '{"choices":[],"usage":{"total_tokens":12}}' },
-    ]
-    expect(await collect(chunks)).toEqual([
-      { ...chunks[0], event: "error" },
-      chunks[1],
-      chunks[2],
-    ])
+  test.each([false, true])(
+    "reports finish_reason:error as one failure with DONE=%s",
+    async (done) => {
+      const result = await collect([
+        { data: '{"choices":[{"delta":{"content":"partial"}}]}' },
+        { data: '{"choices":[{"delta":{},"finish_reason":"error"}]}' },
+        ...(done ? [{ data: "[DONE]" }] : []),
+      ])
+      const errors = result.filter((event) => event.event === "error")
+      expect(errors).toHaveLength(1)
+      const payload = JSON.parse(errors[0]?.data ?? "{}") as {
+        error?: { message?: string; code?: string }
+      }
+      expect(typeof payload.error?.message).toBe("string")
+      expect(payload.error?.message?.trim().length).toBeGreaterThan(0)
+      expect(payload.error?.code).not.toBe("incomplete_stream")
+      expect(result[0].data).toContain("partial")
+    },
+  )
+
+  test.each([{ code: "generation_failed" }, { type: "upstream_error" }])(
+    "keeps the generic failure reason when metadata only identifies a category for %j",
+    async (details) => {
+      const completion = {
+        choices: [{ delta: {}, finish_reason: "error" }],
+      }
+      const baseline = await collect([{ data: JSON.stringify(completion) }])
+      const annotated = await collect([
+        { data: JSON.stringify({ ...completion, copilot_errors: [details] }) },
+      ])
+      const baselineError = JSON.parse(baseline[0].data ?? "{}") as {
+        error: { message: string }
+      }
+      const annotatedError = JSON.parse(annotated[0].data ?? "{}") as {
+        error: { message: string; code?: string; type?: string }
+      }
+      expect(annotatedError.error.message).toBe(baselineError.error.message)
+      expect(annotatedError.error).toMatchObject(details)
+    },
+  )
+
+  test.each([
+    {
+      message: "Session expired",
+      type: "authentication_error",
+      code: "invalid_session",
+    },
+    {
+      message: "Authorization failed",
+      type: "authorization_error",
+      code: "authorization_failed",
+    },
+    {
+      message: "Missing required secret",
+      type: "invalid_request_error",
+      code: "secret_missing",
+    },
+  ])("preserves non-sensitive upstream error details %j", async (details) => {
+    const result = await collect([{ data: JSON.stringify({ error: details }) }])
+    const payload = JSON.parse(result[0].data ?? "{}") as {
+      error: { message: string; type: string; code: string | null }
+    }
+    expect(payload.error).toEqual(details)
   })
+
+  test("preserves same-message content, metadata and usage before the consumer receives an error", async () => {
+    const usage = { prompt_tokens: 8, completion_tokens: 4, total_tokens: 12 }
+    const copilotUsage = { total_nano_aiu: 1_612_500 }
+    const result = await collect([
+      {
+        data: JSON.stringify({
+          id: "chatcmpl-failed-fragment",
+          object: "chat.completion.chunk",
+          created: 0,
+          model: "gpt-test",
+          choices: [
+            {
+              index: 0,
+              delta: { content: "last partial fragment" },
+              finish_reason: "error",
+            },
+          ],
+          usage,
+          copilot_usage: copilotUsage,
+        }),
+      },
+    ])
+    const errorIndex = result.findIndex((event) => event.event === "error")
+    expect(errorIndex).toBeGreaterThan(0)
+    const beforeError = result
+      .slice(0, errorIndex)
+      .map((event) => JSON.parse(event.data ?? "{}") as ChatCompletionChunk)
+    const partial = beforeError.find((event) =>
+      event.choices.some(
+        (choice) => choice.delta.content === "last partial fragment",
+      ),
+    )
+    expect(partial).toMatchObject({
+      id: "chatcmpl-failed-fragment",
+      model: "gpt-test",
+      choices: [{ delta: { content: "last partial fragment" } }],
+    })
+    expect(beforeError.findLast((event) => event.usage)).toMatchObject({
+      usage,
+      copilot_usage: copilotUsage,
+    })
+    expect(result.filter((event) => event.event === "error")).toHaveLength(1)
+  })
+
+  test.each(["finish_reason", "json_error", "sse_error"] as const)(
+    "%s retains same-message usage and drains duplicate trailing usage without repeating errors",
+    async (kind) => {
+      const usage = { prompt_tokens: 8, completion_tokens: 4, total_tokens: 12 }
+      const copilotUsage = {
+        total_nano_aiu: 1_612_500,
+        token_details: [
+          {
+            token_type: "input",
+            token_count: 8,
+            batch_size: 1_000_000,
+            cost_per_batch: 25_000_000_000,
+          },
+        ],
+      }
+      const failure = {
+        ...(kind === "sse_error" ? { event: "error" } : {}),
+        data: JSON.stringify({
+          choices:
+            kind === "finish_reason" ?
+              [{ index: 0, delta: {}, finish_reason: "error" }]
+            : [],
+          error: {
+            type: "api_error",
+            code: "capacity_exhausted",
+            message: "Generation capacity exhausted",
+          },
+          usage,
+          copilot_usage: copilotUsage,
+        }),
+      }
+      const trailingUsage = {
+        data: JSON.stringify({
+          choices: [],
+          usage,
+          copilot_usage: copilotUsage,
+        }),
+      }
+      let sourceDrained = false
+      async function* source() {
+        await Promise.resolve()
+        yield failure
+        yield failure
+        yield { data: "[DONE]" }
+        yield trailingUsage
+        yield trailingUsage
+        sourceDrained = true
+      }
+      const result = []
+      for await (const event of guardChatCompletionsStream(source())) {
+        result.push(event)
+      }
+      const errors = result.filter((event) => event.message.event === "error")
+      expect(errors).toHaveLength(1)
+      expect(JSON.parse(errors[0]?.message.data ?? "{}")).toMatchObject({
+        error: {
+          type: "api_error",
+          code: "capacity_exhausted",
+          message: "Generation capacity exhausted",
+        },
+      })
+      const failureIndex = result.findIndex(
+        (event) => event.message.event === "error",
+      )
+      const usageEvent = result
+        .slice(0, failureIndex)
+        .findLast((event) => event.completion?.usage)
+      expect(usageEvent?.completion).toMatchObject({
+        usage,
+        copilot_usage: copilotUsage,
+      })
+      expect(sourceDrained).toBe(true)
+    },
+  )
+
+  test.each(["finish_reason", "json_error", "sse_error"] as const)(
+    "%s preserves upstream error details without exposing credentials",
+    async (kind) => {
+      const result = await collect([
+        {
+          ...(kind === "sse_error" ? { event: "error" } : {}),
+          data: JSON.stringify({
+            choices:
+              kind === "finish_reason" ?
+                [{ index: 0, delta: {}, finish_reason: "error" }]
+              : [],
+            error: {
+              type: "api_error",
+              code: "capacity_exhausted",
+              message:
+                "Generation capacity exhausted. Authorization: Bearer sk-fixture-secret; Copilot-Edits-Session: edits-fixture-secret",
+              headers: {
+                Authorization: "Bearer sk-fixture-secret",
+                "Copilot-Edits-Session": "edits-fixture-secret",
+              },
+            },
+          }),
+        },
+        { data: "[DONE]" },
+      ])
+      const errors = result.filter((event) => event.event === "error")
+      expect(errors).toHaveLength(1)
+      const data = errors[0]?.data ?? "{}"
+      const payload = JSON.parse(data) as {
+        error: { type: string; code: string; message: string }
+      }
+      expect(payload.error).toMatchObject({
+        type: "api_error",
+        code: "capacity_exhausted",
+      })
+      expect(payload.error.message).toContain("Generation capacity exhausted")
+      expect(JSON.stringify(result)).not.toContain("sk-fixture-secret")
+      expect(JSON.stringify(result)).not.toContain("edits-fixture-secret")
+    },
+  )
 
   test.each([
     42,

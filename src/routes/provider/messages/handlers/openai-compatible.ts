@@ -4,15 +4,21 @@ import { events } from "fetch-event-stream"
 import { streamSSE } from "hono/streaming"
 
 import type {
+  AnthropicMessageDeltaEvent,
   AnthropicMessagesPayload,
   AnthropicStreamState,
 } from "~/lib/types/anthropic"
 import type {
-  ChatCompletionChunk,
+  ChatCompletionErrorResponse,
   ChatCompletionResponse,
   ChatCompletionsPayload,
 } from "~/lib/types/chat-completions"
 
+import {
+  getChatCompletionFailure,
+  guardChatCompletionsStream,
+  type ChatCompletionFailure,
+} from "~/lib/chat-completions-stream"
 import { type ModelConfig, type ResolvedProviderConfig } from "~/lib/config"
 import { getProviderModelConfig } from "~/lib/provider-model-catalog"
 import {
@@ -30,7 +36,11 @@ import {
 } from "~/lib/response-headers"
 import { writeSSEIfConnected } from "~/lib/sse"
 import {
+  copilotUsageToTokens,
+  mergeAnthropicUsage,
+  mergeCopilotUsage,
   normalizeOpenAIUsage,
+  type CopilotUsageTokens,
   type TokenUsageEndpoint,
   type UsageTokens,
 } from "~/lib/token-usage"
@@ -148,7 +158,8 @@ export const handleOpenAICompatibleProviderMessages = async (
     })
   }
 
-  const jsonBody = (await upstreamResponse.json()) as ChatCompletionResponse
+  const jsonBody = (await upstreamResponse.json()) as
+    ChatCompletionResponse | ChatCompletionErrorResponse
   return respondOpenAICompatibleProviderMessagesJson(c, {
     body: jsonBody,
     modelConfig,
@@ -343,6 +354,9 @@ export const streamOpenAICompatibleProviderMessages = ({
   )
   return streamSSE(c, async (stream) => {
     let usage: UsageTokens = {}
+    let copilotUsage: CopilotUsageTokens | undefined
+    let failure: ChatCompletionFailure | undefined
+    let terminalEvent: AnthropicMessageDeltaEvent | undefined
     const streamState: AnthropicStreamState = {
       messageStartSent: false,
       messageCompleted: false,
@@ -353,102 +367,130 @@ export const streamOpenAICompatibleProviderMessages = ({
     }
 
     try {
-      for await (const chunk of events(upstreamResponse)) {
-        logger.debug(
-          "provider.messages.openai_compatible.raw_stream_event:",
-          chunk.data,
-        )
-        const eventName = chunk.event
-        if (eventName === "ping") {
-          await writeSSEIfConnected(stream, {
-            event: "ping",
-            data: '{"type":"ping"}',
-          })
-          continue
-        }
-
-        if (!chunk.data || chunk.data === "[DONE]") {
-          if (chunk.data === "[DONE]") {
-            break
+      try {
+        for await (const guarded of guardChatCompletionsStream(
+          events(upstreamResponse),
+          { reportPostFinishErrors: true },
+        )) {
+          if (guarded.failure) {
+            failure = guarded.failure
+            logger.warn(
+              "provider.messages.openai_compatible.generation_failed",
+              {
+                provider,
+                type: failure.type,
+                code: failure.code,
+                message: failure.message,
+              },
+            )
+            continue
           }
-          continue
-        }
+          const { message: chunk, completion: parsed } = guarded
+          if (chunk.event === "ping") {
+            await writeSSEIfConnected(stream, {
+              event: "ping",
+              data: '{"type":"ping"}',
+            })
+            continue
+          }
+          if (!parsed || !chunk.data || chunk.data === "[DONE]") {
+            continue
+          }
+          logger.debug(
+            "provider.messages.openai_compatible.raw_stream_event:",
+            chunk.data,
+          )
+          recordChatCompletionFirstToken(parsed)
+          if (parsed.usage) {
+            usage = mergeAnthropicUsage(
+              usage,
+              normalizeOpenAIUsage(parsed.usage),
+            )
+          }
+          if (parsed.copilot_usage) {
+            copilotUsage = mergeCopilotUsage(
+              copilotUsage ?? {},
+              copilotUsageToTokens(parsed.copilot_usage),
+            )
+          }
 
-        const parsed = parseOpenAICompatibleStreamChunk(chunk.data)
-        recordChatCompletionFirstToken(parsed)
-        if (!parsed) {
-          continue
+          const translatedEvents = translateChunkToAnthropicEvents(
+            parsed,
+            streamState,
+          )
+          for (const event of translatedEvents) {
+            // A finish can still be followed by usage or failure.
+            if (event.type === "message_delta") {
+              terminalEvent = event
+              continue
+            }
+            if (event.type === "message_stop") {
+              continue
+            }
+            const eventData = JSON.stringify(event)
+            debugLazy(logger, () => [
+              "provider.messages.openai_compatible.translated_event:",
+              eventData,
+            ])
+            await writeSSEIfConnected(stream, {
+              event: event.type,
+              data: eventData,
+            })
+          }
         }
+      } catch {
+        logger.warn("provider.messages.openai_compatible.stream_interrupted:", {
+          provider,
+        })
+      }
 
-        if (parsed.usage) {
-          usage = normalizeOpenAIUsage(parsed.usage)
-        }
-
-        const events = translateChunkToAnthropicEvents(parsed, streamState)
-        for (const event of events) {
-          const eventData = JSON.stringify(event)
+      const finalEvents = flushPendingAnthropicStreamEvents(
+        streamState,
+        failure,
+      )
+      if (!failure && finalEvents.length === 0 && terminalEvent) {
+        finalEvents.push(terminalEvent, { type: "message_stop" })
+      }
+      for (const event of finalEvents) {
+        const eventData = JSON.stringify(event)
+        if (event.type !== "error") {
           debugLazy(logger, () => [
             "provider.messages.openai_compatible.translated_event:",
             eventData,
           ])
-          await writeSSEIfConnected(stream, {
-            event: event.type,
-            data: eventData,
-          })
+        }
+        await writeSSEIfConnected(stream, {
+          event: event.type,
+          data: eventData,
+        })
+      }
+
+      if (!streamState.messageCompleted && !streamState.failureEmitted) {
+        logger.warn("provider.messages.openai_compatible.stream_incomplete:", {
+          provider,
+        })
+        const errorEvent = translateErrorToAnthropicErrorEvent()
+        await writeSSEIfConnected(stream, {
+          event: errorEvent.type,
+          data: JSON.stringify(errorEvent),
+        })
+      }
+    } finally {
+      try {
+        recordUsage(usage, copilotUsage)
+      } finally {
+        if (!stream.closed) {
+          await stream.close()
         }
       }
-    } catch (error) {
-      logger.warn("provider.messages.openai_compatible.stream_interrupted:", {
-        error,
-        provider,
-      })
     }
-
-    for (const event of flushPendingAnthropicStreamEvents(streamState)) {
-      const eventData = JSON.stringify(event)
-      debugLazy(logger, () => [
-        "provider.messages.openai_compatible.translated_event:",
-        eventData,
-      ])
-      await writeSSEIfConnected(stream, {
-        event: event.type,
-        data: eventData,
-      })
-    }
-
-    if (!streamState.messageCompleted) {
-      logger.warn("provider.messages.openai_compatible.stream_incomplete:", {
-        provider,
-      })
-      const errorEvent = translateErrorToAnthropicErrorEvent()
-      await writeSSEIfConnected(stream, {
-        event: errorEvent.type,
-        data: JSON.stringify(errorEvent),
-      })
-    }
-
-    recordUsage(usage)
   })
-}
-
-export const parseOpenAICompatibleStreamChunk = (
-  data: string,
-): ChatCompletionChunk | null => {
-  try {
-    return JSON.parse(data) as ChatCompletionChunk
-  } catch (error) {
-    logger.error("provider.messages.openai_compatible.parse_chunk_error", {
-      data,
-      error,
-    })
-    return null
-  }
 }
 
 export const respondOpenAICompatibleProviderMessagesJson = (
   _c: Context,
   options: {
-    body: ChatCompletionResponse
+    body: ChatCompletionResponse | ChatCompletionErrorResponse
     modelConfig: ModelConfig | undefined
     payload: AnthropicMessagesPayload
     pricingCurrency: string | undefined
@@ -473,9 +515,26 @@ export const respondOpenAICompatibleProviderMessagesJson = (
     pricingCurrency,
     usageEndpoint,
   )
-  recordUsage(normalizeOpenAIUsage(body.usage))
+  recordUsage(
+    normalizeOpenAIUsage(body.usage),
+    copilotUsageToTokens(body.copilot_usage),
+  )
+  const failure = getChatCompletionFailure(body)
+  if (failure) {
+    logger.warn("provider.messages.openai_compatible.generation_failed", {
+      provider,
+      type: failure.type,
+      code: failure.code,
+      message: failure.message,
+    })
+    return jsonWithForwardedHeaders(
+      translateErrorToAnthropicErrorEvent(failure),
+      sourceHeaders,
+      { status: 502 },
+    )
+  }
 
-  const anthropicResponse = translateToAnthropic(body)
+  const anthropicResponse = translateToAnthropic(body as ChatCompletionResponse)
   debugJson(
     logger,
     "provider.messages.openai_compatible.no_stream result:",

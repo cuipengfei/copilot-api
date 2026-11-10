@@ -145,6 +145,87 @@ describe("translateChatCompletionToResponsesResult", () => {
     })
   })
 
+  it.each([
+    { signal: "finish_reason:error", finishReason: "error", error: undefined },
+    {
+      signal: "top-level error despite stop",
+      finishReason: "stop",
+      error: {
+        code: "generation_failed",
+        message: "The upstream generator could not finish this completion.",
+        type: "server_error",
+      },
+    },
+  ])("returns failed with partial output and usage for $signal", (failure) => {
+    const response = Object.assign(
+      baseChatCompletion({
+        choices: [
+          {
+            index: 0,
+            message: {
+              role: "assistant",
+              content: "Partial answer",
+              tool_calls: [
+                {
+                  id: "call_partial",
+                  type: "function",
+                  function: { name: "lookup_weather", arguments: '{"city":' },
+                },
+              ],
+            },
+            logprobs: null,
+            finish_reason: failure.finishReason,
+          },
+        ],
+        usage: {
+          prompt_tokens: 11,
+          completion_tokens: 2,
+          total_tokens: 13,
+          prompt_tokens_details: { cached_tokens: 3 },
+        },
+        copilot_usage: { total_nano_aiu: 1_500_000 },
+      }),
+      { error: failure.error },
+    )
+
+    const result = translateChatCompletionToResponsesResult(response)
+
+    expect(result.status).toBe("failed")
+    expect(result.incomplete_details).toBeNull()
+    expect(typeof result.error?.message).toBe("string")
+    expect(result.error?.message.length).toBeGreaterThan(0)
+    if (failure.error) {
+      expect(result.error).toMatchObject({
+        code: failure.error.code,
+        message: failure.error.message,
+      })
+    }
+    expect(result.output_text).toBe("Partial answer")
+    expect(result.output).toMatchObject([
+      {
+        type: "message",
+        status: "incomplete",
+        content: [
+          { type: "output_text", text: "Partial answer", annotations: [] },
+        ],
+      },
+      {
+        type: "function_call",
+        call_id: "call_partial",
+        name: "lookup_weather",
+        arguments: '{"city":',
+        status: "incomplete",
+      },
+    ])
+    expect(result.usage).toEqual({
+      input_tokens: 11,
+      output_tokens: 2,
+      total_tokens: 13,
+      input_tokens_details: { cached_tokens: 3 },
+    })
+    expect(result.copilot_usage).toEqual({ total_nano_aiu: 1_500_000 })
+  })
+
   it("conservatively maps length finish_reason to incomplete max_output_tokens", () => {
     const result = translateChatCompletionToResponsesResult(
       baseChatCompletion({

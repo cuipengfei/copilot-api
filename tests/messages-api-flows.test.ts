@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, expect, mock, spyOn, test } from "bun:test"
 import { Hono } from "hono"
+import { z } from "zod"
 
 import type {
   AnthropicMessagesPayload,
@@ -26,8 +27,10 @@ import { COMPACT_REQUEST } from "~/lib/compact"
 import * as configModule from "~/lib/config"
 import { installModelsDevCatalog } from "~/lib/models-dev-cache"
 import { requestContext, type RequestTiming } from "~/lib/request-context"
+import { requestEventsMiddleware } from "~/lib/request-events"
 import { attachResponseHeaders } from "~/lib/response-headers"
 import { closeUsageStore, getTokenUsageEventsPage } from "~/lib/token-usage"
+import { traceIdMiddleware } from "~/lib/trace"
 
 import { modelsDevCatalogFixture } from "./fixtures/models-dev-catalog"
 
@@ -728,6 +731,274 @@ test("messages Chat Completions stream preserves Copilot AIU across metadata and
     total_nano_aiu: 1_500_000,
   })
 })
+
+const anthropicGenerationErrorSchema = z.looseObject({
+  type: z.literal("error"),
+  error: z.object({
+    type: z.literal("api_error"),
+    code: z.string().optional(),
+    message: z.string().min(1),
+  }),
+})
+
+const contentBlockIndexSchema = z.object({
+  index: z.number().int().nonnegative(),
+})
+
+test.each([
+  { failure: "finish_reason", output: "text", trailingUsage: false },
+  { failure: "finish_reason", output: "tool", trailingUsage: true },
+  { failure: "top_level", output: "text", trailingUsage: true },
+  { failure: "top_level", output: "tool", trailingUsage: false },
+  { failure: "finish_reason", output: "none", trailingUsage: false },
+  { failure: "top_level", output: "none", trailingUsage: true },
+  { failure: "finish_reason", output: "thinking", trailingUsage: true },
+  { failure: "top_level", output: "thinking", trailingUsage: false },
+] as const)(
+  "Messages Chat fallback fails once on $failure after $output output with trailing usage $trailingUsage",
+  async ({ failure, output, trailingUsage }) => {
+    const upstreamError = {
+      type: "server_error",
+      code: "generation_failed",
+      message: "The model could not generate a completion",
+    }
+    const metadata = {
+      id: "chatcmpl-generation-failed",
+      object: "chat.completion.chunk",
+      created: 0,
+      model: "gpt-test",
+    }
+    const finalUsage = {
+      usage: { prompt_tokens: 12, completion_tokens: 5, total_tokens: 17 },
+      copilot_usage: { total_nano_aiu: 250_000 },
+    }
+    const failedChunk = {
+      ...metadata,
+      choices:
+        failure === "finish_reason" ?
+          [{ index: 0, delta: {}, finish_reason: "error", logprobs: null }]
+        : [],
+      ...(failure === "top_level" && { error: upstreamError }),
+      ...(trailingUsage ?
+        {
+          usage: { prompt_tokens: 12, completion_tokens: 2, total_tokens: 14 },
+          copilot_usage: { total_nano_aiu: 100_000 },
+        }
+      : finalUsage),
+    }
+    const delta: ChatCompletionChunk["choices"][number]["delta"] =
+      output === "tool" ?
+        {
+          tool_calls: [
+            {
+              index: 0,
+              id: "call-partial",
+              type: "function",
+              function: { name: "weather", arguments: '{"city":' },
+            },
+          ],
+        }
+      : output === "thinking" ? { reasoning_text: "partial thought" }
+      : { content: "partial answer" }
+    const usageChunk = {
+      ...metadata,
+      choices: [],
+      ...(trailingUsage ? finalUsage : {}),
+    }
+    const chunks = [
+      ...(output === "none" ?
+        []
+      : [
+          {
+            ...metadata,
+            choices: [{ index: 0, delta, finish_reason: null, logprobs: null }],
+          },
+        ]),
+      failedChunk,
+      failedChunk,
+      {
+        ...metadata,
+        choices: [
+          {
+            index: 0,
+            delta: { content: "must-not-appear" },
+            finish_reason: "stop",
+            logprobs: null,
+          },
+        ],
+      },
+      usageChunk,
+      usageChunk,
+    ]
+    messagesApiFlowDependencies.createChatCompletions = () =>
+      Promise.resolve(
+        createMessagesStream([
+          ...chunks.map((chunk) => ({
+            event: "message",
+            data: JSON.stringify(chunk),
+          })),
+          { event: "message", data: "[DONE]" },
+        ]),
+      )
+    let timing: RequestTiming | undefined
+    const app = new Hono()
+    app.use(traceIdMiddleware)
+    app.use(requestEventsMiddleware(undefined, 4141))
+    app.post("/v1/messages", (c) => {
+      timing = requestContext.getStore()?.requestTiming
+      return handleWithChatCompletions(
+        c,
+        {
+          model: "gpt-test",
+          max_tokens: 128,
+          stream: true,
+          messages: [{ role: "user", content: "hello" }],
+        },
+        { logger, requestId: "request-generation-failed" },
+      )
+    })
+
+    const response = await app.request("/v1/messages", { method: "POST" })
+    expect(response.status).toBe(200)
+    expect(response.headers.get("content-type")).toContain("text/event-stream")
+    const body = await response.text()
+    const events = parseSseEvents(body)
+    const errors = events.filter((event) => event.event === "error")
+    expect(errors).toHaveLength(1)
+    const error = anthropicGenerationErrorSchema.parse(
+      JSON.parse(errors[0].data),
+    )
+    if (failure === "top_level") {
+      expect(error.error.message).toContain(upstreamError.message)
+      expect(error.error.code).toBe(upstreamError.code)
+    }
+    expect(events.at(-1)?.event).toBe("error")
+    expect(events.some((event) => event.event === "message_stop")).toBe(false)
+    for (const event of events.filter(
+      (event) => event.event === "message_delta",
+    )) {
+      expect(JSON.parse(event.data)).toHaveProperty("delta.stop_reason", null)
+    }
+    expect(body).not.toContain("must-not-appear")
+    if (output !== "none") {
+      expect(
+        events.filter((event) => event.event === "content_block_start"),
+      ).toHaveLength(1)
+      expect(
+        events.filter((event) => event.event === "content_block_delta").length,
+      ).toBeGreaterThan(0)
+      expect(body).toContain(
+        output === "tool" ? "call-partial"
+        : output === "thinking" ? "partial thought"
+        : "partial answer",
+      )
+    }
+    const startedBlocks = events
+      .filter((event) => event.event === "content_block_start")
+      .map(
+        (event) => contentBlockIndexSchema.parse(JSON.parse(event.data)).index,
+      )
+    const stoppedBlocks = events
+      .filter((event) => event.event === "content_block_stop")
+      .map(
+        (event) => contentBlockIndexSchema.parse(JSON.parse(event.data)).index,
+      )
+    expect(stoppedBlocks).toEqual(startedBlocks)
+    expect(timing?.outcome).toBe("error")
+    const usageEvents = await getTokenUsageEventsPage({
+      page: 1,
+      pageSize: 10,
+      period: "today",
+    })
+    expect(usageEvents.items).toHaveLength(1)
+    expect(usageEvents.items[0]).toMatchObject({
+      input_tokens: 12,
+      output_tokens: 5,
+      total_tokens: 17,
+      total_nano_aiu: 250_000,
+    })
+  },
+)
+
+test.each(["finish_reason", "top_level"] as const)(
+  "Messages Chat fallback returns a JSON failure and records usage once for non-streaming %s",
+  async (failure) => {
+    const upstreamError = {
+      type: "server_error",
+      code: "generation_failed",
+      message: "The model could not generate a completion",
+    }
+    messagesApiFlowDependencies.createChatCompletions = () =>
+      Promise.resolve(
+        attachResponseHeaders(
+          {
+            id: "chatcmpl-generation-failed",
+            object: "chat.completion",
+            created: 0,
+            model: "gpt-test",
+            choices: [
+              {
+                index: 0,
+                message: { role: "assistant", content: "partial answer" },
+                finish_reason: failure === "finish_reason" ? "error" : "stop",
+                logprobs: null,
+              },
+            ],
+            ...(failure === "top_level" && { error: upstreamError }),
+            usage: {
+              prompt_tokens: 12,
+              completion_tokens: 5,
+              total_tokens: 17,
+            },
+            copilot_usage: { total_nano_aiu: 250_000 },
+          } as unknown as ChatCompletionResponse,
+          new Headers({ "x-ratelimit-remaining": "42" }),
+        ),
+      )
+    let timing: RequestTiming | undefined
+    const app = new Hono()
+    app.use(traceIdMiddleware)
+    app.use(requestEventsMiddleware(undefined, 4141))
+    app.post("/v1/messages", (c) => {
+      timing = requestContext.getStore()?.requestTiming
+      return handleWithChatCompletions(
+        c,
+        {
+          model: "gpt-test",
+          max_tokens: 128,
+          stream: false,
+          messages: [{ role: "user", content: "hello" }],
+        },
+        { logger, requestId: "request-generation-failed" },
+      )
+    })
+
+    const response = await app.request("/v1/messages", { method: "POST" })
+    expect(response.status).toBeGreaterThanOrEqual(500)
+    expect(response.status).toBeLessThan(600)
+    expect(response.headers.get("content-type")).toContain("application/json")
+    expect(response.headers.get("x-ratelimit-remaining")).toBe("42")
+    const body = anthropicGenerationErrorSchema.parse(await response.json())
+    if (failure === "top_level") {
+      expect(body.error.message).toContain(upstreamError.message)
+      expect(body.error.code).toBe(upstreamError.code)
+    }
+    expect(body).not.toHaveProperty("stop_reason")
+    expect(timing?.outcome).toBe("error")
+    const usageEvents = await getTokenUsageEventsPage({
+      page: 1,
+      pageSize: 10,
+      period: "today",
+    })
+    expect(usageEvents.items).toHaveLength(1)
+    expect(usageEvents.items[0]).toMatchObject({
+      input_tokens: 12,
+      output_tokens: 5,
+      total_tokens: 17,
+      total_nano_aiu: 250_000,
+    })
+  },
+)
 
 test("messages Messages flow records Copilot AIU from streaming message delta", async () => {
   createMessages.mockImplementationOnce(
