@@ -75,9 +75,11 @@ describe("Interaction headers", () => {
     trackPanelRequestCalls = 0
     trackGhostTextShownCalls = 0
 
-    spyOn(autoSession, "getAutoSessionTokenForModel").mockResolvedValue(
-      "test-session-token",
-    )
+    spyOn(autoSession, "getAutoSessionForModel").mockResolvedValue({
+      sessionToken: "test-session-token",
+      source: "auto",
+      expectedDiscount: 10,
+    })
     spyOn(telemetryModule, "trackRequestSent").mockImplementation(() => {})
     spyOn(telemetryModule, "trackResponseSuccess").mockImplementation(() => {})
     spyOn(telemetryModule, "trackResponseError").mockImplementation(() => {})
@@ -249,9 +251,11 @@ describe("modelCallId telemetry alignment", () => {
     state.interactionId = "test-interaction-id"
     state.forceAgent = false
 
-    spyOn(autoSession, "getAutoSessionTokenForModel").mockResolvedValue(
-      "test-session-token",
-    )
+    spyOn(autoSession, "getAutoSessionForModel").mockResolvedValue({
+      sessionToken: "test-session-token",
+      source: "auto",
+      expectedDiscount: 10,
+    })
     spyOn(telemetryModule, "trackRequestSent").mockImplementation(
       (...args: Parameters<typeof telemetryModule.trackRequestSent>) => {
         capturedModelCallIdFromRequestSent = args[3]
@@ -442,9 +446,11 @@ describe("Initiator detection (last-message role)", () => {
     state.interactionId = "test-interaction-id"
     state.forceAgent = false
 
-    spyOn(autoSession, "getAutoSessionTokenForModel").mockResolvedValue(
-      "test-session-token",
-    )
+    spyOn(autoSession, "getAutoSessionForModel").mockResolvedValue({
+      sessionToken: "test-session-token",
+      source: "auto",
+      expectedDiscount: 10,
+    })
     spyOn(telemetryModule, "trackRequestSent").mockImplementation(() => {})
     spyOn(telemetryModule, "trackResponseSuccess").mockImplementation(() => {})
     spyOn(telemetryModule, "trackResponseError").mockImplementation(() => {})
@@ -572,9 +578,11 @@ describe("default reasoning effort injection", () => {
         : model === "gpt-5.4" ? "medium"
         : "high",
     )
-    spyOn(autoSession, "getAutoSessionTokenForModel").mockResolvedValue(
-      "test-session-token",
-    )
+    spyOn(autoSession, "getAutoSessionForModel").mockResolvedValue({
+      sessionToken: "test-session-token",
+      source: "auto",
+      expectedDiscount: 10,
+    })
     spyOn(telemetryModule, "trackRequestSent").mockImplementation(() => {})
     spyOn(telemetryModule, "trackResponseSuccess").mockImplementation(() => {})
     spyOn(telemetryModule, "trackResponseError").mockImplementation(() => {})
@@ -710,11 +718,7 @@ describe("default reasoning effort injection", () => {
   })
 
   test("signature retry keeps the injected config effort", async () => {
-    // 无 Auto 令牌：携带令牌的 400 会先被令牌失效重试原样重发一次，
-    // 签名剥离重试就永远到不了。
-    spyOn(autoSession, "getAutoSessionTokenForModel").mockResolvedValue(
-      undefined,
-    )
+    spyOn(autoSession, "getAutoSessionForModel").mockResolvedValue(undefined)
     const thinkingError = new Response(
       JSON.stringify({ error: { message: "signature invalid" } }),
       { status: 400 },

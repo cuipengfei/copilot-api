@@ -22,3 +22,10 @@ const INTELLIGENCE_PROMPTS = [
 
 export const getIntelligenceProbePrompt = (attempt = 0): string =>
   INTELLIGENCE_PROMPTS[attempt % INTELLIGENCE_PROMPTS.length]
+
+export const getFusionProbePrompts = (): Array<string> => [
+  PREWARM_PROMPT,
+  "Write a CSS rule to center a div using flexbox.",
+  TARGET_CODE_PROMPT,
+  getIntelligenceProbePrompt(),
+]

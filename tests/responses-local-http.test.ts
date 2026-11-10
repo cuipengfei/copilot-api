@@ -18,7 +18,14 @@ import path from "node:path"
 
 import { Hono } from "hono"
 
-import { invalidateAutoSession } from "~/lib/auto-session"
+import {
+  invalidateAutoSession,
+  registerAutoSelection,
+  registerFusionSelection,
+  stopProbeScheduler,
+  whenProbeSchedulerIdle,
+} from "~/lib/auto-session"
+import { getConfig } from "~/lib/config-store"
 import { shutdownLoggerRuntime } from "~/lib/logger"
 import { state } from "~/lib/state"
 import { closeUsageStore, getTokenUsageEventsPage } from "~/lib/token-usage"
@@ -61,6 +68,8 @@ const originalEnv = {
   [DB_PATH_ENV]: process.env[DB_PATH_ENV],
   [LOG_DIR_ENV]: process.env[LOG_DIR_ENV],
 }
+const originalAutoDiscovery = getConfig().autoDiscovery
+const originalFetch = globalThis.fetch
 
 const upstreamRequests: Array<RecordedUpstreamRequest> = []
 let respondToResponses:
@@ -85,6 +94,14 @@ const server = Bun.serve({
       }
       return await respondToResponses(recorded)
     }
+
+    if (recorded.path === "/model/fusion") {
+      return Response.json(
+        { error: { code: "model_pool_not_eligible" } },
+        { status: 403 },
+      )
+    }
+    if (recorded.path === "/auto") return new Response(null, { status: 400 })
 
     return new Response("not found", { status: 404 })
   },
@@ -152,6 +169,26 @@ const textPayload = (overrides: Record<string, unknown> = {}) => ({
   ...overrides,
 })
 
+const registerDiscount = (source: "fusion" | "auto" | "none"): void => {
+  if (source === "none") return
+  expect(
+    registerAutoSelection({
+      selected_model: { id: MODEL, supported_endpoints: ["/responses"] },
+      session_token: "local-auto-session",
+      expires_at: Math.floor(Date.now() / 1000) + 3600,
+    }),
+  ).toBe(true)
+  if (source === "fusion") {
+    expect(
+      registerFusionSelection({
+        modelId: MODEL,
+        sessionToken: "local-fusion-session",
+        expiresAt: Math.floor(Date.now() / 1000) + 3600,
+      }),
+    ).toBe(true)
+  }
+}
+
 beforeAll(async () => {
   tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "responses-local-http-"))
 })
@@ -160,6 +197,14 @@ beforeEach(async () => {
   process.env[DB_PATH_ENV] = path.join(tempDir, `usage-${++dbCounter}.sqlite`)
   process.env[LOG_DIR_ENV] = path.join(tempDir, "logs")
   await closeUsageStore()
+  invalidateAutoSession()
+  getConfig().autoDiscovery = undefined
+  globalThis.fetch = ((input: string | URL | Request, init?: RequestInit) => {
+    const url = new URL(input instanceof Request ? input.url : String(input))
+    if (url.origin !== serverUrl)
+      throw new Error("local HTTP fixture forbids external network")
+    return originalFetch(input, init)
+  }) as typeof fetch
 
   state.copilotToken = TEST_TOKEN
   state.copilotApiUrl = serverUrl
@@ -187,6 +232,9 @@ beforeEach(async () => {
 })
 
 afterEach(async () => {
+  await whenProbeSchedulerIdle()
+  globalThis.fetch = originalFetch
+  getConfig().autoDiscovery = originalAutoDiscovery
   await closeUsageStore()
   for (const [key, value] of Object.entries(originalEnv)) {
     if (value === undefined) Reflect.deleteProperty(process.env, key)
@@ -211,213 +259,350 @@ afterEach(async () => {
 })
 
 afterAll(async () => {
+  stopProbeScheduler()
+  await whenProbeSchedulerIdle()
   await server.stop(true)
   shutdownLoggerRuntime()
-  await fs.rm(tempDir, { recursive: true, force: true })
+  // Logger shutdown does not await stream close; retain logs as diagnostic evidence.
+  for (const entry of await fs.readdir(tempDir)) {
+    if (entry === "logs") continue
+    await fs.rm(path.join(tempDir, entry), { recursive: true, force: true })
+  }
 })
 
 describe("native JSON 响应", () => {
-  test("透传 body 与转发 headers，记录 usage，缺省 effort 走默认值", async () => {
-    respondToResponses = () =>
-      Response.json(
-        createResult({
-          copilot_usage: { total_nano_aiu: 1234 },
-          usage: {
-            input_tokens: 4,
-            input_tokens_details: { cached_tokens: 1 },
-            output_tokens: 2,
-            total_tokens: 6,
+  test.each(["fusion", "auto", "none"] as const)(
+    "%s JSON 保留模型、headers 和上游原始费用",
+    async (source) => {
+      registerDiscount(source)
+      respondToResponses = () =>
+        Response.json(
+          createResult({
+            copilot_usage: { total_nano_aiu: 1234 },
+            usage: {
+              input_tokens: 4,
+              input_tokens_details: { cached_tokens: 1 },
+              output_tokens: 2,
+              total_tokens: 6,
+            },
+          }),
+          {
+            status: 200,
+            headers: {
+              [QUOTA_HEADER]: QUOTA_VALUE,
+              [CUSTOM_HEADER]: CUSTOM_VALUE,
+            },
           },
-        }),
-        {
-          status: 200,
-          headers: {
-            [QUOTA_HEADER]: QUOTA_VALUE,
-            [CUSTOM_HEADER]: CUSTOM_VALUE,
-          },
-        },
-      )
+        )
 
-    const response = await postResponses(textPayload())
+      const response = await postResponses(textPayload())
 
-    expect(response.status).toBe(200)
-    expect(response.headers.get(CUSTOM_HEADER)).toBe(CUSTOM_VALUE)
-    expect(response.headers.get(QUOTA_HEADER)).toBe(QUOTA_VALUE)
-    expect(response.headers.get("content-type")).toContain("application/json")
+      expect(response.status).toBe(200)
+      expect(response.headers.get(CUSTOM_HEADER)).toBe(CUSTOM_VALUE)
+      expect(response.headers.get(QUOTA_HEADER)).toBe(QUOTA_VALUE)
+      expect(response.headers.get("content-type")).toContain("application/json")
 
-    const body = (await response.json()) as ResponsesResult
-    expect(body.id).toBe("resp_local_http")
-    expect(body.model).toBe(MODEL)
-    expect(body.status).toBe("completed")
-    expect(body.usage?.total_tokens).toBe(6)
+      const body = (await response.json()) as ResponsesResult
+      expect(body.id).toBe("resp_local_http")
+      expect(body.model).toBe(MODEL)
+      expect(body.status).toBe("completed")
+      expect(body.usage?.total_tokens).toBe(6)
 
-    expect(responsesCount()).toBe(1)
-    const upstream = responsesRequests()[0]
-    expect(upstream.headers.authorization).toBe(`Bearer ${TEST_TOKEN}`)
-    expect(upstream.headers["x-interaction-id"]).toBe(getUUID(SESSION_ID))
-    expect(upstream.headers["x-request-id"]).toBeTruthy()
+      expect(responsesCount()).toBe(1)
+      const upstream = responsesRequests()[0]
+      expect(upstream.headers.authorization).toBe(`Bearer ${TEST_TOKEN}`)
+      expect(upstream.headers["x-interaction-id"]).toBe(getUUID(SESSION_ID))
+      if (source === "none")
+        expect(upstream.headers["copilot-session-token"]).toBeUndefined()
+      else
+        expect(upstream.headers["copilot-session-token"]).toBe(
+          source === "fusion" ? "local-fusion-session" : "local-auto-session",
+        )
+      expect(
+        upstreamRequests.filter((request) => request.path !== "/responses"),
+      ).toHaveLength(0)
+      expect(body.copilot_usage?.total_nano_aiu).toBe(1234)
+      expect(upstream.headers["x-request-id"]).toBeTruthy()
 
-    const upstreamBody = requestJsonBody(upstream)
-    expect(upstreamBody.model).toBe(MODEL)
-    // 原生默认 effort：客户端未给 reasoning.effort 时按模型配置补默认值
-    const reasoning = upstreamBody.reasoning as { effort?: string }
-    expect(typeof reasoning.effort).toBe("string")
-    expect(reasoning.effort?.length).toBeGreaterThan(0)
+      const upstreamBody = requestJsonBody(upstream)
+      expect(upstreamBody.model).toBe(MODEL)
+      // 原生默认 effort：客户端未给 reasoning.effort 时按模型配置补默认值
+      const reasoning = upstreamBody.reasoning as { effort?: string }
+      expect(typeof reasoning.effort).toBe("string")
+      expect(reasoning.effort?.length).toBeGreaterThan(0)
 
-    // 非流式：app.request 返回即 handler 已执行 recordUsage
-    await closeUsageStore()
-    const page = await getTokenUsageEventsPage({
-      page: 1,
-      pageSize: 10,
-      period: "today",
-    })
-    expect(page.total).toBe(1)
-    const event = page.items[0]
-    expect(event.endpoint).toBe("responses")
-    expect(event.model).toBe(MODEL)
-    expect(event.session_id).toBe(getUUID(SESSION_ID))
-    expect(event.input_tokens).toBe(3)
-    expect(event.output_tokens).toBe(2)
-    expect(event.cache_read_input_tokens).toBe(1)
-    expect(event.total_tokens).toBe(6)
-    expect(event.total_nano_aiu).toBe(1234)
-  })
+      // 非流式：app.request 返回即 handler 已执行 recordUsage
+      await closeUsageStore()
+      const page = await getTokenUsageEventsPage({
+        page: 1,
+        pageSize: 10,
+        period: "today",
+      })
+      expect(page.total).toBe(1)
+      const event = page.items[0]
+      expect(event.endpoint).toBe("responses")
+      expect(event.model).toBe(MODEL)
+      expect(event.session_id).toBe(getUUID(SESSION_ID))
+      expect(event.input_tokens).toBe(3)
+      expect(event.output_tokens).toBe(2)
+      expect(event.cache_read_input_tokens).toBe(1)
+      expect(event.total_tokens).toBe(6)
+      expect(event.total_nano_aiu).toBe(1234)
+    },
+  )
 })
 
 describe("native SSE 流", () => {
-  test("透传事件序列、修复终态 item id、正常结束并记录 usage", async () => {
-    const addedItem = {
-      content: [],
-      id: "item_added_0",
-      role: "assistant",
-      status: "in_progress",
-      type: "message",
-    }
-    respondToResponses = () => {
-      const encoder = new TextEncoder()
-      const stream = new ReadableStream<Uint8Array>({
-        start(controller) {
-          controller.enqueue(
-            encoder.encode(
-              sseEvent("response.created", {
-                response: createResult({ status: "in_progress" }),
-                sequence_number: 0,
-                type: "response.created",
-              }),
-            ),
-          )
-          controller.enqueue(
-            encoder.encode(
-              sseEvent("response.output_item.added", {
-                item: addedItem,
-                output_index: 0,
-                sequence_number: 1,
-                type: "response.output_item.added",
-              }),
-            ),
-          )
-          controller.enqueue(
-            encoder.encode(
-              sseEvent("response.output_text.delta", {
-                content_index: 0,
-                delta: "Hi",
-                item_id: "item_stale_x",
-                output_index: 0,
-                sequence_number: 2,
-                type: "response.output_text.delta",
-              }),
-            ),
-          )
-          controller.enqueue(
-            encoder.encode(
-              sseEvent("response.output_item.done", {
-                item: {
-                  ...addedItem,
-                  id: "item_done_differs",
-                  status: "completed",
-                },
-                output_index: 0,
-                sequence_number: 3,
-                type: "response.output_item.done",
-              }),
-            ),
-          )
-          controller.enqueue(
-            encoder.encode(
-              sseEvent("response.completed", {
-                copilot_usage: { total_nano_aiu: 777 },
-                response: createResult({
-                  usage: {
-                    input_tokens: 10,
-                    input_tokens_details: { cached_tokens: 3 },
-                    output_tokens: 4,
-                    total_tokens: 14,
-                  },
+  test.each(["fusion", "auto", "none"] as const)(
+    "%s SSE 保留模型、headers、事件结束和上游原始费用",
+    async (source) => {
+      registerDiscount(source)
+      const addedItem = {
+        content: [],
+        id: "item_added_0",
+        role: "assistant",
+        status: "in_progress",
+        type: "message",
+      }
+      respondToResponses = () => {
+        const encoder = new TextEncoder()
+        const stream = new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(
+              encoder.encode(
+                sseEvent("response.created", {
+                  response: createResult({ status: "in_progress" }),
+                  sequence_number: 0,
+                  type: "response.created",
                 }),
-                sequence_number: 4,
-                type: "response.completed",
-              }),
-            ),
+              ),
+            )
+            controller.enqueue(
+              encoder.encode(
+                sseEvent("response.output_item.added", {
+                  item: addedItem,
+                  output_index: 0,
+                  sequence_number: 1,
+                  type: "response.output_item.added",
+                }),
+              ),
+            )
+            controller.enqueue(
+              encoder.encode(
+                sseEvent("response.output_text.delta", {
+                  content_index: 0,
+                  delta: "Hi",
+                  item_id: "item_stale_x",
+                  output_index: 0,
+                  sequence_number: 2,
+                  type: "response.output_text.delta",
+                }),
+              ),
+            )
+            controller.enqueue(
+              encoder.encode(
+                sseEvent("response.output_item.done", {
+                  item: {
+                    ...addedItem,
+                    id: "item_done_differs",
+                    status: "completed",
+                  },
+                  output_index: 0,
+                  sequence_number: 3,
+                  type: "response.output_item.done",
+                }),
+              ),
+            )
+            controller.enqueue(
+              encoder.encode(
+                sseEvent("response.completed", {
+                  copilot_usage: { total_nano_aiu: 777 },
+                  response: createResult({
+                    usage: {
+                      input_tokens: 10,
+                      input_tokens_details: { cached_tokens: 3 },
+                      output_tokens: 4,
+                      total_tokens: 14,
+                    },
+                  }),
+                  sequence_number: 4,
+                  type: "response.completed",
+                }),
+              ),
+            )
+            controller.close()
+          },
+        })
+        return new Response(stream, {
+          status: 200,
+          headers: {
+            "content-type": "text/event-stream",
+            [QUOTA_HEADER]: QUOTA_VALUE,
+            [CUSTOM_HEADER]: CUSTOM_VALUE,
+          },
+        })
+      }
+
+      const response = await postResponses(textPayload({ stream: true }))
+
+      expect(response.status).toBe(200)
+      expect(response.headers.get("content-type")).toContain(
+        "text/event-stream",
+      )
+      expect(response.headers.get(CUSTOM_HEADER)).toBe(CUSTOM_VALUE)
+      expect(response.headers.get(QUOTA_HEADER)).toBe(QUOTA_VALUE)
+
+      const events: Array<ServerSentEventMessage> = []
+      for await (const event of sseEvents(response)) events.push(event)
+      expect(events.map((entry) => entry.event)).toEqual([
+        "response.created",
+        "response.output_item.added",
+        "response.output_text.delta",
+        "response.output_item.done",
+        "response.completed",
+      ])
+
+      const delta = JSON.parse(events[2].data ?? "") as { item_id: string }
+      expect(delta.item_id).toBe("item_added_0")
+
+      const done = JSON.parse(events[3].data ?? "") as { item: { id: string } }
+      expect(done.item.id).toBe("item_added_0")
+
+      const completed = JSON.parse(events[4].data ?? "") as {
+        response: { model: string; usage?: { total_tokens?: number } }
+      }
+      expect(completed.response.usage?.total_tokens).toBe(14)
+      expect(completed.response.model).toBe(MODEL)
+
+      expect(responsesCount()).toBe(1)
+      const upstream = responsesRequests()[0]
+      expect(requestJsonBody(upstream).model).toBe(MODEL)
+      expect(upstream.headers.authorization).toBe(`Bearer ${TEST_TOKEN}`)
+      if (source === "none")
+        expect(upstream.headers["copilot-session-token"]).toBeUndefined()
+      else
+        expect(upstream.headers["copilot-session-token"]).toBe(
+          source === "fusion" ? "local-fusion-session" : "local-auto-session",
+        )
+      expect(
+        upstreamRequests.filter((request) => request.path !== "/responses"),
+      ).toHaveLength(0)
+
+      await closeUsageStore()
+      const page = await getTokenUsageEventsPage({
+        page: 1,
+        pageSize: 10,
+        period: "today",
+      })
+      expect(page.total).toBe(1)
+      const event = page.items[0]
+      expect(event.endpoint).toBe("responses")
+      expect(event.model).toBe(MODEL)
+      expect(event.input_tokens).toBe(7)
+      expect(event.output_tokens).toBe(4)
+      expect(event.cache_read_input_tokens).toBe(3)
+      expect(event.total_tokens).toBe(14)
+      expect(event.total_nano_aiu).toBe(777)
+    },
+  )
+})
+
+describe("loopback discount rejection chain", () => {
+  test.each([false, true])(
+    "Fusion to Auto to full price preserves stream=%s and usage",
+    async (stream) => {
+      registerDiscount("fusion")
+      let attempt = 0
+      respondToResponses = () => {
+        attempt += 1
+        if (attempt < 3)
+          return Response.json(
+            { error: { message: "opaque token rejection" } },
+            { status: 401 },
           )
-          controller.close()
-        },
+        const result = createResult({
+          copilot_usage: { total_nano_aiu: 2700 },
+          usage: { input_tokens: 4, output_tokens: 2, total_tokens: 6 },
+        })
+        return stream ?
+            new Response(
+              sseEvent("response.completed", {
+                type: "response.completed",
+                sequence_number: 0,
+                copilot_usage: { total_nano_aiu: 2700 },
+                response: result,
+              }),
+              {
+                headers: {
+                  "content-type": "text/event-stream",
+                  [CUSTOM_HEADER]: CUSTOM_VALUE,
+                },
+              },
+            )
+          : Response.json(result, {
+              headers: { [CUSTOM_HEADER]: CUSTOM_VALUE },
+            })
+      }
+
+      const response = await postResponses(textPayload({ stream }))
+      expect(response.status).toBe(200)
+      expect(response.headers.get(CUSTOM_HEADER)).toBe(CUSTOM_VALUE)
+      if (stream) {
+        const completed: Array<ServerSentEventMessage> = []
+        for await (const event of sseEvents(response)) completed.push(event)
+        expect(completed.map((event) => event.event)).toEqual([
+          "response.completed",
+        ])
+        const parsed = JSON.parse(completed[0].data ?? "{}") as {
+          response: ResponsesResult
+        }
+        expect(parsed.response.model).toBe(MODEL)
+      } else {
+        expect(await response.json()).toMatchObject({
+          model: MODEL,
+          copilot_usage: { total_nano_aiu: 2700 },
+        })
+      }
+      const requests = responsesRequests()
+      expect(requests).toHaveLength(3)
+      expect(requests[0].headers["copilot-session-token"]).toBe(
+        "local-fusion-session",
+      )
+      expect(requests[1].headers["copilot-session-token"]).toBe(
+        "local-auto-session",
+      )
+      expect(requests[2].headers["copilot-session-token"]).toBeUndefined()
+      for (const request of requests) {
+        expect(requestJsonBody(request).model).toBe(MODEL)
+        expect(requestJsonBody(request).input).toEqual(
+          requestJsonBody(requests[0]).input,
+        )
+        expect(requestJsonBody(request).reasoning).toEqual(
+          requestJsonBody(requests[0]).reasoning,
+        )
+        for (const name of [
+          "authorization",
+          "x-interaction-id",
+          "x-request-id",
+          "x-initiator",
+        ]) {
+          expect(request.headers[name]).toBe(requests[0].headers[name])
+        }
+      }
+      await closeUsageStore()
+      const page = await getTokenUsageEventsPage({
+        page: 1,
+        pageSize: 10,
+        period: "today",
       })
-      return new Response(stream, {
-        status: 200,
-        headers: {
-          "content-type": "text/event-stream",
-          [QUOTA_HEADER]: QUOTA_VALUE,
-          [CUSTOM_HEADER]: CUSTOM_VALUE,
-        },
+      expect(page.total).toBe(1)
+      expect(page.items[0]).toMatchObject({
+        model: MODEL,
+        total_tokens: 6,
+        total_nano_aiu: 2700,
       })
-    }
-
-    const response = await postResponses(textPayload({ stream: true }))
-
-    expect(response.status).toBe(200)
-    expect(response.headers.get("content-type")).toContain("text/event-stream")
-    expect(response.headers.get(CUSTOM_HEADER)).toBe(CUSTOM_VALUE)
-    expect(response.headers.get(QUOTA_HEADER)).toBe(QUOTA_VALUE)
-
-    const events: Array<ServerSentEventMessage> = []
-    for await (const event of sseEvents(response)) events.push(event)
-    expect(events.map((entry) => entry.event)).toEqual([
-      "response.created",
-      "response.output_item.added",
-      "response.output_text.delta",
-      "response.output_item.done",
-      "response.completed",
-    ])
-
-    const delta = JSON.parse(events[2].data ?? "") as { item_id: string }
-    expect(delta.item_id).toBe("item_added_0")
-
-    const done = JSON.parse(events[3].data ?? "") as { item: { id: string } }
-    expect(done.item.id).toBe("item_added_0")
-
-    const completed = JSON.parse(events[4].data ?? "") as {
-      response: { usage?: { total_tokens?: number } }
-    }
-    expect(completed.response.usage?.total_tokens).toBe(14)
-
-    expect(responsesCount()).toBe(1)
-
-    await closeUsageStore()
-    const page = await getTokenUsageEventsPage({
-      page: 1,
-      pageSize: 10,
-      period: "today",
-    })
-    expect(page.total).toBe(1)
-    const event = page.items[0]
-    expect(event.endpoint).toBe("responses")
-    expect(event.model).toBe(MODEL)
-    expect(event.input_tokens).toBe(7)
-    expect(event.output_tokens).toBe(4)
-    expect(event.cache_read_input_tokens).toBe(3)
-    expect(event.total_tokens).toBe(14)
-    expect(event.total_nano_aiu).toBe(777)
-  })
+    },
+  )
 })
 
 describe("413 重试", () => {
@@ -433,6 +618,7 @@ describe("413 重试", () => {
     )
 
   test("有图时仅重试一次且 vision/reasoning/session/请求头保持", async () => {
+    registerDiscount("fusion")
     let attempt = 0
     respondToResponses = () => {
       attempt += 1
@@ -501,12 +687,14 @@ describe("413 重试", () => {
       "x-request-id",
       "x-agent-task-id",
       "copilot-vision-request",
+      "copilot-session-token",
     ] as const
     for (const name of preservedHeaders) {
       expect(second.headers[name]).toBe(first.headers[name])
     }
     expect(first.headers["copilot-vision-request"]).toBe("true")
     expect(first.headers["x-interaction-id"]).toBe(getUUID(SESSION_ID))
+    expect(first.headers["copilot-session-token"]).toBe("local-fusion-session")
   })
 
   test("无图 413 不重试且错误透传", async () => {
@@ -546,6 +734,7 @@ describe("413 重试", () => {
 
 describe("取消信号", () => {
   test("预取消直接返回 499 且不触碰上游", async () => {
+    registerDiscount("fusion")
     const controller = new AbortController()
     controller.abort()
 
@@ -560,6 +749,7 @@ describe("取消信号", () => {
   })
 
   test("发送后取消客户端信号仍完整读取上游并记录用量", async () => {
+    registerDiscount("fusion")
     const started =
       Promise.withResolvers<ReadableStreamDefaultController<Uint8Array>>()
     let upstreamCancelled = false
@@ -622,6 +812,9 @@ describe("取消信号", () => {
       expect(trailingEvents).toEqual(["response.completed"])
       expect(upstreamCancelled).toBe(false)
       expect(responsesCount()).toBe(1)
+      expect(responsesRequests()[0].headers["copilot-session-token"]).toBe(
+        "local-fusion-session",
+      )
 
       await closeUsageStore()
       const page = await getTokenUsageEventsPage({

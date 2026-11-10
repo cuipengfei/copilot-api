@@ -1,4 +1,13 @@
-import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test"
+import {
+  afterAll,
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  mock,
+  test,
+} from "bun:test"
+import { rejects } from "node:assert/strict"
 
 import type { AnthropicMessagesPayload } from "~/lib/types/anthropic"
 import type { ChatCompletionsPayload } from "~/lib/types/chat-completions"
@@ -8,10 +17,15 @@ import {
   invalidateAutoSession,
   prewarmAutoSession,
   registerAutoSelection,
+  registerFusionSelection,
+  resumeAutoSessionDiscoveryAfterRotation,
+  stopProbeScheduler,
+  whenProbeSchedulerIdle,
 } from "../src/lib/auto-session"
 import { getConfig } from "../src/lib/config-store"
 import { HTTPError } from "../src/lib/error"
 import { state } from "../src/lib/state"
+import { attachAutoSessionToken } from "../src/services/copilot/auto-session-retry"
 import { createChatCompletions } from "../src/services/copilot/create-chat-completions"
 import { createMessages } from "../src/services/copilot/create-messages"
 import { createResponses } from "../src/services/copilot/create-responses"
@@ -20,6 +34,16 @@ import type { AutoSelectionResponse } from "../src/services/copilot/get-auto-sel
 const originalGithubToken = state.githubToken
 const originalTelemetryEnabled = state.copilotTelemetryEnabled
 const originalAutoDiscovery = getConfig().autoDiscovery
+const originalFetch = globalThis.fetch
+const originalState = {
+  copilotApiUrl: state.copilotApiUrl,
+  copilotToken: state.copilotToken,
+  vsCodeVersion: state.vsCodeVersion,
+  accountType: state.accountType,
+  forceAgent: state.forceAgent,
+  models: state.models,
+  interactionId: state.interactionId,
+}
 const createMessagesPayload: AnthropicMessagesPayload = {
   model: "gpt-5.3-codex",
   max_tokens: 256,
@@ -49,9 +73,7 @@ const queuedAutoSelection = (
   session_token: sessionToken,
 })
 
-const wireFetchMock = (
-  finalResponseFactory: () => Response,
-): ReturnType<typeof mock> => {
+const wireFetchMock = (finalResponseFactory: () => Response) => {
   const REQUEST_CAP = 32
   let requestCount = 0
   const fetchMock = mock((url: string, init?: RequestInit) => {
@@ -59,14 +81,24 @@ const wireFetchMock = (
     if (requestCount > REQUEST_CAP) {
       return Promise.reject(new Error("chain request cap exceeded"))
     }
-    if (url.includes("/auto")) {
+    const path = new URL(url).pathname
+    if (path === "/model/fusion") {
+      return Promise.resolve(
+        Response.json(
+          { error: { code: "model_pool_not_eligible" } },
+          { status: 403 },
+        ),
+      )
+    }
+    if (path === "/auto") {
       const currentQueue = (
         globalThis as unknown as {
           __AUTO_SESSION_QUEUE__?: Array<AutoSelectionResponse>
         }
       ).__AUTO_SESSION_QUEUE__
       const nextPayload = currentQueue?.shift()
-      if (!nextPayload) throw new Error("missing queued /auto response")
+      if (!nextPayload)
+        return Promise.resolve(new Response(null, { status: 400 }))
       return Promise.resolve(createAutoSelectionResponse(nextPayload))
     }
 
@@ -136,19 +168,12 @@ const getFinalCallSnapshots = (
 const createOpaqueTokenRejection = (status: number) =>
   new Response("opaque upstream failure without any known keyword", { status })
 
-const queuePrewarmPlusRefresh = (endpoint: string): void => {
-  ;(
-    globalThis as unknown as {
-      __AUTO_SESSION_QUEUE__: Array<AutoSelectionResponse>
-    }
-  ).__AUTO_SESSION_QUEUE__.push(
-    queuedAutoSelection("gpt-5.3-codex", "session-stale", [endpoint]),
-    // 启动发现消耗 8 个探测点：stale + 7 填充，fresh 留待 re-acquire
-    ...Array.from({ length: 7 }, (_, i) =>
-      queuedAutoSelection(`filler-${i}`, `session-filler-${i}`, [endpoint]),
-    ),
-    queuedAutoSelection("gpt-5.3-codex", "session-fresh", [endpoint]),
-  )
+const queueStaleAuto = (endpoint: string): void => {
+  const queue = Reflect.get(
+    globalThis,
+    "__AUTO_SESSION_QUEUE__",
+  ) as Array<AutoSelectionResponse>
+  queue.push(queuedAutoSelection("gpt-5.3-codex", "session-stale", [endpoint]))
 }
 
 const countAutoCalls = (fetchMock: ReturnType<typeof mock>): number =>
@@ -209,20 +234,60 @@ beforeEach(() => {
   ).__AUTO_SESSION_FINAL_CALLS__ = []
 
   state.copilotToken = "test-copilot-token"
+  state.copilotApiUrl = undefined
   state.copilotTelemetryEnabled = false
   state.vsCodeVersion = "1.0.0"
   state.accountType = "individual"
   state.forceAgent = false
-  state.models = undefined
+  state.models = {
+    object: "list",
+    data: [
+      {
+        id: "gpt-5.3-codex",
+        capabilities: {
+          family: "gpt-5.3-codex",
+          limits: {},
+          object: "capabilities",
+          supports: {
+            adaptive_thinking: false,
+            tool_calls: true,
+            streaming: true,
+          },
+          tokenizer: "o200k_base",
+          type: "chat",
+        },
+        model_picker_enabled: true,
+        name: "GPT-5.3-Codex",
+        object: "model",
+        preview: false,
+        vendor: "OpenAI",
+        version: "1",
+        supported_endpoints: [
+          "/responses",
+          "ws:/responses",
+          "/chat/completions",
+          "/v1/messages",
+        ],
+      },
+    ],
+  }
   state.interactionId = "test-interaction-id"
 })
 
-afterEach(() => {
+afterEach(async () => {
+  await whenProbeSchedulerIdle()
+  globalThis.fetch = originalFetch
+  Object.assign(state, originalState)
   state.githubToken = originalGithubToken
   state.copilotTelemetryEnabled = originalTelemetryEnabled
   invalidateAutoSession()
   getConfig().autoDiscovery = originalAutoDiscovery
   mock.restore()
+})
+
+afterAll(async () => {
+  stopProbeScheduler()
+  await whenProbeSchedulerIdle()
 })
 
 describe("auto-session token injection across chains", () => {
@@ -250,8 +315,14 @@ describe("auto-session token injection across chains", () => {
         initiator: "user",
       })
 
-      const [, init] = findCall(fetchMock, "/v1/messages")
+      const [url, init] = findCall(fetchMock, "/v1/messages")
       expect(getSessionHeader(init)).toBe("session-hit")
+      expect(new URL(url).pathname).toBe("/v1/messages")
+      const headers = new Headers(init.headers)
+      expect(headers.get("Authorization")).toBe(
+        metadata ? "Bearer test-github-token" : "Bearer test-copilot-token",
+      )
+      if (metadata) expect(headers.get("OpenAI-Intent")).toBe("messages-proxy")
 
       const parsedBody: unknown = JSON.parse(requestBodyText(init))
       if (
@@ -262,6 +333,124 @@ describe("auto-session token injection across chains", () => {
         throw new Error("inference request body missing model")
       }
       expect(parsedBody.model).toBe("gpt-5.3-codex")
+      expect(parsedBody).toMatchObject({
+        messages: createMessagesPayload.messages,
+        ...(metadata ? { metadata } : {}),
+      })
+    },
+  )
+
+  test("messages proxy preserves GitHub authorization and metadata through Auto rejection", async () => {
+    state.githubToken = "test-github-token"
+    expect(
+      registerAutoSelection(
+        queuedAutoSelection("gpt-5.3-codex", "proxy-auto-token", [
+          "/v1/messages",
+        ]),
+      ),
+    ).toBe(true)
+    let attempts = 0
+    wireFetchMock(() =>
+      ++attempts === 1 ?
+        createOpaqueTokenRejection(401)
+      : createMessagesSuccess("proxy-full-price"),
+    )
+    const metadata = { user_id: "user_device_account_account_session_session" }
+
+    expect(
+      await createMessages({ ...createMessagesPayload, metadata }, undefined, {
+        initiator: "user",
+      }),
+    ).toMatchObject({ id: "proxy-full-price" })
+
+    const calls = getFinalCallSnapshots("/v1/messages")
+    expect(calls.map(([, init]) => getSessionHeader(init))).toEqual([
+      "proxy-auto-token",
+      undefined,
+    ])
+    const firstBody: unknown = JSON.parse(requestBodyText(calls[0][1]))
+    expect(firstBody).toMatchObject({
+      model: createMessagesPayload.model,
+      messages: createMessagesPayload.messages,
+      metadata,
+    })
+    const firstHeaders = new Headers(calls[0][1].headers)
+    for (const [url, init] of calls) {
+      expect(new URL(url).pathname).toBe("/v1/messages")
+      const headers = new Headers(init.headers)
+      expect(headers.get("Authorization")).toBe("Bearer test-github-token")
+      expect(headers.get("OpenAI-Intent")).toBe("messages-proxy")
+      expect(headers.get("X-Request-Id")).toBe(firstHeaders.get("X-Request-Id"))
+      expect(JSON.parse(requestBodyText(init))).toEqual(firstBody)
+    }
+  })
+
+  test.each([false, true])(
+    "messages proxy selection waiting for discovery cannot cross GitHub rotation with Copilot rotation=%s",
+    async (rotateCopilot) => {
+      const initialCopilotToken = state.copilotToken
+      state.githubToken = "test-github-token"
+      getConfig().autoDiscovery = { models: ["gpt-5.3-codex"] }
+      const release = Promise.withResolvers<void>()
+      const started = Promise.withResolvers<void>()
+      const fetchMock = wireFetchMock(() =>
+        createMessagesSuccess("proxy-after-rotation"),
+      )
+      const gatedFetch = mock(
+        async (input: string | URL | Request, init?: RequestInit) => {
+          const url = input instanceof Request ? input.url : input.toString()
+          if (new URL(url).pathname === "/auto") {
+            started.resolve()
+            await release.promise
+          }
+          return fetchMock(url, init)
+        },
+      )
+      globalThis.fetch = gatedFetch as unknown as typeof fetch
+      const startup = prewarmAutoSession()
+
+      try {
+        await started.promise
+        const headers = { Authorization: "Bearer test-github-token" }
+        const attachment = attachAutoSessionToken(
+          headers,
+          "gpt-5.3-codex",
+          "/v1/messages",
+        )
+        let completed = false
+        void attachment.then(() => {
+          completed = true
+        })
+        // Drain the attachment's immediate await continuation, without advancing the discovery clock.
+        await Promise.resolve()
+        await Promise.resolve()
+        expect(completed).toBe(false)
+        state.githubToken = "rotated-github-token"
+        if (rotateCopilot) {
+          state.copilotToken = "rotated-copilot-token"
+          invalidateAutoSession()
+        }
+        expect(
+          registerAutoSelection(
+            queuedAutoSelection("gpt-5.3-codex", "auto-after-rotation", [
+              "/v1/messages",
+            ]),
+          ),
+        ).toBe(true)
+
+        await attachment
+        expect(headers).toEqual({ Authorization: "Bearer test-github-token" })
+      } finally {
+        getConfig().autoDiscovery = undefined
+        resumeAutoSessionDiscoveryAfterRotation()
+        release.resolve()
+        await startup
+        await whenProbeSchedulerIdle()
+        state.copilotToken = initialCopilotToken
+        invalidateAutoSession()
+        resumeAutoSessionDiscoveryAfterRotation()
+        await whenProbeSchedulerIdle()
+      }
     },
   )
 
@@ -525,7 +714,7 @@ describe("auto-session token injection across chains", () => {
 
     await prewarmAutoSession()
 
-    expect(fetchMock).toHaveBeenCalledTimes(8)
+    expect(countAutoCalls(fetchMock)).toBe(8)
     const probeCall = fetchMock.mock.calls.find(
       (call) =>
         (call[1] as RequestInit).body
@@ -546,7 +735,7 @@ describe("auto-session token injection across chains", () => {
   })
 
   test("responses belong error keeps session token and replays without encrypted content", async () => {
-    queuePrewarmPlusRefresh("/responses")
+    queueStaleAuto("/responses")
     let attempts = 0
     const fetchMock = wireFetchMock(() => {
       attempts += 1
@@ -607,288 +796,214 @@ describe("auto-session token injection across chains", () => {
     expect(requestBodyText(calls[1][1])).not.toContain("encrypted_content")
   })
 
-  test("responses chain retries opaque 401 once via re-acquired session", async () => {
-    ;(
-      globalThis as unknown as {
-        __AUTO_SESSION_QUEUE__: Array<AutoSelectionResponse>
-      }
-    ).__AUTO_SESSION_QUEUE__.push(
-      queuedAutoSelection("gpt-5.3-codex", "session-stale", ["/responses"]),
-      // 启动发现消耗 8 个探测点：stale + 7 填充，fresh 留待 refresh
-      ...Array.from({ length: 7 }, (_, i) =>
-        queuedAutoSelection(`filler-${i}`, `session-filler-${i}`, [
-          "/responses",
-        ]),
-      ),
-      queuedAutoSelection("gpt-5.3-codex", "session-fresh", ["/responses"]),
-    )
+  test.each([400, 401])(
+    "Responses rejects Fusion then Auto then sends no token (%i)",
+    async (status) => {
+      expect(
+        registerAutoSelection(
+          queuedAutoSelection("gpt-5.3-codex", "auto-fallback", ["/responses"]),
+        ),
+      ).toBe(true)
+      expect(
+        registerFusionSelection({
+          modelId: "gpt-5.3-codex",
+          sessionToken: "fusion-first",
+          expiresAt: Math.floor(Date.now() / 1000) + 3600,
+        }),
+      ).toBe(true)
+      let attempts = 0
+      wireFetchMock(() =>
+        ++attempts < 3 ?
+          createOpaqueTokenRejection(status)
+        : createResponsesSuccess("resp-full-price"),
+      )
 
-    let responseAttempt = 0
-    wireFetchMock(() => {
-      responseAttempt += 1
-      // 首响应当 401 且正文不含任何旧关键字：触发条件只看 token+状态码
-      if (responseAttempt === 1) {
-        return createOpaqueTokenRejection(401)
+      const result = await createResponses(createResponsesPayload, {
+        vision: false,
+        initiator: "user",
+      })
+      expect(result).toMatchObject({ id: "resp-full-price" })
+      const calls = getFinalCallSnapshots("/responses")
+      expect(calls.map(([, init]) => getSessionHeader(init))).toEqual([
+        "fusion-first",
+        "auto-fallback",
+        undefined,
+      ])
+      const firstBody: unknown = JSON.parse(requestBodyText(calls[0][1]))
+      expect(firstBody).toMatchObject({
+        model: createResponsesPayload.model,
+        input: createResponsesPayload.input,
+      })
+      for (const [, init] of calls) {
+        expect(JSON.parse(requestBodyText(init))).toEqual(firstBody)
       }
-      return createResponsesSuccess("resp-retried")
+      const headers = calls.map(([, init]) => new Headers(init.headers))
+      for (const name of [
+        "authorization",
+        "x-request-id",
+        "x-interaction-id",
+        "x-initiator",
+      ]) {
+        expect(headers[1].get(name)).toBe(headers[0].get(name))
+        expect(headers[2].get(name)).toBe(headers[0].get(name))
+      }
+    },
+  )
+
+  test("final no-token generation failure remains the actual HTTPError", async () => {
+    registerAutoSelection(
+      queuedAutoSelection("gpt-5.3-codex", "auto-rejected", ["/responses"]),
+    )
+    registerFusionSelection({
+      modelId: "gpt-5.3-codex",
+      sessionToken: "fusion-rejected",
+      expiresAt: Math.floor(Date.now() / 1000) + 3600,
     })
-
-    await prewarmAutoSession()
-    const result = (await createResponses(createResponsesPayload, {
-      vision: false,
-      initiator: "user",
-    })) as { id: string }
-
-    const responseCalls = getFinalCallSnapshots("/responses")
-    expect(responseCalls).toHaveLength(2)
-    expect(getSessionHeader(responseCalls[0][1])).toBe("session-stale")
-    expect(getSessionHeader(responseCalls[1][1])).toBe("session-fresh")
-    // payload.model 始终为原模型 ID（含重试包）
-    for (const [, init] of responseCalls) {
-      const body = JSON.parse(requestBodyText(init)) as { model: string }
-      expect(body.model).toBe("gpt-5.3-codex")
-    }
-    expect(result.id).toBe("resp-retried")
-  })
-
-  test("responses chain does not retry opaque 401 more than once", async () => {
-    ;(
-      globalThis as unknown as {
-        __AUTO_SESSION_QUEUE__: Array<AutoSelectionResponse>
-      }
-    ).__AUTO_SESSION_QUEUE__.push(
-      queuedAutoSelection("gpt-5.3-codex", "session-stale", ["/responses"]),
-      // 启动发现消耗 8 个探测点：stale + 7 填充，fresh 留待 refresh
-      ...Array.from({ length: 7 }, (_, i) =>
-        queuedAutoSelection(`filler-${i}`, `session-filler-${i}`, [
-          "/responses",
-        ]),
-      ),
-      queuedAutoSelection("gpt-5.3-codex", "session-fresh", ["/responses"]),
+    let attempts = 0
+    wireFetchMock(() =>
+      ++attempts < 3 ?
+        createOpaqueTokenRejection(401)
+      : new Response("full-price failure", { status: 503 }),
     )
-
-    // 首、次响应均为 401 且无旧关键字正文：第二次失败必须原样 HTTPError
-    wireFetchMock(() => createOpaqueTokenRejection(401))
-
-    await prewarmAutoSession()
     try {
       await createResponses(createResponsesPayload, {
         vision: false,
         initiator: "user",
       })
-      expect.unreachable("Expected token rejection retry to fail")
+      expect.unreachable("Expected final generation failure")
     } catch (error) {
       expect(error).toBeInstanceOf(HTTPError)
+      if (!(error instanceof HTTPError)) throw error
+      expect(error.response.status).toBe(503)
+      expect(await error.response.clone().text()).toBe("full-price failure")
     }
-
-    const responseCalls = getFinalCallSnapshots("/responses")
-    expect(responseCalls).toHaveLength(2)
-    expect(getSessionHeader(responseCalls[0][1])).toBe("session-stale")
-    expect(getSessionHeader(responseCalls[1][1])).toBe("session-fresh")
+    expect(
+      getFinalCallSnapshots("/responses").map(([, init]) =>
+        getSessionHeader(init),
+      ),
+    ).toEqual(["fusion-rejected", "auto-rejected", undefined])
   })
 
-  test("responses chain does not retry 401 without session token or refresh /auto", async () => {
-    // 只给一个其它模型的配对：gpt-5.3-codex 未覆盖 → 请求不附 session token
-    ;(
-      globalThis as unknown as {
-        __AUTO_SESSION_QUEUE__: Array<AutoSelectionResponse>
+  test.each(["responses", "chat", "messages"] as const)(
+    "%s Auto rejection skips the used source despite background reacquisition failure",
+    async (chain) => {
+      const endpoint =
+        chain === "responses" ? "/responses"
+        : chain === "chat" ? "/chat/completions"
+        : "/v1/messages"
+      let attempts = 0
+      const fetchMock = wireFetchMock(() => {
+        if (++attempts === 1) return createOpaqueTokenRejection(401)
+        if (chain === "responses") return createResponsesSuccess("resp-retried")
+        if (chain === "chat") return createChatSuccess("chat-retried")
+        return createMessagesSuccess("msg-retried")
+      })
+      await prewarmAutoSession()
+      registerAutoSelection(
+        queuedAutoSelection("gpt-5.3-codex", "session-stale", [endpoint]),
+      )
+      const probesBeforeRequest = countAutoCalls(fetchMock)
+
+      if (chain === "responses") {
+        expect(
+          await createResponses(createResponsesPayload, {
+            vision: false,
+            initiator: "user",
+          }),
+        ).toMatchObject({ id: "resp-retried" })
+      } else if (chain === "chat") {
+        expect(await createChatCompletions(createChatPayload)).toMatchObject({
+          id: "chat-retried",
+        })
+      } else {
+        expect(
+          await createMessages(createMessagesPayload, undefined, {
+            initiator: "user",
+          }),
+        ).toMatchObject({ id: "msg-retried" })
       }
-    ).__AUTO_SESSION_QUEUE__.push(
-      queuedAutoSelection("other-model", "session-miss", ["/responses"]),
-    )
+      const calls = getFinalCallSnapshots(endpoint)
+      expect(calls.map(([, init]) => getSessionHeader(init))).toEqual([
+        "session-stale",
+        undefined,
+      ])
+      for (const [, init] of calls) {
+        const body = JSON.parse(requestBodyText(init)) as { model: unknown }
+        expect(body.model).toBe("gpt-5.3-codex")
+      }
+      await whenProbeSchedulerIdle()
+      expect(countAutoCalls(fetchMock)).toBeGreaterThan(probesBeforeRequest)
+    },
+  )
 
+  test.each(["responses", "chat", "messages"] as const)(
+    "%s preserves persistent no-token rejection without another discount replay",
+    async (chain) => {
+      const endpoint =
+        chain === "responses" ? "/responses"
+        : chain === "chat" ? "/chat/completions"
+        : "/v1/messages"
+      registerAutoSelection(
+        queuedAutoSelection("gpt-5.3-codex", "session-stale", [endpoint]),
+      )
+      wireFetchMock(() => createOpaqueTokenRejection(400))
+      try {
+        if (chain === "responses")
+          await createResponses(createResponsesPayload, {
+            vision: false,
+            initiator: "user",
+          })
+        else if (chain === "chat")
+          await createChatCompletions(createChatPayload)
+        else
+          await createMessages(createMessagesPayload, undefined, {
+            initiator: "user",
+          })
+        expect.unreachable("Expected final no-token rejection")
+      } catch (error) {
+        expect(error).toBeInstanceOf(HTTPError)
+        if (!(error instanceof HTTPError)) throw error
+        expect(error.response.status).toBe(400)
+      }
+      expect(
+        getFinalCallSnapshots(endpoint).map(([, init]) =>
+          getSessionHeader(init),
+        ),
+      ).toEqual(["session-stale", undefined])
+    },
+  )
+
+  test("Responses without any pairing sends one failing request and never probes", async () => {
     const fetchMock = wireFetchMock(() => createOpaqueTokenRejection(401))
-
-    await prewarmAutoSession()
-    const autoCallsAfterPrewarm = fetchMock.mock.calls.filter((call) =>
-      String(call[0]).includes("/auto"),
-    ).length
-
-    try {
-      await createResponses(createResponsesPayload, {
+    await rejects(
+      createResponses(createResponsesPayload, {
         vision: false,
         initiator: "user",
-      })
-      expect.unreachable("Expected 401 without token to propagate")
-    } catch (error) {
-      expect(error).toBeInstanceOf(HTTPError)
-    }
-
-    const responseCalls = getFinalCallSnapshots("/responses")
-    expect(responseCalls).toHaveLength(1)
-    expect(getSessionHeader(responseCalls[0][1])).toBeUndefined()
-    const autoCallsAfterRequest = fetchMock.mock.calls.filter((call) =>
-      String(call[0]).includes("/auto"),
-    ).length
-    expect(autoCallsAfterRequest).toBe(autoCallsAfterPrewarm)
-  })
-
-  test("chat-completions chain retries opaque 401 once via re-acquired session", async () => {
-    queuePrewarmPlusRefresh("/chat/completions")
-
-    let responseAttempt = 0
-    const fetchMock = wireFetchMock(() => {
-      responseAttempt += 1
-      if (responseAttempt === 1) return createOpaqueTokenRejection(401)
-      return createChatSuccess("chat-retried")
-    })
-
-    await prewarmAutoSession()
-    const autoBefore = countAutoCalls(fetchMock)
-    const result = (await createChatCompletions(createChatPayload)) as {
-      id: string
-    }
-
-    const chatCalls = getFinalCallSnapshots("/chat/completions")
-    expect(chatCalls).toHaveLength(2)
-    expect(getSessionHeader(chatCalls[0][1])).toBe("session-stale")
-    expect(getSessionHeader(chatCalls[1][1])).toBe("session-fresh")
-    for (const [, init] of chatCalls) {
-      const body = JSON.parse(requestBodyText(init)) as { model: string }
-      expect(body.model).toBe("gpt-5.3-codex")
-    }
-    // /auto 刷新至多一次（re-acquire），不多刷
-    expect(countAutoCalls(fetchMock) - autoBefore).toBe(1)
-    expect(result.id).toBe("chat-retried")
-  })
-
-  test("chat-completions chain retries opaque 400 once via re-acquired session", async () => {
-    queuePrewarmPlusRefresh("/chat/completions")
-
-    let responseAttempt = 0
-    const fetchMock = wireFetchMock(() => {
-      responseAttempt += 1
-      if (responseAttempt === 1) return createOpaqueTokenRejection(400)
-      return createChatSuccess("chat-retried")
-    })
-
-    await prewarmAutoSession()
-    const autoBefore = countAutoCalls(fetchMock)
-    const result = (await createChatCompletions(createChatPayload)) as {
-      id: string
-    }
-
-    const chatCalls = getFinalCallSnapshots("/chat/completions")
-    expect(chatCalls).toHaveLength(2)
-    expect(getSessionHeader(chatCalls[0][1])).toBe("session-stale")
-    expect(getSessionHeader(chatCalls[1][1])).toBe("session-fresh")
-    for (const [, init] of chatCalls) {
-      const body = JSON.parse(requestBodyText(init)) as { model: string }
-      expect(body.model).toBe("gpt-5.3-codex")
-    }
-    expect(countAutoCalls(fetchMock) - autoBefore).toBe(1)
-    expect(result.id).toBe("chat-retried")
-  })
-
-  test("chat-completions chain keeps HTTPError when opaque 401 persists", async () => {
-    queuePrewarmPlusRefresh("/chat/completions")
-    const fetchMock = wireFetchMock(() => createOpaqueTokenRejection(401))
-
-    await prewarmAutoSession()
-    const autoBefore = countAutoCalls(fetchMock)
-    try {
-      await createChatCompletions(createChatPayload)
-      expect.unreachable("Expected persistent 401 to propagate as HTTPError")
-    } catch (error) {
-      expect(error).toBeInstanceOf(HTTPError)
-    }
-
-    // 第二次失败原样走错误路径：总实际请求恰 2，不第三次重试
-    expect(getFinalCallSnapshots("/chat/completions")).toHaveLength(2)
-    expect(countAutoCalls(fetchMock) - autoBefore).toBe(1)
-  })
-
-  test("messages chain retries opaque 401 once via re-acquired session", async () => {
-    queuePrewarmPlusRefresh("/v1/messages")
-
-    let responseAttempt = 0
-    const fetchMock = wireFetchMock(() => {
-      responseAttempt += 1
-      if (responseAttempt === 1) return createOpaqueTokenRejection(401)
-      return createMessagesSuccess("msg-retried")
-    })
-
-    await prewarmAutoSession()
-    const autoBefore = countAutoCalls(fetchMock)
-    const result = await createMessages(createMessagesPayload, undefined, {
-      initiator: "user",
-    })
-
-    const messageCalls = getFinalCallSnapshots("/v1/messages")
-    expect(messageCalls).toHaveLength(2)
-    expect(getSessionHeader(messageCalls[0][1])).toBe("session-stale")
-    expect(getSessionHeader(messageCalls[1][1])).toBe("session-fresh")
-    for (const [, init] of messageCalls) {
-      const body = JSON.parse(requestBodyText(init)) as { model: string }
-      expect(body.model).toBe("gpt-5.3-codex")
-    }
-    expect(countAutoCalls(fetchMock) - autoBefore).toBe(1)
-    const body = result as { id: string }
-    expect(body.id).toBe("msg-retried")
-  })
-
-  test("messages chain retries opaque 400 once via re-acquired session", async () => {
-    queuePrewarmPlusRefresh("/v1/messages")
-
-    let responseAttempt = 0
-    const fetchMock = wireFetchMock(() => {
-      responseAttempt += 1
-      if (responseAttempt === 1) return createOpaqueTokenRejection(400)
-      return createMessagesSuccess("msg-retried")
-    })
-
-    await prewarmAutoSession()
-    const autoBefore = countAutoCalls(fetchMock)
-    const result = await createMessages(createMessagesPayload, undefined, {
-      initiator: "user",
-    })
-
-    const messageCalls = getFinalCallSnapshots("/v1/messages")
-    expect(messageCalls).toHaveLength(2)
-    expect(getSessionHeader(messageCalls[0][1])).toBe("session-stale")
-    expect(getSessionHeader(messageCalls[1][1])).toBe("session-fresh")
-    for (const [, init] of messageCalls) {
-      const body = JSON.parse(requestBodyText(init)) as { model: string }
-      expect(body.model).toBe("gpt-5.3-codex")
-    }
-    expect(countAutoCalls(fetchMock) - autoBefore).toBe(1)
-    const body = result as { id: string }
-    expect(body.id).toBe("msg-retried")
-  })
-
-  test("messages chain keeps HTTPError when opaque 400 persists", async () => {
-    queuePrewarmPlusRefresh("/v1/messages")
-    const fetchMock = wireFetchMock(() => createOpaqueTokenRejection(400))
-
-    await prewarmAutoSession()
-    const autoBefore = countAutoCalls(fetchMock)
-    try {
-      await createMessages(createMessagesPayload, undefined, {
-        initiator: "user",
-      })
-      expect.unreachable("Expected persistent 400 to propagate as HTTPError")
-    } catch (error) {
-      expect(error).toBeInstanceOf(HTTPError)
-    }
-
-    // 第二次失败原样走错误路径：总实际请求恰 2，不第三次重试
-    expect(getFinalCallSnapshots("/v1/messages")).toHaveLength(2)
-    expect(countAutoCalls(fetchMock) - autoBefore).toBe(1)
+      }),
+      HTTPError,
+    )
+    expect(getFinalCallSnapshots("/responses")).toHaveLength(1)
+    expect(
+      getSessionHeader(getFinalCallSnapshots("/responses")[0][1]),
+    ).toBeUndefined()
+    expect(countAutoCalls(fetchMock)).toBe(0)
+    expect(
+      fetchMock.mock.calls.filter(([url]) =>
+        String(url).includes("/model/fusion"),
+      ),
+    ).toHaveLength(0)
   })
 
   test.each([
     { forceAgent: false, expectedInitiator: "user" },
     { forceAgent: true, expectedInitiator: "agent" },
   ])(
-    "chat-completions chain honors -F=$forceAgent with auto token retry (initiator=$expectedInitiator)",
+    "chat fallback preserves forceAgent=$forceAgent initiator",
     async ({ forceAgent, expectedInitiator }) => {
-      const previousForceAgent = state.forceAgent
       const previousDecision = state.smartAgentDecision
       const previousCacheTimestamp = state.smartAgentCacheTimestamp
       state.forceAgent = forceAgent
       if (forceAgent) {
-        // 预置有效缓存（forceAgent=true 决策 + 新鲜时间戳）：
-        // getDecisionWithSmartCache 命中缓存，绝不查询真实配额服务
         state.smartAgentDecision = {
           forceAgent: true,
           reason: "over_budget",
@@ -899,69 +1014,69 @@ describe("auto-session token injection across chains", () => {
         state.smartAgentCacheTimestamp = Date.now()
       }
       try {
-        queuePrewarmPlusRefresh("/chat/completions")
-
-        let responseAttempt = 0
-        const fetchMock = wireFetchMock(() => {
-          responseAttempt += 1
-          if (responseAttempt === 1) return createOpaqueTokenRejection(401)
-          return createChatSuccess("chat-force-agent")
+        registerAutoSelection(
+          queuedAutoSelection("gpt-5.3-codex", "session-stale", [
+            "/chat/completions",
+          ]),
+        )
+        let attempts = 0
+        const fetchMock = wireFetchMock(() =>
+          ++attempts === 1 ?
+            createOpaqueTokenRejection(401)
+          : createChatSuccess("chat-force-agent"),
+        )
+        expect(await createChatCompletions(createChatPayload)).toMatchObject({
+          id: "chat-force-agent",
         })
-
-        await prewarmAutoSession()
-        const result = (await createChatCompletions(createChatPayload)) as {
-          id: string
-        }
-
-        const chatCalls = getFinalCallSnapshots("/chat/completions")
-        expect(chatCalls).toHaveLength(2)
-        expect(getSessionHeader(chatCalls[0][1])).toBe("session-stale")
-        expect(getSessionHeader(chatCalls[1][1])).toBe("session-fresh")
-        for (const [, init] of chatCalls) {
-          const body = JSON.parse(requestBodyText(init)) as { model: string }
-          expect(body.model).toBe("gpt-5.3-codex")
-          expect((init.headers as Record<string, string>)["x-initiator"]).toBe(
+        const calls = getFinalCallSnapshots("/chat/completions")
+        expect(calls.map(([, init]) => getSessionHeader(init))).toEqual([
+          "session-stale",
+          undefined,
+        ])
+        for (const [, init] of calls) {
+          expect(new Headers(init.headers).get("x-initiator")).toBe(
             expectedInitiator,
           )
+          const body = JSON.parse(requestBodyText(init)) as { model: unknown }
+          expect(body.model).toBe("gpt-5.3-codex")
         }
-        expect(result.id).toBe("chat-force-agent")
-
-        // 严禁真实配额服务：两个分支全程零 copilot_internal/user 请求
-        const quotaCalls = fetchMock.mock.calls.filter((call) =>
-          String(call[0]).includes("copilot_internal/user"),
-        )
-        expect(quotaCalls).toHaveLength(0)
+        expect(
+          fetchMock.mock.calls.filter(([url]) =>
+            String(url).includes("copilot_internal/user"),
+          ),
+        ).toHaveLength(0)
       } finally {
-        state.forceAgent = previousForceAgent
         state.smartAgentDecision = previousDecision
         state.smartAgentCacheTimestamp = previousCacheTimestamp
-        invalidateAutoSession()
       }
     },
   )
 
-  test("learns only the final session token after the shared retry rotates it", async () => {
-    queuePrewarmPlusRefresh("/responses")
-    let responseAttempt = 0
+  test("reasoning replay learns the actual fallback token, not rejected Fusion", async () => {
+    registerAutoSelection(
+      queuedAutoSelection("gpt-5.3-codex", "auto-current", ["/responses"]),
+    )
+    registerFusionSelection({
+      modelId: "gpt-5.3-codex",
+      sessionToken: "fusion-stale",
+      expiresAt: Math.floor(Date.now() / 1000) + 3600,
+    })
+    let attempts = 0
     wireFetchMock(() => {
-      responseAttempt += 1
-      // 首发 401 触发共享重试：session-stale 换 session-fresh
-      if (responseAttempt === 1) return createOpaqueTokenRejection(401)
-      // 换令牌后的 belong 由 responses-compat 学下当前令牌并直接重试
-      if (responseAttempt === 2) {
-        return new Response(
-          JSON.stringify({
+      attempts += 1
+      if (attempts === 1) return createOpaqueTokenRejection(401)
+      if (attempts === 2)
+        return Response.json(
+          {
             error: {
               message: "input item ID does not belong to this connection",
             },
-          }),
+          },
           { status: 401 },
         )
-      }
-      return createResponsesSuccess(`resp-replay-${responseAttempt}`)
+      return createResponsesSuccess(`resp-replay-${attempts}`)
     })
-
-    const payloadWithReasoning = (): ResponsesPayload => ({
+    const payload = (): ResponsesPayload => ({
       ...createResponsesPayload,
       input: [
         { role: "user", content: "hello" },
@@ -973,66 +1088,56 @@ describe("auto-session token injection across chains", () => {
         },
       ],
     })
-
-    await prewarmAutoSession()
     state.responsesReplayLearned.clear()
     try {
-      const result = (await createResponses(payloadWithReasoning(), {
-        vision: false,
-        initiator: "user",
-        reasoningReplayIdentity: "rotation",
-      })) as { id: string }
-      expect(result.id).toBe("resp-replay-3")
-
-      const rotatedCalls = getFinalCallSnapshots("/responses")
-      expect(rotatedCalls).toHaveLength(3)
-      expect(getSessionHeader(rotatedCalls[0][1])).toBe("session-stale")
-      expect(getSessionHeader(rotatedCalls[1][1])).toBe("session-fresh")
-      expect(getSessionHeader(rotatedCalls[2][1])).toBe("session-fresh")
-      expect(requestBodyText(rotatedCalls[1][1])).toContain("encrypted_content")
-      expect(requestBodyText(rotatedCalls[2][1])).not.toContain(
-        "encrypted_content",
-      )
+      expect(
+        await createResponses(payload(), {
+          vision: false,
+          initiator: "user",
+          reasoningReplayIdentity: "rotation",
+        }),
+      ).toMatchObject({ id: "resp-replay-3" })
+      const calls = getFinalCallSnapshots("/responses")
+      expect(calls.map(([, init]) => getSessionHeader(init))).toEqual([
+        "fusion-stale",
+        "auto-current",
+        "auto-current",
+      ])
+      expect(requestBodyText(calls[1][1])).toContain("encrypted_content")
+      expect(requestBodyText(calls[2][1])).not.toContain("encrypted_content")
       expect(state.responsesReplayLearned.size).toBe(1)
       const learned = Array.from(state.responsesReplayLearned).join("\n")
-      expect(learned).not.toContain("session-stale")
-      expect(learned).not.toContain("session-fresh")
-      expect(learned).not.toContain("test-copilot-token")
+      for (const secret of [
+        "fusion-stale",
+        "auto-current",
+        "test-copilot-token",
+      ])
+        expect(learned).not.toContain(secret)
 
-      // 学到的 session-fresh 重发必须命中：首发即去掉 encrypted_content
-      const beforeFreshReuse = rotatedCalls.length
-      await createResponses(payloadWithReasoning(), {
+      await createResponses(payload(), {
         vision: false,
         initiator: "user",
         reasoningReplayIdentity: "rotation",
       })
-      const freshReuseCalls = getFinalCallSnapshots("/responses")
-      expect(freshReuseCalls).toHaveLength(beforeFreshReuse + 1)
-      expect(getSessionHeader(freshReuseCalls[beforeFreshReuse][1])).toBe(
-        "session-fresh",
-      )
-      expect(
-        requestBodyText(freshReuseCalls[beforeFreshReuse][1]),
-      ).not.toContain("encrypted_content")
+      const reused = getFinalCallSnapshots("/responses")[3][1]
+      expect(getSessionHeader(reused)).toBe("auto-current")
+      expect(requestBodyText(reused)).not.toContain("encrypted_content")
 
-      // 旧令牌重新登记：只学到 session-fresh，旧令牌首发必须保留 encrypted_content
       expect(
-        registerAutoSelection(
-          queuedAutoSelection("gpt-5.3-codex", "session-stale", ["/responses"]),
-        ),
+        registerFusionSelection({
+          modelId: "gpt-5.3-codex",
+          sessionToken: "fusion-new",
+          expiresAt: Math.floor(Date.now() / 1000) + 3600,
+        }),
       ).toBe(true)
-      const beforeStale = getFinalCallSnapshots("/responses").length
-      await createResponses(payloadWithReasoning(), {
+      await createResponses(payload(), {
         vision: false,
         initiator: "user",
         reasoningReplayIdentity: "rotation",
       })
-      const staleCalls = getFinalCallSnapshots("/responses")
-      expect(staleCalls).toHaveLength(beforeStale + 1)
-      expect(getSessionHeader(staleCalls[beforeStale][1])).toBe("session-stale")
-      expect(requestBodyText(staleCalls[beforeStale][1])).toContain(
-        "encrypted_content",
-      )
+      const upgraded = getFinalCallSnapshots("/responses")[4][1]
+      expect(getSessionHeader(upgraded)).toBe("fusion-new")
+      expect(requestBodyText(upgraded)).toContain("encrypted_content")
       expect(state.responsesReplayLearned.size).toBe(1)
     } finally {
       state.responsesReplayLearned.clear()

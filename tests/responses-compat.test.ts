@@ -1,5 +1,6 @@
 import {
   afterAll,
+  afterEach,
   beforeAll,
   beforeEach,
   describe,
@@ -10,8 +11,20 @@ import type { Server } from "bun"
 
 import type { ResponsesPayload } from "../src/lib/types/responses"
 
+import {
+  getAutoSessionForModel,
+  invalidateAutoSession,
+  registerAutoSelection,
+  registerFusionSelection,
+  stopProbeScheduler,
+  whenProbeSchedulerIdle,
+} from "../src/lib/auto-session"
+import { getConfig } from "../src/lib/config-store"
 import { state } from "../src/lib/state"
-import { getResponseErrorMessage } from "../src/services/copilot/auto-session-retry"
+import {
+  attachAutoSessionToken,
+  getResponseErrorMessage,
+} from "../src/services/copilot/auto-session-retry"
 import {
   hasStrippableReasoningItem,
   sendResponsesRequestWithReasoningReplay,
@@ -20,7 +33,11 @@ import {
 const BELONG_MESSAGE = "input item ID does not belong to this connection"
 
 let server: Server<undefined>
-const requests: Array<{ path: string; body: string }> = []
+const requests: Array<{
+  path: string
+  body: string
+  sessionToken: string | null
+}> = []
 let holdFirstBelong: (() => Promise<void>) | undefined
 
 const transportConfig = {
@@ -52,7 +69,33 @@ beforeAll(() => {
     async fetch(request) {
       const url = new URL(request.url)
       const bodyText = await request.text()
-      requests.push({ path: url.pathname, body: bodyText })
+      requests.push({
+        path: url.pathname,
+        body: bodyText,
+        sessionToken: request.headers.get("Copilot-Session-Token"),
+      })
+
+      if (url.pathname === "/responses") {
+        const sessionToken = request.headers.get("Copilot-Session-Token")
+        if (
+          sessionToken === "fusion-replay-token"
+          || (sessionToken === "auto-replay-token"
+            && request.headers.has("x-test-reject-auto"))
+        ) {
+          return Response.json(
+            { error: { message: "session rejected" } },
+            { status: 401 },
+          )
+        }
+        const body = JSON.parse(bodyText) as CapturedRequestBody
+        if (body.input.some((item) => item.encrypted_content !== undefined)) {
+          return Response.json(
+            { error: { message: BELONG_MESSAGE } },
+            { status: 401 },
+          )
+        }
+        return Response.json({ id: "discounted-replay-success" })
+      }
 
       if (
         url.pathname === "/belong-by-body"
@@ -565,4 +608,134 @@ describe("reasoning replay learning cache", () => {
     expect(state.responsesReplayLearned.has("seed-1")).toBe(true)
     expect((await sendCounted("/belong-by-body", "overflow")).attempts).toBe(1)
   })
+})
+
+describe("discount downgrade and reasoning replay stay independent", () => {
+  const originalToken = state.copilotToken
+  const originalModels = state.models
+  const originalDiscovery = getConfig().autoDiscovery
+  const originalFetch = globalThis.fetch
+
+  beforeEach(() => {
+    invalidateAutoSession()
+    getConfig().autoDiscovery = undefined
+    state.responsesReplayLearned.clear()
+    state.copilotToken = "replay-discount-auth"
+    state.models = {
+      object: "list",
+      data: [{ id: "gpt-test", supported_endpoints: ["/responses"] }],
+    } as typeof state.models
+    globalThis.fetch = ((input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(
+        input instanceof Request ? input.url : input.toString(),
+      )
+      if (url.origin === server.url.origin) return originalFetch(input, init)
+      if (url.pathname === "/auto" || url.pathname === "/model/fusion") {
+        return Promise.resolve(
+          Response.json(
+            { error: { message: "local discovery disabled" } },
+            { status: 403 },
+          ),
+        )
+      }
+      return Promise.reject(new Error("unexpected upstream URL"))
+    }) as typeof fetch
+    expect(
+      registerAutoSelection({
+        selected_model: {
+          id: "gpt-test",
+          supported_endpoints: ["/responses"],
+        },
+        session_token: "auto-replay-token",
+        expires_at: Math.floor(Date.now() / 1000) + 3600,
+      }),
+    ).toBe(true)
+    expect(
+      registerFusionSelection({
+        modelId: "gpt-test",
+        sessionToken: "fusion-replay-token",
+        expiresAt: Math.floor(Date.now() / 1000) + 3600,
+      }),
+    ).toBe(true)
+  })
+
+  afterEach(() => {
+    invalidateAutoSession()
+    state.responsesReplayLearned.clear()
+    state.copilotToken = originalToken
+    state.models = originalModels
+    getConfig().autoDiscovery = originalDiscovery
+  })
+
+  afterAll(async () => {
+    stopProbeScheduler()
+    await whenProbeSchedulerIdle()
+    globalThis.fetch = originalFetch
+  })
+
+  test.each([false, true])(
+    "belong retries separately after discount fallback (reject Auto: %s)",
+    async (rejectAuto) => {
+      const start = requests.length
+      const headers: Record<string, string> = {
+        Authorization: `Bearer ${state.copilotToken}`,
+      }
+      if (rejectAuto) headers["x-test-reject-auto"] = "1"
+      await attachAutoSessionToken(headers, "gpt-test", "/responses")
+      const payload: ResponsesPayload = {
+        model: "gpt-test",
+        input: [
+          { role: "user", content: "keep this input" },
+          {
+            type: "reasoning",
+            id: "reasoning-discount",
+            summary: [],
+            encrypted_content: "encrypted-discount",
+          },
+        ],
+      }
+
+      const response = await sendResponsesRequestWithReasoningReplay(
+        new URL("/responses", server.url).href,
+        {
+          headers,
+          payload,
+          transportConfig,
+          reasoningReplayIdentity: "discount-replay",
+        },
+      )
+
+      expect(response.status).toBe(200)
+      expect(await response.json()).toEqual({ id: "discounted-replay-success" })
+      const attempts = requests.slice(start)
+      expect(attempts.map((request) => request.sessionToken)).toEqual(
+        rejectAuto ?
+          ["fusion-replay-token", "auto-replay-token", null, null]
+        : ["fusion-replay-token", "auto-replay-token", "auto-replay-token"],
+      )
+      for (const attempt of attempts) {
+        expect((JSON.parse(attempt.body) as ResponsesPayload).model).toBe(
+          "gpt-test",
+        )
+      }
+      const encryptedBeforeReplay = JSON.parse(
+        attempts.at(-2)!.body,
+      ) as CapturedRequestBody
+      expect(
+        encryptedBeforeReplay.input.find((item) => item.type === "reasoning"),
+      ).toHaveProperty("encrypted_content", "encrypted-discount")
+      const strippedRetry = JSON.parse(
+        attempts.at(-1)!.body,
+      ) as CapturedRequestBody
+      expect(
+        strippedRetry.input.find((item) => item.type === "reasoning"),
+      ).not.toHaveProperty("encrypted_content")
+      const selection = await getAutoSessionForModel({
+        model: "gpt-test",
+        endpoint: "/responses",
+        waitForDiscovery: false,
+      })
+      expect(selection?.source).toBe(rejectAuto ? undefined : "auto")
+    },
+  )
 })

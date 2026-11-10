@@ -208,11 +208,8 @@ await mock.module("undici", () => ({
 }))
 
 const { state } = await import("~/lib/state")
-const {
-  getAutoSessionTokenForModel,
-  invalidateAutoSession,
-  registerAutoSelection,
-} = await import("~/lib/auto-session")
+const { getAutoSessionForModel, invalidateAutoSession, registerAutoSelection } =
+  await import("~/lib/auto-session")
 const { getConfig, invalidateConfigCache } = await import("~/lib/config")
 const { PATHS } = await import("~/lib/paths")
 const { createResponses } = await import("~/services/copilot/create-responses")
@@ -420,10 +417,14 @@ test("Responses websocket handshake omits Copilot-Session-Token even with a vali
     expires_at: Math.floor(Date.now() / 1000) + 3600,
   })
   try {
-    // 配对确实可用（HTTP /responses 维度）——负例针对的是 WS 分支不附加
-    expect(await getAutoSessionTokenForModel("gpt-test", "/responses")).toBe(
-      "ws-should-not-attach",
-    )
+    expect(
+      (
+        await getAutoSessionForModel({
+          model: "gpt-test",
+          endpoint: "/responses",
+        })
+      )?.sessionToken,
+    ).toBe("ws-should-not-attach")
 
     await collectResponsesStream("auto-ws-no-session")
 

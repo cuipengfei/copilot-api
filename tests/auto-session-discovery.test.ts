@@ -3,12 +3,14 @@ import consola from "consola"
 import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
+import { setImmediate as nextTurn } from "node:timers/promises"
 
 import { state } from "../src/lib/state"
 import type { AutoSelectionResponse } from "../src/services/copilot/get-auto-selection"
 import { getConfig } from "../src/lib/config-store"
 
 import type * as AutoSessionModule from "../src/lib/auto-session"
+import type { Model } from "../src/lib/types/models"
 
 const TIERS = ["efficiency", "balance", "intelligence", "fast"] as const
 
@@ -27,12 +29,19 @@ const createResponse = (payload: AutoSelectionResponse) =>
 const originalFetch = globalThis.fetch
 const originalAutoDiscovery = getConfig().autoDiscovery
 
+const originalToken = state.copilotToken
+const originalModels = state.models
+const modules: Array<typeof AutoSessionModule> = []
 // 动态导入用于重置模块级配对表：每个用例需要干净的 auto-session 状态。
+// Static imports cannot reset the module-owned pairing table and scheduler.
 // 带 query 的动态导入被 TS 视为 any，断言回模块类型以满足类型安全返回
-const loadAutoSessionModule = (): Promise<typeof AutoSessionModule> =>
-  import(
+const loadAutoSessionModule = async (): Promise<typeof AutoSessionModule> => {
+  const module = (await import(
     `../src/lib/auto-session?test=${Date.now()}-${Math.random()}`
-  ) as Promise<typeof AutoSessionModule>
+  )) as typeof AutoSessionModule
+  modules.push(module)
+  return module
+}
 
 interface RecordedCall {
   url: string
@@ -51,7 +60,12 @@ const installRouter = (
     | Error
     | Response
     | Promise<AutoSelectionResponse | Response>,
-): { calls: Array<RecordedCall> } => {
+  fusionHandler?: (
+    body: { prompt: string },
+    init?: RequestInit,
+  ) => Response | Promise<Response>,
+): { calls: Array<RecordedCall>; fusionCalls: Array<RecordedCall> } => {
+  const fusionCalls: Array<RecordedCall> = []
   // 调用记录设硬上限：超出即视为探测循环失控，立即以普通 Error 终止，
   // 保证 mock 数组与日志占用有界
   const MAX_RECORDED_CALLS = 256
@@ -64,6 +78,18 @@ const installRouter = (
           new Error(
             `installRouter recorded ${MAX_RECORDED_CALLS} calls: runaway probe loop`,
           ),
+        )
+      }
+      if (u.endsWith("/model/fusion")) {
+        if (typeof init?.body !== "string")
+          throw new Error("expected string request body")
+        fusionCalls.push({ url: u, init })
+        return Promise.resolve(
+          fusionHandler?.(JSON.parse(init.body) as { prompt: string }, init)
+            ?? new Response(
+              JSON.stringify({ error: { code: "model_pool_not_eligible" } }),
+              { status: 403 },
+            ),
         )
       }
       calls.push({ url: u, init })
@@ -86,7 +112,7 @@ const installRouter = (
   )
   ;(globalThis as { fetch: typeof fetch }).fetch =
     fetchMock as unknown as typeof fetch
-  return { calls }
+  return { calls, fusionCalls }
 }
 
 const requestBody = (call: RecordedCall): { prompt: string; tier: string } => {
@@ -145,7 +171,13 @@ beforeEach(() => {
   getConfig().autoDiscovery = undefined
 })
 
-afterEach(() => {
+afterEach(async () => {
+  for (const module of modules.splice(0)) {
+    module.stopProbeScheduler()
+    await module.whenProbeSchedulerIdle()
+  }
+  state.copilotToken = originalToken
+  state.models = originalModels
   ;(globalThis as { fetch: typeof fetch }).fetch = originalFetch
   mock.restore()
   getConfig().autoDiscovery = originalAutoDiscovery
@@ -193,9 +225,10 @@ test("startup probes fixed intelligence input and sampled hard inputs for the ot
   // 每次成功响应按实际模型 ID 注册，token 与模型精确绑定
   for (const [model, token] of tokens) {
     expect(mod.isModelAutoCovered(model)).toBe(true)
-    expect(await mod.getAutoSessionTokenForModel(model, "/responses")).toBe(
-      token,
-    )
+    expect(
+      (await mod.getAutoSessionForModel({ model, endpoint: "/responses" }))
+        ?.sessionToken,
+    ).toBe(token)
   }
 })
 
@@ -502,7 +535,7 @@ test("terminal probe failures log minimal diagnosable status without prompt, sou
     // 上游侧日志只含整数状态码：statusText 是上游可控正文，不得回显
     const upstreamLines = errorSpy.mock.calls
       .map((call) => String(call[0]))
-      .filter((line) => line.includes("selection request failed"))
+      .filter((line) => line.startsWith("[auto] selection request failed"))
     expect(upstreamLines.length).toBe(1)
     for (const line of upstreamLines) {
       expect(line).toContain("HTTP 400")
@@ -539,10 +572,20 @@ test("insufficient source still reports acquired models and keeps requests usabl
     expect(line).toContain('obtained=["only-easy","only-hard"]')
     // 请求路径仍可用（命中已注册配对）
     expect(
-      await mod.getAutoSessionTokenForModel("only-easy", "/responses"),
+      (
+        await mod.getAutoSessionForModel({
+          model: "only-easy",
+          endpoint: "/responses",
+        })
+      )?.sessionToken,
     ).toBe("token-only-easy")
     expect(
-      await mod.getAutoSessionTokenForModel("only-hard", "/responses"),
+      (
+        await mod.getAutoSessionForModel({
+          model: "only-hard",
+          endpoint: "/responses",
+        })
+      )?.sessionToken,
     ).toBe("token-only-hard")
   } finally {
     mod.stopProbeScheduler()
@@ -608,14 +651,18 @@ test("startup discovery wait has a hard budget; in-flight probes finish in backg
     // 启动等待有确定上限：远小于单请求 15s 超时，服务可开始接收请求
     expect(elapsed).toBeLessThan(2_000)
     // 启动返回时普通请求路径不被在途探测阻断（未覆盖模型返回 undefined 而非挂起）
-    expect(await mod.getAutoSessionTokenForModel("gated-model")).toBeUndefined()
+    expect(
+      (await mod.getAutoSessionForModel({ model: "gated-model" }))
+        ?.sessionToken,
+    ).toBeUndefined()
 
     // 放行后在后台完成补采，配对立即命中可用
     gate.resolve()
     await waitFor(() => mod.isModelAutoCovered("gated-model"), 3_000)
-    expect(await mod.getAutoSessionTokenForModel("gated-model")).toBe(
-      "token-gated-model",
-    )
+    expect(
+      (await mod.getAutoSessionForModel({ model: "gated-model" }))
+        ?.sessionToken,
+    ).toBe("token-gated-model")
   } finally {
     gate.resolve()
     await mod.whenProbeSchedulerIdle?.()
@@ -647,7 +694,12 @@ test("successful probe points are usable at startup return while a stalled tier 
     // 成功点在启动返回时立即可用
     expect(mod.isModelAutoCovered("fast-efficiency")).toBe(true)
     expect(
-      await mod.getAutoSessionTokenForModel("fast-efficiency", "/responses"),
+      (
+        await mod.getAutoSessionForModel({
+          model: "fast-efficiency",
+          endpoint: "/responses",
+        })
+      )?.sessionToken,
     ).toBe("token-fast-efficiency")
     // 被挂起的档尚未覆盖，但不妨碍其他点与普通请求
     expect(mod.isModelAutoCovered("balance-model")).toBe(false)
@@ -817,11 +869,20 @@ test("network failure probe retries with backoff and eventually succeeds", async
       .map((call) => String(call[0]))
       .filter((line) => line.includes("probe retry"))
     expect(retryLines).toHaveLength(1)
-    expect(retryLines[0]).toBe("[auto-session] probe retry: network")
-    expect(debugSpy).toHaveBeenCalledWith("[auto-session] probe retry: network")
+    expect(retryLines[0]).toContain("source=auto")
+    expect(retryLines[0]).toContain("network")
+    expect(
+      debugSpy.mock.calls.some(
+        (call) =>
+          String(call[0]).includes("probe retry")
+          && String(call[0]).includes("source=auto"),
+      ),
+    ).toBe(true)
     expect(
       infoSpy.mock.calls.filter(
-        (call) => call[0] === "[auto-session] probe recovered",
+        (call) =>
+          String(call[0]).includes("probe recovered")
+          && String(call[0]).includes("source=auto"),
       ),
     ).toHaveLength(1)
   } finally {
@@ -859,6 +920,9 @@ test("401 halts all probes for the same credential; only a real credential chang
     // 真实凭据变化 + 缓存失效边界：探测恢复并成功登记
     state.copilotToken = "rotated-token"
     mod.invalidateAutoSession()
+    await nextTurn()
+    expect(autoCalls()).toBe(8)
+    mod.resumeAutoSessionDiscoveryAfterRotation()
     await waitFor(
       () => autoCalls() > 8 && mod.isModelAutoCovered("resumed-efficiency"),
       3_000,
@@ -1049,7 +1113,7 @@ test("budget snapshot reports no acquired models before responses arrive", async
     const targetResult = infoSpy.mock.calls
       .map((call) => String(call[0]))
       .find((line) => line.includes("target discovery stopped"))
-    expect(targetResult).toContain('added=[] missing=["missing-model"]')
+    expect(targetResult).toContain('missing=["missing-model"]')
   } finally {
     gate.resolve()
     mod.stopProbeScheduler?.()
@@ -1085,6 +1149,9 @@ test("401 arriving after a credential rotation is attributed to the requesting c
     mod.invalidateAutoSession()
     rotated = true
     gate.resolve()
+    await nextTurn()
+    expect(mod.isModelAutoCovered("resumed-model")).toBe(false)
+    mod.resumeAutoSessionDiscoveryAfterRotation()
     await waitFor(() => mod.isModelAutoCovered("resumed-model"), 3_000)
   } finally {
     state.copilotToken = "discovery-auth-token"
@@ -1156,6 +1223,9 @@ test("401 without any credential parks all points instead of hammering /auto", a
 
     state.copilotToken = "fresh-token"
     mod.invalidateAutoSession()
+    await nextTurn()
+    expect(autoCalls()).toBe(8)
+    mod.resumeAutoSessionDiscoveryAfterRotation()
     await waitFor(() => mod.isModelAutoCovered("credentialed-model"), 3_000)
   } finally {
     state.copilotToken = "discovery-auth-token"
@@ -1235,18 +1305,29 @@ test("stale in-flight /auto success from an old credential is not registered; po
     mod.invalidateAutoSession()
     rotated = true
     gate.resolve()
+    await nextTurn()
+    expect(calls).toHaveLength(8)
+    expect(mod.isModelAutoCovered("old-model")).toBe(false)
+    mod.resumeAutoSessionDiscoveryAfterRotation()
 
     // 新凭据下补采成功并登记
     await waitFor(() => mod.isModelAutoCovered("new-easy-efficiency"), 3_000)
     expect(
-      await mod.getAutoSessionTokenForModel(
-        "new-easy-efficiency",
-        "/responses",
-      ),
+      (
+        await mod.getAutoSessionForModel({
+          model: "new-easy-efficiency",
+          endpoint: "/responses",
+        })
+      )?.sessionToken,
     ).toBe("token-new-easy-efficiency")
     // 旧凭据的响应不得进入新凭据配对：旧模型必须脱靶
     expect(
-      await mod.getAutoSessionTokenForModel("old-model", "/responses"),
+      (
+        await mod.getAutoSessionForModel({
+          model: "old-model",
+          endpoint: "/responses",
+        })
+      )?.sessionToken,
     ).toBeUndefined()
     // 每点单飞：八点旧请求各结算一次后，每点恰好再发一次新凭据请求
     expect(calls.filter((call) => call.url.includes("/auto"))).toHaveLength(16)
@@ -1376,7 +1457,8 @@ test("invalidate plus resume after real credential rotation re-probes quiet succ
     // 旧凭据配对即使尚未调用 invalidate 也不得报覆盖
     expect(mod.isModelAutoCovered("easy-efficiency")).toBe(false)
     expect(
-      await mod.getAutoSessionTokenForModel("easy-efficiency"),
+      (await mod.getAutoSessionForModel({ model: "easy-efficiency" }))
+        ?.sessionToken,
     ).toBeUndefined()
 
     // 单纯 invalidate（测试清理同路径）绝不自行发请求
@@ -1392,9 +1474,10 @@ test("invalidate plus resume after real credential rotation re-probes quiet succ
     // 8 个安静成功点全部按新凭据后台补采，且只携带新凭据
     expect(calls).toHaveLength(16)
     expect(newTokenAuths).toHaveLength(8)
-    expect(await mod.getAutoSessionTokenForModel("easy-efficiency")).toBe(
-      "token-easy-efficiency",
-    )
+    expect(
+      (await mod.getAutoSessionForModel({ model: "easy-efficiency" }))
+        ?.sessionToken,
+    ).toBe("token-easy-efficiency")
     expect(mod.isModelAutoCovered("easy-efficiency")).toBe(true)
 
     // 幂等：同凭据再次 invalidate+resume（如 Auto token 失效刷新）不得重复补采
@@ -1491,31 +1574,47 @@ test("configured cold misses share discovery and accept only the selected target
   try {
     mod.resumeAutoSessionDiscoveryAfterRotation()
     const pending = Array.from({ length: 20 }, () =>
-      mod.getAutoSessionTokenForModel("target-model", "/responses"),
+      mod.getAutoSessionForModel({
+        model: "target-model",
+        endpoint: "/responses",
+      }),
     )
     await waitFor(() => calls.length === 1, 1_000)
     expect(
-      await mod.getAutoSessionTokenForModel("unconfigured-model"),
+      (await mod.getAutoSessionForModel({ model: "unconfigured-model" }))
+        ?.sessionToken,
     ).toBeUndefined()
     gate.resolve(okSelection("target-model", "target-session"))
-    expect(await Promise.all(pending)).toEqual(
-      Array.from({ length: 20 }, () => "target-session"),
-    )
+    expect(
+      (await Promise.all(pending)).map((item) => item?.sessionToken),
+    ).toEqual(Array.from({ length: 20 }, () => "target-session"))
     expect(calls).toHaveLength(1)
     expect(
-      await mod.getAutoSessionTokenForModel("target-model", "/v1/messages"),
+      (
+        await mod.getAutoSessionForModel({
+          model: "target-model",
+          endpoint: "/v1/messages",
+        })
+      )?.sessionToken,
     ).toBeUndefined()
     expect(calls).toHaveLength(1)
     await mod.whenProbeSchedulerIdle()
     const lines = infoSpy.mock.calls.map((call) => String(call[0]))
     expect(
-      lines.filter((line) => line.includes("target discovery start")),
+      lines.filter(
+        (line) =>
+          line.includes("target discovery start")
+          && line.includes("source=auto"),
+      ),
     ).toHaveLength(1)
-    expect(
-      lines.filter((line) => line.includes("target discovery result")),
-    ).toEqual([
-      '[auto-session] target discovery result added=["target-model"] missing=[]',
-    ])
+    const results = lines.filter(
+      (line) =>
+        line.includes("target discovery result")
+        && line.includes("source=auto"),
+    )
+    expect(results).toHaveLength(1)
+    expect(results[0]).toContain('auto_obtained=["target-model"]')
+    expect(results[0]).toContain("missing=[]")
   } finally {
     mod.stopProbeScheduler()
     gate.resolve(okSelection("target-model"))
@@ -1535,15 +1634,18 @@ test("configured miss timeout leaves shared discovery running for later requests
     mod.resumeAutoSessionDiscoveryAfterRotation()
     const started = Date.now()
     expect(
-      await mod.getAutoSessionTokenForModel("target-model"),
+      (await mod.getAutoSessionForModel({ model: "target-model" }))
+        ?.sessionToken,
     ).toBeUndefined()
     expect(Date.now() - started).toBeGreaterThanOrEqual(1_900)
+    expect(Date.now() - started).toBeLessThan(2_800)
     expect(calls).toHaveLength(1)
     gate.resolve(okSelection("target-model", "late-session"))
     await waitFor(() => mod.isModelAutoCovered("target-model"), 1_000)
-    expect(await mod.getAutoSessionTokenForModel("target-model")).toBe(
-      "late-session",
-    )
+    expect(
+      (await mod.getAutoSessionForModel({ model: "target-model" }))
+        ?.sessionToken,
+    ).toBe("late-session")
     expect(calls).toHaveLength(1)
   } finally {
     mod.stopProbeScheduler()
@@ -1568,20 +1670,22 @@ test("rotation ends old miss wait and rejects late old-credential selection", as
   })
   try {
     mod.resumeAutoSessionDiscoveryAfterRotation()
-    const pending = mod.getAutoSessionTokenForModel("target-model")
+    const pending = mod.getAutoSessionForModel({ model: "target-model" })
     await waitFor(() => calls.length === 1, 1_000)
     state.copilotToken = "rotated-token"
     mod.invalidateAutoSession()
-    expect(await pending).toBeUndefined()
+    expect((await pending)?.sessionToken).toBeUndefined()
     expect(
-      await mod.getAutoSessionTokenForModel("target-model"),
+      (await mod.getAutoSessionForModel({ model: "target-model" }))
+        ?.sessionToken,
     ).toBeUndefined()
     mod.resumeAutoSessionDiscoveryAfterRotation()
     gate.resolve(okSelection("target-model", "old-session"))
     await waitFor(() => mod.isModelAutoCovered("target-model"), 4_500)
-    expect(await mod.getAutoSessionTokenForModel("target-model")).toBe(
-      "new-session",
-    )
+    expect(
+      (await mod.getAutoSessionForModel({ model: "target-model" }))
+        ?.sessionToken,
+    ).toBe("new-session")
   } finally {
     mod.stopProbeScheduler()
     gate.resolve(okSelection("target-model"))
@@ -1600,16 +1704,17 @@ test("stop settles concurrent miss waiters before the upstream request finishes"
   try {
     mod.resumeAutoSessionDiscoveryAfterRotation()
     const pending = Array.from({ length: 20 }, () =>
-      mod.getAutoSessionTokenForModel("target-model"),
+      mod.getAutoSessionForModel({ model: "target-model" }),
     )
     await waitFor(() => calls.length === 1, 1_000)
     mod.stopProbeScheduler()
     mod.stopProbeScheduler()
-    expect(await Promise.all(pending)).toEqual(
-      Array.from({ length: 20 }, () => undefined),
-    )
     expect(
-      await mod.getAutoSessionTokenForModel("target-model"),
+      (await Promise.all(pending)).map((item) => item?.sessionToken),
+    ).toEqual(Array.from({ length: 20 }, () => undefined))
+    expect(
+      (await mod.getAutoSessionForModel({ model: "target-model" }))
+        ?.sessionToken,
     ).toBeUndefined()
     expect(calls).toHaveLength(1)
   } finally {
@@ -1629,12 +1734,14 @@ test("wrong-model selection never supplies the configured target token", async (
   try {
     mod.resumeAutoSessionDiscoveryAfterRotation()
     expect(
-      await mod.getAutoSessionTokenForModel("target-model"),
+      (await mod.getAutoSessionForModel({ model: "target-model" }))
+        ?.sessionToken,
     ).toBeUndefined()
     expect(mod.isModelAutoCovered("target-model")).toBe(false)
-    expect(await mod.getAutoSessionTokenForModel("other-model")).toBe(
-      "other-session",
-    )
+    expect(
+      (await mod.getAutoSessionForModel({ model: "other-model" }))
+        ?.sessionToken,
+    ).toBe("other-session")
   } finally {
     mod.stopProbeScheduler()
     await mod.whenProbeSchedulerIdle()
@@ -1658,12 +1765,22 @@ test("expired configured pairing is replaced before the requesting caller receiv
   try {
     mod.resumeAutoSessionDiscoveryAfterRotation()
     expect(
-      await mod.getAutoSessionTokenForModel("target-model", "/responses"),
+      (
+        await mod.getAutoSessionForModel({
+          model: "target-model",
+          endpoint: "/responses",
+        })
+      )?.sessionToken,
     ).toBe("session-1")
     await mod.whenProbeSchedulerIdle()
     clockOffset = 3_700_000
     expect(
-      await mod.getAutoSessionTokenForModel("target-model", "/responses"),
+      (
+        await mod.getAutoSessionForModel({
+          model: "target-model",
+          endpoint: "/responses",
+        })
+      )?.sessionToken,
     ).toBe("session-2")
     expect(requests).toBe(2)
   } finally {
@@ -1685,10 +1802,20 @@ test("cold miss rejects an acquired token unsupported by the requested endpoint"
   try {
     mod.resumeAutoSessionDiscoveryAfterRotation()
     expect(
-      await mod.getAutoSessionTokenForModel("target-model", "/v1/messages"),
+      (
+        await mod.getAutoSessionForModel({
+          model: "target-model",
+          endpoint: "/v1/messages",
+        })
+      )?.sessionToken,
     ).toBeUndefined()
     expect(
-      await mod.getAutoSessionTokenForModel("target-model", "/responses"),
+      (
+        await mod.getAutoSessionForModel({
+          model: "target-model",
+          endpoint: "/responses",
+        })
+      )?.sessionToken,
     ).toBe("response-session")
     expect(calls).toHaveLength(1)
   } finally {
@@ -1708,14 +1835,16 @@ test("cold miss waits for metadata readiness before issuing an authenticated pro
   )
   try {
     expect(
-      await mod.getAutoSessionTokenForModel("target-model"),
+      (await mod.getAutoSessionForModel({ model: "target-model" }))
+        ?.sessionToken,
     ).toBeUndefined()
     expect(calls).toHaveLength(0)
     mod.resumeAutoSessionDiscoveryAfterRotation()
     expect(calls).toHaveLength(0)
-    expect(await mod.getAutoSessionTokenForModel("target-model")).toBe(
-      "ready-session",
-    )
+    expect(
+      (await mod.getAutoSessionForModel({ model: "target-model" }))
+        ?.sessionToken,
+    ).toBe("ready-session")
     expect(calls).toHaveLength(1)
   } finally {
     mod.stopProbeScheduler()
@@ -1748,13 +1877,23 @@ test("exhausted target discovery resumes on a miss after 90 seconds", async () =
     const exhaustedCalls = calls.length
     now = exhaustedAt + 89_999
     expect(
-      await mod.getAutoSessionTokenForModel("target-model", "/responses"),
+      (
+        await mod.getAutoSessionForModel({
+          model: "target-model",
+          endpoint: "/responses",
+        })
+      )?.sessionToken,
     ).toBeUndefined()
     expect(calls).toHaveLength(exhaustedCalls)
     now = exhaustedAt + 90_000
     available = true
     expect(
-      await mod.getAutoSessionTokenForModel("target-model", "/responses"),
+      (
+        await mod.getAutoSessionForModel({
+          model: "target-model",
+          endpoint: "/responses",
+        })
+      )?.sessionToken,
     ).toBe("token-target-model")
     await mod.whenProbeSchedulerIdle()
     expect(calls).toHaveLength(exhaustedCalls + 1)
@@ -1787,9 +1926,10 @@ test("intelligence changes its hard question when distinct startup models still 
     await mod.whenProbeSchedulerIdle()
     expect(hardPrompts).toHaveLength(2)
     expect(hardPrompts[1]).not.toBe(hardPrompts[0])
-    expect(await mod.getAutoSessionTokenForModel("wanted-model")).toBe(
-      "wanted-session",
-    )
+    expect(
+      (await mod.getAutoSessionForModel({ model: "wanted-model" }))
+        ?.sessionToken,
+    ).toBe("wanted-session")
     expect(mod.isModelAutoCovered("first-hard-model")).toBe(true)
   } finally {
     mod.stopProbeScheduler()
@@ -1812,19 +1952,640 @@ test("shared target discovery starts with intelligence and changes its question 
   })
   try {
     mod.resumeAutoSessionDiscoveryAfterRotation()
-    await mod.getAutoSessionTokenForModel("wanted-model")
+    await mod.getAutoSessionForModel({ model: "wanted-model" })
     await mod.whenProbeSchedulerIdle()
     expect(requestBody(calls[0]).tier).toBe("intelligence")
     expect(intelligencePrompts.size).toBe(2)
-    expect(await mod.getAutoSessionTokenForModel("wanted-model")).toBe(
-      "wanted-session",
-    )
-    expect(await mod.getAutoSessionTokenForModel("other-model")).toBe(
-      "other-session",
-    )
+    expect(
+      (await mod.getAutoSessionForModel({ model: "wanted-model" }))
+        ?.sessionToken,
+    ).toBe("wanted-session")
+    expect(
+      (await mod.getAutoSessionForModel({ model: "other-model" }))
+        ?.sessionToken,
+    ).toBe("other-session")
   } finally {
     mod.stopProbeScheduler()
     await mod.whenProbeSchedulerIdle()
     clock.mockRestore()
+  }
+})
+
+const installDiscountCatalog = (...ids: Array<string>): void => {
+  state.models = {
+    object: "list",
+    data: ids.map((id): Model => ({
+      id,
+      name: id,
+      object: "model",
+      model_picker_enabled: true,
+      preview: false,
+      vendor: "test",
+      version: "test",
+      capabilities: {
+        family: "test",
+        limits: {},
+        object: "model_capabilities",
+        supports: {},
+        tokenizer: "test",
+        type: "chat",
+      },
+      supported_endpoints: ["/responses"],
+    })),
+  }
+}
+
+const fusionSelectionResponse = (model: string, token: string): Response =>
+  new Response(
+    JSON.stringify({
+      fusion_pattern: "solo",
+      steps: [{ model_id: model }],
+      session: { token, expires_at: Math.floor(Date.now() / 1000) + 3600 },
+    }),
+  )
+
+test("Fusion pool 403 pauses only Fusion while Auto still retries and supplies its 10 percent candidate", async () => {
+  const mod = await loadAutoSessionModule()
+  installDiscountCatalog("wanted-model")
+  getConfig().autoDiscovery = { models: ["wanted-model"] }
+  let now = Date.parse("2026-12-15T12:00:00Z")
+  const clock = spyOn(Date, "now").mockImplementation(() => (now += 4_000))
+  let efficiencyAttempts = 0
+  const { calls, fusionCalls } = installRouter((body) => {
+    if (
+      body.tier === "efficiency"
+      && body.prompt === "hello"
+      && ++efficiencyAttempts === 1
+    ) {
+      return new Response(null, { status: 500 })
+    }
+    return okSelection("wanted-model", "auto-after-fusion-pool-denied")
+  })
+  try {
+    await mod.prewarmAutoSession()
+    await mod.whenProbeSchedulerIdle()
+    expect(fusionCalls).toHaveLength(4)
+    expect(efficiencyAttempts).toBe(2)
+    expect(calls.every((call) => call.url.endsWith("/auto"))).toBe(true)
+    expect(
+      await mod.getAutoSessionForModel({
+        model: "wanted-model",
+        endpoint: "/responses",
+      }),
+    ).toEqual({
+      sessionToken: "auto-after-fusion-pool-denied",
+      source: "auto",
+      expectedDiscount: 10,
+    })
+  } finally {
+    mod.stopProbeScheduler()
+    await mod.whenProbeSchedulerIdle()
+    clock.mockRestore()
+  }
+})
+
+test("Fusion becoming unavailable releases already parked probes and joins without another request", async () => {
+  const mod = await loadAutoSessionModule()
+  installDiscountCatalog("wanted-model")
+  getConfig().autoDiscovery = { models: ["wanted-model"] }
+  const unavailable = Promise.withResolvers<Response>()
+  let attempts = 0
+  const { fusionCalls } = installRouter(
+    () => okSelection("wanted-model", "kept-auto"),
+    () => {
+      attempts++
+      if (attempts === 1)
+        return new Response(
+          JSON.stringify({ error: { code: "account_denied" } }),
+          { status: 403 },
+        )
+      if (attempts === 2) return unavailable.promise
+      return new Response(null, { status: 400 })
+    },
+  )
+  const poolDenied = (): Response =>
+    new Response(
+      JSON.stringify({ error: { code: "model_pool_not_eligible" } }),
+      { status: 403 },
+    )
+  try {
+    await mod.prewarmAutoSession({ startupBudgetMs: 20 })
+    expect(fusionCalls).toHaveLength(4)
+    unavailable.resolve(poolDenied())
+    await mod.whenProbeSchedulerIdle()
+    expect(fusionCalls).toHaveLength(4)
+    expect(
+      await mod.getAutoSessionForModel({
+        model: "wanted-model",
+        endpoint: "/responses",
+      }),
+    ).toEqual({
+      sessionToken: "kept-auto",
+      source: "auto",
+      expectedDiscount: 10,
+    })
+    await mod.whenProbeSchedulerIdle()
+    expect(fusionCalls).toHaveLength(4)
+  } finally {
+    mod.stopProbeScheduler()
+    unavailable.resolve(poolDenied())
+    await mod.whenProbeSchedulerIdle()
+  }
+})
+
+test("Fusion shares four seeds plus ten additional attempts across targets, counts failures, and respects a 90 second cooldown after the promotion date", async () => {
+  const mod = await loadAutoSessionModule()
+  installDiscountCatalog("wanted-a", "wanted-b")
+  getConfig().autoDiscovery = { models: ["wanted-a", "wanted-b"] }
+  let now = Date.parse("2026-12-15T12:00:00Z")
+  let advancing = true
+  const clock = spyOn(Date, "now").mockImplementation(() => {
+    if (advancing) now += 4_000
+    return now
+  })
+  mod.registerAutoSelection({
+    ...okSelection("wanted-a", "auto-a"),
+    expires_at: Math.floor(now / 1000) + 86400,
+  })
+  mod.registerAutoSelection({
+    ...okSelection("wanted-b", "auto-b"),
+    expires_at: Math.floor(now / 1000) + 86400,
+  })
+  let recovered = false
+  let fusionAttempts = 0
+  let recoveries = 0
+  const { fusionCalls } = installRouter(
+    () => ({
+      ...okSelection("wanted-a", "auto-a"),
+      expires_at: Math.floor(now / 1000) + 86400,
+    }),
+    () => {
+      fusionAttempts++
+      if (recovered) {
+        recoveries++
+        return fusionSelectionResponse(
+          recoveries === 1 ? "wanted-a" : "wanted-b",
+          `fusion-recovered-${recoveries}`,
+        )
+      }
+      if (fusionAttempts <= 4) return new Response(null, { status: 400 })
+      if (fusionAttempts % 3 === 0)
+        return Promise.reject(new TypeError("fetch failed"))
+      return new Response(null, {
+        status: fusionAttempts % 2 === 0 ? 503 : 429,
+        headers: { "retry-after": "1" },
+      })
+    },
+  )
+  try {
+    await mod.prewarmAutoSession()
+    await mod.whenProbeSchedulerIdle()
+    expect(fusionCalls).toHaveLength(14)
+    const seedPrompts = fusionCalls.slice(0, 4).map((call) => {
+      const body = call.init?.body
+      if (typeof body !== "string")
+        throw new Error("expected string request body")
+      return JSON.parse(body) as { prompt: string }
+    })
+    expect(new Set(seedPrompts.map((body) => body.prompt)).size).toBe(4)
+    advancing = false
+    const exhaustedAt = now
+    now = exhaustedAt + 89_999
+    expect(
+      (
+        await mod.getAutoSessionForModel({
+          model: "wanted-a",
+          endpoint: "/responses",
+        })
+      )?.sessionToken,
+    ).toBe("auto-a")
+    expect(fusionCalls).toHaveLength(14)
+    now = exhaustedAt + 90_000
+    recovered = true
+    expect(
+      (
+        await mod.getAutoSessionForModel({
+          model: "wanted-a",
+          endpoint: "/responses",
+        })
+      )?.source,
+    ).toBe("auto")
+    advancing = true
+    await mod.whenProbeSchedulerIdle()
+    expect(fusionCalls).toHaveLength(16)
+    expect(
+      (
+        await mod.getAutoSessionForModel({
+          model: "wanted-a",
+          endpoint: "/responses",
+        })
+      )?.sessionToken,
+    ).toBe("fusion-recovered-1")
+    expect(
+      (
+        await mod.getAutoSessionForModel({
+          model: "wanted-b",
+          endpoint: "/responses",
+        })
+      )?.sessionToken,
+    ).toBe("fusion-recovered-2")
+  } finally {
+    mod.stopProbeScheduler()
+    await mod.whenProbeSchedulerIdle()
+    clock.mockRestore()
+  }
+})
+
+test("twenty concurrent configured misses share one in-flight request per source and return Auto without waiting for Fusion", async () => {
+  const mod = await loadAutoSessionModule()
+  installDiscountCatalog("wanted-model")
+  getConfig().autoDiscovery = { models: ["wanted-model"] }
+  const auto = Promise.withResolvers<AutoSelectionResponse>()
+  const fusion = Promise.withResolvers<Response>()
+  const autoStarted = Promise.withResolvers<void>()
+  const fusionStarted = Promise.withResolvers<void>()
+  const { calls, fusionCalls } = installRouter(
+    () => {
+      autoStarted.resolve()
+      return auto.promise
+    },
+    () => {
+      fusionStarted.resolve()
+      return fusion.promise
+    },
+  )
+  mod.resumeAutoSessionDiscoveryAfterRotation()
+  const pending = Array.from({ length: 20 }, () =>
+    mod.getAutoSessionForModel({
+      model: "wanted-model",
+      endpoint: "/responses",
+    }),
+  )
+  try {
+    await Promise.all([autoStarted.promise, fusionStarted.promise])
+    expect(calls).toHaveLength(1)
+    expect(fusionCalls).toHaveLength(1)
+    auto.resolve(okSelection("wanted-model", "immediate-auto"))
+    expect(
+      (await Promise.all(pending)).every(
+        (item) =>
+          item?.sessionToken === "immediate-auto" && item.source === "auto",
+      ),
+    ).toBe(true)
+    expect(fusionCalls).toHaveLength(1)
+    fusion.resolve(fusionSelectionResponse("wanted-model", "later-fusion"))
+    await mod.whenProbeSchedulerIdle()
+    expect(
+      (
+        await mod.getAutoSessionForModel({
+          model: "wanted-model",
+          endpoint: "/responses",
+        })
+      )?.sessionToken,
+    ).toBe("later-fusion")
+  } finally {
+    mod.stopProbeScheduler()
+    auto.resolve(okSelection("wanted-model", "immediate-auto"))
+    fusion.resolve(fusionSelectionResponse("wanted-model", "later-fusion"))
+    await mod.whenProbeSchedulerIdle()
+    await Promise.all(pending)
+  }
+})
+
+test("startup shares the 30 second budget across Auto and Fusion, then stop joins both in-flight sources", async () => {
+  const mod = await loadAutoSessionModule()
+  expect(mod.STARTUP_PROBE_BUDGET_MS).toBe(30_000)
+  installDiscountCatalog("wanted-model")
+  const auto = Promise.withResolvers<AutoSelectionResponse>()
+  const fusion = Promise.withResolvers<Response>()
+  const { calls, fusionCalls } = installRouter(
+    () => auto.promise,
+    () => fusion.promise,
+  )
+  try {
+    // A shortened real budget exercises the same platform-timer race without a 30s test delay.
+    const started = Date.now()
+    await mod.prewarmAutoSession({ startupBudgetMs: 80 })
+    expect(Date.now() - started).toBeLessThan(2_000)
+    expect(calls.length).toBeGreaterThan(0)
+    expect(fusionCalls).toHaveLength(4)
+    mod.stopProbeScheduler()
+    let joined = false
+    const idle = mod.whenProbeSchedulerIdle().then(() => {
+      joined = true
+    })
+    auto.resolve(okSelection("wanted-model", "auto-after-budget"))
+    await auto.promise
+    await Promise.resolve()
+    expect(joined).toBe(false)
+    fusion.resolve(
+      fusionSelectionResponse("wanted-model", "fusion-after-budget"),
+    )
+    await idle
+    expect(joined).toBe(true)
+  } finally {
+    mod.stopProbeScheduler()
+    auto.resolve(okSelection("wanted-model", "auto-after-budget"))
+    fusion.resolve(
+      fusionSelectionResponse("wanted-model", "fusion-after-budget"),
+    )
+    await mod.whenProbeSchedulerIdle()
+  }
+})
+
+test("Fusion 的失败种子各发送一次，随后共享十次补采并进入冷却", async () => {
+  const mod = await loadAutoSessionModule()
+  const dir = await mkdtemp(path.join(os.tmpdir(), "fusion-failed-seeds-"))
+  installDiscountCatalog("wanted-model")
+  getConfig().autoDiscovery = { models: ["wanted-model"] }
+  let now = Date.now()
+  let advancing = true
+  const clock = spyOn(Date, "now").mockImplementation(() => {
+    if (advancing) now += 4_000
+    return now
+  })
+  const { fusionCalls } = installRouter(
+    () => ({
+      ...okSelection("wanted-model", "kept-auto"),
+      expires_at: Math.floor(now / 1000) + 86400,
+    }),
+    () => new Response(null, { status: 503, headers: { "retry-after": "1" } }),
+  )
+  try {
+    await mod.prewarmAutoSession({ sourceRoot: dir })
+    await mod.whenProbeSchedulerIdle()
+    expect(fusionCalls).toHaveLength(14)
+    const prompts = fusionCalls.map((call) => requestBody(call).prompt)
+    expect(new Set(prompts.slice(0, 4)).size).toBe(4)
+    expect(prompts.filter((prompt) => prompt === "hello")).toHaveLength(1)
+    advancing = false
+    const exhaustedAt = now
+    now = exhaustedAt + 89_999
+    expect(
+      (
+        await mod.getAutoSessionForModel({
+          model: "wanted-model",
+          endpoint: "/responses",
+        })
+      )?.sessionToken,
+    ).toBe("kept-auto")
+    expect(fusionCalls).toHaveLength(14)
+    now = exhaustedAt + 90_000
+    advancing = true
+    await mod.getAutoSessionForModel({
+      model: "wanted-model",
+      endpoint: "/responses",
+    })
+    await mod.whenProbeSchedulerIdle()
+    expect(fusionCalls).toHaveLength(24)
+  } finally {
+    mod.stopProbeScheduler()
+    await mod.whenProbeSchedulerIdle()
+    clock.mockRestore()
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test.each([429, 503])(
+  "Fusion 的单次有界失败保留 %s Retry-After，后续补采不能提前发送",
+  async (status) => {
+    const mod = await loadAutoSessionModule()
+    const dir = await mkdtemp(path.join(os.tmpdir(), "fusion-retry-deadline-"))
+    installDiscountCatalog("wanted-model")
+    let now = Date.now()
+    spyOn(Date, "now").mockImplementation(() => now)
+    const { fusionCalls } = installRouter(
+      () => okSelection("wanted-model", "kept-auto"),
+      () => new Response(null, { status, headers: { "retry-after": "3600" } }),
+    )
+    try {
+      await mod.prewarmAutoSession({ sourceRoot: dir, startupBudgetMs: 20 })
+      expect(fusionCalls).toHaveLength(4)
+      now += 3_599_999
+      await nextTurn()
+      expect(fusionCalls).toHaveLength(4)
+      mod.stopProbeScheduler()
+      await mod.whenProbeSchedulerIdle()
+      expect(fusionCalls).toHaveLength(4)
+    } finally {
+      mod.stopProbeScheduler()
+      await mod.whenProbeSchedulerIdle()
+      await rm(dir, { recursive: true, force: true })
+    }
+  },
+)
+
+test("Fusion 轮换中的种子等待元数据就绪，丢弃 A 响应且 B 每点保持单飞", async () => {
+  const mod = await loadAutoSessionModule()
+  const dir = await mkdtemp(path.join(os.tmpdir(), "fusion-rotation-seeds-"))
+  installDiscountCatalog("old-model")
+  const oldAuthorization = `Bearer ${state.copilotToken}`
+  const old = Promise.withResolvers<void>()
+  const fresh = Promise.withResolvers<void>()
+  const freshStarted = Promise.withResolvers<void>()
+  let freshCalls = 0
+  const { fusionCalls } = installRouter(
+    () => new Response(null, { status: 400 }),
+    (_body, init) => {
+      if (new Headers(init?.headers).get("authorization") === oldAuthorization)
+        return old.promise.then(() =>
+          fusionSelectionResponse("old-model", "stale-a"),
+        )
+      if (++freshCalls === 4) freshStarted.resolve()
+      return fresh.promise.then(() =>
+        fusionSelectionResponse("new-model", "ready-b"),
+      )
+    },
+  )
+  const warm = mod.prewarmAutoSession({ sourceRoot: dir, startupBudgetMs: 20 })
+  try {
+    await warm
+    expect(fusionCalls).toHaveLength(4)
+    state.copilotToken = "rotated-fusion-token"
+    old.resolve()
+    await nextTurn()
+    expect(fusionCalls).toHaveLength(4)
+    expect(mod.isModelAutoCovered("old-model")).toBe(false)
+    expect(
+      (
+        await mod.getAutoSessionForModel({
+          model: "old-model",
+          waitForDiscovery: false,
+        })
+      )?.sessionToken,
+    ).toBeUndefined()
+    installDiscountCatalog("new-model")
+    mod.resumeAutoSessionDiscoveryAfterRotation()
+    mod.resumeAutoSessionDiscoveryAfterRotation()
+    await freshStarted.promise
+    expect(fusionCalls).toHaveLength(8)
+    expect(
+      new Set(fusionCalls.slice(4).map((call) => requestBody(call).prompt))
+        .size,
+    ).toBe(4)
+    fresh.resolve()
+    await mod.whenProbeSchedulerIdle()
+    expect(
+      (
+        await mod.getAutoSessionForModel({
+          model: "new-model",
+          endpoint: "/responses",
+        })
+      )?.sessionToken,
+    ).toBe("ready-b")
+    expect(mod.isModelAutoCovered("old-model")).toBe(false)
+    expect(fusionCalls).toHaveLength(8)
+  } finally {
+    mod.stopProbeScheduler()
+    old.resolve()
+    fresh.resolve()
+    await warm
+    await mod.whenProbeSchedulerIdle()
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test("Fusion 补采轮次的 finally 不得在新身份元数据就绪前开启 B 请求", async () => {
+  const mod = await loadAutoSessionModule()
+  installDiscountCatalog("old-model")
+  getConfig().autoDiscovery = { models: ["wanted-model"] }
+  const oldAuthorization = `Bearer ${state.copilotToken}`
+  const old = Promise.withResolvers<Response>()
+  const oldStarted = Promise.withResolvers<void>()
+  const { fusionCalls } = installRouter(
+    () => okSelection("wanted-model", "kept-auto"),
+    (_body, init) => {
+      if (
+        new Headers(init?.headers).get("authorization") === oldAuthorization
+      ) {
+        oldStarted.resolve()
+        return old.promise
+      }
+      return fusionSelectionResponse("wanted-model", "ready-b")
+    },
+  )
+  try {
+    mod.resumeAutoSessionDiscoveryAfterRotation()
+    await mod.getAutoSessionForModel({
+      model: "wanted-model",
+      waitForDiscovery: false,
+    })
+    await oldStarted.promise
+    expect(fusionCalls).toHaveLength(1)
+    state.copilotToken = "rotated-fusion-token"
+    old.resolve(fusionSelectionResponse("old-model", "stale-a"))
+    await nextTurn()
+    expect(fusionCalls).toHaveLength(1)
+    expect(mod.isModelAutoCovered("old-model")).toBe(false)
+    installDiscountCatalog("wanted-model")
+    mod.resumeAutoSessionDiscoveryAfterRotation()
+    await mod.whenProbeSchedulerIdle()
+    expect(
+      (
+        await mod.getAutoSessionForModel({
+          model: "wanted-model",
+          endpoint: "/responses",
+        })
+      )?.sessionToken,
+    ).toBe("ready-b")
+    expect(fusionCalls).toHaveLength(5)
+  } finally {
+    mod.stopProbeScheduler()
+    old.resolve(fusionSelectionResponse("old-model", "stale-a"))
+    await mod.whenProbeSchedulerIdle()
+  }
+})
+
+test("停止唤醒等待轮换元数据的 Fusion 种子且不发送 B 请求", async () => {
+  const mod = await loadAutoSessionModule()
+  const dir = await mkdtemp(path.join(os.tmpdir(), "fusion-rotation-stop-"))
+  installDiscountCatalog("old-model")
+  const old = Promise.withResolvers<void>()
+  const { fusionCalls } = installRouter(
+    () => new Response(null, { status: 400 }),
+    () =>
+      old.promise.then(() => fusionSelectionResponse("old-model", "stale-a")),
+  )
+  try {
+    await mod.prewarmAutoSession({ sourceRoot: dir, startupBudgetMs: 20 })
+    state.copilotToken = "rotated-fusion-token"
+    old.resolve()
+    await nextTurn()
+    expect(fusionCalls).toHaveLength(4)
+    mod.stopProbeScheduler()
+    await mod.whenProbeSchedulerIdle()
+    expect(fusionCalls).toHaveLength(4)
+    expect(mod.isModelAutoCovered("old-model")).toBe(false)
+  } finally {
+    mod.stopProbeScheduler()
+    old.resolve()
+    await mod.whenProbeSchedulerIdle()
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test("Fusion 种子跨 A→B 未就绪→C 就绪轮换后，C 的失败发送每点仍只有一次", async () => {
+  const mod = await loadAutoSessionModule()
+  const dir = await mkdtemp(path.join(os.tmpdir(), "fusion-rotation-budget-"))
+  installDiscountCatalog("old-model")
+  const oldAuthorization = `Bearer ${state.copilotToken}`
+  const old = Promise.withResolvers<void>()
+  let now = Date.now()
+  let advancing = false
+  spyOn(Date, "now").mockImplementation(() => {
+    if (advancing) now += 4_000
+    return now
+  })
+  const { fusionCalls } = installRouter(
+    () => new Response(null, { status: 400 }),
+    (_body, init) => {
+      if (
+        new Headers(init?.headers).get("authorization") === oldAuthorization
+      ) {
+        return old.promise.then(() =>
+          fusionSelectionResponse("old-model", "stale-a"),
+        )
+      }
+      return new Response(null, { status: 503 })
+    },
+  )
+  try {
+    await mod.prewarmAutoSession({ sourceRoot: dir, startupBudgetMs: 20 })
+    expect(fusionCalls).toHaveLength(4)
+    state.copilotToken = "rotation-budget-b"
+    old.resolve()
+    await nextTurn()
+    expect(fusionCalls).toHaveLength(4)
+    expect(mod.isModelAutoCovered("old-model")).toBe(false)
+
+    state.copilotToken = "rotation-budget-c"
+    advancing = true
+    mod.resumeAutoSessionDiscoveryAfterRotation()
+    await mod.whenProbeSchedulerIdle()
+
+    expect(fusionCalls).toHaveLength(8)
+    const cCalls = fusionCalls.filter(
+      (call) =>
+        new Headers(call.init?.headers).get("authorization")
+        === "Bearer rotation-budget-c",
+    )
+    expect(cCalls).toHaveLength(4)
+    expect(new Set(cCalls.map((call) => requestBody(call).prompt)).size).toBe(4)
+    expect(
+      fusionCalls.some(
+        (call) =>
+          new Headers(call.init?.headers).get("authorization")
+          === "Bearer rotation-budget-b",
+      ),
+    ).toBe(false)
+    expect(mod.isModelAutoCovered("old-model")).toBe(false)
+    mod.stopProbeScheduler()
+    await mod.whenProbeSchedulerIdle()
+    expect(fusionCalls).toHaveLength(8)
+  } finally {
+    mod.stopProbeScheduler()
+    old.resolve()
+    await mod.whenProbeSchedulerIdle()
+    await rm(dir, { recursive: true, force: true })
   }
 })

@@ -2,14 +2,16 @@ import type { Server } from "bun"
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { afterEach, beforeEach, expect, test } from "bun:test"
+import { afterAll, afterEach, beforeEach, expect, test } from "bun:test"
 
 import { invalidateConfigCache, reloadConfig } from "~/lib/config-store"
 import { PATHS } from "~/lib/paths"
 import {
+  getAutoSessionForModel,
   invalidateAutoSession,
   isModelAutoCovered,
   prewarmAutoSession,
+  stopProbeScheduler,
   whenProbeSchedulerIdle,
 } from "~/lib/auto-session"
 import { state } from "~/lib/state"
@@ -38,6 +40,7 @@ const originalState = {
   enterpriseList: state.enterpriseList,
   accountType: state.accountType,
   showToken: state.showToken,
+  models: state.models,
 }
 
 let server: Server<undefined>
@@ -46,10 +49,13 @@ let originalOauthApp: string | undefined
 const originalConfigPath = PATHS.CONFIG_PATH
 let tempConfigDir: string
 
-// 本地 /auto 请求计数；补采请求必须全部落在 127.0.0.1 本地服务
+// Both discovery sources must use the loopback server, including rotation probes.
 let autoRequestCount = 0
+let fusionRequestCount = 0
+const selectionRequests: Array<{ path: string; authorization: string | null }> =
+  []
 let originalFetch: typeof fetch
-// 文件级网络边界：被拦截的非本地 /auto 请求数（afterEach 断言为零）
+// Non-local selection requests are blocked before fetch can touch the network.
 let blockedRequestCount = 0
 
 const responseDefaults = {
@@ -67,18 +73,33 @@ beforeEach(() => {
   delete process.env.COPILOT_API_OAUTH_APP
 
   autoRequestCount = 0
+  fusionRequestCount = 0
+  selectionRequests.length = 0
   server = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
     fetch: (req) => {
       const url = new URL(req.url)
+      const authorization = req.headers.get("authorization")
+      selectionRequests.push({ path: url.pathname, authorization })
+      if (url.pathname === "/model/fusion") {
+        fusionRequestCount += 1
+        return Response.json({
+          fusion_pattern: "solo",
+          steps: [{ model_id: "auto-model-1" }],
+          session: {
+            token: `${authorization}-fusion`,
+            expires_at: Math.floor(Date.now() / 1000) + 3600,
+          },
+        })
+      }
       if (url.pathname !== "/auto") {
         // 未知路径即时失败：本地替身必须暴露意外请求
         return new Response(`unexpected path: ${url.pathname}`, { status: 404 })
       }
       autoRequestCount += 1
       return Response.json({
-        session_token: "session-1",
+        session_token: `${authorization}-auto`,
         selected_model: {
           id: "auto-model-1",
           supported_endpoints: ["/responses"],
@@ -89,9 +110,7 @@ beforeEach(() => {
   })
   serverUrl = `http://127.0.0.1:${server.port}`
 
-  // 包裹全局 fetch：仅允许以本次本地 server 为 origin 且路径 /auto 的请求，
-  // 其他 URL 同步抛明确的本地测试错误——静态模块残留的补采意图
-  // 不可能触达真实 Copilot（含 BUSINESS/ENTERPRISE 元数据测试场景）
+  // Only the two selection endpoints on this loopback origin are allowed.
   originalFetch = globalThis.fetch
   blockedRequestCount = 0
   globalThis.fetch = ((
@@ -100,10 +119,13 @@ beforeEach(() => {
   ): Promise<Response> => {
     const raw = input instanceof Request ? input.url : String(input)
     const url = new URL(raw)
-    if (url.origin !== serverUrl || url.pathname !== "/auto") {
+    if (
+      url.origin !== serverUrl
+      || !["/auto", "/model/fusion"].includes(url.pathname)
+    ) {
       blockedRequestCount += 1
       throw new Error(
-        `[token-metadata-apply] blocked non-local request: ${url.origin}${url.pathname} (only ${serverUrl}/auto is allowed in this test file)`,
+        "[token-metadata-apply] blocked request outside local selection endpoints",
       )
     }
     return originalFetch(input, init)
@@ -118,16 +140,19 @@ beforeEach(() => {
   state.enterpriseList = undefined
   state.accountType = "individual"
   state.showToken = false
+  state.models = {
+    object: "list",
+    data: [{ id: "auto-model-1", supported_endpoints: ["/responses"] }],
+  } as typeof state.models
 
   invalidateAutoSession()
 })
 
 afterEach(async () => {
-  // 先等在途补采/探测全部结算，再恢复 state、关闭本地 server：
-  // 否则在途 /auto 会失去本地服务并可能泄漏到真实上游
+  // Drain both sources before restoring credentials or closing the local server.
   try {
     await whenProbeSchedulerIdle()
-    // 越界请求必须为零：任何非本地 /auto 请求都说明测试隔离失效。
+    // Any blocked request means a discovery source escaped the local fixture.
     expect(blockedRequestCount).toBe(0)
   } finally {
     globalThis.fetch = originalFetch
@@ -147,6 +172,11 @@ afterEach(async () => {
       rmSync(tempConfigDir, { recursive: true, force: true })
     }
   }
+})
+
+afterAll(async () => {
+  stopProbeScheduler()
+  await whenProbeSchedulerIdle()
 })
 
 const assertLocalEndpoint = (): void => {
@@ -248,6 +278,18 @@ test("仅 token 发生变化时使 Auto-session 失效并按新凭据后台补�
   await prewarmAutoSession()
   expect(isModelAutoCovered("auto-model-1")).toBe(true)
   const callsAfterPrewarm = autoRequestCount
+  const fusionCallsAfterPrewarm = fusionRequestCount
+  expect(fusionCallsAfterPrewarm).toBeGreaterThan(0)
+  expect(
+    await getAutoSessionForModel({
+      model: "auto-model-1",
+      endpoint: "/responses",
+    }),
+  ).toMatchObject({
+    source: "fusion",
+    expectedDiscount: 30,
+    sessionToken: "Bearer same-token-fusion",
+  })
 
   const previousToken = state.copilotToken
   const sameResponse = {
@@ -260,6 +302,7 @@ test("仅 token 发生变化时使 Auto-session 失效并按新凭据后台补�
   // 同 token：无新增 /auto，配对保持
   await whenProbeSchedulerIdle()
   expect(autoRequestCount).toBe(callsAfterPrewarm)
+  expect(fusionRequestCount).toBe(fusionCallsAfterPrewarm)
   expect(isModelAutoCovered("auto-model-1")).toBe(true)
 
   const changedPreviousToken = state.copilotToken
@@ -272,11 +315,49 @@ test("仅 token 发生变化时使 Auto-session 失效并按新凭据后台补�
   applyCopilotTokenMetadata(changedResponse, changedPreviousToken)
   // 旧配对立即失效（不等补采完成）
   expect(isModelAutoCovered("auto-model-1")).toBe(false)
+  expect(
+    await getAutoSessionForModel({
+      model: "auto-model-1",
+      endpoint: "/responses",
+      authToken: "same-token",
+      waitForDiscovery: false,
+    }),
+  ).toBeUndefined()
 
   // 后台补采全部指向本地 127.0.0.1：await idle 后新凭据配对可用
   await whenProbeSchedulerIdle()
   expect(autoRequestCount).toBeGreaterThan(callsAfterPrewarm)
   expect(isModelAutoCovered("auto-model-1")).toBe(true)
+  expect(fusionRequestCount).toBeGreaterThan(fusionCallsAfterPrewarm)
+  expect(
+    await getAutoSessionForModel({
+      model: "auto-model-1",
+      endpoint: "/responses",
+    }),
+  ).toEqual({
+    sessionToken: `Bearer ${changedResponse.token}-fusion`,
+    source: "fusion",
+    expectedDiscount: 30,
+  })
+  expect(
+    await getAutoSessionForModel({
+      model: "auto-model-1",
+      endpoint: "/responses",
+      excludedSources: new Set(["fusion"]),
+    }),
+  ).toEqual({
+    sessionToken: `Bearer ${changedResponse.token}-auto`,
+    source: "auto",
+    expectedDiscount: 10,
+  })
+  expect(
+    selectionRequests
+      .filter(
+        (request) =>
+          request.authorization === `Bearer ${changedResponse.token}`,
+      )
+      .map((request) => request.path),
+  ).toEqual(expect.arrayContaining(["/auto", "/model/fusion"]) as Array<string>)
 })
 
 test("OpenCode 直接使用 token 时保留未提供的元数据", async () => {
@@ -295,6 +376,7 @@ test("OpenCode 直接使用 token 时保留未提供的元数据", async () => {
   await prewarmAutoSession()
   expect(isModelAutoCovered("auto-model-1")).toBe(true)
   const callsAfterPrewarm = autoRequestCount
+  const fusionCallsAfterPrewarm = fusionRequestCount
 
   state.githubToken = "gho-direct-token"
   await setupCopilotToken()
@@ -313,4 +395,15 @@ test("OpenCode 直接使用 token 时保留未提供的元数据", async () => {
   await whenProbeSchedulerIdle()
   expect(autoRequestCount).toBeGreaterThan(callsAfterPrewarm)
   expect(isModelAutoCovered("auto-model-1")).toBe(true)
+  expect(fusionRequestCount).toBeGreaterThan(fusionCallsAfterPrewarm)
+  expect(
+    await getAutoSessionForModel({
+      model: "auto-model-1",
+      endpoint: "/responses",
+    }),
+  ).toEqual({
+    sessionToken: `Bearer ${state.githubToken}-fusion`,
+    source: "fusion",
+    expectedDiscount: 30,
+  })
 })

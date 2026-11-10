@@ -6,9 +6,9 @@
 - 同步上游时，按以下行为检查受影响的接入位置，并执行完整回归验证。
 - 独有文档、图谱和测试文件通常没有同路径的上游修改；双方新增同名文件仍可能发生文本冲突，测试也需要跟随实际行为更新。
 
-## 1. 共用请求发送与 Auto-session
+## 1. 共用请求发送与折扣会话
 
-**使用场景**：三个 Copilot API 入口需要一致的 HTTP 生命周期、TLS 重试和 Auto-session 处理。
+**使用场景**：三个 Copilot API 入口需要一致的 HTTP 生命周期、TLS 重试和 Fusion/Auto 折扣会话处理。
 
 **必须保留的行为**：
 
@@ -16,20 +16,24 @@
 - 发送前已经取消的请求不访问上游；请求发出后继续读取上游响应并记录用量。headers 超时和流读取超时仍可终止上游请求。
 - 每次实际发送时序列化当前 payload，保留同一 headers 对象与调用方的 `AbortSignal`。
 - TLS 重试继续由既有 `retryAfterTlsCertificateVerificationFailure` 判定，最多重试一次。
-- [auto-session-retry.test.ts](../tests/auto-session-retry.test.ts)：附带 token 的 `400`/`401` 单次重试、迟到 `401` 与失效后裸重试语义；系统实际调用 `/auto` 重新取得且重取失败时传出刷新错误并停止本次请求（不发第二次推理），旧 401 迟到且配对已被并发清除时仍为原模型无 token 重试一次。
-- 仅当模型命中 `/auto` 配对且该配对支持请求端点时附加 `Copilot-Session-Token`；Responses WebSocket 分支不附加。
-- Auto 会话令牌失效后的重试属于首次请求链；后续协议兼容重试只调用 HTTP/TLS 发送层。
-- 启动 `/auto` 八个探测点（四档×简单题与难题），互不阻断、同点单飞；简单题使用 `hello`。`intelligence` 难题使用已验证的完整题面与冻结的 100 行真实 TypeScript 源码样本，其余三档独立采样当前仓库源码。启动等待上限 30 秒，未完成点在服务运行期后台补采。
-- `intelligence` 首次难题仍未覆盖配置目标，或同档两题选中相同模型时，最多追加一次题面变体。目标补充探测优先 `intelligence` 并轮换三个已验证题面，其余档位沿用简单题与代码任务交替；每档最多十次，全部目标取得后结束。固定输入及变体由 `getIntelligenceProbePrompt()` 统一提供，成功配对的刷新重放实际成功文本。
-- 探测失败按类别处理：429 优先 `Retry-After`，网络失败与 5xx 按 1 秒起步 30 秒封顶随机退避，401/403 暂停相同凭据探测待凭据变化恢复，持续请求格式类 400 记为待处理。
-- 每条配对按上游 `expires_at` 在到期前 5 分钟刷新（同点共享在途）；Copilot 凭据变化立即使旧配对失效，并在 token 与账号元数据全部落位后重新补采；Auto 查表与 `state.forceAgent` 内部标志无关。
+- [auto-session-retry.test.ts](../tests/auto-session-retry.test.ts)：每次进入共享折扣降级链最多三次业务发送，依次为 Fusion、Auto、无 token；只对携带 token 的 `400`/`401`（`belong` 拒绝除外）定向失效并前进到下一来源，同一链不再回头使用已用来源。配对刷新失败不阻止使用另一来源或原价发送；原价生成失败、`429`/`5xx`、取消及流开始后的错误仍按原路径返回。`413` 图片处理可能重新进入整条生成链，signature、effort 与 `belong` 修正各有既有兼容发送，TLS 重试独立计数，各类发送分别记录。
+- 仅当最终上游模型在所选来源（有效 Fusion 优先，其次 Auto）有有效配对、凭据身份一致且该配对支持请求端点时，在真实 HTTP 生成分支附加 `Copilot-Session-Token`。Fusion 候选只适用于已验证的 `/responses` 端点，模型目录不能扩大该端点集合。Responses WebSocket 分支不附会话 token，也不因存在配对而切换传输。
+- 带 token 请求被拒绝时只失效实际发送的 token 对应来源候选，并在后台按同一来源重获，不阻塞当前请求链，也不重放已经成功的生成。后续协议兼容重试只调用 HTTP/TLS 发送层。
+- 启动同时运行 Auto 四档八个探测点（四档×简单题与难题）与 Fusion 四个固定题面（`hello`、CSS Flexbox 题、`TARGET_CODE_PROMPT`、`getIntelligenceProbePrompt()`），互不阻断、同点单飞，共享 30 秒启动等待上限。Fusion 四个种子在每个身份下各最多发送一次请求，失败不重试，也不阻止后续共享补采。Auto 简单题使用 `hello`；`intelligence` 难题使用已验证的完整题面与冻结的 100 行真实 TypeScript 源码样本，其余三档独立采样当前仓库源码。未完成点在服务运行期后台补采。
+- `intelligence` 首次难题仍未覆盖配置目标，或同档两题选中相同模型时，最多追加一次题面变体。目标补充探测优先 `intelligence` 并轮换三个已验证题面，其余档位沿用简单题与代码任务交替；Auto 每档最多十次。已有 10% 的模型仍是 Fusion 升级目标：Fusion 续期与过期重获进入共享轮次，每轮最多十次请求，包含保存题面的首次尝试与所有失败尝试；返回的模型按实际结果登记，缺失目标继续用 intelligence 题面变体补采，请求间隔至少 3 秒，轮次耗尽冷却 90 秒，之后由后续 miss 重新开启轮次；固定输入及变体由 `getIntelligenceProbePrompt()` 统一提供，成功配对的刷新重放实际成功文本。
+- 各来源独立判定探测失败：429 与 Fusion 5xx 的有效 `Retry-After` 优先于退避，网络失败与其余 5xx 按 1 秒起步 30 秒封顶随机退避，持续请求格式类 400 记为待处理。Fusion 的退避截止在有界轮次结束后仍保留，后续请求不得早于该时间发送。401 视为身份异常并暂停两个来源的探测，403 只暂停当前来源，两者均待凭据变化恢复。Fusion 的 `model_pool_not_eligible` 或端点不支持只暂停该来源在当前身份下的探测，不暂停 Auto。
+- 每个模型分别缓存 Fusion 与 Auto 候选；有效 Fusion 始终优先。已有有效 Auto 而 Fusion 正在取得或续期时，前台立即使用 10%，不等待 30%；新的有效 Fusion 登记后下一请求立即优先，无需重启。无任何配对时，配置目标共享补采最多等待 2 秒，之后按原价发送。
+- 每条候选按各自上游 `expires_at` 在到期前 5 分钟刷新（同来源同点共享在途）。Fusion 到期时删除过期候选并按保存的成功题面重新取得，即使 Auto 仍有效也不跳过；Auto 到期后按来源补采。Copilot 凭据变化立即使旧配对失效，并在 token 与账号元数据全部落位后按来源重新补采；种子、在途探测、共享轮次及轮次结束后的重启都等待该就绪条件，旧身份下启动的结果和迟到响应不能登记到新身份或覆盖较新候选。折扣查表与 `state.forceAgent` 内部标志无关。
+- 持续取得、刷新与补采 Fusion 配对，不使用促销日期常量、日期开关或按日期失效缓存；官方公布的优惠日期仅作参考，不参与运行时启停，缓存有效期只取服务端 token expiry。
+- 启动汇总保留 `wanted`、`obtained`、`missing` 现有含义，`obtained` 是当前身份下至少有一个有效候选的模型并集；另输出 `fusion_obtained`、`auto_obtained`、`fusion_missing`、`auto_missing` 展示各来源覆盖，升级等级变化也输出。两个来源分别判断目标是否完成。
+- 取得、升级、失效、续期与逐请求选择均以 `consola.info` 记录，字段限定为转义后的模型 ID、source（`fusion`/`auto`/`none`）、expected_discount、升级时的 previous_discount、endpoint 与固定 reason；取得日志表示候选已登记，逐请求日志表示本次携带 token 的预期折扣，不宣称账单已确认。真实费用直接使用上游 `copilot_usage`，不按 30%/10% 二次计算。日志不输出 token、header 对象、题面、源码、原始响应或原始错误消息。
 
 **本地实现**：
 
-- [request.ts](../src/services/copilot/request.ts)：HTTP/TLS 发送与 Auto 会话令牌失效后的首次重试的公共入口。
-- [auto-session-retry.ts](../src/services/copilot/auto-session-retry.ts)：会话 header 附加、失效判定与刷新。
-- [auto-session.ts](../src/lib/auto-session.ts)：会话配对表、启动探测、到期刷新与凭据轮换失效；[get-auto-selection.ts](../src/services/copilot/get-auto-selection.ts)：`/auto` 选模请求。
-- [auto-probe-prompts.ts](../src/lib/auto-probe-prompts.ts)：固定探测题面与验证要求变体；[auto-probe-sample.json](../src/lib/auto-probe-sample.json)：冻结源码样本及其原始文件、零起点行号和行数。固定样本用于保持输入可复现，不表示当前源码存在题面所描述的故障，也不保证上游始终返回某个模型。
+- [request.ts](../src/services/copilot/request.ts)：HTTP/TLS 发送与折扣降级链首次请求的公共入口。
+- [auto-session-retry.ts](../src/services/copilot/auto-session-retry.ts)：按选中候选附加会话 header、拒绝后的来源定向失效与有限降级。
+- [auto-session.ts](../src/lib/auto-session.ts)：两来源候选表、启动探测、逐候选到期刷新与凭据轮换失效；[get-auto-selection.ts](../src/services/copilot/get-auto-selection.ts)：`/auto` 选模请求；[get-fusion-selection.ts](../src/services/copilot/get-fusion-selection.ts)：`/model/fusion` 请求与 solo 单步响应校验。
+- [auto-probe-prompts.ts](../src/lib/auto-probe-prompts.ts)：Auto 固定探测题面、验证要求变体与 Fusion 固定题面；[auto-probe-sample.json](../src/lib/auto-probe-sample.json)：冻结源码样本及其原始文件、零起点行号和行数。固定样本用于保持输入可复现，不表示当前源码存在题面所描述的故障，也不保证上游始终返回某个模型。
 - [tls-retry.ts](../src/services/tls-retry.ts)：既有 TLS 错误判定、等待与单次重试。
 
 **必要的上游接入**：三个 `create-*` service 的发送位置；启动和 token 更新位置保留会话预热、失效处理。上游 [upstream-http.ts](../src/services/upstream-http.ts) 的实现保持不变。
@@ -40,11 +44,12 @@
 - [responses-local-http.test.ts](../tests/responses-local-http.test.ts)：默认 handler 与 service 使用本地真实 HTTP 验证 JSON/SSE、413、发送前取消，以及发送后取消信号时的完整读取和用量记录。
 - Responses 本地 HTTP 验证通过 `traceIdMiddleware` 建立请求上下文，检查根 Session 在上游请求头、413 重试和用量记录中的一致性；会话优先级测试使用具备 Responses 能力的模型。
 - 用量页面的模型与 Session 明细同时保留 `Copilot AIU Cost` 和通用 `Total Cost`；只有 AIU 的历史记录继续显示 AIU 费用，名称与费用提示内容经过 HTML 转义。
-- [auto-session-chains.test.ts](../tests/auto-session-chains.test.ts)：三个公开 service 的 Auto-session 注入链路。
-- [auto-session-retry.test.ts](../tests/auto-session-retry.test.ts)：附带 token 的 `400`/`401` 单次重试、迟到 `401` 与失效后裸重试语义。
-- [auto-session-discovery.test.ts](../tests/auto-session-discovery.test.ts)、[auto-session.test.ts](../tests/auto-session.test.ts)：启动探测、退避分类、到期刷新、凭据轮换与 `forceAgent` 无关性。
-- [auto-session-logs.test.ts](../tests/auto-session-logs.test.ts)：日志隐私。
-- [auto-session-websocket-local.test.ts](../tests/auto-session-websocket-local.test.ts)：本机真实 WebSocket 握手头验证不附 Auto token；[create-responses-websocket-pool.test.ts](../tests/create-responses-websocket-pool.test.ts)：Responses WebSocket 池化行为。
+- [auto-session-chains.test.ts](../tests/auto-session-chains.test.ts)：三个公开 service 的折扣会话注入链路。
+- [auto-session-retry.test.ts](../tests/auto-session-retry.test.ts)：Fusion→Auto→原价每链最多三次业务发送、刷新失败不阻断原价、`belong` 交回兼容路径，以及 413 重新进入的独立计数。
+- [auto-session-discovery.test.ts](../tests/auto-session-discovery.test.ts)、[auto-session.test.ts](../tests/auto-session.test.ts)：双来源启动探测、升级、退避分类、逐候选到期刷新、凭据轮换、预算与冷却，以及 `forceAgent` 无关性。
+- [auto-session-logs.test.ts](../tests/auto-session-logs.test.ts)：info 安全字段与日志隐私。
+- [get-fusion-selection.test.ts](../tests/get-fusion-selection.test.ts)：Fusion 网络边界的 solo、单步、token、expiry 与端点校验。
+- [auto-session-websocket-local.test.ts](../tests/auto-session-websocket-local.test.ts)：本机真实 WebSocket 握手头验证不附会话 token；[create-responses-websocket-pool.test.ts](../tests/create-responses-websocket-pool.test.ts)：Responses WebSocket 池化行为。
 - [tls-retry.test.ts](../tests/tls-retry.test.ts)。
 - [start-auto-session-prewarm.test.ts](../tests/start-auto-session-prewarm.test.ts)、[token-metadata.test.ts](../tests/token-metadata.test.ts)、[token-metadata-apply.test.ts](../tests/token-metadata-apply.test.ts)。
 - [start-mode.test.ts](../tests/start-mode.test.ts)：GitHub 凭据来源优先级、provider-only 启动、交互配置完成后的启动与无可用 provider 时拒绝开放服务。

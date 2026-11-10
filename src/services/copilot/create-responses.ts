@@ -122,6 +122,9 @@ export const createResponses = async (
   setPluginRequestActualModel(payload.model)
   if (payload.stream === true && effectiveTransport === "websocket") {
     clientSignal?.throwIfAborted()
+    consola.info(
+      `[auto-session] miss model=${JSON.stringify(payload.model)} endpoint=/responses source=none expected_discount=0% reason=websocket`,
+    )
     const websocketRequest = prepareResponsesWebSocketRequest(
       upstreamPayload,
       headers,
@@ -187,7 +190,7 @@ const createHttpResponses = async (
     reasoningReplayIdentity,
   }: ResponsesHttpContext,
 ): Promise<CreateResponsesReturn> => {
-  // Auto 会话令牌仅用于 HTTP 分支；WebSocket 请求不附带
+  // Discount session tokens only apply to HTTP, never WebSocket requests.
   await attachAutoSessionToken(headers, payload.model, "/responses")
   const url = `${copilotBaseUrl(state)}/responses`
   const transportConfig = getUpstreamTransportConfig()
