@@ -241,13 +241,26 @@ test("an Auto-covered wanted model still obtains Fusion and logs the upgrade wit
         })
       )?.sessionToken,
     ).toBe("fusion-upgrade")
-    const result = info.mock.calls
-      .map((call) => String(call[0]))
-      .findLast((line) => line.includes("discovery result"))
-    expect(result).toContain('obtained=["wanted-model"]')
-    expect(result).toContain('fusion_obtained=["wanted-model"]')
-    expect(result).toContain("fusion_missing=[]")
-    expect(result).toContain("auto_missing=[]")
+    expect(mod.getMissingAutoDiscoveryModels(["wanted-model"])).toEqual([])
+    const lines = info.mock.calls.map((call) => String(call[0]))
+    expect(
+      lines.some(
+        (line) =>
+          line.includes("upgraded")
+          && line.includes("source=fusion")
+          && line.includes("previous_discount=10%")
+          && line.includes("expected_discount=30%"),
+      ),
+    ).toBe(true)
+    const result = lines.findLast(
+      (line) =>
+        line.includes("target discovery result")
+        && line.includes("source=fusion"),
+    )
+    expect(result).toContain('added=["wanted-model"]')
+    expect(result).toContain("missing=[]")
+    expect(result).not.toContain("auto_obtained")
+    expect(result).not.toContain("fusion_obtained")
   } finally {
     mod.stopProbeScheduler()
     fusion.resolve()

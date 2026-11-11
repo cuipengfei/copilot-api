@@ -22,7 +22,7 @@ import {
 } from "~/lib/auto-probe-prompts"
 import { getConfig } from "./config-store"
 import { HTTPError } from "./error"
-import { shouldUseColor } from "./logger"
+import { colorizeModel, shouldUseColor } from "./logger"
 import { state } from "./state"
 
 export type AutoSessionSource = "fusion" | "auto"
@@ -55,6 +55,7 @@ interface ProbeRequest {
   token: string | undefined
   epoch: number
   sequence: number
+  refresh: boolean
 }
 
 const SOURCES: ReadonlyArray<AutoSessionSource> = ["fusion", "auto"]
@@ -142,12 +143,13 @@ const syncAuthEpoch = (): void => {
   clearRejectedTokens()
 }
 
-const beginProbeRequest = (): ProbeRequest => {
+const beginProbeRequest = (refresh = false): ProbeRequest => {
   syncAuthEpoch()
   return {
     token: state.copilotToken,
     epoch: authEpoch,
     sequence: ++requestSequence,
+    refresh,
   }
 }
 
@@ -194,6 +196,20 @@ const getMissingSourceModels = (
   models: ReadonlyArray<string>,
   source: AutoSessionSource,
 ): Array<string> => models.filter((model) => !isSourceCovered(model, source))
+
+const formatLogValue = (value: string): string =>
+  /^[\w./:-]+$/u.test(value) ? value : (
+    JSON.stringify(value).replace(
+      /[\u007f-\u009f\u2028\u2029]/gu,
+      (character) =>
+        `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`,
+    )
+  )
+
+const formatAutoSessionModel = (model: string): string => {
+  const display = formatLogValue(model)
+  return shouldUseColor() ? colorizeModel(display) : display
+}
 
 const discoverySnapshot = (wanted = getConfiguredTargetModels()): string => {
   syncAuthEpoch()
@@ -259,7 +275,9 @@ const registerPairing = (
     previous?.fusion && isPairingValid(model, previous.fusion) ? 30
     : previous?.auto && isPairingValid(model, previous.auto) ? 10
     : 0
-  const refreshed = previous?.[pairing.source] !== undefined
+  const previousSource = previous?.[pairing.source]
+  const refreshed =
+    previousSource !== undefined && isPairingValid(model, previousSource)
   const gainsAutoCoverage =
     pairing.source === "auto" && !isSourceCovered(model, "auto")
   const candidate: DiscountPairing = {
@@ -280,9 +298,9 @@ const registerPairing = (
     oldDiscount > 0 && candidate.expectedDiscount > oldDiscount ? "upgraded"
     : refreshed ? "refresh"
     : "acquired"
-  consola.info(
-    `[auto-session] ${event} model=${JSON.stringify(model)} source=${candidate.source} expected_discount=${candidate.expectedDiscount}%${event === "upgraded" ? ` previous_discount=${oldDiscount}%` : ""}`,
-  )
+  const message = `[auto-session] ${event} model=${formatAutoSessionModel(model)} source=${candidate.source} expected_discount=${candidate.expectedDiscount}%${event === "upgraded" ? ` previous_discount=${oldDiscount}%` : ""}`
+  if (event === "refresh" && !request.refresh) consola.debug(message)
+  else consola.info(message)
   if (gainsAutoCoverage && identityReady(request.token)) {
     startFusionDiscovery(fusionSeedRound)
   }
@@ -359,7 +377,7 @@ const explicitRefreshes = new Set<Promise<void>>()
 export const refreshAutoSession = (): Promise<void> => {
   const refresh = (async () => {
     for (;;) {
-      const request = beginProbeRequest()
+      const request = beginProbeRequest(true)
       const selection = await getAutoSelection(PREWARM_PROMPT, PREWARM_TIER)
       if (state.copilotToken !== request.token) continue
       if (!registerAutoResponse(selection, PREWARM_AUTO_PROBE, request)) {
@@ -418,7 +436,7 @@ export const invalidateAutoSessionPairing = (
     )
     pruneRejectedTokens()
     consola.info(
-      `[auto-session] rejected model=${JSON.stringify(model)} source=${source} expected_discount=${EXPECTED_DISCOUNT[source]}% reason=token_rejected`,
+      `[auto-session] rejected model=${formatAutoSessionModel(model)} source=${source} expected_discount=${EXPECTED_DISCOUNT[source]}% reason=token_rejected`,
     )
     reacquireSource(model, pairing.probe, "rejected")
     return true
@@ -785,9 +803,6 @@ const scheduleRefresh = (
         scheduleRefresh(model, pairing)
         return
       }
-      consola.info(
-        `[auto-session] refresh start model=${JSON.stringify(model)} source=${pairing.source} expected_discount=${pairing.expectedDiscount}%`,
-      )
       if (pairing.source === "fusion")
         reacquireSource(model, pairing.probe, "expired", true)
       else void runSourceProbe(pairing.probe, true)
@@ -867,7 +882,7 @@ const probePointLoop = async (
       await probeSleep(runtimes.fusion.retryUntil - Date.now(), "fusion")
       continue
     }
-    const request = beginProbeRequest()
+    const request = beginProbeRequest(fromRefreshTimer)
     budgetToken = request.token
     try {
       attempted = true
@@ -1167,15 +1182,12 @@ const startDiscoveryRound = (
   const startedToken = state.copilotToken
   discoveryToken ??= startedToken
   discoveryRan = true
-  const before = discoverySnapshot()
   const previous = new Set(
     [...pairings.keys()].filter((model) => isSourceCovered(model, source)),
   )
-  if (reason !== "startup") {
-    consola.info(
-      `[auto-session] target discovery start source=${source} reason=${reason} missing=${JSON.stringify(getMissingSourceModels(models, source))}`,
-    )
-  }
+  consola.info(
+    `[auto-session] target discovery start source=${source} reason=${reason} missing=${JSON.stringify(getMissingSourceModels(models, source))}`,
+  )
   const round = after
     .then(() => {
       if (state.copilotToken !== startedToken || !probeIdentityReady()) return
@@ -1193,18 +1205,12 @@ const startDiscoveryRound = (
         : state.copilotToken !== startedToken ? "rotated"
         : missing.length > 0 ? "exhausted"
         : "result"
-      if (
-        reason !== "startup"
-        || discoverySnapshot() !== before
-        || missing.length > 0
-      ) {
-        const added = [...pairings.keys()].filter(
-          (model) => isSourceCovered(model, source) && !previous.has(model),
-        )
-        logAutoDiscovery(
-          `target discovery ${outcome} source=${source} added=${JSON.stringify(added)}`,
-        )
-      }
+      const added = [...pairings.keys()].filter(
+        (model) => isSourceCovered(model, source) && !previous.has(model),
+      )
+      consola.info(
+        `[auto-session] target discovery ${outcome} source=${source} added=${JSON.stringify(added)} missing=${JSON.stringify(missing)}`,
+      )
     })
     .finally(() => {
       if (runtime.round === round) runtime.round = undefined
@@ -1340,6 +1346,22 @@ const colorAutoSessionEvent = (event: "hit" | "miss"): string => {
   return `\x1b[1;${event === "hit" ? 92 : 93}m${event}\x1b[0m`
 }
 
+export const logAutoSessionSelection = ({
+  model,
+  endpoint,
+  selection,
+  transport,
+}: {
+  model: string
+  endpoint?: string
+  selection?: AutoSessionSelection
+  transport?: "websocket"
+}): void => {
+  consola.info(
+    `[auto-session] ${colorAutoSessionEvent(selection ? "hit" : "miss")} model=${formatAutoSessionModel(model)} source=${selection?.source ?? "none"} expected_discount=${selection?.expectedDiscount ?? 0}%${endpoint === undefined ? "" : ` endpoint=${formatLogValue(endpoint)}`}${transport === undefined ? "" : ` transport=${transport}`}`,
+  )
+}
+
 const identityReady = (authToken: string | undefined): boolean =>
   !probeSchedulerStopped
   && authToken !== undefined
@@ -1379,14 +1401,16 @@ const reacquireSource = (
     return
   }
   consola.info(
-    `[auto-session] probe start reason=${reason} model=${JSON.stringify(model)} source=${probe.source} expected_discount=${EXPECTED_DISCOUNT[probe.source]}%`,
+    `[auto-session] probe start reason=${reason} model=${formatAutoSessionModel(model)} source=${probe.source} expected_discount=${EXPECTED_DISCOUNT[probe.source]}%`,
   )
   void runSourceProbe(probe).then(() => {
     if (!isSourceCovered(model, probe.source)) {
       runtimes[probe.source].cooldownUntil =
         Date.now() + TARGET_DISCOVERY_COOLDOWN_MS
     }
-    logAutoDiscovery(`probe result reason=${reason} source=${probe.source}`)
+    consola.info(
+      `[auto-session] probe result reason=${reason} source=${probe.source} missing=${JSON.stringify(getMissingSourceModels([model], probe.source))}`,
+    )
   })
 }
 
@@ -1450,7 +1474,7 @@ export const getAutoSessionForModel = async ({
         clearRefreshTimer(model, source)
         expired = true
         consola.info(
-          `[auto-session] expired model=${JSON.stringify(model)} source=${source} expected_discount=${pairing.expectedDiscount}% reason=expired`,
+          `[auto-session] expired model=${formatAutoSessionModel(model)} source=${source} expected_discount=${pairing.expectedDiscount}% reason=expired`,
         )
         reacquireSource(model, pairing.probe, "expired")
       }
@@ -1489,10 +1513,6 @@ export const getAutoSessionForModel = async ({
       }
     }
   }
-  const source = selected?.source ?? "none"
-  const expectedDiscount = selected?.expectedDiscount ?? 0
-  consola.info(
-    `[auto-session] ${colorAutoSessionEvent(selected ? "hit" : "miss")} model=${JSON.stringify(model)}${endpoint === undefined ? "" : ` endpoint=${JSON.stringify(endpoint)}`} source=${source} expected_discount=${expectedDiscount}%`,
-  )
+  logAutoSessionSelection({ model, endpoint, selection: selected })
   return selected
 }

@@ -1,7 +1,10 @@
-import { afterEach, beforeEach, expect, mock, test } from "bun:test"
+import { afterEach, beforeEach, expect, mock, spyOn, test } from "bun:test"
+import consola from "consola"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
+
+import * as logger from "~/lib/logger"
 
 import type { ResponsesPayload, ResponsesResult } from "~/lib/types/responses"
 
@@ -408,15 +411,17 @@ test("Responses websocket pool reuses the same connection for matching pool keys
 })
 
 test("Responses websocket handshake omits Copilot-Session-Token even with a valid auto pairing", async () => {
-  registerAutoSelection({
-    selected_model: {
-      id: "gpt-test",
-      supported_endpoints: ["/responses", "ws:/responses"],
-    },
-    session_token: "ws-should-not-attach",
-    expires_at: Math.floor(Date.now() / 1000) + 3600,
-  })
+  const infoSpy = spyOn(consola, "info")
+  const colorSpy = spyOn(logger, "shouldUseColor").mockReturnValue(false)
   try {
+    registerAutoSelection({
+      selected_model: {
+        id: "gpt-test",
+        supported_endpoints: ["/responses", "ws:/responses"],
+      },
+      session_token: "ws-should-not-attach",
+      expires_at: Math.floor(Date.now() / 1000) + 3600,
+    })
     expect(
       (
         await getAutoSessionForModel({
@@ -445,8 +450,21 @@ test("Responses websocket handshake omits Copilot-Session-Token even with a vali
       fetchTargets.filter((url) => url.includes("/responses")),
     ).toHaveLength(0)
     expect(fetchTargets.filter((url) => url.includes("/auto"))).toHaveLength(0)
+    const lines = infoSpy.mock.calls.map((call) => call.map(String).join(" "))
+    const bypass = lines.filter((line) => line.includes("transport=websocket"))
+    expect(bypass).toHaveLength(1)
+    expect(bypass[0]).toContain("miss model=gpt-test")
+    expect(bypass[0]).toContain("source=none")
+    expect(bypass[0]).toContain("expected_discount=0%")
+    expect(bypass[0]).toContain("endpoint=/responses")
+    expect(bypass[0]).not.toContain("reason=")
+    expect(bypass[0]).not.toContain("\x1b[")
+    expect(lines.join("\n")).not.toContain("ws-should-not-attach")
+    expect(lines.join("\n")).not.toContain("test-token")
   } finally {
     invalidateAutoSession()
+    colorSpy.mockRestore()
+    infoSpy.mockRestore()
   }
 })
 

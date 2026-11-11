@@ -1,5 +1,6 @@
-import { afterAll, expect, spyOn, test } from "bun:test"
+import { afterAll, afterEach, expect, mock, spyOn, test } from "bun:test"
 import consola from "consola"
+import type { ServerWebSocket } from "bun"
 
 import {
   getAutoSessionForModel,
@@ -9,6 +10,7 @@ import {
   stopProbeScheduler,
   whenProbeSchedulerIdle,
 } from "../src/lib/auto-session"
+import * as logger from "../src/lib/logger"
 import { state } from "../src/lib/state"
 import { createResponses } from "../src/services/copilot/create-responses"
 import {
@@ -28,23 +30,49 @@ const originalState = {
   vsCodeVersion: state.vsCodeVersion,
 }
 const originalFetch = globalThis.fetch
+const originalNoColor = process.env.NO_COLOR
+const originalTty = Object.getOwnPropertyDescriptor(process.stdout, "isTTY")
 
+afterEach(async () => {
+  await whenProbeSchedulerIdle()
+  invalidateAutoSession()
+  globalThis.fetch = originalFetch
+  Object.assign(state, originalState)
+  mock.restore()
+  if (originalNoColor === undefined) delete process.env.NO_COLOR
+  else process.env.NO_COLOR = originalNoColor
+  if (originalTty) Object.defineProperty(process.stdout, "isTTY", originalTty)
+  else Reflect.deleteProperty(process.stdout, "isTTY")
+})
 afterAll(async () => {
   stopProbeScheduler()
   await whenProbeSchedulerIdle()
 })
 
-test.each(["fusion", "auto"] as const)(
-  "Responses websocket handshake omits a valid %s discount token",
-  async (source) => {
+test.each([
+  { source: "fusion", tty: true, noColor: undefined },
+  { source: "auto", tty: true, noColor: undefined },
+  { source: "auto", tty: true, noColor: "" },
+  { source: "fusion", tty: false, noColor: undefined },
+] as const)(
+  "Responses websocket logs $source discount bypass with TTY=$tty NO_COLOR=$noColor",
+  async ({ source, tty, noColor }) => {
+    Object.defineProperty(process.stdout, "isTTY", {
+      configurable: true,
+      value: tty,
+    })
+    if (noColor === undefined) delete process.env.NO_COLOR
+    else process.env.NO_COLOR = noColor
+    const colorSpy = spyOn(logger, "shouldUseColor")
     const handshakes: Array<{ path: string; headers: Record<string, string> }> =
       []
     const receivedModels: Array<string> = []
+    const sockets = new Set<ServerWebSocket<undefined>>()
     let httpAutoCount = 0
     let httpResponsesCount = 0
     let httpFusionCount = 0
     const infoSpy = spyOn(consola, "info")
-    const transportSpy = spyOn(
+    spyOn(
       responsesUtilsDependencies,
       "isResponsesApiWebSocketEnabled",
     ).mockReturnValue(true)
@@ -69,6 +97,12 @@ test.each(["fusion", "auto"] as const)(
         return new Response("unexpected http", { status: 400 })
       },
       websocket: {
+        open(ws) {
+          sockets.add(ws)
+        },
+        close(ws) {
+          sockets.delete(ws)
+        },
         message(ws, data) {
           const payload = JSON.parse(String(data)) as { model?: string }
           if (typeof payload.model === "string") {
@@ -167,7 +201,7 @@ test.each(["fusion", "auto"] as const)(
         { input: "hello", model: "gpt-test", stream: true },
         {
           initiator: "user",
-          requestId: `ws-local-${source}`,
+          requestId: `ws-local-${source}-${tty}-${noColor === undefined ? "color" : "plain"}`,
           transport: transport ?? undefined,
           vision: false,
         },
@@ -196,35 +230,37 @@ test.each(["fusion", "auto"] as const)(
       expect(httpResponsesCount).toBe(0)
       expect(httpFusionCount).toBe(0)
       const lines = infoSpy.mock.calls.map((call) => call.map(String).join(" "))
+      const bypassLines = lines.filter((line) =>
+        line.includes("transport=websocket"),
+      )
+      expect(bypassLines).toHaveLength(1)
+      const bypass = bypassLines[0]
+      expect(bypass).toContain("[auto-session]")
+      expect(bypass).toContain("endpoint=/responses")
+      expect(bypass).toContain("source=none")
+      expect(bypass).toContain("expected_discount=0%")
+      expect(bypass).not.toContain("reason=")
+      expect(colorSpy).toHaveBeenCalled()
+      if (tty && noColor === undefined) {
+        expect(bypass).toContain("\x1b[1;93mmiss\x1b[0m")
+        expect(bypass).toContain(`model=${logger.colorizeModel("gpt-test")}`)
+      } else {
+        expect(bypass).toContain("miss model=gpt-test")
+        expect(bypass).not.toContain("\x1b[")
+      }
       expect(
-        lines.some((line) =>
-          [
-            "[auto-session]",
-            'model="gpt-test"',
-            "source=none",
-            "expected_discount=0%",
-            "reason=websocket",
-          ].every((field) => line.includes(field)),
-        ),
+        lines
+          .filter(
+            (line) =>
+              line.includes("source=auto") || line.includes("source=fusion"),
+          )
+          .every((line) => !line.includes("transport=")),
       ).toBe(true)
       expect(lines.join("\n")).not.toContain("should-not-attach")
       expect(lines.join("\n")).not.toContain("ws-local-fake-token")
     } finally {
-      await whenProbeSchedulerIdle()
-      globalThis.fetch = originalFetch
-      invalidateAutoSession()
-      state.accountType = originalState.accountType
-      state.copilotApiUrl = originalState.copilotApiUrl
-      state.copilotToken = originalState.copilotToken
-      state.forceAgent = originalState.forceAgent
-      state.copilotTelemetryEnabled = originalState.copilotTelemetryEnabled
-      state.models = originalState.models
-      state.vsCodeDeviceId = originalState.vsCodeDeviceId
-      state.vsCodeVersion = originalState.vsCodeVersion
-
+      for (const socket of sockets) socket.close()
       await server.stop(true)
-      transportSpy.mockRestore()
-      infoSpy.mockRestore()
     }
   },
 )

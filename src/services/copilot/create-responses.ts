@@ -18,6 +18,7 @@ import {
   prepareForCompact,
   prepareInteractionHeaders,
 } from "~/lib/api-config"
+import { logAutoSessionSelection } from "~/lib/auto-session"
 import { COMPACT_REQUEST, type CompactType } from "~/lib/compact"
 import {
   getUpstreamTransportConfig,
@@ -122,9 +123,11 @@ export const createResponses = async (
   setPluginRequestActualModel(payload.model)
   if (payload.stream === true && effectiveTransport === "websocket") {
     clientSignal?.throwIfAborted()
-    consola.info(
-      `[auto-session] miss model=${JSON.stringify(payload.model)} endpoint=/responses source=none expected_discount=0% reason=websocket`,
-    )
+    logAutoSessionSelection({
+      model: payload.model,
+      endpoint: "/responses",
+      transport: "websocket",
+    })
     const websocketRequest = prepareResponsesWebSocketRequest(
       upstreamPayload,
       headers,

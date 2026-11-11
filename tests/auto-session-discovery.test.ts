@@ -161,7 +161,7 @@ interface InfoSpy {
 const discoveryLogLine = (infoSpy: InfoSpy): string => {
   const line = infoSpy.mock.calls
     .map((call) => String(call[0]))
-    .find((text) => text.includes("discovery result"))
+    .find((text) => text.startsWith("[auto-session] discovery result "))
   expect(line).toBeDefined()
   return line as string
 }
@@ -977,18 +977,34 @@ test("budget expiry logs a snapshot while probes still run; final log follows co
     await mod.prewarmAutoSession({ sourceRoot: dir, startupBudgetMs: 80 })
 
     // 预算到期是快照而非最终态：后台仍在运行
-    expect(
-      infoLines().some((line) => line.includes("discovery snapshot")),
-    ).toBe(true)
-    expect(infoLines().some((line) => line.includes("discovery result"))).toBe(
-      false,
+    const snapshot = infoLines().find((line) =>
+      line.includes("discovery snapshot"),
     )
+    expect(snapshot).toContain("obtained=[] missing=[]")
+    expect(snapshot).toContain("fusion_obtained=[]")
+    expect(snapshot).toContain("auto_obtained=[]")
+    expect(snapshot).toContain("fusion_missing=[]")
+    expect(snapshot).toContain("auto_missing=[]")
+    expect(
+      infoLines().some((line) =>
+        line.startsWith("[auto-session] discovery result "),
+      ),
+    ).toBe(false)
 
     gate.resolve()
     await waitFor(
-      () => infoLines().some((line) => line.includes("discovery result")),
+      () =>
+        infoLines().some((line) =>
+          line.startsWith("[auto-session] discovery result "),
+        ),
       3_000,
     )
+    const result = discoveryLogLine(infoSpy)
+    expect(result).toContain('obtained=["gated-model"] missing=[]')
+    expect(result).toContain("fusion_obtained=[]")
+    expect(result).toContain('auto_obtained=["gated-model"]')
+    expect(result).toContain("fusion_missing=[]")
+    expect(result).toContain("auto_missing=[]")
   } finally {
     gate.resolve()
     mod.stopProbeScheduler?.()
@@ -1569,6 +1585,14 @@ test("configured cold misses share discovery and accept only the selected target
   const previous = config.autoDiscovery
   const gate = Promise.withResolvers<AutoSelectionResponse>()
   config.autoDiscovery = { models: ["target-model"] }
+  installDiscountCatalog(
+    "target-model",
+    "fusion-only-model",
+    "existing-auto-model",
+  )
+  mod.registerAutoSelection(
+    okSelection("existing-auto-model", "existing-auto-token"),
+  )
   const { calls } = installRouter(() => gate.promise)
   const infoSpy = spyOn(consola, "info")
   try {
@@ -1580,6 +1604,13 @@ test("configured cold misses share discovery and accept only the selected target
       }),
     )
     await waitFor(() => calls.length === 1, 1_000)
+    expect(
+      mod.registerFusionSelection({
+        modelId: "fusion-only-model",
+        sessionToken: "FUSION_ONLY_PRIVATE",
+        expiresAt: Math.floor(Date.now() / 1000) + 3600,
+      }),
+    ).toBe(true)
     expect(
       (await mod.getAutoSessionForModel({ model: "unconfigured-model" }))
         ?.sessionToken,
@@ -1600,21 +1631,22 @@ test("configured cold misses share discovery and accept only the selected target
     expect(calls).toHaveLength(1)
     await mod.whenProbeSchedulerIdle()
     const lines = infoSpy.mock.calls.map((call) => String(call[0]))
-    expect(
-      lines.filter(
-        (line) =>
-          line.includes("target discovery start")
-          && line.includes("source=auto"),
-      ),
-    ).toHaveLength(1)
+    const starts = lines.filter(
+      (line) =>
+        line.includes("target discovery start") && line.includes("source=auto"),
+    )
+    expect(starts).toEqual([
+      '[auto-session] target discovery start source=auto reason=miss missing=["target-model"]',
+    ])
     const results = lines.filter(
       (line) =>
         line.includes("target discovery result")
         && line.includes("source=auto"),
     )
-    expect(results).toHaveLength(1)
-    expect(results[0]).toContain('auto_obtained=["target-model"]')
-    expect(results[0]).toContain("missing=[]")
+    expect(results).toEqual([
+      '[auto-session] target discovery result source=auto added=["target-model"] missing=[]',
+    ])
+    expect(lines.join("\n")).not.toContain("FUSION_ONLY_PRIVATE")
   } finally {
     mod.stopProbeScheduler()
     gate.resolve(okSelection("target-model"))
@@ -2587,5 +2619,49 @@ test("Fusion 种子跨 A→B 未就绪→C 就绪轮换后，C 的失败发送�
     old.resolve()
     await mod.whenProbeSchedulerIdle()
     await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test("Fusion round summaries exclude coverage acquired only by Auto", async () => {
+  const mod = await loadAutoSessionModule()
+  installDiscountCatalog("target-model", "auto-only-model", "later-auto-model")
+  getConfig().autoDiscovery = { models: ["target-model"] }
+  const gate = Promise.withResolvers<Response>()
+  const infoSpy = spyOn(consola, "info")
+  const { fusionCalls } = installRouter(
+    () => new Response(null, { status: 400 }),
+    () => gate.promise,
+  )
+  try {
+    mod.resumeAutoSessionDiscoveryAfterRotation()
+    mod.registerAutoSelection(
+      okSelection("auto-only-model", "AUTO_ONLY_PRIVATE"),
+    )
+    await waitFor(() => fusionCalls.length === 1, 1_000)
+    mod.registerAutoSelection(
+      okSelection("later-auto-model", "LATER_AUTO_PRIVATE"),
+    )
+    mod.stopProbeScheduler()
+    gate.resolve(
+      fusionSelectionResponse("target-model", "FUSION_TARGET_PRIVATE"),
+    )
+    await mod.whenProbeSchedulerIdle()
+
+    const lines = infoSpy.mock.calls.map((call) => String(call[0]))
+    expect(
+      lines.filter((line) => line.includes("target discovery start")),
+    ).toEqual([
+      '[auto-session] target discovery start source=fusion reason=miss missing=["target-model","auto-only-model"]',
+    ])
+    expect(
+      lines.filter((line) => line.includes("target discovery stopped")),
+    ).toEqual([
+      '[auto-session] target discovery stopped source=fusion added=["target-model"] missing=["auto-only-model","later-auto-model"]',
+    ])
+    expect(lines.join("\n")).not.toContain("PRIVATE")
+  } finally {
+    mod.stopProbeScheduler()
+    gate.resolve(new Response(null, { status: 400 }))
+    await mod.whenProbeSchedulerIdle()
   }
 })

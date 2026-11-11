@@ -25,8 +25,8 @@
 - 每个模型分别缓存 Fusion 与 Auto 候选；有效 Fusion 始终优先。已有有效 Auto 而 Fusion 正在取得或续期时，前台立即使用 10%，不等待 30%；新的有效 Fusion 登记后下一请求立即优先，无需重启。无任何配对时，配置目标共享补采最多等待 2 秒，之后按原价发送。
 - 每条候选按各自上游 `expires_at` 在到期前 5 分钟刷新（同来源同点共享在途）。Fusion 到期时删除过期候选并按保存的成功题面重新取得，即使 Auto 仍有效也不跳过；Auto 到期后按来源补采。Copilot 凭据变化立即使旧配对失效，并在 token 与账号元数据全部落位后按来源重新补采；种子、在途探测、共享轮次及轮次结束后的重启都等待该就绪条件，旧身份下启动的结果和迟到响应不能登记到新身份或覆盖较新候选。折扣查表与 `state.forceAgent` 内部标志无关。
 - 持续取得、刷新与补采 Fusion 配对，不使用促销日期常量、日期开关或按日期失效缓存；官方公布的优惠日期仅作参考，不参与运行时启停，缓存有效期只取服务端 token expiry。
-- 启动汇总保留 `wanted`、`obtained`、`missing` 现有含义，`obtained` 是当前身份下至少有一个有效候选的模型并集；另输出 `fusion_obtained`、`auto_obtained`、`fusion_missing`、`auto_missing` 展示各来源覆盖，升级等级变化也输出。两个来源分别判断目标是否完成。
-- 取得、升级、失效、续期与逐请求选择均以 `consola.info` 记录，字段限定为转义后的模型 ID、source（`fusion`/`auto`/`none`）、expected_discount、升级时的 previous_discount、endpoint 与固定 reason；取得日志表示候选已登记，逐请求日志表示本次携带 token 的预期折扣，不宣称账单已确认。真实费用直接使用上游 `copilot_usage`，不按 30%/10% 二次计算。日志不输出 token、header 对象、题面、源码、原始响应或原始错误消息。
+- 启动汇总输出一次 `wanted`，`obtained` 是当前身份下至少有一个有效候选的模型并集，`missing` 是 `wanted` 中没有有效候选的模型；另输出 `fusion_obtained`、`auto_obtained`、`fusion_missing`、`auto_missing` 展示各来源覆盖。等待预算到期输出快照，最终列表未变化时不重复输出；启动结果与快照保留完整双来源列表。单来源轮次开始时只输出 source、reason 与该来源 missing，结束时只输出 source、该来源本轮新增的 added 与 missing，added 不包含另一来源。两个来源分别判断目标是否完成。
+- 首次取得某模型与来源的有效候选、10% 升至 30%、失效、过期或拒绝后的重新取得、定时器或显式刷新成功使用 `consola.info`；后台补采重复覆盖尚有效的同来源候选只记 `consola.debug`，仍更新 token、到期时间与刷新定时器，有效候选登记成功后才输出续期 INFO。逐请求日志由 HTTP 与 WebSocket 共用的 `logAutoSessionSelection` 输出，字段限于模型 ID、source（`fusion`/`auto`/`none`）、expected_discount、升级时的 previous_discount、endpoint、transport 与固定 reason；WebSocket 不传 selection，记录 `transport=websocket`。常规模型 ID 去除外围双引号，异常模型 ID 保留 JSON 引号与安全转义，控制字符按 JSON 转义保持单行；仅在 TTY 且启用颜色时正常模型 ID 与 IN 同色、命中绿色、未命中黄色，`NO_COLOR` 或非 TTY 为纯文本。取得日志表示候选已登记，逐请求日志表示本次携带 token 的预期折扣，不宣称账单已确认。真实费用直接使用上游 `copilot_usage`，不按 30%/10% 二次计算。日志不输出 token、header 对象、题面、源码、原始响应或原始错误消息。
 
 **本地实现**：
 

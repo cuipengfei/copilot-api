@@ -142,7 +142,7 @@
 #### Scenario: WebSocket 不附 token 且不切换传输
 - **WHEN** 传输选择为 Responses WebSocket，即使该模型存在有效 Fusion 或 Auto 候选
 - **THEN** 请求继续使用 WebSocket 且不附加 `Copilot-Session-Token`
-- **AND** info 日志记录 `source=none expected_discount=0% reason=websocket`，缓存取得日志仍可报告该模型已有 HTTP 可用候选
+- **AND** 共用的逐请求日志以 `transport=websocket` 记录 `source=none expected_discount=0%`，缓存取得日志仍可报告该模型已有 HTTP 可用候选
 
 #### Scenario: 413 重新进入与兼容重试独立计数
 - **WHEN** 图片请求触发 413 处理，或发生 signature、effort、`belong` 兼容重试与 TLS 重试
@@ -150,21 +150,31 @@
 - **AND** 这些发送与每次折扣链的三次业务发送分别记录，不宣称整个客户端请求最多三次网络发送
 
 ### Requirement: 折扣日志、覆盖汇总与成本数据约束
-系统 MUST 以 `consola.info` 记录候选取得、升级、失效、续期与逐请求选择，字段限于转义后的模型 ID、source（`fusion`/`auto`/`none`）、expected_discount、升级时的 previous_discount、endpoint、未完成数量与固定 reason；MUST NOT 输出 session token、Copilot token、header 对象、题面、源码、原始响应或原始错误消息。有效 Fusion 候选记录预期 30%，有效 Auto 候选记录预期 10%，无 token 记录 0%；这些值只表示所附 token 来源的预期，不声明账单已确认。`discounted_costs` 仅作补充证据，缺失或无法解释时不得把有效 Auto 候选降为 unknown，也不得据该字段推算实际优惠。启动汇总 MUST 保留 `wanted`、`obtained`、`missing` 的现有含义（`obtained` 为当前身份下至少有一个有效候选的模型并集），并增加 `fusion_obtained`、`auto_obtained`、`fusion_missing`、`auto_missing` 展示各来源覆盖；升级等级变化即使合并后的 `obtained` 未变化也 MUST 输出更新。请求计费 MUST 沿用上游返回的实际成本字段，不重复应用折扣。
+系统 MUST 使用 `consola.info` 与 `consola.debug` 分级记录候选取得、升级、失效、续期与逐请求选择：首次取得某模型与来源的有效候选、10% 升至 30%、失效、过期或拒绝后的重新取得、定时器或显式刷新成功使用 `consola.info`；后台补采重复覆盖尚有效的同来源候选只使用 `consola.debug`，并仍更新 token、到期时间与刷新定时器；仅在有效候选登记成功后 MUST 输出续期 INFO。启动汇总 MUST 输出一次 `wanted`，保留 `wanted`、`obtained`、`missing` 的现有含义（`obtained` 为当前身份下至少有一个有效候选的模型并集），并增加 `fusion_obtained`、`auto_obtained`、`fusion_missing`、`auto_missing` 展示各来源覆盖。单来源轮次开始 MUST 只输出 source、reason 与该来源 missing，结束 MUST 只输出 source、该来源本轮新增的 added 与 missing，added MUST NOT 包含另一来源；启动结果与快照 MUST 保留完整双来源列表。逐请求日志 MUST 由 HTTP 与 WebSocket 共用的 `logAutoSessionSelection` 输出，字段限于安全转义后的模型 ID、source（`fusion`/`auto`/`none`）、expected_discount、升级时的 previous_discount、endpoint、transport 与固定 reason；常规模型 ID MUST 去除外围双引号，异常模型 ID MUST 保留 JSON 引号，控制字符按 JSON 转义并保持单行；命中 MUST 显示绿色、未命中黄色，仅 TTY 且启用颜色时着色，`NO_COLOR` 或非 TTY MUST 输出纯文本，正常模型 ID 与 IN 日志同色；WebSocket MUST NOT 传 selection，记录 `transport=websocket`。MUST NOT 输出 session token、Copilot token、header 对象、题面、源码、原始响应或原始错误消息。有效 Fusion 候选记录预期 30%，有效 Auto 候选记录预期 10%，无 token 记录 0%；这些值只表示所附 token 来源的预期，不声明账单已确认。`discounted_costs` 仅作补充证据，缺失或无法解释时不得把有效 Auto 候选降为 unknown，也不得据该字段推算实际优惠。请求计费 MUST 沿用上游返回的实际成本字段，不重复应用折扣。
 
 #### Scenario: 取得与逐请求选择分别记录预期折扣
 - **WHEN** 系统登记候选或为请求选择候选
 - **THEN** 取得日志报告已登记的模型与来源，逐请求日志报告本次携带 token 的来源与预期折扣
 - **AND** 日志不宣称账单已确认，真实费用以上游 `copilot_usage` 为准
 
+#### Scenario: 后台重复覆盖只记 debug
+- **WHEN** 后台补采返回某模型尚有效的同来源候选
+- **THEN** 系统只以 `consola.debug` 记录 `refresh`，并更新 token、到期时间与刷新定时器
+- **AND** 首次取得、10% 升至 30%、定时器或显式刷新成功仍以 `consola.info` 记录
+
+#### Scenario: 单来源轮次日志不含另一来源
+- **WHEN** 某来源开始并结束一轮补充探测
+- **THEN** 开始日志只含 source、reason 与该来源 missing，结束日志只含 source、该来源本轮新增的 added 与 missing
+- **AND** added 不包含另一来源的模型，启动结果与快照保留双来源完整列表
+
 #### Scenario: 日志只含允许字段
 - **WHEN** 系统记录探测、命中、未命中、升级、失效、续期或 token 拒绝事件
-- **THEN** 日志仅包含模型 ID、source、expected_discount、升级时的 previous_discount、endpoint、状态类别与固定 reason
+- **THEN** 日志仅包含模型 ID、source、expected_discount、升级时的 previous_discount、endpoint、transport、状态类别与固定 reason
 - **AND** 不包含任何令牌、header 对象、题面、源码、session 标识片段或原始错误消息
 
 #### Scenario: 来源覆盖分别展示
 - **WHEN** 某模型由 Auto 升级至 Fusion，或过期 Fusion 被移除而 Auto 仍有效
-- **THEN** 启动汇总与后续更新分别显示 `fusion_obtained`、`auto_obtained`、`fusion_missing`、`auto_missing`
+- **THEN** 升级或过期事件以该模型、来源与预期折扣报告变化；启动结果与快照显示 `fusion_obtained`、`auto_obtained`、`fusion_missing`、`auto_missing`
 - **AND** 合并后的 `obtained`、`missing` 含义保持不变
 
 #### Scenario: 成本沿用上游实际数据
