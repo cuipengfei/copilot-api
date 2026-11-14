@@ -16,11 +16,12 @@
 - 发送前已经取消的请求不访问上游；请求发出后继续读取上游响应并记录用量。headers 超时和流读取超时仍可终止上游请求。
 - 每次实际发送时序列化当前 payload，保留同一 headers 对象与调用方的 `AbortSignal`。
 - TLS 重试继续由既有 `retryAfterTlsCertificateVerificationFailure` 判定，最多重试一次。
-- [auto-session-retry.test.ts](../tests/auto-session-retry.test.ts)：每次进入共享折扣降级链最多三次业务发送，依次为 Fusion、Auto、无 token；只对携带 token 的 `400`/`401`（`belong` 拒绝除外）定向失效并前进到下一来源，同一链不再回头使用已用来源。配对刷新失败不阻止使用另一来源或原价发送；原价生成失败、`429`/`5xx`、取消及流开始后的错误仍按原路径返回。`413` 图片处理可能重新进入整条生成链，signature、effort 与 `belong` 修正各有既有兼容发送，TLS 重试独立计数，各类发送分别记录。
+- [auto-session-retry.test.ts](../tests/auto-session-retry.test.ts) 验证共享折扣降级链每次最多三次业务发送，依次为 Fusion、Auto、无 token。携带 token 的明确 session 拒绝 `400` 或 `401` 会定向失效并进入下一来源，普通参数错误 `400` 保留原响应与配对，`belong` 拒绝沿用既有处理。配对刷新失败不阻止使用另一来源或原价发送。原价生成失败、`429`、`5xx`、取消及流开始后的错误沿用原路径。`413` 图片处理可能重新进入生成链，signature、effort 与 `belong` 修正各有既有兼容发送，TLS 重试独立计数，各类发送分别记录。
 - 仅当最终上游模型在所选来源（有效 Fusion 优先，其次 Auto）有有效配对、凭据身份一致且该配对支持请求端点时，在真实 HTTP 生成分支附加 `Copilot-Session-Token`。Fusion 候选只适用于已验证的 `/responses` 端点，模型目录不能扩大该端点集合。Responses WebSocket 分支不附会话 token，也不因存在配对而切换传输。
 - 带 token 请求被拒绝时只失效实际发送的 token 对应来源候选，并在后台按同一来源重获，不阻塞当前请求链，也不重放已经成功的生成。后续协议兼容重试只调用 HTTP/TLS 发送层。
-- 启动同时运行 Auto 四档八个探测点（四档×简单题与难题）与 Fusion 四个固定题面（`hello`、CSS Flexbox 题、`TARGET_CODE_PROMPT`、`getIntelligenceProbePrompt()`），互不阻断、同点单飞，共享 30 秒启动等待上限。Fusion 四个种子在每个身份下各最多发送一次请求，失败不重试，也不阻止后续共享补采。Auto 简单题使用 `hello`；`intelligence` 难题使用已验证的完整题面与冻结的 100 行真实 TypeScript 源码样本，其余三档独立采样当前仓库源码。未完成点在服务运行期后台补采。
-- `intelligence` 首次难题仍未覆盖配置目标，或同档两题选中相同模型时，最多追加一次题面变体。目标补充探测优先 `intelligence` 并轮换三个已验证题面，其余档位沿用简单题与代码任务交替；Auto 每档最多十次。已有 10% 的模型仍是 Fusion 升级目标：Fusion 续期与过期重获进入共享轮次，每轮最多十次请求，包含保存题面的首次尝试与所有失败尝试；返回的模型按实际结果登记，缺失目标继续用 intelligence 题面变体补采，请求间隔至少 3 秒，轮次耗尽冷却 90 秒，之后由后续 miss 重新开启轮次；固定输入及变体由 `getIntelligenceProbePrompt()` 统一提供，成功配对的刷新重放实际成功文本。
+- Auto 与 Fusion 共用完整 `ProbeCondition`，身份由来源、Auto tier 或 Fusion plan version、完整题面 SHA-256 确定。启动探测互不阻断，共享 30 秒等待上限。Fusion 四个种子逐一选择 plan version `1` 和 `2`，同一身份与完整条件最多发送一次种子请求；种子失败不重试，后续共享补采仍可使用其他条件。
+- 两个来源分别覆盖 `autoDiscovery.models`。Auto 每档每轮最多十次，Fusion 每轮最多十次，保存条件的续期首次尝试与失败尝试均计入预算。Fusion 保留完整有序 steps 和 role，按实际模型分别登记配对。额外有效模型可以被请求使用，也保存至历史；主动目标只包含配置目标与明确请求续期的模型。请求间隔至少 3 秒，轮次结束后缺失目标由 90 秒冷却定时器自主恢复补采。条件轮换覆盖共享题面与历史原题面，旧条件选中模型改变后继续补采缺失目标。
+- 每个监听端口拥有独立历史目录，每个 runtime 或 tester writer 拥有各自的 `conditions.json` 与按 UTC 日期记录的 JSONL。条件保存完整题面，观察记录只保存条件 ID、实际模型、评分和授权生成结果。历史不保存凭据与 session token。重启后重新发送保存的条件取得当前 token，历史命中不计为当前有效覆盖。
 - 各来源独立判定探测失败：429 与 Fusion 5xx 的有效 `Retry-After` 优先于退避，网络失败与其余 5xx 按 1 秒起步 30 秒封顶随机退避，持续请求格式类 400 记为待处理。Fusion 的退避截止在有界轮次结束后仍保留，后续请求不得早于该时间发送。401 视为身份异常并暂停两个来源的探测，403 只暂停当前来源，两者均待凭据变化恢复。Fusion 的 `model_pool_not_eligible` 或端点不支持只暂停该来源在当前身份下的探测，不暂停 Auto。
 - 每个模型分别缓存 Fusion 与 Auto 候选；有效 Fusion 始终优先。已有有效 Auto 而 Fusion 正在取得或续期时，前台立即使用 10%，不等待 30%；新的有效 Fusion 登记后下一请求立即优先，无需重启。无任何配对时，配置目标共享补采最多等待 2 秒，之后按原价发送。
 - 每条候选按各自上游 `expires_at` 在到期前 5 分钟刷新（同来源同点共享在途）。Fusion 到期时删除过期候选并按保存的成功题面重新取得，即使 Auto 仍有效也不跳过；Auto 到期后按来源补采。Copilot 凭据变化立即使旧配对失效，并在 token 与账号元数据全部落位后按来源重新补采；种子、在途探测、共享轮次及轮次结束后的重启都等待该就绪条件，旧身份下启动的结果和迟到响应不能登记到新身份或覆盖较新候选。折扣查表与 `state.forceAgent` 内部标志无关。
@@ -32,8 +33,8 @@
 
 - [request.ts](../src/services/copilot/request.ts)：HTTP/TLS 发送与折扣降级链首次请求的公共入口。
 - [auto-session-retry.ts](../src/services/copilot/auto-session-retry.ts)：按选中候选附加会话 header、拒绝后的来源定向失效与有限降级。
-- [auto-session.ts](../src/lib/auto-session.ts)：两来源候选表、启动探测、逐候选到期刷新与凭据轮换失效；[get-auto-selection.ts](../src/services/copilot/get-auto-selection.ts)：`/auto` 选模请求；[get-fusion-selection.ts](../src/services/copilot/get-fusion-selection.ts)：`/model/fusion` 请求与 solo 单步响应校验。
-- [auto-probe-prompts.ts](../src/lib/auto-probe-prompts.ts)：Auto 固定探测题面、验证要求变体与 Fusion 固定题面；[auto-probe-sample.json](../src/lib/auto-probe-sample.json)：冻结源码样本及其原始文件、零起点行号和行数。固定样本用于保持输入可复现，不表示当前源码存在题面所描述的故障，也不保证上游始终返回某个模型。
+- [auto-session.ts](../src/lib/auto-session.ts) 管理双来源候选、条件轮换、冷却恢复、到期刷新与身份轮换。[get-auto-selection.ts](../src/services/copilot/get-auto-selection.ts) 调用 `/auto`。[get-fusion-selection.ts](../src/services/copilot/get-fusion-selection.ts) 调用 `/model/fusion` 并验证两个 plan version 的有序 steps、role 与评分。
+- [auto-probe-prompts.ts](../src/lib/auto-probe-prompts.ts) 提供共享条件、完整题面身份与唯一 wanted 读取。[auto-probe-history.ts](../src/lib/auto-probe-history.ts) 保存每实例与 writer 的条件和观察记录。[auto-probe-sample.json](../src/lib/auto-probe-sample.json) 保存冻结源码样本及原始文件、零起点行号和行数。
 - [tls-retry.ts](../src/services/tls-retry.ts)：既有 TLS 错误判定、等待与单次重试。
 
 **必要的上游接入**：三个 `create-*` service 的发送位置；启动和 token 更新位置保留会话预热、失效处理。上游 [upstream-http.ts](../src/services/upstream-http.ts) 的实现保持不变。

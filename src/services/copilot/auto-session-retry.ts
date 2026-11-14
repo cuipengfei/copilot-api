@@ -114,6 +114,17 @@ export const retryAfterAutoSessionTokenRejection = async (
   ) {
     const errorMessage = await getResponseErrorMessage(response)
     if (errorMessage?.toLowerCase().includes("belong")) return response
+    if (
+      response.status === 400
+      && !(
+        errorMessage !== undefined
+        && /(?:session[\s_-]*token|copilot[\s_-]*session)/i.test(errorMessage)
+        && /(?:invalid|expired|rejected|mismatch|not valid|not accepted)/i.test(
+          errorMessage,
+        )
+      )
+    )
+      return response
 
     excludedSources.add(selection.source)
     if (getSelectionAuthToken(headers, context)) {

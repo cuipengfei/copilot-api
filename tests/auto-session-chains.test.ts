@@ -7,6 +7,7 @@ import {
   mock,
   test,
 } from "bun:test"
+import { createProbeCondition } from "../src/lib/auto-probe-prompts"
 import { rejects } from "node:assert/strict"
 
 import type { AnthropicMessagesPayload } from "~/lib/types/anthropic"
@@ -166,7 +167,19 @@ const getFinalCallSnapshots = (
   ).filter(([url]) => url.includes(pathKeyword))
 
 const createOpaqueTokenRejection = (status: number) =>
-  new Response("opaque upstream failure without any known keyword", { status })
+  status === 400 ?
+    Response.json(
+      {
+        error: {
+          code: "invalid_session_token",
+          message: "Copilot session token is invalid",
+        },
+      },
+      { status },
+    )
+  : new Response("opaque upstream failure without any known keyword", {
+      status,
+    })
 
 const queueStaleAuto = (endpoint: string): void => {
   const queue = Reflect.get(
@@ -347,6 +360,11 @@ describe("auto-session token injection across chains", () => {
         queuedAutoSelection("gpt-5.3-codex", "proxy-auto-token", [
           "/v1/messages",
         ]),
+        createProbeCondition({
+          source: "auto",
+          tier: "balance",
+          prompt: "hello",
+        }),
       ),
     ).toBe(true)
     let attempts = 0
@@ -435,6 +453,11 @@ describe("auto-session token injection across chains", () => {
             queuedAutoSelection("gpt-5.3-codex", "auto-after-rotation", [
               "/v1/messages",
             ]),
+            createProbeCondition({
+              source: "auto",
+              tier: "balance",
+              prompt: "hello",
+            }),
           ),
         ).toBe(true)
 
@@ -802,14 +825,29 @@ describe("auto-session token injection across chains", () => {
       expect(
         registerAutoSelection(
           queuedAutoSelection("gpt-5.3-codex", "auto-fallback", ["/responses"]),
+          createProbeCondition({
+            source: "auto",
+            tier: "balance",
+            prompt: "hello",
+          }),
         ),
       ).toBe(true)
       expect(
-        registerFusionSelection({
-          modelId: "gpt-5.3-codex",
-          sessionToken: "fusion-first",
-          expiresAt: Math.floor(Date.now() / 1000) + 3600,
-        }),
+        registerFusionSelection(
+          {
+            planVersion: "2" as const,
+            fusionPattern: "solo",
+            steps: [{ modelId: "gpt-5.3-codex" }],
+            sessionToken: "fusion-first",
+            expiresAt: Math.floor(Date.now() / 1000) + 3600,
+          },
+          createProbeCondition({
+            source: "fusion",
+            planVersion: "2",
+            fusionMode: "hydrafusion",
+            prompt: "hello",
+          }),
+        ),
       ).toBe(true)
       let attempts = 0
       wireFetchMock(() =>
@@ -853,12 +891,27 @@ describe("auto-session token injection across chains", () => {
   test("final no-token generation failure remains the actual HTTPError", async () => {
     registerAutoSelection(
       queuedAutoSelection("gpt-5.3-codex", "auto-rejected", ["/responses"]),
+      createProbeCondition({
+        source: "auto",
+        tier: "balance",
+        prompt: "hello",
+      }),
     )
-    registerFusionSelection({
-      modelId: "gpt-5.3-codex",
-      sessionToken: "fusion-rejected",
-      expiresAt: Math.floor(Date.now() / 1000) + 3600,
-    })
+    registerFusionSelection(
+      {
+        planVersion: "2" as const,
+        fusionPattern: "solo",
+        steps: [{ modelId: "gpt-5.3-codex" }],
+        sessionToken: "fusion-rejected",
+        expiresAt: Math.floor(Date.now() / 1000) + 3600,
+      },
+      createProbeCondition({
+        source: "fusion",
+        planVersion: "2",
+        fusionMode: "hydrafusion",
+        prompt: "hello",
+      }),
+    )
     let attempts = 0
     wireFetchMock(() =>
       ++attempts < 3 ?
@@ -901,6 +954,11 @@ describe("auto-session token injection across chains", () => {
       await prewarmAutoSession()
       registerAutoSelection(
         queuedAutoSelection("gpt-5.3-codex", "session-stale", [endpoint]),
+        createProbeCondition({
+          source: "auto",
+          tier: "balance",
+          prompt: "hello",
+        }),
       )
       const probesBeforeRequest = countAutoCalls(fetchMock)
 
@@ -945,6 +1003,11 @@ describe("auto-session token injection across chains", () => {
         : "/v1/messages"
       registerAutoSelection(
         queuedAutoSelection("gpt-5.3-codex", "session-stale", [endpoint]),
+        createProbeCondition({
+          source: "auto",
+          tier: "balance",
+          prompt: "hello",
+        }),
       )
       wireFetchMock(() => createOpaqueTokenRejection(400))
       try {
@@ -1018,6 +1081,11 @@ describe("auto-session token injection across chains", () => {
           queuedAutoSelection("gpt-5.3-codex", "session-stale", [
             "/chat/completions",
           ]),
+          createProbeCondition({
+            source: "auto",
+            tier: "balance",
+            prompt: "hello",
+          }),
         )
         let attempts = 0
         const fetchMock = wireFetchMock(() =>
@@ -1055,12 +1123,27 @@ describe("auto-session token injection across chains", () => {
   test("reasoning replay learns the actual fallback token, not rejected Fusion", async () => {
     registerAutoSelection(
       queuedAutoSelection("gpt-5.3-codex", "auto-current", ["/responses"]),
+      createProbeCondition({
+        source: "auto",
+        tier: "balance",
+        prompt: "hello",
+      }),
     )
-    registerFusionSelection({
-      modelId: "gpt-5.3-codex",
-      sessionToken: "fusion-stale",
-      expiresAt: Math.floor(Date.now() / 1000) + 3600,
-    })
+    registerFusionSelection(
+      {
+        planVersion: "2" as const,
+        fusionPattern: "solo",
+        steps: [{ modelId: "gpt-5.3-codex" }],
+        sessionToken: "fusion-stale",
+        expiresAt: Math.floor(Date.now() / 1000) + 3600,
+      },
+      createProbeCondition({
+        source: "fusion",
+        planVersion: "2",
+        fusionMode: "hydrafusion",
+        prompt: "hello",
+      }),
+    )
     let attempts = 0
     wireFetchMock(() => {
       attempts += 1
@@ -1124,11 +1207,21 @@ describe("auto-session token injection across chains", () => {
       expect(requestBodyText(reused)).not.toContain("encrypted_content")
 
       expect(
-        registerFusionSelection({
-          modelId: "gpt-5.3-codex",
-          sessionToken: "fusion-new",
-          expiresAt: Math.floor(Date.now() / 1000) + 3600,
-        }),
+        registerFusionSelection(
+          {
+            planVersion: "2" as const,
+            fusionPattern: "solo",
+            steps: [{ modelId: "gpt-5.3-codex" }],
+            sessionToken: "fusion-new",
+            expiresAt: Math.floor(Date.now() / 1000) + 3600,
+          },
+          createProbeCondition({
+            source: "fusion",
+            planVersion: "2",
+            fusionMode: "hydrafusion",
+            prompt: "hello",
+          }),
+        ),
       ).toBe(true)
       await createResponses(payload(), {
         vision: false,

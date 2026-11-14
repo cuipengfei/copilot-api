@@ -6,52 +6,56 @@
 // src/lib/api-config.ts at runtime, so upstream version bumps never require
 // edits here.
 //
-// --variety runs the fixed 12-case model-variety probe: one POST /auto per
-// case, sequential, no retries, a single 60s AbortSignal spanning token
-// exchange and all requests, and exactly one sanitized JSON report on stdout.
-//
 // Identity headers (EDITOR_DEVICE_ID, VSCODE_SESSION_ID, VSCODE_MACHINE_ID)
 // can be pinned via environment variables for controlled A/B probing;
 // fresh synthetic UUIDs are generated per run otherwise.
 //
 // Run: bun .agents/skills/copilot-backend-tester/scripts/test-auto-select.mjs [options]
 
-import { join } from "node:path"
-
-import { copilotAuthInit, copilotCommonHeaders } from "./copilot-auth.mjs"
-import { createVarietyCases } from "./auto-variety-prompts.mjs"
-import { missingValue, printBody, printHeaders } from "./probe-common.mjs"
+import {
+  copilotAuthInit,
+  copilotCommonHeaders,
+  copilotSelectionHeaders,
+} from "./copilot-auth.mjs"
+import { missingValue, printHeaders, sanitizeJson } from "./probe-common.mjs"
+import {
+  isoDate,
+  positiveInteger,
+  runSelectionVariety,
+  safeUrl,
+  VARIETY_DEFAULTS,
+} from "./selection-variety.mjs"
 
 const DEFAULT_PROMPT =
   "Write a TypeScript function that normalizes URL paths, with tests for root, duplicate slashes, and trailing slashes."
 const ALL_TIERS = ["efficiency", "balance", "intelligence", "fast"]
-const VARIETY_CASE_COUNT = 12
-const VARIETY_TIMEOUT_MS = 60_000
-const VARIETY_SOURCE_ROOT = join(import.meta.dirname, "../../../../src")
 
 const HELP_TEXT = `Usage: test-auto-select.mjs [options]
 
 Probes POST /auto on the upstream returned by token exchange.
 
 Options:
-  --proxy-url <url>    Local proxy URL to borrow credentials from (default: http://localhost:4141)
-  --business           Expect a business account upstream (api.business.githubcopilot.com)
-  --tier <name>        efficiency | balance | intelligence | fast | all (default: balance)
-  --prompt <text>      Prompt used for model selection
-  --with-inference     Also send a minimal request to the selected model's first
-                       non-websocket endpoint using the same session token.
-                       This performs real billed generation.
-  --variety            Run the fixed 12-case variety probe: one POST /auto per case,
-                       sequential, no retries, whole run capped at 60s, with a single
-                       sanitized JSON report on stdout. Mutually exclusive with
-                       --prompt, --tier, --with-inference and --show-headers.
-  --show-headers       Print sanitized response headers
-  -h, --help           Show this help
+  --proxy-url <url>       Local proxy URL used for credentials and instance identity
+                          (default: http://localhost:4141)
+  --business              Expect a business account upstream
+  --tier <name>           efficiency | balance | intelligence | fast | all (default: balance)
+  --prompt <text>         Prompt used for single-tier model selection
+  --variety               Run shared and real-source conditions with one JSON report
+  --with-inference        Generate once in single mode; run billed token controls in variety
+  --repeat <n>            Repeat the selected conditions (default: 1)
+  --interval-ms <n>       Delay between conditions (default: 0)
+  --budget-ms <n>         Whole-run deadline including authentication (default: 60000)
+  --max-requests <n>      Shared selection and generation request budget (default: 128)
+  --replay                Replay saved prompts instead of constructing new conditions
+  --replay-date <date>    Replay only conditions observed on this UTC YYYY-MM-DD
+  --history-root <path>   Read and write probe history below this root
+  --show-headers          Print sanitized response headers in single-tier mode
+  -h, --help              Show this help
 
 Environment:
-  EDITOR_DEVICE_ID     Pin the editor device identity (default: synthetic UUID per run)
-  VSCODE_SESSION_ID    Pin the VS Code session identity (default: synthetic UUID per run)
-  VSCODE_MACHINE_ID    Pin the VS Code machine identity (default: synthetic UUID per run)`
+  EDITOR_DEVICE_ID        Pin the editor device identity
+  VSCODE_SESSION_ID       Pin the VS Code session identity
+  VSCODE_MACHINE_ID       Pin the VS Code machine identity`
 
 function parseArgs(argv) {
   const options = {
@@ -64,6 +68,10 @@ function parseArgs(argv) {
     withInference: false,
     showHeaders: false,
     variety: false,
+    replay: false,
+    replayDate: null,
+    historyRoot: undefined,
+    ...VARIETY_DEFAULTS,
   }
 
   for (let i = 0; i < argv.length; i++) {
@@ -94,6 +102,37 @@ function parseArgs(argv) {
       case "--variety":
         options.variety = true
         break
+      case "--repeat":
+        options.repeat = positiveInteger(argv[++i] ?? missingValue("--repeat"), "--repeat")
+        break
+      case "--interval-ms":
+        options.intervalMs = positiveInteger(
+          argv[++i] ?? missingValue("--interval-ms"),
+          "--interval-ms",
+          { allowZero: true },
+        )
+        break
+      case "--budget-ms":
+        options.budgetMs = positiveInteger(argv[++i] ?? missingValue("--budget-ms"), "--budget-ms")
+        break
+      case "--max-requests":
+        options.maxRequests = positiveInteger(
+          argv[++i] ?? missingValue("--max-requests"),
+          "--max-requests",
+        )
+        break
+      case "--replay":
+        options.replay = true
+        options.variety = true
+        break
+      case "--replay-date":
+        options.replayDate = isoDate(argv[++i] ?? missingValue("--replay-date"))
+        options.replay = true
+        options.variety = true
+        break
+      case "--history-root":
+        options.historyRoot = argv[++i] ?? missingValue("--history-root")
+        break
       case "--show-headers":
         options.showHeaders = true
         break
@@ -110,11 +149,14 @@ function parseArgs(argv) {
     const conflicts = []
     if (options.promptExplicit) conflicts.push("--prompt")
     if (options.tierExplicit) conflicts.push("--tier")
-    if (options.withInference) conflicts.push("--with-inference")
     if (options.showHeaders) conflicts.push("--show-headers")
     if (conflicts.length > 0) {
       throw new Error(`--variety is mutually exclusive with ${conflicts.join(", ")}`)
     }
+  } else if (options.replay || options.repeat !== 1 || options.intervalMs !== 0
+    || options.budgetMs !== VARIETY_DEFAULTS.budgetMs
+    || options.maxRequests !== VARIETY_DEFAULTS.maxRequests || options.historyRoot !== undefined) {
+    throw new Error("history, repeat, interval and budget options require --variety")
   }
 
   return options
@@ -158,6 +200,11 @@ function redactPrompt(value, prompt) {
   return value
 }
 
+function printSafeBody(ctx, body) {
+  console.log(JSON.stringify(sanitizeJson(body, { secrets: ctx.secrets }), null, 2))
+  console.log()
+}
+
 async function probeInference(ctx, sessionToken, modelId, endpoint) {
   let body
   if (endpoint.endsWith("/responses")) {
@@ -186,6 +233,7 @@ async function probeInference(ctx, sessionToken, modelId, endpoint) {
     method: "POST",
     headers: {
       ...ctx.headers,
+      ...(endpoint.endsWith("/messages") ? { "anthropic-version": "2023-06-01" } : {}),
       "Copilot-Session-Token": sessionToken,
       "x-request-id": `${ctx.requestIdBase}-inference`,
     },
@@ -197,30 +245,31 @@ async function probeInference(ctx, sessionToken, modelId, endpoint) {
     printHeaders(response.headers)
     console.log()
   }
-  printBody(await response.json())
+  printSafeBody(ctx, await response.json())
   return response.ok
 }
 
 async function probeTier(ctx, tier) {
+  const requestId = `${ctx.requestIdBase}-${tier}`
   const response = await fetch(`${ctx.auth.base}/auto`, {
     method: "POST",
     headers: {
-      ...ctx.headers,
+      ...copilotSelectionHeaders(ctx.auth, requestId),
       "VScode-SessionId": ctx.vscodeSessionId,
       "VScode-MachineId": ctx.vscodeMachineId,
-      "x-request-id": `${ctx.requestIdBase}-${tier}`,
     },
     body: JSON.stringify({ prompt: ctx.options.prompt, tier }),
   })
 
   const body = await response.json()
+  if (typeof body?.session_token === "string") ctx.secrets.push(body.session_token)
 
   console.log(`=== Tier: ${tier} (HTTP ${response.status}) ===`)
   if (ctx.options.showHeaders) {
     printHeaders(response.headers)
     console.log()
   }
-  printBody(body)
+  printSafeBody(ctx, body)
 
   if (!response.ok) {
     return false
@@ -245,219 +294,16 @@ async function probeTier(ctx, tier) {
   return true
 }
 
-// Fail before any network when the case profile is unusable (construction
-// error, wrong count, missing fields, or an unusable source reference).
-function validateVarietyCases(cases) {
-  if (!Array.isArray(cases) || cases.length !== VARIETY_CASE_COUNT) {
-    throw new Error(`variety case profile must define exactly ${VARIETY_CASE_COUNT} cases`)
-  }
-  for (const varietyCase of cases) {
-    if (
-      typeof varietyCase?.id !== "string" ||
-      varietyCase.id === "" ||
-      typeof varietyCase?.prompt !== "string" ||
-      varietyCase.prompt === "" ||
-      !ALL_TIERS.includes(varietyCase?.tier)
-    ) {
-      throw new Error("variety case profile contains an invalid case")
-    }
-    const source = varietyCase.source
-    if (
-      source !== undefined &&
-      (typeof source?.file !== "string" ||
-        !Number.isInteger(source?.startLine) ||
-        !Number.isInteger(source?.lineCount))
-    ) {
-      throw new Error("variety case profile contains an invalid source reference")
-    }
-    if (
-      varietyCase.prompt_sha256 !== undefined &&
-      (typeof varietyCase.prompt_sha256 !== "string" ||
-        !/^[0-9a-f]{64}$/.test(varietyCase.prompt_sha256))
-    ) {
-      throw new Error("variety case profile contains an invalid prompt_sha256")
-    }
-    const sources = varietyCase.sources
-    if (
-      sources !== undefined &&
-      (!Array.isArray(sources) ||
-        sources.length === 0 ||
-        sources.some(
-          (entry) =>
-            typeof entry?.file !== "string" ||
-            entry.file === "" ||
-            !Number.isInteger(entry?.startLine) ||
-            !Number.isInteger(entry?.lineCount),
-        ))
-    ) {
-      throw new Error("variety case profile contains an invalid sources reference")
-    }
-  }
-  return cases
-}
-
-// Variety run: exactly one sanitized JSON report on stdout and nothing else.
-// Prompts, sampled source code, tokens and upstream error bodies never appear
-// in the output; errors are reduced to an HTTP category or an Error.name.
-async function runVariety(options) {
-  const expectedAccount = options.business ? "business" : "individual"
-  const report = {
-    observed_at: new Date().toISOString(),
-    proxy_url: options.proxyUrl,
-    upstream: null,
-    account: expectedAccount,
-    account_source: "expectation",
-    complete: false,
-    stop_reason: null,
-    auto_requests: 0,
-    results: [],
-    observed_models: [],
-    expected_cases: VARIETY_CASE_COUNT,
-  }
-
-  const controller = new AbortController()
-  let timedOut = false
-  const timer = setTimeout(() => {
-    timedOut = true
-    controller.abort()
-  }, VARIETY_TIMEOUT_MS)
-
-  try {
-    let cases
-    try {
-      cases = validateVarietyCases(
-        await createVarietyCases({ sourceRoot: VARIETY_SOURCE_ROOT }),
-      )
-    } catch (error) {
-      report.stop_reason = "case_profile_failed"
-      report.error = error?.name ?? "Error"
-      return 1
-    }
-    if (timedOut) {
-      // The 60s budget elapsed while building cases; do not start auth.
-      report.stop_reason = "deadline"
-      return 1
-    }
-
-    let auth
-    try {
-      auth = await copilotAuthInit(options.proxyUrl, {
-        expectedAccount,
-        signal: controller.signal,
-      })
-    } catch (error) {
-      report.error = error?.name ?? "Error"
-      if (timedOut) {
-        report.stop_reason = "deadline"
-      } else if (Number.isInteger(error?.status)) {
-        report.stop_reason = `http_${error.status}`
-      } else {
-        report.stop_reason = "auth_failed"
-      }
-      return 1
-    }
-    report.upstream = auth.base
-
-    const headers = copilotCommonHeaders(auth)
-    const vscodeSessionId = process.env.VSCODE_SESSION_ID ?? crypto.randomUUID()
-    const vscodeMachineId = process.env.VSCODE_MACHINE_ID ?? crypto.randomUUID()
-    const requestIdBase = `auto-variety-${crypto.randomUUID()}`
-
-    let stopReason = null
-    for (let i = 0; i < cases.length; i++) {
-      if (timedOut) {
-        stopReason = "deadline"
-        break
-      }
-      const varietyCase = cases[i]
-      const row = {
-        prompt_id: varietyCase.id,
-        tier: varietyCase.tier,
-        status: null,
-        selected_model: null,
-        supported_endpoints: null,
-      }
-      if (varietyCase.source !== undefined) {
-        row.source = varietyCase.source
-      }
-      if (varietyCase.sources !== undefined) {
-        row.sources = varietyCase.sources
-      }
-      if (varietyCase.prompt_sha256 !== undefined) {
-        row.prompt_sha256 = varietyCase.prompt_sha256
-      }
-      report.auto_requests += 1
-      try {
-        const response = await fetch(`${auth.base}/auto`, {
-          method: "POST",
-          headers: {
-            ...headers,
-            "VScode-SessionId": vscodeSessionId,
-            "VScode-MachineId": vscodeMachineId,
-            "x-request-id": `${requestIdBase}-${i}`,
-          },
-          body: JSON.stringify({ prompt: varietyCase.prompt, tier: varietyCase.tier }),
-          signal: controller.signal,
-        })
-        if (!response.ok) {
-          row.status = response.status
-          row.error = `http_${response.status}`
-          report.results.push(row)
-          stopReason = row.error
-          break
-        }
-        row.status = response.status
-        let body
-        try {
-          body = await response.json()
-        } catch {
-          body = null
-        }
-        const modelId = body?.selected_model?.id
-        const supportedEndpoints = body?.selected_model?.supported_endpoints
-        const endpointsMalformed =
-          supportedEndpoints !== undefined &&
-          (!Array.isArray(supportedEndpoints) ||
-            !supportedEndpoints.every(
-              (endpoint) => typeof endpoint === "string",
-            ))
-        if (typeof modelId !== "string" || modelId === "" || endpointsMalformed) {
-          row.error = "malformed_model"
-          report.results.push(row)
-          stopReason = "malformed_model"
-          break
-        }
-        row.selected_model = modelId
-        row.supported_endpoints = supportedEndpoints ?? null
-        report.results.push(row)
-      } catch (error) {
-        row.error = error?.name ?? "Error"
-        report.results.push(row)
-        stopReason = timedOut ? "deadline" : "network_error"
-        break
-      }
-    }
-
-    report.stop_reason = stopReason
-    report.observed_models = [
-      ...new Set(
-        report.results
-          .filter((row) => row.selected_model !== null)
-          .map((row) => row.selected_model),
-      ),
-    ].sort()
-    report.complete = stopReason === null
-    return report.complete ? 0 : 1
-  } finally {
-    clearTimeout(timer)
-    console.log(JSON.stringify(report, null, 2))
-  }
-}
 
 async function main() {
   const options = parseArgs(process.argv.slice(2))
   if (options.variety) {
-    process.exitCode = await runVariety(options)
+    process.exitCode = await runSelectionVariety({
+      ...options,
+      source: "auto",
+      planVersions: [],
+      runtimeSeeds: false,
+    })
     return
   }
   const expectedAccount = options.business ? "business" : "individual"
@@ -465,11 +311,10 @@ async function main() {
   const auth = await copilotAuthInit(options.proxyUrl, expectedAccount)
   const headers = copilotCommonHeaders(auth)
 
-  // CAPI 0.5.x client identity headers: pin via environment variables for
-  // controlled A/B probing, fresh synthetic UUIDs per run otherwise.
   const ctx = {
     auth,
     headers,
+    secrets: [auth.token],
     requestIdBase: `auto-v2-${crypto.randomUUID()}`,
     vscodeSessionId: process.env.VSCODE_SESSION_ID ?? crypto.randomUUID(),
     vscodeMachineId: process.env.VSCODE_MACHINE_ID ?? crypto.randomUUID(),
@@ -481,10 +326,10 @@ async function main() {
   console.log("=== Probe Metadata ===")
   console.log(
     JSON.stringify(
-      {
+      sanitizeJson({
         observed_at: new Date().toISOString(),
-        proxy_url: options.proxyUrl,
-        upstream: auth.base,
+        proxy_url: safeUrl(options.proxyUrl),
+        upstream: safeUrl(auth.base),
         account: expectedAccount,
         prompt_chars: options.prompt.length,
         identity_pinned: {
@@ -492,7 +337,7 @@ async function main() {
           vscode_session_id: process.env.VSCODE_SESSION_ID ?? null,
           vscode_machine_id: process.env.VSCODE_MACHINE_ID ?? null,
         },
-      },
+      }, { secrets: ctx.secrets }),
       null,
       2,
     ),
@@ -503,12 +348,11 @@ async function main() {
   for (const tier of tiers) {
     try {
       const ok = await probeTier(ctx, tier)
-      if (!ok) {
-        failed = true
-      }
+      if (!ok) failed = true
     } catch (error) {
       failed = true
-      console.error(`Tier ${tier} failed: ${error.message}`)
+      const status = Number.isInteger(error?.status) ? ` HTTP ${error.status}` : ""
+      console.error(`Tier ${tier} failed: ${error?.name ?? "Error"}${status}`)
     }
     console.log()
   }

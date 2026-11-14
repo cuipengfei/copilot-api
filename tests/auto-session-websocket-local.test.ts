@@ -1,4 +1,5 @@
 import { afterAll, afterEach, expect, mock, spyOn, test } from "bun:test"
+import { createProbeCondition } from "../src/lib/auto-probe-prompts"
 import consola from "consola"
 import type { ServerWebSocket } from "bun"
 
@@ -162,21 +163,38 @@ test.each([
     } as typeof state.models
     invalidateAutoSession()
 
-    registerAutoSelection({
-      selected_model: {
-        id: "gpt-test",
-        supported_endpoints: ["/responses", "ws:/responses"],
+    registerAutoSelection(
+      {
+        selected_model: {
+          id: "gpt-test",
+          supported_endpoints: ["/responses", "ws:/responses"],
+        },
+        session_token: "ws-should-not-attach",
+        expires_at: Math.floor(Date.now() / 1000) + 3600,
       },
-      session_token: "ws-should-not-attach",
-      expires_at: Math.floor(Date.now() / 1000) + 3600,
-    })
+      createProbeCondition({
+        source: "auto",
+        tier: "balance",
+        prompt: "hello",
+      }),
+    )
     if (source === "fusion") {
       expect(
-        registerFusionSelection({
-          modelId: "gpt-test",
-          sessionToken: "fusion-ws-should-not-attach",
-          expiresAt: Math.floor(Date.now() / 1000) + 3600,
-        }),
+        registerFusionSelection(
+          {
+            planVersion: "2" as const,
+            fusionPattern: "solo",
+            steps: [{ modelId: "gpt-test" }],
+            sessionToken: "fusion-ws-should-not-attach",
+            expiresAt: Math.floor(Date.now() / 1000) + 3600,
+          },
+          createProbeCondition({
+            source: "fusion",
+            planVersion: "2",
+            fusionMode: "hydrafusion",
+            prompt: "hello",
+          }),
+        ),
       ).toBe(true)
     }
     try {

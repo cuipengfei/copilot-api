@@ -1,12 +1,14 @@
 import { afterEach, beforeEach, expect, mock, spyOn, test } from "bun:test"
+import {
+  createProbeCondition,
+  parseAutoDiscoveryModels,
+} from "../src/lib/auto-probe-prompts"
 import consola from "consola"
 
 import { getConfig } from "../src/lib/config-store"
 import { state } from "../src/lib/state"
 import type { Model } from "../src/lib/types/models"
 import type * as AutoSession from "../src/lib/auto-session"
-
-import { parseAutoDiscoveryModels } from "../src/lib/auto-session"
 
 test("omitted and empty Auto targets add no models", () => {
   expect(parseAutoDiscoveryModels(undefined)).toEqual([])
@@ -95,19 +97,35 @@ test("wanted remains configuration-owned while obtained and missing are the vali
   const mod = await loadModule()
   const configured = { models: ["wanted-model", "other-model"] }
   getConfig().autoDiscovery = configured
-  mod.registerAutoSelection({
-    selected_model: { id: "wanted-model", supported_endpoints: ["/responses"] },
-    session_token: "auto-wanted",
-    expires_at: Math.floor(Date.now() / 1000) + 3600,
-  })
+  mod.registerAutoSelection(
+    {
+      selected_model: {
+        id: "wanted-model",
+        supported_endpoints: ["/responses"],
+      },
+      session_token: "auto-wanted",
+      expires_at: Math.floor(Date.now() / 1000) + 3600,
+    },
+    createProbeCondition({ source: "auto", tier: "balance", prompt: "hello" }),
+  )
   expect(mod.getMissingAutoDiscoveryModels(configured.models)).toEqual([
     "other-model",
   ])
-  mod.registerFusionSelection({
-    modelId: "other-model",
-    sessionToken: "fusion-other",
-    expiresAt: Math.floor(Date.now() / 1000) + 3600,
-  })
+  mod.registerFusionSelection(
+    {
+      planVersion: "2" as const,
+      fusionPattern: "solo",
+      steps: [{ modelId: "other-model" }],
+      sessionToken: "fusion-other",
+      expiresAt: Math.floor(Date.now() / 1000) + 3600,
+    },
+    createProbeCondition({
+      source: "fusion",
+      planVersion: "2",
+      fusionMode: "hydrafusion",
+      prompt: "hello",
+    }),
+  )
   expect(mod.getMissingAutoDiscoveryModels(configured.models)).toEqual([])
   expect(getConfig().autoDiscovery).toBe(configured)
   expect(configured).toEqual({ models: ["wanted-model", "other-model"] })
@@ -344,4 +362,44 @@ test("a Fusion-covered wanted model still completes independent Auto fallback di
     auto.resolve()
     await mod.whenProbeSchedulerIdle()
   }
+})
+
+test("v1 registers all eligible distinct step models even when its first step cannot use Responses", async () => {
+  const mod = await loadModule()
+  const configured = { models: ["wanted-model"] }
+  getConfig().autoDiscovery = configured
+  const condition = createProbeCondition({
+    source: "fusion",
+    planVersion: "1",
+    fusionMode: "hydrafusion",
+    prompt: "multi-step fixture",
+  })
+  expect(
+    mod.registerFusionSelection(
+      {
+        planVersion: "1",
+        fusionPattern: "multi-step",
+        steps: [
+          { modelId: "unknown-catalog-model", role: "planner" },
+          { modelId: "wanted-model", role: "executor" },
+          { modelId: "other-model", role: "critic" },
+          { modelId: "wanted-model", role: "finalizer" },
+        ],
+        sessionToken: "multi-step-token",
+        expiresAt: Math.floor(Date.now() / 1000) + 3600,
+      },
+      condition,
+    ),
+  ).toBe(true)
+  for (const model of ["wanted-model", "other-model"]) {
+    expect(
+      await mod.getAutoSessionForModel({ model, endpoint: "/responses" }),
+    ).toEqual({
+      sessionToken: "multi-step-token",
+      source: "fusion",
+      expectedDiscount: 30,
+    })
+  }
+  expect(mod.isModelAutoCovered("unknown-catalog-model")).toBe(false)
+  expect(getConfig().autoDiscovery).toBe(configured)
 })

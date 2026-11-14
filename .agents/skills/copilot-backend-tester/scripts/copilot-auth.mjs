@@ -163,3 +163,13 @@ export function copilotCommonHeaders(auth) {
     "X-Initiator": "agent",
   }
 }
+
+export function copilotSelectionHeaders(auth, requestId) {
+  return {
+    ...copilotCommonHeaders(auth),
+    "openai-intent": "model-access",
+    "x-interaction-type": "model-access",
+    "x-request-id": requestId,
+    "x-agent-task-id": requestId,
+  }
+}

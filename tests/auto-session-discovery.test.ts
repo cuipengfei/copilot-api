@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, expect, mock, spyOn, test } from "bun:test"
+import { createProbeCondition } from "../src/lib/auto-probe-prompts"
 import consola from "consola"
 import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises"
 import os from "node:os"
@@ -1592,6 +1593,7 @@ test("configured cold misses share discovery and accept only the selected target
   )
   mod.registerAutoSelection(
     okSelection("existing-auto-model", "existing-auto-token"),
+    createProbeCondition({ source: "auto", tier: "balance", prompt: "hello" }),
   )
   const { calls } = installRouter(() => gate.promise)
   const infoSpy = spyOn(consola, "info")
@@ -1605,11 +1607,21 @@ test("configured cold misses share discovery and accept only the selected target
     )
     await waitFor(() => calls.length === 1, 1_000)
     expect(
-      mod.registerFusionSelection({
-        modelId: "fusion-only-model",
-        sessionToken: "FUSION_ONLY_PRIVATE",
-        expiresAt: Math.floor(Date.now() / 1000) + 3600,
-      }),
+      mod.registerFusionSelection(
+        {
+          planVersion: "2" as const,
+          fusionPattern: "solo",
+          steps: [{ modelId: "fusion-only-model" }],
+          sessionToken: "FUSION_ONLY_PRIVATE",
+          expiresAt: Math.floor(Date.now() / 1000) + 3600,
+        },
+        createProbeCondition({
+          source: "fusion",
+          planVersion: "2",
+          fusionMode: "hydrafusion",
+          prompt: "hello",
+        }),
+      ),
     ).toBe(true)
     expect(
       (await mod.getAutoSessionForModel({ model: "unconfigured-model" }))
@@ -1788,11 +1800,14 @@ test("expired configured pairing is replaced before the requesting caller receiv
   const realNow = Date.now
   let clockOffset = 0
   let requests = 0
+  const renewal = Promise.withResolvers<AutoSelectionResponse>()
   config.autoDiscovery = { models: ["target-model"] }
   Date.now = () => realNow() + clockOffset
-  installRouter(() => {
+  const { calls } = installRouter(() => {
     requests++
-    return okSelection("target-model", `session-${requests}`)
+    return requests === 1 ?
+        okSelection("target-model", "session-1")
+      : renewal.promise
   })
   try {
     mod.resumeAutoSessionDiscoveryAfterRotation()
@@ -1806,18 +1821,26 @@ test("expired configured pairing is replaced before the requesting caller receiv
     ).toBe("session-1")
     await mod.whenProbeSchedulerIdle()
     clockOffset = 3_700_000
+    const pending = Array.from({ length: 20 }, () =>
+      mod.getAutoSessionForModel({
+        model: "target-model",
+        endpoint: "/responses",
+      }),
+    )
+    await nextTurn()
+    expect(requests).toBe(2)
+    expect(calls[1].url).toBe(calls[0].url)
+    expect(requestBody(calls[1])).toEqual(requestBody(calls[0]))
+    renewal.resolve(okSelection("target-model", "session-2"))
     expect(
-      (
-        await mod.getAutoSessionForModel({
-          model: "target-model",
-          endpoint: "/responses",
-        })
-      )?.sessionToken,
-    ).toBe("session-2")
+      (await Promise.all(pending)).map((selection) => selection?.sessionToken),
+    ).toEqual(Array.from({ length: 20 }, () => "session-2"))
+    await mod.whenProbeSchedulerIdle()
     expect(requests).toBe(2)
   } finally {
     Date.now = realNow
     mod.stopProbeScheduler()
+    renewal.resolve(okSelection("target-model", "session-2"))
     await mod.whenProbeSchedulerIdle()
     config.autoDiscovery = previous
   }
@@ -1894,6 +1917,22 @@ test("exhausted target discovery resumes on a miss after 90 seconds", async () =
     if (advancing) now += 4_000
     return now
   })
+  // Freeze at source exhaustion, before later history/idle reads advance the test clock.
+  const info = consola.info
+  spyOn(consola, "info").mockImplementation(
+    Object.assign(
+      (...args: Parameters<typeof info>) => {
+        if (
+          String(args[0]).startsWith(
+            "[auto-session] target discovery exhausted source=auto ",
+          )
+        )
+          advancing = false
+        return info(...args)
+      },
+      { raw: info.raw },
+    ),
+  )
   getConfig().autoDiscovery = { models: ["target-model"] }
   let available = false
   const { calls } = installRouter(() =>
@@ -1904,7 +1943,7 @@ test("exhausted target discovery resumes on a miss after 90 seconds", async () =
   try {
     await mod.prewarmAutoSession({ sourceRoot: dir })
     await mod.whenProbeSchedulerIdle()
-    advancing = false
+    expect(advancing).toBe(false)
     const exhaustedAt = now
     const exhaustedCalls = calls.length
     now = exhaustedAt + 89_999
@@ -2135,14 +2174,20 @@ test("Fusion shares four seeds plus ten additional attempts across targets, coun
     if (advancing) now += 4_000
     return now
   })
-  mod.registerAutoSelection({
-    ...okSelection("wanted-a", "auto-a"),
-    expires_at: Math.floor(now / 1000) + 86400,
-  })
-  mod.registerAutoSelection({
-    ...okSelection("wanted-b", "auto-b"),
-    expires_at: Math.floor(now / 1000) + 86400,
-  })
+  mod.registerAutoSelection(
+    {
+      ...okSelection("wanted-a", "auto-a"),
+      expires_at: Math.floor(now / 1000) + 86400,
+    },
+    createProbeCondition({ source: "auto", tier: "balance", prompt: "hello" }),
+  )
+  mod.registerAutoSelection(
+    {
+      ...okSelection("wanted-b", "auto-b"),
+      expires_at: Math.floor(now / 1000) + 86400,
+    },
+    createProbeCondition({ source: "auto", tier: "balance", prompt: "hello" }),
+  )
   let recovered = false
   let fusionAttempts = 0
   let recoveries = 0
@@ -2336,6 +2381,21 @@ test("Fusion 的失败种子各发送一次，随后共享十次补采并进入�
     if (advancing) now += 4_000
     return now
   })
+  const info = consola.info
+  spyOn(consola, "info").mockImplementation(
+    Object.assign(
+      (...args: Parameters<typeof info>) => {
+        if (
+          String(args[0]).startsWith(
+            "[auto-session] target discovery exhausted source=fusion ",
+          )
+        )
+          advancing = false
+        return info(...args)
+      },
+      { raw: info.raw },
+    ),
+  )
   const { fusionCalls } = installRouter(
     () => ({
       ...okSelection("wanted-model", "kept-auto"),
@@ -2347,10 +2407,49 @@ test("Fusion 的失败种子各发送一次，随后共享十次补采并进入�
     await mod.prewarmAutoSession({ sourceRoot: dir })
     await mod.whenProbeSchedulerIdle()
     expect(fusionCalls).toHaveLength(14)
-    const prompts = fusionCalls.map((call) => requestBody(call).prompt)
-    expect(new Set(prompts.slice(0, 4)).size).toBe(4)
-    expect(prompts.filter((prompt) => prompt === "hello")).toHaveLength(1)
-    advancing = false
+    const conditions = fusionCalls.map((call) => {
+      const raw = call.init?.body
+      if (typeof raw !== "string")
+        throw new Error("expected string request body")
+      const body = JSON.parse(raw) as {
+        prompt: string
+        plan_version: "1" | "2"
+        fusion_mode: "hydrafusion"
+      }
+      expect(body.fusion_mode).toBe("hydrafusion")
+      expect(["1", "2"]).toContain(body.plan_version)
+      return createProbeCondition({
+        source: "fusion",
+        planVersion: body.plan_version,
+        fusionMode: body.fusion_mode,
+        prompt: body.prompt,
+      })
+    })
+    const seeds = conditions.slice(0, 4)
+    expect(new Set(seeds.map((condition) => condition.prompt)).size).toBe(4)
+    expect(seeds.map((condition) => condition.planVersion)).toEqual([
+      "1",
+      "2",
+      "1",
+      "2",
+    ])
+    for (const seed of seeds)
+      expect(
+        conditions.filter((condition) => condition.id === seed.id),
+      ).toHaveLength(1)
+    const targets = conditions.slice(4)
+    expect(targets).toHaveLength(10)
+    expect(new Set(targets.map((condition) => condition.id)).size).toBe(10)
+    for (const planVersion of ["1", "2"])
+      expect(
+        targets.filter((condition) => condition.planVersion === planVersion),
+      ).toHaveLength(5)
+    expect(
+      conditions
+        .filter((condition) => condition.prompt === "hello")
+        .map((condition) => condition.planVersion),
+    ).toEqual(["1", "2"])
+    expect(advancing).toBe(false)
     const exhaustedAt = now
     now = exhaustedAt + 89_999
     expect(
@@ -2636,10 +2735,29 @@ test("Fusion round summaries exclude coverage acquired only by Auto", async () =
     mod.resumeAutoSessionDiscoveryAfterRotation()
     mod.registerAutoSelection(
       okSelection("auto-only-model", "AUTO_ONLY_PRIVATE"),
+      createProbeCondition({
+        source: "auto",
+        tier: "balance",
+        prompt: "hello",
+      }),
+    )
+    expect(fusionCalls).toHaveLength(0)
+    mod.registerAutoSelection(
+      okSelection("target-model", "AUTO_TARGET_PRIVATE"),
+      createProbeCondition({
+        source: "auto",
+        tier: "balance",
+        prompt: "hello",
+      }),
     )
     await waitFor(() => fusionCalls.length === 1, 1_000)
     mod.registerAutoSelection(
       okSelection("later-auto-model", "LATER_AUTO_PRIVATE"),
+      createProbeCondition({
+        source: "auto",
+        tier: "balance",
+        prompt: "hello",
+      }),
     )
     mod.stopProbeScheduler()
     gate.resolve(
@@ -2651,12 +2769,12 @@ test("Fusion round summaries exclude coverage acquired only by Auto", async () =
     expect(
       lines.filter((line) => line.includes("target discovery start")),
     ).toEqual([
-      '[auto-session] target discovery start source=fusion reason=miss missing=["target-model","auto-only-model"]',
+      '[auto-session] target discovery start source=fusion reason=miss missing=["target-model"]',
     ])
     expect(
       lines.filter((line) => line.includes("target discovery stopped")),
     ).toEqual([
-      '[auto-session] target discovery stopped source=fusion added=["target-model"] missing=["auto-only-model","later-auto-model"]',
+      '[auto-session] target discovery stopped source=fusion added=["target-model"] missing=[]',
     ])
     expect(lines.join("\n")).not.toContain("PRIVATE")
   } finally {

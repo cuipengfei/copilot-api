@@ -62,7 +62,11 @@ const patchedSetTimeout = (
   ms?: number,
   ...args: Array<unknown>
 ) => {
-  if (scenario === "hang" && ms === 60_000) {
+  if (
+    ["hang", "fusionHang", "intervalHang"].includes(scenario)
+    && ms === 60_000
+    && savedDeadlineCallback === null
+  ) {
     savedDeadlineCallback = () => callback(...args)
   }
   return realSetTimeout(callback, ms, ...args)
@@ -149,7 +153,10 @@ const handleAuto = async (init?: RequestInit): Promise<Response> => {
       }, 10)
     })
   }
-  const id = modelCycle[index % modelCycle.length] ?? "unknown-exp-model-9"
+  const id =
+    scenario === "autoInference" ? "gpt-5.1-codex" : (
+      (modelCycle[index % modelCycle.length] ?? "unknown-exp-model-9")
+    )
   // noEndpoints：上游合法模型省略 supported_endpoints，CLI 必须原样继续观测
   const selectedModel: {
     id: string
@@ -162,10 +169,152 @@ const handleAuto = async (init?: RequestInit): Promise<Response> => {
       "ws:/chat/completions",
     ]
   }
+  if (scenario === "intervalHang" && index === 0) {
+    realSetTimeout(() => {
+      const fire = savedDeadlineCallback
+      savedDeadlineCallback = null
+      fire?.()
+    }, 10)
+  }
+  if (typeof init?.body !== "string")
+    throw new Error("missing fixture JSON body")
+  const requestBody: unknown = JSON.parse(init.body)
+  if (
+    typeof requestBody !== "object"
+    || requestBody === null
+    || !("prompt" in requestBody)
+    || typeof requestBody.prompt !== "string"
+  )
+    throw new Error("invalid fixture prompt")
   return jsonResponse({
     selected_model: selectedModel,
     session_token: fixtureSessionToken,
     expires_at: Math.floor(Date.now() / 1000) + 3_600,
+    hydra_scores: {
+      code_gen: 0.5,
+      debugging: 0.25,
+      reasoning: 0.75,
+      tool_use: 0.125,
+    },
+    discounted_costs:
+      scenario === "badDiscountedCosts" ?
+        { diagnostic: requestBody.prompt }
+      : { [id]: 0.1 },
+  })
+}
+
+const fusionIndex = { current: 0 }
+const fusionModelCycle = [
+  "gpt-5.6-sol",
+  "gpt-6-sol",
+  "gpt-6-luna",
+  "gpt-5.6-sol",
+]
+
+const handleFusion = (body: unknown): Response => {
+  const index = fusionIndex.current++
+  if (["fusionHttp401", "fusionHttp403", "fusionHttp429"].includes(scenario)) {
+    return jsonResponse(
+      { error: `simulated ${scenario}` },
+      Number(scenario.slice(-3)),
+    )
+  }
+  if (scenario === "fusionInvalidJson") {
+    return new Response("{", {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    })
+  }
+  const planVersion =
+    typeof body === "object" && body !== null && "plan_version" in body ?
+      body.plan_version
+    : "2"
+  const modelId =
+    scenario === "fusionEmptyModel" ? ""
+    : scenario === "fusionMalformed" ? undefined
+    : (fusionModelCycle[index % fusionModelCycle.length] ?? "gpt-5.6-sol")
+  const steps =
+    planVersion === "1" ?
+      [
+        {
+          model_id:
+            scenario === "fusionMalformed" || scenario === "fusionEmptyModel" ?
+              modelId
+            : "gpt-6-luna",
+          role: "draft",
+        },
+        { model_id: "gpt-6.1-sol", role: "escalation" },
+        { model_id: "gpt-6-luna", role: "revision" },
+      ]
+    : [{ model_id: modelId, role: "generation" }]
+  return jsonResponse({
+    plan_version: planVersion,
+    fusion_pattern:
+      scenario === "fusionMalformed" ? "invalid"
+      : planVersion === "1" ? "cascade"
+      : "solo",
+    steps,
+    hydra_scores: {
+      code_gen: 0.595,
+      debugging: 0.024,
+      reasoning: 0.4154,
+      tool_use: 0.2693,
+    },
+    session: {
+      token: fixtureSessionToken,
+      expires_at: Math.floor(Date.now() / 1000) + 3_600,
+    },
+  })
+}
+
+const handleGeneration = (init?: RequestInit): Response => {
+  const withToken = new Headers(init?.headers).has("copilot-session-token")
+  if (withToken && scenario === "generation401") {
+    return jsonResponse({ error: "simulated generation401" }, 401)
+  }
+  if (withToken && scenario === "generation400") {
+    return jsonResponse({ error: "simulated generation400" }, 400)
+  }
+  const discount = scenario === "autoInference" ? 0.9 : 0.7
+  const rate = (base: number): number =>
+    Math.round(base * (withToken ? discount : 1))
+  const tokenDetails = [
+    {
+      token_type: "input",
+      batch_size: 1_000_000,
+      cost_per_batch: rate(200_000_000_000),
+      token_count: 11,
+    },
+    {
+      token_type: "cache_read",
+      batch_size: 1_000_000,
+      cost_per_batch: rate(10_000_000_000),
+      token_count: 0,
+    },
+    {
+      token_type: "cache_write",
+      batch_size: 1_000_000,
+      cost_per_batch: rate(250_000_000_000),
+      token_count: 0,
+    },
+    {
+      token_type: "output",
+      batch_size: 1_000_000,
+      cost_per_batch: rate(1_000_000_000_000),
+      token_count: 5,
+    },
+  ]
+  return jsonResponse({
+    copilot_usage: {
+      token_details: tokenDetails,
+      total_nano_aiu: tokenDetails.reduce(
+        (total, detail) =>
+          total
+          + (detail.token_count * detail.cost_per_batch) / detail.batch_size,
+        0,
+      ),
+    },
+    output: [],
   })
 }
 
@@ -212,6 +361,23 @@ const mockedFetch = async (
   }
   if (url === `${upstreamBase}/auto`) {
     const response = await handleAuto(init)
+    responses.push({ url, status: response.status })
+    return response
+  }
+  if (url === `${upstreamBase}/model/fusion`) {
+    const response =
+      scenario === "hang" ? await handleAuto(init) : handleFusion(body)
+    responses.push({ url, status: response.status })
+    return response
+  }
+  if (
+    [
+      `${upstreamBase}/responses`,
+      `${upstreamBase}/chat/completions`,
+      `${upstreamBase}/v1/messages`,
+    ].includes(url)
+  ) {
+    const response = handleGeneration(init)
     responses.push({ url, status: response.status })
     return response
   }

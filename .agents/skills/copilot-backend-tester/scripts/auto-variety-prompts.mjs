@@ -1,12 +1,12 @@
-// Fixed 12-case prompt set for `--variety` probing of POST /auto selection.
 // 固定 intelligence 输入优先；task 保留完整跨文件上下文，hard 仍采样真实 100 行源码。
 
 import { createHash } from "node:crypto"
 import { readFile } from "node:fs/promises"
 import { relative, resolve, sep } from "node:path"
-
 import {
+  createProbeCondition,
   getIntelligenceProbePrompt,
+  getProbeConditions,
   HARD_QUESTION,
   PREWARM_PROMPT,
   TARGET_CODE_PROMPT,
@@ -39,6 +39,7 @@ const TASK_CONTEXT_FILES = [
  * @property {string} prompt_sha256 prompt 的 SHA-256（hex），供跨轮追溯比对，不打印正文
  * @property {VarietySource=} source 仅 hard case 携带 100 行片段出处
  * @property {Array<VarietySource>=} sources 仅跨文件 task case 携带各完整文件出处
+ * @property {import("../../../../src/lib/auto-probe-prompts.ts").ProbeCondition} condition 完整共享探测条件
  */
 
 // 四个任务探测的固定任务措辞，保持稳定便于跨轮比较
@@ -107,14 +108,13 @@ const mustSample = async (sourceRoot) => {
 }
 
 /**
- * 返回固定 12 条探测条件；任何片段/文件缺失即抛错，绝不退回裸 HARD_QUESTION
- * 顺序：固定 intelligence 输入、task-correctness、prewarm/target/hard
- * 四档，其余三个 task 按既有稳定 id 收尾
- * @param {{sourceRoot?: string}=} options sourceRoot 缺省为 repo 的 src 绝对路径
- * @returns {Promise<Array<VarietyCase>>} 固定顺序的 12 条 case，每条带 prompt_sha256
+ * 返回同一数组中的共享固定条件与真实源码条件。任何片段或文件缺失即抛错。
+ * @param {{sourceRoot?: string, includeShared?: boolean}=} options sourceRoot 缺省为 repo 的 src 绝对路径
+ * @returns {Promise<Array<VarietyCase>>} 带完整 ProbeCondition 的探测 case
  */
 export const createVarietyCases = async ({
   sourceRoot = DEFAULT_SOURCE_ROOT,
+  includeShared = true,
 } = {}) => {
   const [hardSnippets, taskFiles] = await Promise.all([
     Promise.all(HARD_TIERS.map(() => mustSample(sourceRoot))),
@@ -130,6 +130,11 @@ export const createVarietyCases = async ({
   }))
   const withHash = (fields) => ({
     ...fields,
+    condition: createProbeCondition({
+      source: "auto",
+      tier: fields.tier,
+      prompt: fields.prompt,
+    }),
     prompt_sha256: createHash("sha256").update(fields.prompt).digest("hex"),
   })
   const taskCase = ({ id, tier, task }) =>
@@ -164,6 +169,17 @@ export const createVarietyCases = async ({
   }
   for (const taskDef of TASK_CASES) {
     cases.push(taskCase(taskDef))
+  }
+  if (!includeShared) return cases
+  const known = new Set(cases.map((entry) => entry.condition.id))
+  for (const condition of getProbeConditions()) {
+    if (condition.source !== "auto" || known.has(condition.id)) continue
+    known.add(condition.id)
+    cases.push(withHash({
+      id: `shared:${condition.id.slice(0, 12)}`,
+      tier: condition.tier,
+      prompt: condition.prompt,
+    }))
   }
   return cases
 }

@@ -1,3 +1,9 @@
+import { createHash } from "node:crypto"
+
+import type { AutoSelectionTier } from "~/services/copilot/get-auto-selection"
+
+import { getConfig } from "~/lib/config-store"
+
 import probeSample from "~/lib/auto-probe-sample.json"
 
 // 探测文本保持固定；intelligence 使用已验证的真实源码快照与相关题面变体。
@@ -23,9 +29,107 @@ const INTELLIGENCE_PROMPTS = [
 export const getIntelligenceProbePrompt = (attempt = 0): string =>
   INTELLIGENCE_PROMPTS[attempt % INTELLIGENCE_PROMPTS.length]
 
-export const getFusionProbePrompts = (): Array<string> => [
+const SEED_PROMPTS = [
   PREWARM_PROMPT,
   "Write a CSS rule to center a div using flexbox.",
   TARGET_CODE_PROMPT,
   getIntelligenceProbePrompt(),
 ]
+
+export type FusionPlanVersion = "1" | "2"
+
+export type ProbeConditionInput =
+  | { source: "auto"; tier: AutoSelectionTier; prompt: string }
+  | {
+      source: "fusion"
+      planVersion: FusionPlanVersion
+      fusionMode: "hydrafusion"
+      prompt: string
+    }
+
+export type ProbeCondition = ProbeConditionInput & { id: string }
+
+export function createProbeCondition(
+  input: Extract<ProbeConditionInput, { source: "auto" }>,
+): Extract<ProbeCondition, { source: "auto" }>
+export function createProbeCondition(
+  input: Extract<ProbeConditionInput, { source: "fusion" }>,
+): Extract<ProbeCondition, { source: "fusion" }>
+export function createProbeCondition(input: ProbeConditionInput): ProbeCondition
+export function createProbeCondition(
+  input: ProbeConditionInput,
+): ProbeCondition {
+  const parameters: ProbeConditionInput =
+    input.source === "auto" ?
+      { source: "auto", tier: input.tier, prompt: input.prompt }
+    : {
+        source: "fusion",
+        fusionMode: input.fusionMode,
+        planVersion: input.planVersion,
+        prompt: input.prompt,
+      }
+  const tuple =
+    parameters.source === "auto" ?
+      [parameters.source, parameters.tier, parameters.prompt]
+    : [
+        parameters.source,
+        parameters.fusionMode,
+        parameters.planVersion,
+        parameters.prompt,
+      ]
+  const id = createHash("sha256").update(JSON.stringify(tuple)).digest("hex")
+  return { ...parameters, id }
+}
+
+const VARIETY_PROMPTS = [
+  "Write a Python script that reads a CSV file, groups rows by customer, sums the amounts and writes a JSON report. Provide the full executable script and tests.",
+  "The production C++ process crashes in free() after a concurrent update. AddressSanitizer reports heap-use-after-free at reclaim_node, ThreadSanitizer reports a race between clear_hazard and delete_node, and gdb shows the hazard record still points to a freed node. Determine the exact causality and memory-model violation, reproduce the bug deterministically, prove a correct repair and implement exhaustive regression tests.",
+  "Implement a TypeScript LRU cache with positive capacity, get and set, O(1) operations, replacement of existing keys, and least-recently-used eviction. Include executable assertions for eviction and updates.",
+  "Prove that every finite integral domain is a field. Give a complete proof without writing code.",
+  "Write a complete implementation and tests for a Python function that adds two integers. Do not reason or explain. Generate only source code and tests.",
+]
+
+const SHARED_PROMPTS = [
+  ...new Set([...SEED_PROMPTS, ...INTELLIGENCE_PROMPTS, ...VARIETY_PROMPTS]),
+]
+const CONDITIONS = SHARED_PROMPTS.flatMap((prompt): Array<ProbeCondition> => [
+  ...(["efficiency", "balance", "intelligence", "fast"] as const).map((tier) =>
+    createProbeCondition({ source: "auto", tier, prompt }),
+  ),
+  ...(["1", "2"] as const).map((planVersion) =>
+    createProbeCondition({
+      source: "fusion",
+      planVersion,
+      fusionMode: "hydrafusion",
+      prompt,
+    }),
+  ),
+])
+
+export const getProbeConditions = (): Array<ProbeCondition> =>
+  CONDITIONS.map((condition) => ({ ...condition }))
+
+export const parseAutoDiscoveryModels = (discovery: unknown): Array<string> => {
+  if (discovery === undefined) return []
+  if (
+    discovery === null
+    || typeof discovery !== "object"
+    || Array.isArray(discovery)
+  ) {
+    throw new TypeError("autoDiscovery must be an object")
+  }
+  const models = "models" in discovery ? discovery.models : undefined
+  if (models === undefined) return []
+  if (
+    !Array.isArray(models)
+    || models.some(
+      (model: unknown) => typeof model !== "string" || !model.trim(),
+    )
+  ) {
+    throw new TypeError("autoDiscovery.models must contain nonempty model IDs")
+  }
+  return [...new Set<string>(models)]
+}
+
+export const getWantedModels = (): Array<string> =>
+  parseAutoDiscoveryModels(getConfig().autoDiscovery)

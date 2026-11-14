@@ -65,6 +65,7 @@ async function resolveGitHubToken(
 async function setupCopilotMode(
   githubToken: string,
   source: GitHubTokenSource,
+  instanceId: string,
 ): Promise<void> {
   state.githubTokenSource = source
   consola.info(
@@ -75,13 +76,16 @@ async function setupCopilotMode(
   )
 
   await setupCopilotRuntime(githubToken)
-  await prewarmAutoSession({ startupBudgetMs: STARTUP_PROBE_BUDGET_MS })
+  await prewarmAutoSession({
+    startupBudgetMs: STARTUP_PROBE_BUDGET_MS,
+    instanceId,
+  })
 
   const availableModels = state.models?.data ?? []
   consola.info(formatModelsLog(availableModels))
 }
 
-async function setupProviderMode(): Promise<void> {
+async function setupProviderMode(instanceId: string): Promise<void> {
   const enabledProviders = listEnabledProviders()
 
   if (enabledProviders.length > 0) {
@@ -100,7 +104,7 @@ async function setupProviderMode(): Promise<void> {
 
   if (state.githubToken && isGitHubCopilotEnabled()) {
     // The setup flow persisted the token with the credential store.
-    await setupCopilotMode(state.githubToken, "file")
+    await setupCopilotMode(state.githubToken, "file", instanceId)
     return
   }
 
@@ -160,9 +164,10 @@ export async function runServer(options: RunServerOptions): Promise<void> {
     await setupCopilotMode(
       resolvedGitHubToken.token,
       resolvedGitHubToken.source,
+      `listen-${options.port}`,
     )
   } else {
-    await setupProviderMode()
+    await setupProviderMode(`listen-${options.port}`)
   }
 
   consola.box(

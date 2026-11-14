@@ -17,6 +17,7 @@ export interface AutoSelectionResponse {
   session_token: string
   expires_at: number
   discounted_costs?: Record<string, number>
+  hydra_scores?: Record<string, number>
 }
 
 export const getAutoSelection = async (

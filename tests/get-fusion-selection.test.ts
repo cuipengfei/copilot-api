@@ -9,12 +9,6 @@ import {
 } from "bun:test"
 import consola from "consola"
 
-import {
-  getFusionProbePrompts,
-  getIntelligenceProbePrompt,
-  PREWARM_PROMPT,
-  TARGET_CODE_PROMPT,
-} from "~/lib/auto-probe-prompts"
 import * as configStore from "~/lib/config-store"
 import { HTTPError } from "~/lib/error"
 import { state } from "~/lib/state"
@@ -45,6 +39,21 @@ const soloResponse = () => ({
   steps: [{ model_id: "selected-model", role: "generation" }],
   session: { token: SESSION_TOKEN, expires_at: EXPIRES_AT },
 })
+const cascadeResponse = () => ({
+  fusion_pattern: "cascade",
+  plan_version: "1",
+  hydra_scores: {
+    code_gen: 0.595,
+    debugging: 0.024,
+    reasoning: 0.4154,
+    tool_use: 0.2693,
+  },
+  steps: [
+    { model_id: "mai-model", role: "draft" },
+    { model_id: "gpt-6.1-sol", role: "escalation" },
+  ],
+  session: { token: SESSION_TOKEN, expires_at: EXPIRES_AT },
+})
 const fetchMock = mock((_input: string | URL | Request, _init: RequestInit) =>
   Promise.resolve(Response.json(soloResponse())),
 )
@@ -55,11 +64,18 @@ const errorLog = Object.assign(
 const timeoutSignal = new AbortController().signal
 const timeoutMock = mock((_milliseconds: number) => timeoutSignal)
 
-const expectInvalidBody = async (body: unknown): Promise<void> => {
+const expectInvalidBody = async (
+  body: unknown,
+  options?: { planVersion: "1" | "2" },
+): Promise<void> => {
   fetchMock.mockResolvedValueOnce(Response.json(body))
+  const selection =
+    options === undefined ?
+      getFusionSelection(PROMPT)
+    : getFusionSelection(PROMPT, options)
   // Bun types declare rejection matchers as void; normalize their async result.
   await Promise.resolve(
-    expect(getFusionSelection(PROMPT)).rejects.toThrow(
+    expect(selection).rejects.toThrow(
       "Invalid Fusion selection response: invalid_body",
     ),
   )
@@ -107,7 +123,9 @@ describe("getFusionSelection", () => {
     await getAutoSelection(PROMPT, "balance")
 
     expect(result).toEqual({
-      modelId: "selected-model",
+      planVersion: "2",
+      fusionPattern: "solo",
+      steps: [{ modelId: "selected-model", role: "generation" }],
       sessionToken: SESSION_TOKEN,
       expiresAt: EXPIRES_AT,
     })
@@ -174,7 +192,7 @@ describe("getFusionSelection", () => {
     expect(headers.has("host")).toBe(false)
   })
 
-  test("ignores role, kind and unrecognized plan metadata without executing a plan", async () => {
+  test("preserves string roles and scores while ignoring unrecognized metadata without executing a plan", async () => {
     fetchMock.mockResolvedValueOnce(
       Response.json({
         ...soloResponse(),
@@ -186,19 +204,199 @@ describe("getFusionSelection", () => {
           },
         ],
         matched_rule: "untrusted-rule",
-        hydra_scores: { arbitrary: true },
+        hydra_scores: { code_gen: 0.595, reasoning: 0.4154 },
         policy_version: "unknown",
-        plan_version: "unknown",
       }),
     )
     expect(await getFusionSelection(PROMPT)).toEqual({
-      modelId: "actual-selected-model",
+      planVersion: "2",
+      fusionPattern: "solo",
+      steps: [{ modelId: "actual-selected-model", role: "unknown-role" }],
       sessionToken: SESSION_TOKEN,
       expiresAt: EXPIRES_AT,
+      scores: { code_gen: 0.595, reasoning: 0.4154 },
     })
     expect(fetchMock).toHaveBeenCalledTimes(1)
     expect(errorLog).not.toHaveBeenCalled()
   })
+
+  test("returns every v1 cascade step and the session token", async () => {
+    fetchMock.mockResolvedValueOnce(Response.json(cascadeResponse()))
+
+    const result = await getFusionSelection(PROMPT, { planVersion: "1" })
+
+    expect(result).toEqual({
+      planVersion: "1",
+      fusionPattern: "cascade",
+      steps: [
+        { modelId: "mai-model", role: "draft" },
+        { modelId: "gpt-6.1-sol", role: "escalation" },
+      ],
+      sessionToken: SESSION_TOKEN,
+      expiresAt: EXPIRES_AT,
+      scores: {
+        code_gen: 0.595,
+        debugging: 0.024,
+        reasoning: 0.4154,
+        tool_use: 0.2693,
+      },
+    })
+    const [, init] = fetchMock.mock.calls[0]
+    expect(JSON.parse(init?.body as string)).toEqual({
+      prompt: PROMPT,
+      fusion_mode: "hydrafusion",
+      plan_version: "1",
+    })
+  })
+
+  test("keeps repeated Luna models in distinct critique plan roles", async () => {
+    fetchMock.mockResolvedValueOnce(
+      Response.json({
+        ...cascadeResponse(),
+        fusion_pattern: "critic",
+        steps: [
+          { model_id: "gpt-6-luna", role: "draft" },
+          { model_id: "gpt-6-luna", role: "critique" },
+        ],
+      }),
+    )
+
+    expect(await getFusionSelection(PROMPT, { planVersion: "1" })).toEqual({
+      planVersion: "1",
+      fusionPattern: "critic",
+      steps: [
+        { modelId: "gpt-6-luna", role: "draft" },
+        { modelId: "gpt-6-luna", role: "critique" },
+      ],
+      sessionToken: SESSION_TOKEN,
+      expiresAt: EXPIRES_AT,
+      scores: {
+        code_gen: 0.595,
+        debugging: 0.024,
+        reasoning: 0.4154,
+        tool_use: 0.2693,
+      },
+    })
+  })
+
+  test("accepts v1 without a response version echo", async () => {
+    fetchMock.mockResolvedValueOnce(
+      Response.json({ ...cascadeResponse(), plan_version: undefined }),
+    )
+
+    expect(await getFusionSelection(PROMPT, { planVersion: "1" })).toEqual({
+      planVersion: "1",
+      fusionPattern: "cascade",
+      steps: [
+        { modelId: "mai-model", role: "draft" },
+        { modelId: "gpt-6.1-sol", role: "escalation" },
+      ],
+      sessionToken: SESSION_TOKEN,
+      expiresAt: EXPIRES_AT,
+      scores: {
+        code_gen: 0.595,
+        debugging: 0.024,
+        reasoning: 0.4154,
+        tool_use: 0.2693,
+      },
+    })
+  })
+
+  test.each([null, "2", "untrusted-plan"])(
+    "rejects an invalid v1 plan version %p",
+    async (plan_version) => {
+      await expectInvalidBody(
+        { ...cascadeResponse(), plan_version },
+        { planVersion: "1" },
+      )
+    },
+  )
+
+  test.each([null, "1", "untrusted-plan"])(
+    "rejects an invalid v2 plan version %p",
+    async (plan_version) => {
+      await expectInvalidBody({ ...soloResponse(), plan_version })
+    },
+  )
+
+  test.each(["1", "2"] as const)(
+    "accepts a single role-free solo step for version %s",
+    async (planVersion) => {
+      fetchMock.mockResolvedValueOnce(
+        Response.json({
+          ...soloResponse(),
+          plan_version: planVersion,
+          steps: [{ model_id: "selected-model" }],
+        }),
+      )
+
+      expect(await getFusionSelection(PROMPT, { planVersion })).toEqual({
+        planVersion,
+        fusionPattern: "solo",
+        steps: [{ modelId: "selected-model" }],
+        sessionToken: SESSION_TOKEN,
+        expiresAt: EXPIRES_AT,
+      })
+    },
+  )
+
+  test.each([undefined, null, "", " \n\t", 42])(
+    "rejects an invalid v1 pattern %p",
+    async (fusion_pattern) => {
+      await expectInvalidBody(
+        { ...cascadeResponse(), fusion_pattern },
+        { planVersion: "1" },
+      )
+    },
+  )
+
+  test.each([
+    { steps: [] },
+    { steps: { model_id: "first" } },
+    { steps: [null] },
+    { steps: [{ model_id: "first" }, { model_id: " \n\t" }] },
+    { steps: [{ model_id: "first" }, { model_id: "second", role: 42 }] },
+  ])("validates every v1 model step: $steps", async ({ steps }) => {
+    await expectInvalidBody(
+      { ...cascadeResponse(), steps },
+      { planVersion: "1" },
+    )
+  })
+
+  test.each([null, 42, { arbitrary: true }])(
+    "rejects a non-string role %p",
+    async (role) => {
+      await expectInvalidBody({
+        ...soloResponse(),
+        steps: [{ model_id: "selected-model", role }],
+      })
+    },
+  )
+
+  test.each([
+    { hydra_scores: null },
+    { hydra_scores: [] },
+    { hydra_scores: { code_gen: "0.595" } },
+    { hydra_scores: { arbitrary: true } },
+  ])(
+    "rejects non-numeric score metadata $hydra_scores",
+    async ({ hydra_scores }) => {
+      await expectInvalidBody({ ...soloResponse(), hydra_scores })
+    },
+  )
+
+  test.each([undefined, null, "", " \n\t", 42])(
+    "rejects an invalid v1 session token %p",
+    async (token) => {
+      await expectInvalidBody(
+        {
+          ...cascadeResponse(),
+          session: { token, expires_at: EXPIRES_AT },
+        },
+        { planVersion: "1" },
+      )
+    },
+  )
 
   test.each([{ body: null }, { body: [] }, { body: SESSION_TOKEN }])(
     "rejects a non-object body $body",
@@ -361,16 +559,4 @@ describe("getFusionSelection", () => {
     )
     expect(errorLog).not.toHaveBeenCalled()
   })
-})
-
-test("Fusion seeds reuse the existing hello, code and intelligence prompts verbatim", () => {
-  expect(getFusionProbePrompts()).toEqual([
-    PREWARM_PROMPT,
-    "Write a CSS rule to center a div using flexbox.",
-    TARGET_CODE_PROMPT,
-    getIntelligenceProbePrompt(),
-  ])
-  const first = getFusionProbePrompts()
-  first[0] = "changed by caller"
-  expect(getFusionProbePrompts()[0]).toBe(PREWARM_PROMPT)
 })

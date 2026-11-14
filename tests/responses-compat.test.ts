@@ -7,6 +7,7 @@ import {
   expect,
   test,
 } from "bun:test"
+import { createProbeCondition } from "../src/lib/auto-probe-prompts"
 import type { Server } from "bun"
 
 import type { ResponsesPayload } from "../src/lib/types/responses"
@@ -641,21 +642,38 @@ describe("discount downgrade and reasoning replay stay independent", () => {
       return Promise.reject(new Error("unexpected upstream URL"))
     }) as typeof fetch
     expect(
-      registerAutoSelection({
-        selected_model: {
-          id: "gpt-test",
-          supported_endpoints: ["/responses"],
+      registerAutoSelection(
+        {
+          selected_model: {
+            id: "gpt-test",
+            supported_endpoints: ["/responses"],
+          },
+          session_token: "auto-replay-token",
+          expires_at: Math.floor(Date.now() / 1000) + 3600,
         },
-        session_token: "auto-replay-token",
-        expires_at: Math.floor(Date.now() / 1000) + 3600,
-      }),
+        createProbeCondition({
+          source: "auto",
+          tier: "balance",
+          prompt: "hello",
+        }),
+      ),
     ).toBe(true)
     expect(
-      registerFusionSelection({
-        modelId: "gpt-test",
-        sessionToken: "fusion-replay-token",
-        expiresAt: Math.floor(Date.now() / 1000) + 3600,
-      }),
+      registerFusionSelection(
+        {
+          planVersion: "2" as const,
+          fusionPattern: "solo",
+          steps: [{ modelId: "gpt-test" }],
+          sessionToken: "fusion-replay-token",
+          expiresAt: Math.floor(Date.now() / 1000) + 3600,
+        },
+        createProbeCondition({
+          source: "fusion",
+          planVersion: "2",
+          fusionMode: "hydrafusion",
+          prompt: "hello",
+        }),
+      ),
     ).toBe(true)
   })
 

@@ -16,6 +16,11 @@ const GITHUB_TOKEN_PATH = path.join(
 const CODEX_CREDENTIAL_PATH = path.join(APP_DIR, "codex_credentials.json")
 const XAI_CREDENTIAL_PATH = path.join(APP_DIR, "xai_credentials.json")
 const CONFIG_PATH = path.join(APP_DIR, "config.json")
+const PROBE_HISTORY_DIR = path.join(
+  APP_DIR,
+  AUTH_APP,
+  ENTERPRISE_PREFIX + "probe-history",
+)
 
 export const PATHS = {
   APP_DIR,
@@ -23,6 +28,7 @@ export const PATHS = {
   CODEX_CREDENTIAL_PATH,
   XAI_CREDENTIAL_PATH,
   CONFIG_PATH,
+  PROBE_HISTORY_DIR,
 }
 
 export async function ensurePaths(): Promise<void> {

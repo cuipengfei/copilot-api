@@ -21,6 +21,7 @@ import {
   stopProbeScheduler,
   whenProbeSchedulerIdle,
 } from "../src/lib/auto-session"
+import { createProbeCondition } from "../src/lib/auto-probe-prompts"
 import { getConfig } from "../src/lib/config-store"
 import { state } from "../src/lib/state"
 import {
@@ -67,16 +68,35 @@ const autoSelection = (
 })
 
 const registerAuto = (model = MODEL, token = "auto-token"): void => {
-  expect(registerAutoSelection(autoSelection(model, token))).toBe(true)
+  expect(
+    registerAutoSelection(
+      autoSelection(model, token),
+      createProbeCondition({
+        source: "auto",
+        tier: "efficiency",
+        prompt: "hello",
+      }),
+    ),
+  ).toBe(true)
 }
 
 const registerFusion = (token = "fusion-token"): void => {
   expect(
-    registerFusionSelection({
-      modelId: MODEL,
-      sessionToken: token,
-      expiresAt: Math.floor(Date.now() / 1000) + 3600,
-    }),
+    registerFusionSelection(
+      {
+        planVersion: "2",
+        fusionPattern: "solo",
+        steps: [{ modelId: MODEL }],
+        sessionToken: token,
+        expiresAt: Math.floor(Date.now() / 1000) + 3600,
+      },
+      createProbeCondition({
+        source: "fusion",
+        planVersion: "2",
+        fusionMode: "hydrafusion",
+        prompt: "hello",
+      }),
+    ),
   ).toBe(true)
 }
 
@@ -177,7 +197,12 @@ describe("finite source-based discount rejection chain", () => {
     generate = () =>
       sent.length < 3 ?
         Response.json(
-          { error: { message: SENTINEL, detail: "BELONG" } },
+          {
+            error: {
+              message: `Invalid session token ${SENTINEL}`,
+              detail: "BELONG",
+            },
+          },
           { status: sent.length === 1 ? 401 : 400 },
         )
       : Response.json({ id: "full-price-success" })
@@ -263,7 +288,10 @@ describe("finite source-based discount rejection chain", () => {
     const retry = mock(() =>
       Promise.resolve(
         headers["Copilot-Session-Token"] ?
-          new Response("rejected", { status: 400 })
+          Response.json(
+            { error: { message: "Invalid session token" } },
+            { status: 400 },
+          )
         : final,
       ),
     )
@@ -625,6 +653,33 @@ describe("actual Authorization snapshot and candidate applicability", () => {
 })
 
 describe("non-downgrade boundaries", () => {
+  test.each([
+    {
+      error: {
+        message: "max_output_tokens must be positive",
+        code: "invalid_request",
+      },
+    },
+    { error: { message: "Input exceeds the model context limit" } },
+    { error: { message: "invalid request body" } },
+  ])(
+    "ordinary HTTP 400 preserves the selected pairing and sends once",
+    async (body) => {
+      registerAuto()
+      registerFusion()
+      const headers = headersFor()
+      await attachAutoSessionToken(headers, MODEL, "/responses")
+      generate = () => Response.json(body, { status: 400 })
+
+      const response = await send(headers)
+
+      expect(response.status).toBe(400)
+      expect(await response.json()).toEqual(body)
+      expect(sentTokens()).toEqual(["fusion-token"])
+      expect((await selectionFor())?.sessionToken).toBe("fusion-token")
+    },
+  )
+
   test.each([403, 413, 429, 500, 503])(
     "HTTP %i is returned without source invalidation or replay",
     async (status) => {

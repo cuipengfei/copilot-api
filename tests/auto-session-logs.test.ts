@@ -7,6 +7,7 @@ import {
   spyOn,
   test,
 } from "bun:test"
+import { createProbeCondition } from "../src/lib/auto-probe-prompts"
 import consola from "consola"
 
 import type * as AutoSessionModule from "../src/lib/auto-session"
@@ -163,7 +164,14 @@ describe("auto-session logging", () => {
   test("first candidates and the Auto to Fusion upgrade are visible without credentials", async () => {
     const infoSpy = spyOn(consola, "info")
     expect(
-      sessions.registerAutoSelection(selection("wanted-model", "AUTO_PRIVATE")),
+      sessions.registerAutoSelection(
+        selection("wanted-model", "AUTO_PRIVATE"),
+        createProbeCondition({
+          source: "auto",
+          tier: "balance",
+          prompt: "hello",
+        }),
+      ),
     ).toBe(true)
     expectFields(messages(infoSpy), [
       "acquired",
@@ -174,11 +182,21 @@ describe("auto-session logging", () => {
 
     infoSpy.mockClear()
     expect(
-      sessions.registerFusionSelection({
-        modelId: "extra-model",
-        sessionToken: "FIRST_FUSION_PRIVATE",
-        expiresAt: Math.floor(Date.now() / 1000) + 3600,
-      }),
+      sessions.registerFusionSelection(
+        {
+          planVersion: "2" as const,
+          fusionPattern: "solo",
+          steps: [{ modelId: "extra-model" }],
+          sessionToken: "FIRST_FUSION_PRIVATE",
+          expiresAt: Math.floor(Date.now() / 1000) + 3600,
+        },
+        createProbeCondition({
+          source: "fusion",
+          planVersion: "2",
+          fusionMode: "hydrafusion",
+          prompt: "hello",
+        }),
+      ),
     ).toBe(true)
     expectFields(messages(infoSpy), [
       "acquired",
@@ -187,11 +205,21 @@ describe("auto-session logging", () => {
       "expected_discount=30%",
     ])
     expect(
-      sessions.registerFusionSelection({
-        modelId: "wanted-model",
-        sessionToken: "FUSION_PRIVATE",
-        expiresAt: Math.floor(Date.now() / 1000) + 3600,
-      }),
+      sessions.registerFusionSelection(
+        {
+          planVersion: "2" as const,
+          fusionPattern: "solo",
+          steps: [{ modelId: "wanted-model" }],
+          sessionToken: "FUSION_PRIVATE",
+          expiresAt: Math.floor(Date.now() / 1000) + 3600,
+        },
+        createProbeCondition({
+          source: "fusion",
+          planVersion: "2",
+          fusionMode: "hydrafusion",
+          prompt: "hello",
+        }),
+      ),
     ).toBe(true)
     expectFields(messages(infoSpy), [
       "upgraded",
@@ -230,15 +258,32 @@ describe("auto-session logging", () => {
       const clearTimerSpy = spyOn(globalThis, "clearTimeout")
       const register = (token: string, lifetime: number): boolean =>
         source === "auto" ?
-          sessions.registerAutoSelection({
-            ...selection("wanted-model", token),
-            expires_at: Math.floor(now / 1000) + lifetime,
-          })
-        : sessions.registerFusionSelection({
-            modelId: "wanted-model",
-            sessionToken: token,
-            expiresAt: Math.floor(now / 1000) + lifetime,
-          })
+          sessions.registerAutoSelection(
+            {
+              ...selection("wanted-model", token),
+              expires_at: Math.floor(now / 1000) + lifetime,
+            },
+            createProbeCondition({
+              source: "auto",
+              tier: "balance",
+              prompt: "hello",
+            }),
+          )
+        : sessions.registerFusionSelection(
+            {
+              planVersion: "2" as const,
+              fusionPattern: "solo",
+              steps: [{ modelId: "wanted-model" }],
+              sessionToken: token,
+              expiresAt: Math.floor(now / 1000) + lifetime,
+            },
+            createProbeCondition({
+              source: "fusion",
+              planVersion: "2",
+              fusionMode: "hydrafusion",
+              prompt: "hello",
+            }),
+          )
       expect(register("FIRST_PRIVATE_TOKEN", 600)).toBe(true)
       expect(timerSpy.mock.calls.at(-1)?.[1]).toBe(300_000)
       const originalTimer = timerSpy.mock.results.at(-1)?.value
@@ -292,6 +337,11 @@ describe("auto-session logging", () => {
   test("explicit refresh remains visible and selects the renewed token", async () => {
     sessions.registerAutoSelection(
       selection("extra-model", "FIRST_PRIVATE_TOKEN"),
+      createProbeCondition({
+        source: "auto",
+        tier: "balance",
+        prompt: "hello",
+      }),
     )
     const infoSpy = spyOn(consola, "info")
     queue.push(selection("extra-model", "SECOND_PRIVATE_TOKEN"))
@@ -319,10 +369,17 @@ describe("auto-session logging", () => {
     let now = Math.floor(Date.now() / 1000) * 1000
     spyOn(Date, "now").mockImplementation(() => now)
     const timerSpy = spyOn(globalThis, "setTimeout")
-    sessions.registerAutoSelection({
-      ...selection("wanted-model", "TIMER_OLD_PRIVATE"),
-      expires_at: Math.floor(now / 1000) + 600,
-    })
+    sessions.registerAutoSelection(
+      {
+        ...selection("wanted-model", "TIMER_OLD_PRIVATE"),
+        expires_at: Math.floor(now / 1000) + 600,
+      },
+      createProbeCondition({
+        source: "auto",
+        tier: "balance",
+        prompt: "hello",
+      }),
+    )
     const callback = timerSpy.mock.calls.find(
       (call) => call[1] === 300_000,
     )?.[0]
@@ -367,10 +424,17 @@ describe("auto-session logging", () => {
     async (reason) => {
       let now = Math.floor(Date.now() / 1000) * 1000
       spyOn(Date, "now").mockImplementation(() => now)
-      sessions.registerAutoSelection({
-        ...selection("wanted-model", "OLD_RECOVERY_PRIVATE"),
-        expires_at: Math.floor(now / 1000) + 600,
-      })
+      sessions.registerAutoSelection(
+        {
+          ...selection("wanted-model", "OLD_RECOVERY_PRIVATE"),
+          expires_at: Math.floor(now / 1000) + 600,
+        },
+        createProbeCondition({
+          source: "auto",
+          tier: "balance",
+          prompt: "hello",
+        }),
+      )
       const infoSpy = spyOn(consola, "info")
       queue.push(selection("wanted-model", "NEW_RECOVERY_PRIVATE"))
       if (reason === "expired") {
@@ -415,12 +479,27 @@ describe("auto-session logging", () => {
     const now = Date.now()
     sessions.registerAutoSelection(
       selection("wanted-model", "AUTO_EXPIRY_PRIVATE"),
+      createProbeCondition({
+        source: "auto",
+        tier: "balance",
+        prompt: "hello",
+      }),
     )
-    sessions.registerFusionSelection({
-      modelId: "wanted-model",
-      sessionToken: "FUSION_EXPIRY_PRIVATE",
-      expiresAt: Math.floor(now / 1000) + 600,
-    })
+    sessions.registerFusionSelection(
+      {
+        planVersion: "2" as const,
+        fusionPattern: "solo",
+        steps: [{ modelId: "wanted-model" }],
+        sessionToken: "FUSION_EXPIRY_PRIVATE",
+        expiresAt: Math.floor(now / 1000) + 600,
+      },
+      createProbeCondition({
+        source: "fusion",
+        planVersion: "2",
+        fusionMode: "hydrafusion",
+        prompt: "hello",
+      }),
+    )
     const infoSpy = spyOn(consola, "info")
     spyOn(Date, "now").mockReturnValue(now + 601_000)
     expect(
@@ -456,9 +535,23 @@ describe("auto-session logging", () => {
       (character) =>
         `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`,
     )
-    sessions.registerAutoSelection(selection(model, "CONTROL_PRIVATE_TOKEN"))
+    sessions.registerAutoSelection(
+      selection(model, "CONTROL_PRIVATE_TOKEN"),
+      createProbeCondition({
+        source: "auto",
+        tier: "balance",
+        prompt: "hello",
+      }),
+    )
     await sessions.getAutoSessionForModel({ model, endpoint: "/responses" })
-    sessions.registerAutoSelection(selection(model, "RENEWED_PRIVATE_TOKEN"))
+    sessions.registerAutoSelection(
+      selection(model, "RENEWED_PRIVATE_TOKEN"),
+      createProbeCondition({
+        source: "auto",
+        tier: "balance",
+        prompt: "hello",
+      }),
+    )
     expect(
       await sessions.getAutoSessionForModel({
         model: `${model}-miss`,
@@ -555,6 +648,11 @@ describe("auto-session logging", () => {
       const infoSpy = spyOn(consola, "info")
       sessions.registerAutoSelection(
         selection("gpt-5.3-codex", "COLOR_PRIVATE_TOKEN"),
+        createProbeCondition({
+          source: "auto",
+          tier: "balance",
+          prompt: "hello",
+        }),
       )
       await sessions.getAutoSessionForModel({
         model: "gpt-5.3-codex",

@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, expect, mock, spyOn, test } from "bun:test"
+import { createProbeCondition } from "../src/lib/auto-probe-prompts"
 import consola from "consola"
 import fs from "node:fs"
 import os from "node:os"
@@ -414,14 +415,21 @@ test("Responses websocket handshake omits Copilot-Session-Token even with a vali
   const infoSpy = spyOn(consola, "info")
   const colorSpy = spyOn(logger, "shouldUseColor").mockReturnValue(false)
   try {
-    registerAutoSelection({
-      selected_model: {
-        id: "gpt-test",
-        supported_endpoints: ["/responses", "ws:/responses"],
+    registerAutoSelection(
+      {
+        selected_model: {
+          id: "gpt-test",
+          supported_endpoints: ["/responses", "ws:/responses"],
+        },
+        session_token: "ws-should-not-attach",
+        expires_at: Math.floor(Date.now() / 1000) + 3600,
       },
-      session_token: "ws-should-not-attach",
-      expires_at: Math.floor(Date.now() / 1000) + 3600,
-    })
+      createProbeCondition({
+        source: "auto",
+        tier: "balance",
+        prompt: "hello",
+      }),
+    )
     expect(
       (
         await getAutoSessionForModel({

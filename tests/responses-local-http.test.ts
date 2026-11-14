@@ -8,6 +8,7 @@ import {
   expect,
   test,
 } from "bun:test"
+import { createProbeCondition } from "../src/lib/auto-probe-prompts"
 import {
   events as sseEvents,
   type ServerSentEventMessage,
@@ -172,19 +173,36 @@ const textPayload = (overrides: Record<string, unknown> = {}) => ({
 const registerDiscount = (source: "fusion" | "auto" | "none"): void => {
   if (source === "none") return
   expect(
-    registerAutoSelection({
-      selected_model: { id: MODEL, supported_endpoints: ["/responses"] },
-      session_token: "local-auto-session",
-      expires_at: Math.floor(Date.now() / 1000) + 3600,
-    }),
+    registerAutoSelection(
+      {
+        selected_model: { id: MODEL, supported_endpoints: ["/responses"] },
+        session_token: "local-auto-session",
+        expires_at: Math.floor(Date.now() / 1000) + 3600,
+      },
+      createProbeCondition({
+        source: "auto",
+        tier: "balance",
+        prompt: "hello",
+      }),
+    ),
   ).toBe(true)
   if (source === "fusion") {
     expect(
-      registerFusionSelection({
-        modelId: MODEL,
-        sessionToken: "local-fusion-session",
-        expiresAt: Math.floor(Date.now() / 1000) + 3600,
-      }),
+      registerFusionSelection(
+        {
+          planVersion: "2" as const,
+          fusionPattern: "solo",
+          steps: [{ modelId: MODEL }],
+          sessionToken: "local-fusion-session",
+          expiresAt: Math.floor(Date.now() / 1000) + 3600,
+        },
+        createProbeCondition({
+          source: "fusion",
+          planVersion: "2",
+          fusionMode: "hydrafusion",
+          prompt: "hello",
+        }),
+      ),
     ).toBe(true)
   }
 }

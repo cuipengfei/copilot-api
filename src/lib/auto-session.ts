@@ -1,5 +1,7 @@
 import consola from "consola"
 import { readFileSync } from "node:fs"
+import { mkdtemp, rm } from "node:fs/promises"
+import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { setTimeout as delay } from "node:timers/promises"
 
@@ -14,15 +16,23 @@ import {
 } from "~/services/copilot/get-fusion-selection"
 
 import {
-  getFusionProbePrompts,
+  createProbeCondition,
+  getProbeConditions,
+  getWantedModels,
+  type ProbeCondition,
   getIntelligenceProbePrompt,
   HARD_QUESTION,
   PREWARM_PROMPT,
-  TARGET_CODE_PROMPT,
 } from "~/lib/auto-probe-prompts"
-import { getConfig } from "./config-store"
+import {
+  getRankedProbeConditions,
+  openProbeHistory,
+  type ProbeHistoryStore,
+  type ProbeObservation,
+} from "~/lib/auto-probe-history"
 import { HTTPError } from "./error"
 import { colorizeModel, shouldUseColor } from "./logger"
+import { registerProcessCleanup } from "./process-cleanup"
 import { state } from "./state"
 
 export type AutoSessionSource = "fusion" | "auto"
@@ -34,9 +44,7 @@ export interface AutoSessionSelection {
 }
 
 type ProbeKind = "easy" | "hard" | "target"
-type ProbeSource =
-  | { source: "auto"; tier: AutoSelectionTier; kind: ProbeKind; prompt: string }
-  | { source: "fusion"; point: string; prompt: string }
+type ProbeSource = ProbeCondition
 
 interface DiscountPairing extends AutoSessionSelection {
   expiresAt: number
@@ -46,7 +54,7 @@ interface DiscountPairing extends AutoSessionSelection {
   probe: ProbeSource
 }
 
-interface FusionRenewal {
+interface SourceRenewal {
   probe: ProbeSource
   fromRefreshTimer: boolean
 }
@@ -100,10 +108,7 @@ let rejectedTokenTimer: NodeJS.Timeout | undefined
 const pairingKey = (model: string, source: AutoSessionSource): string =>
   JSON.stringify([source, model])
 
-const probeKey = (probe: ProbeSource): string =>
-  probe.source === "auto" ?
-    `auto:${probe.tier}:${probe.kind}`
-  : `fusion:${probe.point}`
+const probeKey = (probe: ProbeSource): string => probe.id
 
 const rejectedTokenKey = (
   model: string,
@@ -211,7 +216,7 @@ const formatAutoSessionModel = (model: string): string => {
   return shouldUseColor() ? colorizeModel(display) : display
 }
 
-const discoverySnapshot = (wanted = getConfiguredTargetModels()): string => {
+const discoverySnapshot = (wanted = getWantedModels()): string => {
   syncAuthEpoch()
   const obtained = [...pairings.keys()].filter(isModelAutoCovered)
   const fusionObtained = obtained.filter((model) =>
@@ -223,19 +228,15 @@ const discoverySnapshot = (wanted = getConfiguredTargetModels()): string => {
   return `obtained=${JSON.stringify(obtained)} missing=${JSON.stringify(getMissingAutoDiscoveryModels(wanted))} fusion_obtained=${JSON.stringify(fusionObtained)} auto_obtained=${JSON.stringify(autoObtained)} fusion_missing=${JSON.stringify(getMissingSourceModels(wanted, "fusion"))} auto_missing=${JSON.stringify(getMissingSourceModels(wanted, "auto"))}`
 }
 
-const logAutoDiscovery = (
-  phase: string,
-  wanted = getConfiguredTargetModels(),
-): void => {
+const logAutoDiscovery = (phase: string, wanted = getWantedModels()): void => {
   consola.info(`[auto-session] ${phase} ${discoverySnapshot(wanted)}`)
 }
 
-const PREWARM_AUTO_PROBE: ProbeSource = {
+const PREWARM_AUTO_PROBE = createProbeCondition({
   source: "auto",
   tier: PREWARM_TIER,
-  kind: "easy",
   prompt: PREWARM_PROMPT,
-}
+})
 
 const registerPairing = (
   model: string,
@@ -279,7 +280,9 @@ const registerPairing = (
   const refreshed =
     previousSource !== undefined && isPairingValid(model, previousSource)
   const gainsAutoCoverage =
-    pairing.source === "auto" && !isSourceCovered(model, "auto")
+    pairing.source === "auto"
+    && getWantedModels().includes(model)
+    && !isSourceCovered(model, "auto")
   const candidate: DiscountPairing = {
     ...pairing,
     expectedDiscount: EXPECTED_DISCOUNT[pairing.source],
@@ -291,7 +294,7 @@ const registerPairing = (
   pairings.set(model, slots)
   committedSequences.set(key, request.sequence)
   pairingSources.set(key, pairing.probe)
-  lastSuccessPrompts.set(probeKey(pairing.probe), pairing.probe)
+  lastSuccessPrompts.set(key, pairing.probe)
   scheduleRefresh(model, candidate, fromRefreshTimer)
   wakeTargetWaiters(model, request.token)
   const event =
@@ -338,40 +341,56 @@ const registerAutoResponse = (
 
 export const registerAutoSelection = (
   selection: AutoSelectionResponse,
-): boolean =>
-  registerAutoResponse(selection, PREWARM_AUTO_PROBE, beginProbeRequest())
+  probe: Extract<ProbeCondition, { source: "auto" }>,
+): boolean => {
+  const request = beginProbeRequest()
+  const accepted = registerAutoResponse(selection, probe, request)
+  recordSelection(
+    probe,
+    request,
+    selection,
+    accepted ? [selection.selected_model.id] : [],
+  )
+  return accepted
+}
 
 const registerFusionResponse = (
   selection: FusionSelectionResponse,
   probe: ProbeSource,
   request: ProbeRequest,
   fromRefreshTimer = false,
-): boolean =>
-  registerPairing(
-    selection.modelId,
-    {
-      sessionToken: selection.sessionToken,
-      expiresAt: selection.expiresAt,
-      supportedEndpoints: ["/responses"],
-      source: "fusion",
-      probe,
-    },
-    request,
-    fromRefreshTimer,
-  )
+): Array<string> => {
+  const paired: Array<string> = []
+  const modelIds = new Set(selection.steps.map((step) => step.modelId))
+  for (const model of modelIds) {
+    if (
+      registerPairing(
+        model,
+        {
+          sessionToken: selection.sessionToken,
+          expiresAt: selection.expiresAt,
+          supportedEndpoints: ["/responses"],
+          source: "fusion",
+          probe,
+        },
+        request,
+        fromRefreshTimer,
+      )
+    )
+      paired.push(model)
+  }
+  return paired
+}
 
 export const registerFusionSelection = (
   selection: FusionSelectionResponse,
-): boolean =>
-  registerFusionResponse(
-    selection,
-    {
-      source: "fusion",
-      point: "seed:0",
-      prompt: getFusionProbePrompts()[0],
-    },
-    beginProbeRequest(),
-  )
+  probe: Extract<ProbeCondition, { source: "fusion" }>,
+): boolean => {
+  const request = beginProbeRequest()
+  const paired = registerFusionResponse(selection, probe, request)
+  recordSelection(probe, request, selection, paired)
+  return paired.length > 0
+}
 
 const explicitRefreshes = new Set<Promise<void>>()
 export const refreshAutoSession = (): Promise<void> => {
@@ -383,6 +402,9 @@ export const refreshAutoSession = (): Promise<void> => {
       if (!registerAutoResponse(selection, PREWARM_AUTO_PROBE, request)) {
         throw new Error("invalid auto selection response")
       }
+      recordSelection(PREWARM_AUTO_PROBE, request, selection, [
+        selection.selected_model.id,
+      ])
       return
     }
   })()
@@ -403,8 +425,12 @@ export const invalidateAutoSession = (): void => {
   invalidationBarriers.clear()
   clearRejectedTokens()
   clearAllRefreshTimers()
-  fusionRenewalModels.clear()
-  for (const source of SOURCES) runtimes[source].cooldownUntil = 0
+  for (const source of SOURCES) {
+    renewalModels[source].clear()
+    runtimes[source].cooldownUntil = 0
+    clearTimeout(runtimes[source].cooldownTimer)
+    runtimes[source].cooldownTimer = undefined
+  }
   // Clearing a cache is not an identity change and must not interrupt backoff.
   for (const source of SOURCES) wakeAll(runtimes[source].haltWaiters)
   wakeAllTargetWaiters()
@@ -450,6 +476,9 @@ export const resumeAutoSessionDiscoveryAfterRotation = (): void => {
   discoveryToken = state.copilotToken
   for (const source of SOURCES) {
     runtimes[source].retryUntil = 0
+    runtimes[source].cooldownUntil = 0
+    clearTimeout(runtimes[source].cooldownTimer)
+    runtimes[source].cooldownTimer = undefined
     wakeAll(runtimes[source].haltWaiters)
     wakeAll(runtimes[source].sleepWaiters)
   }
@@ -458,15 +487,12 @@ export const resumeAutoSessionDiscoveryAfterRotation = (): void => {
   for (const probe of lastSuccessPrompts.values()) {
     if (probe.source === "auto") void runSourceProbe(probe)
   }
+  const fusionConditions = fusionSeedProbes()
   fusionSeedRound = Promise.all(
-    fusionSeedProbes().map((probe) => runSourceProbe(probe)),
+    fusionConditions.map((probe) => runSourceProbe(probe)),
   )
-  startTargetDiscovery(
-    getConfiguredTargetModels(),
-    Promise.resolve(),
-    "rotation",
-  )
-  startFusionDiscovery(fusionSeedRound, "rotation")
+  startTargetDiscovery(getWantedModels(), Promise.resolve(), "rotation")
+  startFusionDiscovery(fusionSeedRound, "rotation", undefined, fusionConditions)
 }
 
 export interface HardSnippet {
@@ -566,6 +592,8 @@ interface SourceRuntime {
   haltWaiters: Set<() => void>
   sleepWaiters: Set<() => void>
   cooldownUntil: number
+  cooldownTimer: NodeJS.Timeout | undefined
+  cursor: number
   retryUntil: number
   round: Promise<void> | undefined
 }
@@ -578,6 +606,8 @@ const newSourceRuntime = (): SourceRuntime => ({
   sleepWaiters: new Set(),
   cooldownUntil: 0,
   retryUntil: 0,
+  cooldownTimer: undefined,
+  cursor: 0,
   round: undefined,
 })
 const runtimes: Record<AutoSessionSource, SourceRuntime> = {
@@ -589,11 +619,131 @@ let discoveryRan = false
 let discoveryToken: string | undefined
 const pairingSources = new Map<string, ProbeSource>()
 const lastSuccessPrompts = new Map<string, ProbeSource>()
-const fusionRenewalModels = new Set<string>()
+const renewalModels: Record<AutoSessionSource, Set<string>> = {
+  auto: new Set(),
+  fusion: new Set(),
+}
 const identityWaiters = new Set<() => void>()
 const inflightProbePoints = new Map<string, Promise<string | undefined>>()
 let fusionSeedRound: Promise<unknown> = Promise.resolve()
 let latestProbeRound: Promise<unknown> = Promise.resolve()
+let historyStore: ProbeHistoryStore | undefined
+let historyOpening: Promise<void> | undefined
+let isolatedHistoryRoot: string | undefined
+let historyDisabled = false
+const historySecrets: Array<string> = []
+const pendingObservations: Array<ProbeObservation> = []
+const historyWrites = new Set<Promise<void>>()
+const observedConditions = new Map<string, ProbeCondition>()
+
+const saveObservation = (observation: ProbeObservation): void => {
+  if (historyDisabled) return
+  observedConditions.set(observation.condition.id, observation.condition)
+  if (historyStore === undefined) {
+    pendingObservations.push(observation)
+    return
+  }
+  for (const token of [state.copilotToken, state.githubToken]) {
+    if (typeof token === "string" && !historySecrets.includes(token))
+      historySecrets.push(token)
+  }
+  const write = historyStore
+    .record(observation)
+    .then(() => {
+      observedConditions.delete(observation.condition.id)
+    })
+    .catch((error: unknown) => {
+      if (error instanceof TypeError) {
+        observedConditions.delete(observation.condition.id)
+        consola.warn("[auto-session] probe history observation rejected")
+        return
+      }
+      historyDisabled = true
+      pendingObservations.length = 0
+      observedConditions.clear()
+      consola.warn(
+        "[auto-session] probe history write failed; persistence paused",
+      )
+    })
+  historyWrites.add(write)
+  void write.finally(() => historyWrites.delete(write))
+}
+
+const recordSelection = (
+  condition: ProbeCondition,
+  request: ProbeRequest,
+  selection: AutoSelectionResponse | FusionSelectionResponse,
+  pairedModelIds: Array<string>,
+): void => {
+  if (!requestIsCurrent(request)) return
+  const modelIds = (
+    "steps" in selection ?
+      [...new Set(selection.steps.map((step) => step.modelId))]
+    : [selection.selected_model?.id]).filter(
+    (model): model is string =>
+      typeof model === "string" && model.trim().length > 0,
+  )
+  const rawScores =
+    "steps" in selection ? selection.scores : selection.hydra_scores
+  const scores =
+    (
+      rawScores !== null
+      && typeof rawScores === "object"
+      && !Array.isArray(rawScores)
+      && Object.values(rawScores).every(
+        (score) => typeof score === "number" && Number.isFinite(score),
+      )
+    ) ?
+      rawScores
+    : undefined
+  saveObservation({
+    condition,
+    observedAt: new Date(Date.now()).toISOString(),
+    outcome: "selected",
+    modelIds,
+    pairedModelIds,
+    ...(scores !== undefined ? { scores } : {}),
+  })
+}
+
+const initializeHistory = ({
+  instanceId,
+  sourceRoot,
+}: PrewarmOptions = {}): Promise<void> => {
+  if (historyOpening !== undefined) return historyOpening
+  historyOpening = (async () => {
+    historySecrets.push(
+      ...[state.copilotToken, state.githubToken].filter(
+        (token): token is string => typeof token === "string",
+      ),
+    )
+    const root =
+      sourceRoot !== undefined ? join(sourceRoot, ".probe-history")
+      : instanceId === undefined ?
+        await mkdtemp(join(tmpdir(), "auto-probe-history-"))
+      : undefined
+    if (sourceRoot === undefined && instanceId === undefined)
+      isolatedHistoryRoot = root
+    historyStore = await openProbeHistory({
+      instanceId: instanceId ?? "isolated",
+      root,
+      secrets: historySecrets,
+    })
+    for (const observation of pendingObservations.splice(0))
+      saveObservation(observation)
+    if (instanceId !== undefined)
+      registerProcessCleanup(async () => {
+        stopProbeScheduler()
+        await whenProbeSchedulerIdle()
+      })
+  })().catch(() => {
+    historyDisabled = true
+    pendingObservations.length = 0
+    observedConditions.clear()
+    consola.warn("[auto-session] probe history load failed")
+  })
+  return historyOpening
+}
 
 const wakeAll = (waiters: Set<() => void>): void => {
   const pending = [...waiters]
@@ -735,26 +885,29 @@ export const stopProbeScheduler = (): void => {
   clearAllRefreshTimers()
   clearRejectedTokens()
   for (const source of SOURCES) {
+    clearTimeout(runtimes[source].cooldownTimer)
+    runtimes[source].cooldownTimer = undefined
     wakeAll(runtimes[source].haltWaiters)
     wakeAll(runtimes[source].sleepWaiters)
   }
   wakeAllTargetWaiters()
   wakeAll(identityWaiters)
 }
-
 export const whenProbeSchedulerIdle = async (): Promise<void> => {
   await latestProbeRound
-  for (;;) {
-    const pending = [
-      ...SOURCES.flatMap((source) =>
-        runtimes[source].round ? [runtimes[source].round] : [],
-      ),
-      ...inflightProbePoints.values(),
-      ...explicitRefreshes,
-    ]
-    if (pending.length === 0) return
-    await Promise.all(pending)
-  }
+  const pending = [
+    ...SOURCES.flatMap((source) =>
+      runtimes[source].round ? [runtimes[source].round] : [],
+    ),
+    ...inflightProbePoints.values(),
+    ...explicitRefreshes,
+  ]
+  await Promise.all(pending)
+  await initializeHistory()
+  await Promise.all(historyWrites)
+  await historyStore?.flush()
+  if (probeSchedulerStopped && isolatedHistoryRoot !== undefined)
+    await rm(isolatedHistoryRoot, { recursive: true, force: true })
 }
 
 const isRetriableNetworkError = (error: Error): boolean =>
@@ -788,7 +941,7 @@ const scheduleRefresh = (
   if (probeSchedulerStopped) return
   const fireIn = pairing.expiresAt * 1000 - REFRESH_AHEAD_MS - Date.now()
   // An upstream token still inside the refresh window must not create a 0ms loop.
-  if (fromRefreshTimer && fireIn <= 0) return
+  const expiryOnly = fromRefreshTimer && fireIn <= 0
   const key = pairingKey(model, pairing.source)
   const timer = setTimeout(
     () => {
@@ -803,11 +956,11 @@ const scheduleRefresh = (
         scheduleRefresh(model, pairing)
         return
       }
-      if (pairing.source === "fusion")
-        reacquireSource(model, pairing.probe, "expired", true)
-      else void runSourceProbe(pairing.probe, true)
+      reacquireSource(model, pairing.probe, "expired", true)
     },
-    nextRefreshDelayMs(pairing.expiresAt * 1000, Date.now()),
+    expiryOnly ?
+      Math.max(1, pairing.expiresAt * 1000 - Date.now())
+    : nextRefreshDelayMs(pairing.expiresAt * 1000, Date.now()),
   )
   timer.unref?.()
   refreshTimers.set(key, timer)
@@ -841,6 +994,7 @@ const probePointLoop = async (
   probe: ProbeSource,
   fromRefreshTimer: boolean,
   maxRequests: number,
+  flightKey: string,
 ): Promise<string | undefined> => {
   let requests = 0
   let failures = 0
@@ -858,14 +1012,6 @@ const probePointLoop = async (
     }
   }
   for (;;) {
-    // 种子和续期在新身份就绪后重新计次；补采轮次不跨身份续跑。
-    if (
-      probe.source === "fusion"
-      && probe.point !== "target"
-      && budgetToken !== state.copilotToken
-    ) {
-      requests = 0
-    }
     if (probeSchedulerStopped || requests >= maxRequests) return undefined
     if (!probeIdentityReady()) await waitForProbeIdentity()
     if (probeSchedulerStopped) return undefined
@@ -878,6 +1024,19 @@ const probePointLoop = async (
     )
       return undefined
     if (!probeIdentityReady()) continue
+    if (budgetToken !== state.copilotToken) {
+      syncAuthEpoch()
+      const nextKey = JSON.stringify([authEpoch, probe.id])
+      const own = inflightProbePoints.get(flightKey)
+      const current = inflightProbePoints.get(nextKey)
+      if (current !== undefined && current !== own) return current
+      for (const [model, slots] of pairings) {
+        const pairing = slots[probe.source]
+        if (pairing?.probe.id === probe.id && isPairingValid(model, pairing))
+          return model
+      }
+      if (own !== undefined) inflightProbePoints.set(nextKey, own)
+    }
     if (probe.source === "fusion" && runtimes.fusion.retryUntil > Date.now()) {
       await probeSleep(runtimes.fusion.retryUntil - Date.now(), "fusion")
       continue
@@ -893,27 +1052,56 @@ const probePointLoop = async (
           if (state.copilotToken !== request.token) continue
           return undefined
         }
-        if (!registerAutoResponse(selection, probe, request, fromRefreshTimer))
-          return undefined
+        const accepted = registerAutoResponse(
+          selection,
+          probe,
+          request,
+          fromRefreshTimer,
+        )
+        recordSelection(
+          probe,
+          request,
+          selection,
+          accepted ? [selection.selected_model.id] : [],
+        )
+        if (!accepted) return undefined
         if (lastNetworkFailure !== undefined)
           consola.info("[auto-session] probe recovered source=auto")
         return selection.selected_model.id
       }
-      const selection = await getFusionSelection(probe.prompt)
+      const selection = await getFusionSelection(probe.prompt, {
+        planVersion: probe.planVersion,
+      })
       if (!requestIsCurrent(request)) {
         if (state.copilotToken !== request.token) continue
         return undefined
       }
-      if (!registerFusionResponse(selection, probe, request, fromRefreshTimer))
-        return undefined
+      const paired = registerFusionResponse(
+        selection,
+        probe,
+        request,
+        fromRefreshTimer,
+      )
+      recordSelection(probe, request, selection, paired)
+      if (paired.length === 0) return undefined
       if (lastNetworkFailure !== undefined)
         consola.info("[auto-session] probe recovered source=fusion")
-      return selection.modelId
+      return paired[0]
     } catch (error) {
       if (!requestIsCurrent(request)) {
         if (state.copilotToken !== request.token) continue
         return undefined
       }
+      saveObservation({
+        condition: probe,
+        observedAt: new Date(Date.now()).toISOString(),
+        outcome: "error",
+        modelIds: [],
+        ...(error instanceof HTTPError ?
+          { status: error.response.status }
+        : {}),
+        errorCode: probeFailureKind(error),
+      })
       if (error instanceof HTTPError) {
         const status = error.response.status
         if (
@@ -985,14 +1173,12 @@ const probePointLoop = async (
     }
   }
 }
-
 const runSourceProbe = (
   probe: ProbeSource,
   fromRefreshTimer = false,
-  maxRequests = probe.source === "fusion" || probe.kind === "target" ?
-    1
-  : Number.POSITIVE_INFINITY,
+  maxRequests = probe.source === "fusion" ? 1 : Number.POSITIVE_INFINITY,
 ): Promise<string | undefined> => {
+  syncAuthEpoch()
   const runtime = runtimes[probe.source]
   if (
     probeSchedulerStopped
@@ -1002,16 +1188,18 @@ const runSourceProbe = (
   ) {
     return Promise.resolve(undefined)
   }
-  const key = probeKey(probe)
+  const key = JSON.stringify([authEpoch, probeKey(probe)])
   const existing = inflightProbePoints.get(key)
   if (existing !== undefined) return existing
   const attempt = probePointLoop(
     probe,
     fromRefreshTimer,
     probe.source === "fusion" ? 1 : maxRequests,
+    key,
   ).finally(() => {
-    if (inflightProbePoints.get(key) === attempt)
-      inflightProbePoints.delete(key)
+    for (const [flightKey, pending] of inflightProbePoints) {
+      if (pending === attempt) inflightProbePoints.delete(flightKey)
+    }
   })
   inflightProbePoints.set(key, attempt)
   return attempt
@@ -1025,144 +1213,154 @@ export const runProbePoint = (
   maxRequests = kind === "target" ? 1 : Number.POSITIVE_INFINITY,
 ): Promise<string | undefined> =>
   runSourceProbe(
-    { source: "auto", tier, kind, prompt },
+    createProbeCondition({ source: "auto", tier, prompt }),
     fromRefreshTimer,
     maxRequests,
   )
 
-const fusionSeedProbes = (): Array<ProbeSource> =>
-  getFusionProbePrompts().map((prompt, index) => ({
-    source: "fusion",
-    point: `seed:${index}`,
-    prompt,
-  }))
+const fusionSeedProbes = (): Array<ProbeSource> => {
+  const seeds = getProbeConditions().filter(
+    (condition) => condition.source === "fusion",
+  )
+  const prompts = [
+    ...new Set(seeds.map((condition) => condition.prompt)),
+  ].slice(0, 4)
+  return prompts.map((prompt, index) =>
+    createProbeCondition({
+      source: "fusion",
+      planVersion: index % 2 === 0 ? "1" : "2",
+      fusionMode: "hydrafusion",
+      prompt,
+    }),
+  )
+}
 
-const discoverTargets = async (
-  models: Array<string>,
+const getSourceTargetModels = (source: AutoSessionSource): Array<string> => [
+  ...new Set([...getWantedModels(), ...renewalModels[source]]),
+]
+
+const discoverSourceTargets = async (
+  source: AutoSessionSource,
   token: string | undefined,
+  renewal?: SourceRenewal,
+  priorProbes: ReadonlyArray<ProbeSource> = [],
 ): Promise<void> => {
-  for (let attempt = 0; attempt < TARGET_ATTEMPTS_PER_TIER; attempt++) {
-    for (const tier of TARGET_TIERS) {
-      if (
-        probeSchedulerStopped
-        || state.copilotToken !== token
-        || !probeIdentityReady()
-        || getMissingSourceModels(models, "auto").length === 0
+  const runtime = runtimes[source]
+  const conditions = [
+    ...new Map(
+      [
+        ...getProbeConditions(),
+        ...(historyStore?.conditions ?? []),
+        ...observedConditions.values(),
+      ].map((condition) => [condition.id, condition]),
+    ).values(),
+  ]
+  const seen = new Set(priorProbes.map((probe) => probe.id))
+  const ranked = getRankedProbeConditions({
+    source,
+    conditions,
+    observations: historyStore?.observations ?? pendingObservations,
+    missingModels: getMissingSourceModels(
+      getSourceTargetModels(source),
+      source,
+    ),
+  })
+  const buckets =
+    source === "auto" ?
+      TARGET_TIERS.map((tier) =>
+        ranked.filter(
+          (condition) =>
+            condition.source === "auto"
+            && condition.tier === tier
+            && !seen.has(condition.id),
+        ),
       )
-        return
-      await waitOutHalt("auto")
-      if (
-        probeSchedulerStopped
-        || state.copilotToken !== token
-        || !probeIdentityReady()
-        || getMissingSourceModels(models, "auto").length === 0
+    : (["1", "2"] as const).map((version) =>
+        ranked.filter(
+          (condition) =>
+            condition.source === "fusion"
+            && condition.planVersion === version
+            && !seen.has(condition.id),
+        ),
       )
-        return
-      const existing = inflightProbePoints.get(`auto:${tier}:target`)
-      if (existing !== undefined) {
-        await existing
-        if (
-          probeSchedulerStopped
-          || getMissingSourceModels(models, "auto").length === 0
-        )
-          return
-        await probeSleep(TARGET_PROBE_INTERVAL_MS, "auto")
-        continue
-      }
-      const prompt =
-        tier === "intelligence" ? getIntelligenceProbePrompt(attempt)
-        : attempt % 2 === 0 ? PREWARM_PROMPT
-        : TARGET_CODE_PROMPT
-      await runProbePoint(tier, "target", prompt, false, 1)
-      if (
-        probeSchedulerStopped
-        || getMissingSourceModels(models, "auto").length === 0
-      )
-        return
-      await probeSleep(TARGET_PROBE_INTERVAL_MS, "auto")
-    }
+  const candidates: Array<ProbeCondition> = []
+  const longest = Math.max(0, ...buckets.map((bucket) => bucket.length))
+  for (let index = 0; index < longest; index++) {
+    for (const bucket of buckets)
+      if (bucket[index] !== undefined) candidates.push(bucket[index])
   }
-}
-
-const getFusionTargetModels = (): Array<string> => {
-  const targets = new Set([
-    ...getConfiguredTargetModels(),
-    ...fusionRenewalModels,
-  ])
-  for (const model of pairings.keys()) {
-    if (isSourceCovered(model, "auto")) targets.add(model)
+  const tierRequests: Record<AutoSelectionTier, number> = {
+    intelligence: 0,
+    efficiency: 0,
+    balance: 0,
+    fast: 0,
   }
-  return [...targets]
-}
-
-const discoverFusionTargets = async (
-  token: string | undefined,
-  renewal?: FusionRenewal,
-): Promise<void> => {
-  for (let attempt = 0; attempt < FUSION_TARGET_ATTEMPTS; attempt++) {
-    if (state.copilotToken !== token || !probeIdentityReady()) return
-    if (runtimes.fusion.unavailable && runtimes.fusion.haltToken === token)
-      return
-    const first = attempt === 0 ? renewal : undefined
-    if (
-      probeSchedulerStopped
-      || (!first
-        && getMissingSourceModels(getFusionTargetModels(), "fusion").length
-          === 0)
-    )
-      return
-    await waitOutHalt("fusion")
-    if (state.copilotToken !== token || !probeIdentityReady()) return
-    if (runtimes.fusion.unavailable && runtimes.fusion.haltToken === token)
-      return
-    if (
-      probeSchedulerStopped
-      || (!first
-        && getMissingSourceModels(getFusionTargetModels(), "fusion").length
-          === 0)
-    )
-      return
-    // 保存题面的续期也占共享十次预算，失败或选到其他模型后继续变体。
-    await runSourceProbe(
-      first?.probe ?? {
-        source: "fusion",
-        point: "target",
-        prompt: getIntelligenceProbePrompt(attempt + 1),
-      },
-      first?.fromRefreshTimer ?? false,
-      1,
-    )
-    if (state.copilotToken !== token || !probeIdentityReady()) return
-    if (runtimes.fusion.unavailable && runtimes.fusion.haltToken === token)
-      return
-    if (
-      probeSchedulerStopped
-      || getMissingSourceModels(getFusionTargetModels(), "fusion").length === 0
-    )
-      return
-    await probeSleep(TARGET_PROBE_INTERVAL_MS, "fusion")
-  }
-}
-
-export const parseAutoDiscoveryModels = (value: unknown): Array<string> => {
-  if (value === undefined) return []
-  if (value === null || typeof value !== "object" || Array.isArray(value)) {
-    throw new TypeError("autoDiscovery must be an object")
-  }
-  const models = "models" in value ? value.models : undefined
-  if (models === undefined) return []
-  if (
-    !Array.isArray(models)
-    || models.some(
-      (model: unknown) => typeof model !== "string" || !model.trim(),
-    )
+  const budget =
+    source === "auto" ?
+      TARGET_ATTEMPTS_PER_TIER * TARGET_TIERS.length
+    : FUSION_TARGET_ATTEMPTS
+  let requests = 0
+  let visited = 0
+  let first = renewal
+  while (
+    requests < budget
+    && (first !== undefined || visited < candidates.length)
   ) {
-    throw new TypeError("autoDiscovery.models must contain nonempty model IDs")
+    if (
+      probeSchedulerStopped
+      || state.copilotToken !== token
+      || !probeIdentityReady()
+    )
+      return
+    if (runtime.unavailable && runtime.haltToken === token) return
+    const saved = first
+    first = undefined
+    if (
+      (!saved || !saved.fromRefreshTimer)
+      && getMissingSourceModels(getSourceTargetModels(source), source).length
+        === 0
+    )
+      return
+    const probe = saved?.probe ?? candidates[runtime.cursor % candidates.length]
+    if (saved === undefined) {
+      runtime.cursor += 1
+      visited += 1
+    }
+    if (probe === undefined) return
+    if (
+      seen.has(probe.id)
+      || (probe.source === "auto"
+        && tierRequests[probe.tier] >= TARGET_ATTEMPTS_PER_TIER)
+    )
+      continue
+    await waitOutHalt(source)
+    if (
+      probeSchedulerStopped
+      || state.copilotToken !== token
+      || !probeIdentityReady()
+    )
+      return
+    if (runtime.unavailable && runtime.haltToken === token) return
+    seen.add(probe.id)
+    if (!inflightProbePoints.has(JSON.stringify([authEpoch, probe.id]))) {
+      requests += 1
+      if (probe.source === "auto") tierRequests[probe.tier] += 1
+    }
+    await runSourceProbe(probe, saved?.fromRefreshTimer ?? false, 1)
+    if (
+      probeSchedulerStopped
+      || state.copilotToken !== token
+      || !probeIdentityReady()
+    )
+      return
+    if (
+      getMissingSourceModels(getSourceTargetModels(source), source).length === 0
+    )
+      return
+    if (requests < budget && visited < candidates.length)
+      await probeSleep(TARGET_PROBE_INTERVAL_MS, source)
   }
-  return [...new Set<string>(models)]
 }
-const getConfiguredTargetModels = (): Array<string> =>
-  parseAutoDiscoveryModels(getConfig().autoDiscovery)
 
 type DiscoveryReason = "startup" | "miss" | "expired" | "rotation" | "rejected"
 
@@ -1171,7 +1369,8 @@ const startDiscoveryRound = (
   models: Array<string>,
   after: Promise<unknown>,
   reason: DiscoveryReason,
-  renewal?: FusionRenewal,
+  renewal?: SourceRenewal,
+  priorProbes: ReadonlyArray<ProbeSource> = [],
 ): void => {
   const runtime = runtimes[source]
   if (models.length === 0 || probeSchedulerStopped || runtime.round) return
@@ -1191,13 +1390,11 @@ const startDiscoveryRound = (
   const round = after
     .then(() => {
       if (state.copilotToken !== startedToken || !probeIdentityReady()) return
-      return source === "auto" ?
-          discoverTargets(models, startedToken)
-        : discoverFusionTargets(startedToken, renewal)
+      return discoverSourceTargets(source, startedToken, renewal, priorProbes)
     })
     .then(() => {
       const missing = getMissingSourceModels(
-        source === "fusion" ? getFusionTargetModels() : models,
+        getSourceTargetModels(source),
         source,
       )
       const outcome =
@@ -1214,54 +1411,115 @@ const startDiscoveryRound = (
     })
     .finally(() => {
       if (runtime.round === round) runtime.round = undefined
+      for (const model of renewalModels[source]) {
+        const pairing = pairings.get(model)?.[source]
+        if (
+          pairing
+          && requestIdentityMatches(pairing)
+          && !refreshTimers.has(pairingKey(model, source))
+        )
+          scheduleRefresh(model, pairing, true)
+      }
       if (
         !probeSchedulerStopped
         && state.copilotToken !== startedToken
         && probeIdentityReady()
       ) {
         if (source === "auto")
-          startTargetDiscovery(
-            getConfiguredTargetModels(),
-            Promise.resolve(),
+          startTargetDiscovery(getWantedModels(), Promise.resolve(), "rotation")
+        else
+          startFusionDiscovery(
+            fusionSeedRound,
             "rotation",
+            undefined,
+            fusionSeedProbes(),
           )
-        else startFusionDiscovery(fusionSeedRound, "rotation")
       } else if (
         !probeSchedulerStopped
         && state.copilotToken === startedToken
       ) {
-        const targets = source === "fusion" ? getFusionTargetModels() : models
+        const targets = getSourceTargetModels(source)
         if (getMissingSourceModels(targets, source).length > 0) {
           runtime.cooldownUntil = Date.now() + TARGET_DISCOVERY_COOLDOWN_MS
+          scheduleDiscoveryCooldown(source)
         }
       }
     })
   runtime.round = round
 }
 
+const scheduleDiscoveryCooldown = (source: AutoSessionSource): void => {
+  const runtime = runtimes[source]
+  clearTimeout(runtime.cooldownTimer)
+  runtime.cooldownTimer = undefined
+  if (
+    probeSchedulerStopped
+    || !probeIdentityReady()
+    || runtime.haltActive
+    || runtime.unavailable
+  )
+    return
+  if (
+    getMissingSourceModels(getSourceTargetModels(source), source).length === 0
+  )
+    return
+  const token = state.copilotToken
+  runtime.cooldownTimer = setTimeout(
+    () => {
+      runtime.cooldownTimer = undefined
+      if (
+        probeSchedulerStopped
+        || state.copilotToken !== token
+        || !probeIdentityReady()
+      )
+        return
+      startDiscoveryRound(
+        source,
+        getSourceTargetModels(source),
+        Promise.resolve(),
+        "miss",
+      )
+    },
+    Math.min(MAX_TIMER_MS, Math.max(1, runtime.cooldownUntil - Date.now())),
+  )
+  runtime.cooldownTimer.unref?.()
+}
+
 const startTargetDiscovery = (
   models: Array<string>,
   after: Promise<unknown> = Promise.resolve(),
   reason: DiscoveryReason = "miss",
-): void => startDiscoveryRound("auto", models, after, reason)
+  renewal?: SourceRenewal,
+): void => startDiscoveryRound("auto", models, after, reason, renewal)
 
 const startFusionDiscovery = (
   after: Promise<unknown> = fusionSeedRound,
   reason: DiscoveryReason = "miss",
-  renewal?: FusionRenewal,
+  renewal?: SourceRenewal,
+  priorProbes: ReadonlyArray<ProbeSource> = [],
 ): void =>
-  startDiscoveryRound("fusion", getFusionTargetModels(), after, reason, renewal)
+  startDiscoveryRound(
+    "fusion",
+    getSourceTargetModels("fusion"),
+    after,
+    reason,
+    renewal,
+    priorProbes,
+  )
 
 interface PrewarmOptions {
   sourceRoot?: string
   startupBudgetMs?: number
+  instanceId?: string
 }
 
 export const prewarmAutoSession = async ({
   sourceRoot,
   startupBudgetMs,
+  instanceId,
 }: PrewarmOptions = {}): Promise<void> => {
-  const targetModels = getConfiguredTargetModels()
+  await initializeHistory({ sourceRoot, instanceId })
+  const targetModels = getWantedModels()
   consola.info(
     `[auto-session] discovery start wanted=${JSON.stringify(targetModels)}`,
   )
@@ -1299,16 +1557,38 @@ export const prewarmAutoSession = async ({
   syncAuthEpoch()
   discoveryRan = true
   discoveryToken = state.copilotToken
-  const autoProbes = Promise.all(STARTUP_TIERS.map(probeTierPair))
+  const replayConditions = (historyStore?.observations ?? [])
+    .filter(
+      (observation) =>
+        observation.outcome === "selected"
+        && observation.modelIds.some((model) => targetModels.includes(model)),
+    )
+    .map((observation) => observation.condition)
+  const replays = [
+    ...new Map(
+      replayConditions.map((condition) => [condition.id, condition]),
+    ).values(),
+  ]
+  const autoProbes = Promise.all([
+    ...STARTUP_TIERS.map(probeTierPair),
+    ...replays
+      .filter((condition) => condition.source === "auto")
+      .slice(0, 4)
+      .map((probe) => runSourceProbe(probe, false, 1)),
+  ])
+  const fusionConditions = [
+    ...fusionSeedProbes(),
+    ...replays.filter((condition) => condition.source === "fusion").slice(0, 4),
+  ]
   const fusionProbes = Promise.all(
-    fusionSeedProbes().map((probe) => runSourceProbe(probe)),
+    fusionConditions.map((probe) => runSourceProbe(probe)),
   )
   fusionSeedRound = fusionProbes
   latestProbeRound = Promise.all([autoProbes, fusionProbes])
   const probes = latestProbeRound
   startTargetDiscovery(targetModels, autoProbes, "startup")
   // Fusion retries do not wait for a stalled Auto source, but never precede its seeds.
-  startFusionDiscovery(fusionProbes, "startup")
+  startFusionDiscovery(fusionProbes, "startup", undefined, fusionConditions)
   let snapshot: string | undefined
   const reportResult = (): void => {
     const current = discoverySnapshot(targetModels)
@@ -1382,13 +1662,19 @@ const reacquireSource = (
     && (discoveryRan || discoveryToken !== undefined)
   )
     return
-  if (Date.now() < runtimes[probe.source].cooldownUntil) return
+  renewalModels[probe.source].add(model)
+  if (Date.now() < runtimes[probe.source].cooldownUntil) {
+    scheduleDiscoveryCooldown(probe.source)
+    return
+  }
   if (probe.source === "fusion") {
-    fusionRenewalModels.add(model)
+    renewalModels.fusion.add(model)
     startFusionDiscovery(fusionSeedRound, reason, { probe, fromRefreshTimer })
     return
   }
-  const existing = inflightProbePoints.get(probeKey(probe))
+  const existing = inflightProbePoints.get(
+    JSON.stringify([authEpoch, probeKey(probe)]),
+  )
   if (existing !== undefined) {
     // Invalidation makes an already-running result inadmissible. Reacquire only
     // after that single flight settles, never in parallel with the old request.
@@ -1403,10 +1689,18 @@ const reacquireSource = (
   consola.info(
     `[auto-session] probe start reason=${reason} model=${formatAutoSessionModel(model)} source=${probe.source} expected_discount=${EXPECTED_DISCOUNT[probe.source]}%`,
   )
-  void runSourceProbe(probe).then(() => {
+  void runSourceProbe(probe, fromRefreshTimer).then(() => {
+    const pairing = pairings.get(model)?.[probe.source]
+    if (
+      pairing
+      && requestIdentityMatches(pairing)
+      && !refreshTimers.has(pairingKey(model, probe.source))
+    )
+      scheduleRefresh(model, pairing, true)
     if (!isSourceCovered(model, probe.source)) {
       runtimes[probe.source].cooldownUntil =
         Date.now() + TARGET_DISCOVERY_COOLDOWN_MS
+      scheduleDiscoveryCooldown(probe.source)
     }
     consola.info(
       `[auto-session] probe result reason=${reason} source=${probe.source} missing=${JSON.stringify(getMissingSourceModels([model], probe.source))}`,
@@ -1483,19 +1777,18 @@ export const getAutoSessionForModel = async ({
   }
   let selected = selectPairing(model, endpoint, authToken, excludedSources)
   if (!identityMismatch && identityReady(authToken)) {
-    const targets = getConfiguredTargetModels()
+    const targets = getWantedModels()
     if (targets.includes(model) && !isSourceCovered(model, "auto")) {
+      const probe = pairingSources.get(pairingKey(model, "auto"))
       startTargetDiscovery(
         targets,
         Promise.resolve(),
         expired ? "expired" : "miss",
+        probe === undefined ? undefined : { probe, fromRefreshTimer: false },
       )
     }
     // An Auto hit must remain immediate while Fusion is acquired in the background.
-    if (
-      !isSourceCovered(model, "fusion")
-      && (targets.includes(model) || isSourceCovered(model, "auto"))
-    ) {
+    if (!isSourceCovered(model, "fusion") && targets.includes(model)) {
       const source = pairingSources.get(pairingKey(model, "fusion"))
       if (source !== undefined) reacquireSource(model, source, "expired")
       else startFusionDiscovery()

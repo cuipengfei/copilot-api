@@ -7,6 +7,9 @@ import {
   spyOn,
   test,
 } from "bun:test"
+import * as timersPromises from "node:timers/promises"
+
+import { createProbeCondition } from "../src/lib/auto-probe-prompts"
 
 import { state } from "../src/lib/state"
 import type { AutoSelectionResponse } from "../src/services/copilot/get-auto-selection"
@@ -66,12 +69,115 @@ const setFetchMock = (mockedFetch: typeof fetch): void => {
   }) as typeof fetch
 }
 
+const originalTimerPromises = { ...timersPromises }
+const nextTurn = originalTimerPromises.setImmediate
 const originalFetch = globalThis.fetch
 const originalAutoDiscovery = getConfig().autoDiscovery
 const originalToken = state.copilotToken
 const originalModels = state.models
 const originalForceAgent = state.forceAgent
 const modules: Array<AutoSessionModule> = []
+
+const installProbeClock = (initialNow: number) => {
+  let now = initialNow
+  const timers: Array<{
+    at: number
+    ms: number
+    callback: () => void
+    cancelled: boolean
+    unref: () => void
+  }> = []
+  const schedule = (callback: () => void, ms: number) => {
+    const timer = { at: now + ms, ms, callback, cancelled: false, unref() {} }
+    timers.push(timer)
+    return timer
+  }
+  const nextTimer = (until = Number.POSITIVE_INFINITY) => {
+    let next: (typeof timers)[number] | undefined
+    for (const timer of timers) {
+      if (
+        !timer.cancelled
+        && timer.at <= until
+        && (next === undefined || timer.at < next.at)
+      )
+        next = timer
+    }
+    return next
+  }
+  const advanceBy = async (ms: number): Promise<void> => {
+    const until = now + ms
+    await nextTurn()
+    for (let fired = 0; ; fired++) {
+      const timer = nextTimer(until)
+      if (timer === undefined) break
+      if (fired >= 128) throw new Error("unbounded probe timers")
+      now = Math.max(now, timer.at)
+      timer.cancelled = true
+      timer.callback()
+      await nextTurn()
+    }
+    now = until
+    await nextTurn()
+  }
+  const finishCurrentRound = async (mod: AutoSessionModule): Promise<void> => {
+    let idle = false
+    const pending = mod.whenProbeSchedulerIdle().then(() => {
+      idle = true
+    })
+    await nextTurn()
+    for (let fired = 0; !idle; fired++) {
+      if (fired >= 128) throw new Error("probe round did not become idle")
+      const timer = nextTimer()
+      if (timer === undefined || timer.at - now > 3_000) {
+        await pending
+        break
+      }
+      await advanceBy(Math.max(0, timer.at - now))
+    }
+    await pending
+  }
+  spyOn(Date, "now").mockImplementation(() => now)
+  spyOn(globalThis, "setTimeout").mockImplementation(((
+    callback: () => void,
+    ms = 0,
+  ) => schedule(callback, ms)) as unknown as typeof setTimeout)
+  spyOn(globalThis, "clearTimeout").mockImplementation((timer: unknown) => {
+    const captured = timers.find((candidate) => candidate === timer)
+    if (captured) captured.cancelled = true
+  })
+  void mock.module("node:timers/promises", () => ({
+    ...originalTimerPromises,
+    setTimeout: <T = void>(
+      ms = 0,
+      value?: T,
+      { signal }: { signal?: AbortSignal } = {},
+    ): Promise<T> => {
+      const { promise, resolve, reject } = Promise.withResolvers<T>()
+      const abort = () => {
+        timer.cancelled = true
+        reject(new DOMException("Timer aborted", "AbortError"))
+      }
+      const timer = schedule(() => {
+        signal?.removeEventListener("abort", abort)
+        resolve(value)
+      }, ms)
+      if (signal?.aborted) abort()
+      else signal?.addEventListener("abort", abort, { once: true })
+      return promise
+    },
+  }))
+  return {
+    timers,
+    finishCurrentRound,
+    advanceBy,
+    get now() {
+      return now
+    },
+    set now(value: number) {
+      now = value
+    },
+  }
+}
 
 const loadAutoSessionModule = async (): Promise<AutoSessionModule> => {
   // Static imports cannot reset the module-owned pairing table and scheduler.
@@ -255,7 +361,16 @@ describe("auto-session", () => {
     ]
 
     for (const invalid of invalidSelections) {
-      expect(registerAutoSelection(invalid)).toBe(false)
+      expect(
+        registerAutoSelection(
+          invalid,
+          createProbeCondition({
+            source: "auto",
+            tier: "balance",
+            prompt: "hello",
+          }),
+        ),
+      ).toBe(false)
     }
 
     expect(isModelAutoCovered("gpt-5.3-codex")).toBe(false)
@@ -365,10 +480,24 @@ describe("auto-session", () => {
       await loadAutoSessionModule()
 
     expect(
-      registerAutoSelection(selection("gpt-5.3-codex", "token-first")),
+      registerAutoSelection(
+        selection("gpt-5.3-codex", "token-first"),
+        createProbeCondition({
+          source: "auto",
+          tier: "balance",
+          prompt: "hello",
+        }),
+      ),
     ).toBe(true)
     expect(
-      registerAutoSelection(selection("gpt-5.3-codex", "token-latest")),
+      registerAutoSelection(
+        selection("gpt-5.3-codex", "token-latest"),
+        createProbeCondition({
+          source: "auto",
+          tier: "balance",
+          prompt: "hello",
+        }),
+      ),
     ).toBe(true)
 
     expect(
@@ -384,6 +513,11 @@ describe("auto-session", () => {
     registerAutoSelection(
       selection("gpt-5.3-codex", "token-own", {
         supportedEndpoints: ["/responses"],
+      }),
+      createProbeCondition({
+        source: "auto",
+        tier: "balance",
+        prompt: "hello",
       }),
     )
 
@@ -413,6 +547,11 @@ describe("auto-session", () => {
       selection("gpt-6-luna", "token-luna", {
         supportedEndpoints: ["/responses", "ws:/responses"],
       }),
+      createProbeCondition({
+        source: "auto",
+        tier: "balance",
+        prompt: "hello",
+      }),
     )
 
     expect(
@@ -440,6 +579,11 @@ describe("auto-session", () => {
       selection("ws-only-model", "token-ws", {
         supportedEndpoints: ["ws:/responses"],
       }),
+      createProbeCondition({
+        source: "auto",
+        tier: "balance",
+        prompt: "hello",
+      }),
     )
     expect(
       (
@@ -454,6 +598,11 @@ describe("auto-session", () => {
     registerAutoSelection(
       selection("claude-model", "token-claude", {
         supportedEndpoints: ["/v1/messages"],
+      }),
+      createProbeCondition({
+        source: "auto",
+        tier: "balance",
+        prompt: "hello",
       }),
     )
     expect(
@@ -473,6 +622,11 @@ describe("auto-session", () => {
     registerAutoSelection(
       selection("gpt-5.3-codex", "token-flag", {
         supportedEndpoints: ["/responses"],
+      }),
+      createProbeCondition({
+        source: "auto",
+        tier: "balance",
+        prompt: "hello",
       }),
     )
 
@@ -505,7 +659,14 @@ describe("auto-session", () => {
       registerAutoSelection,
     } = await loadAutoSessionModule()
 
-    registerAutoSelection(selection("gpt-5.3-codex", "token-clear"))
+    registerAutoSelection(
+      selection("gpt-5.3-codex", "token-clear"),
+      createProbeCondition({
+        source: "auto",
+        tier: "balance",
+        prompt: "hello",
+      }),
+    )
 
     invalidateAutoSession()
 
@@ -712,6 +873,8 @@ describe("auto-session", () => {
     const realClearTimeout = globalThis.clearTimeout
     const realNow = Date.now
     const longTimers: Array<{ cb: () => void; delay: number }> = []
+    let now = realNow()
+    Date.now = () => now
     const marked = new WeakSet<object>()
     try {
       globalThis.setTimeout = ((
@@ -747,7 +910,7 @@ describe("auto-session", () => {
       setFetchMock((() => {
         calls += 1
         if (calls > 16) return Promise.reject(new Error("cap exceeded"))
-        // 补采在穿越后的时钟下拿到续期（now+120s，仍在未来、无需再排程）
+        // 补采在穿越后的时钟下拿到续期（now+120s，仍未来但已进入刷新窗口）
         const renewed =
           calls === 1 ? expiresAt : Math.floor(Date.now() / 1000) + 120
         return Promise.resolve(
@@ -771,7 +934,7 @@ describe("auto-session", () => {
       expect(longTimers.length).toBe(2)
 
       // 推进时间越过真实刷新时刻后再触发：到时只发一次
-      Date.now = () => realNow() + 31 * 24 * 3600 * 1000
+      now += 31 * 24 * 3600 * 1000
       longTimers[1].cb()
       const start = Date.now()
       while (calls < 2 && Date.now() - start < 2_000) {
@@ -780,8 +943,13 @@ describe("auto-session", () => {
       // 让 void runProbePoint 的登记链落定后再断言
       await new Promise((resolve) => realSetTimeout(resolve, 50))
       expect(calls).toBe(2)
-      // 刷新仍拿到同一过期 expiry（fromTimer 且 fireIn<=0）→ 不再排新定时器
-      expect(longTimers.length).toBe(2)
+      // 续期仍在未来但已进入五分钟窗口：按真实 expiry 正延时再排程
+      expect(longTimers.length).toBe(3)
+      expect(longTimers[2].delay).toBeGreaterThan(0)
+      expect(longTimers[2].delay).toBe(
+        (Math.floor(Date.now() / 1000) + 120) * 1000 - Date.now(),
+      )
+      expect(calls).toBe(2)
       Date.now = realNow
       expect(
         (await mod.getAutoSessionForModel({ model: "long-model" }))
@@ -1245,17 +1413,28 @@ describe("two-source discount pairings", () => {
     state.models = originalModels
     getConfig().autoDiscovery = originalAutoDiscovery
     mock.restore()
+    await mock.module("node:timers/promises", () => originalTimerPromises)
   })
 
   test("Fusion30 wins even when Auto10 arrives later; endpoint and excluded-source selection use the same candidates", async () => {
     const mod = await loadAutoSessionModule()
     const expiresAt = Math.floor(Date.now() / 1000) + 3600
     expect(
-      mod.registerFusionSelection({
-        modelId: "discount-model",
-        sessionToken: "fusion-30",
-        expiresAt,
-      }),
+      mod.registerFusionSelection(
+        {
+          planVersion: "2" as const,
+          fusionPattern: "solo",
+          steps: [{ modelId: "discount-model" }],
+          sessionToken: "fusion-30",
+          expiresAt,
+        },
+        createProbeCondition({
+          source: "fusion",
+          planVersion: "2",
+          fusionMode: "hydrafusion",
+          prompt: "hello",
+        }),
+      ),
     ).toBe(true)
     expect(
       mod.registerAutoSelection(
@@ -1265,6 +1444,11 @@ describe("two-source discount pairings", () => {
             "/chat/completions",
             "/v1/messages",
           ],
+        }),
+        createProbeCondition({
+          source: "auto",
+          tier: "balance",
+          prompt: "hello",
         }),
       ),
     ).toBe(true)
@@ -1325,15 +1509,30 @@ describe("two-source discount pairings", () => {
     let now = Date.now()
     spyOn(Date, "now").mockImplementation(() => now)
     const expiresAt = Math.floor(now / 1000)
-    mod.registerFusionSelection({
-      modelId: "discount-model",
-      sessionToken: "fusion-short",
-      expiresAt: expiresAt + 600,
-    })
+    mod.registerFusionSelection(
+      {
+        planVersion: "2" as const,
+        fusionPattern: "solo",
+        steps: [{ modelId: "discount-model" }],
+        sessionToken: "fusion-short",
+        expiresAt: expiresAt + 600,
+      },
+      createProbeCondition({
+        source: "fusion",
+        planVersion: "2",
+        fusionMode: "hydrafusion",
+        prompt: "hello",
+      }),
+    )
     mod.registerAutoSelection(
       selection("discount-model", "auto-long", {
         expiresAt: expiresAt + 1800,
         supportedEndpoints: ["/responses"],
+      }),
+      createProbeCondition({
+        source: "auto",
+        tier: "balance",
+        prompt: "hello",
       }),
     )
     now += 601_000
@@ -1369,12 +1568,27 @@ describe("two-source discount pairings", () => {
       selection("discount-model", "auto-short", {
         expiresAt: Math.floor(now / 1000) + 600,
       }),
+      createProbeCondition({
+        source: "auto",
+        tier: "balance",
+        prompt: "hello",
+      }),
     )
-    mod.registerFusionSelection({
-      modelId: "discount-model",
-      sessionToken: "fusion-long",
-      expiresAt: Math.floor(now / 1000) + 1800,
-    })
+    mod.registerFusionSelection(
+      {
+        planVersion: "2" as const,
+        fusionPattern: "solo",
+        steps: [{ modelId: "discount-model" }],
+        sessionToken: "fusion-long",
+        expiresAt: Math.floor(now / 1000) + 1800,
+      },
+      createProbeCondition({
+        source: "fusion",
+        planVersion: "2",
+        fusionMode: "hydrafusion",
+        prompt: "hello",
+      }),
+    )
     now += 601_000
     expect(
       (
@@ -1399,23 +1613,58 @@ describe("two-source discount pairings", () => {
     mod.stopProbeScheduler()
     const expiresAt = Math.floor(Date.now() / 1000) + 3600
     const fusion = {
-      modelId: "discount-model",
+      planVersion: "2" as const,
+      fusionPattern: "solo",
+      steps: [{ modelId: "discount-model" }],
       sessionToken: "rejected-fusion",
       expiresAt,
     }
     const auto = selection("discount-model", "kept-auto")
-    mod.registerFusionSelection(fusion)
-    mod.registerAutoSelection(auto)
+    mod.registerFusionSelection(
+      fusion,
+      createProbeCondition({
+        source: "fusion",
+        planVersion: "2",
+        fusionMode: "hydrafusion",
+        prompt: "hello",
+      }),
+    )
+    mod.registerAutoSelection(
+      auto,
+      createProbeCondition({
+        source: "auto",
+        tier: "balance",
+        prompt: "hello",
+      }),
+    )
     expect(
       mod.invalidateAutoSessionPairing("discount-model", fusion.sessionToken),
     ).toBe(true)
-    expect(mod.registerFusionSelection(fusion)).toBe(false)
+    expect(
+      mod.registerFusionSelection(
+        fusion,
+        createProbeCondition({
+          source: "fusion",
+          planVersion: "2",
+          fusionMode: "hydrafusion",
+          prompt: "hello",
+        }),
+      ),
+    ).toBe(false)
     expect(
       (await mod.getAutoSessionForModel({ model: "discount-model" }))
         ?.sessionToken,
     ).toBe("kept-auto")
     expect(
-      mod.registerFusionSelection({ ...fusion, sessionToken: "new-fusion" }),
+      mod.registerFusionSelection(
+        { ...fusion, sessionToken: "new-fusion" },
+        createProbeCondition({
+          source: "fusion",
+          planVersion: "2",
+          fusionMode: "hydrafusion",
+          prompt: "hello",
+        }),
+      ),
     ).toBe(true)
     expect(
       mod.invalidateAutoSessionPairing("discount-model", fusion.sessionToken),
@@ -1427,7 +1676,16 @@ describe("two-source discount pairings", () => {
     expect(
       mod.invalidateAutoSessionPairing("discount-model", "kept-auto"),
     ).toBe(true)
-    expect(mod.registerAutoSelection(auto)).toBe(false)
+    expect(
+      mod.registerAutoSelection(
+        auto,
+        createProbeCondition({
+          source: "auto",
+          tier: "balance",
+          prompt: "hello",
+        }),
+      ),
+    ).toBe(false)
     expect(
       (await mod.getAutoSessionForModel({ model: "discount-model" }))
         ?.sessionToken,
@@ -1470,7 +1728,14 @@ describe("two-source discount pairings", () => {
   test("a pre-rejection in-flight Auto response cannot cross the source commit barrier", async () => {
     const mod = await loadAutoSessionModule()
     const stale = Promise.withResolvers<Response>()
-    mod.registerAutoSelection(selection("discount-model", "sent-auto"))
+    mod.registerAutoSelection(
+      selection("discount-model", "sent-auto"),
+      createProbeCondition({
+        source: "auto",
+        tier: "balance",
+        prompt: "hello",
+      }),
+    )
     globalThis.fetch = mock(() => stale.promise) as unknown as typeof fetch
     const pending = mod.runProbePoint("efficiency", "easy", "stale")
     try {
@@ -1531,11 +1796,21 @@ describe("two-source discount pairings", () => {
   test("selection honors the actual request identity snapshot across credential rotation", async () => {
     const mod = await loadAutoSessionModule()
     const expiresAt = Math.floor(Date.now() / 1000) + 3600
-    mod.registerFusionSelection({
-      modelId: "discount-model",
-      sessionToken: "identity-a",
-      expiresAt,
-    })
+    mod.registerFusionSelection(
+      {
+        planVersion: "2" as const,
+        fusionPattern: "solo",
+        steps: [{ modelId: "discount-model" }],
+        sessionToken: "identity-a",
+        expiresAt,
+      },
+      createProbeCondition({
+        source: "fusion",
+        planVersion: "2",
+        fusionMode: "hydrafusion",
+        prompt: "hello",
+      }),
+    )
     state.copilotToken = "discount-auth-b"
     expect(
       (
@@ -1546,11 +1821,21 @@ describe("two-source discount pairings", () => {
       )?.sessionToken,
     ).toBeUndefined()
     mod.invalidateAutoSession()
-    mod.registerFusionSelection({
-      modelId: "discount-model",
-      sessionToken: "identity-b",
-      expiresAt,
-    })
+    mod.registerFusionSelection(
+      {
+        planVersion: "2" as const,
+        fusionPattern: "solo",
+        steps: [{ modelId: "discount-model" }],
+        sessionToken: "identity-b",
+        expiresAt,
+      },
+      createProbeCondition({
+        source: "fusion",
+        planVersion: "2",
+        fusionMode: "hydrafusion",
+        prompt: "hello",
+      }),
+    )
     expect(
       (
         await mod.getAutoSessionForModel({
@@ -1605,6 +1890,11 @@ describe("two-source discount pairings", () => {
         selection("discount-model", "auto-during-renewal", {
           expiresAt: Math.floor(now / 1000) + 7200,
           supportedEndpoints: ["/responses"],
+        }),
+        createProbeCondition({
+          source: "auto",
+          tier: "balance",
+          prompt: "hello",
         }),
       )
       expect(
@@ -1696,12 +1986,27 @@ describe("two-source discount pairings", () => {
       selection("discount-model", "auto-initial", {
         expiresAt: Math.floor(now / 1000) + 900,
       }),
+      createProbeCondition({
+        source: "auto",
+        tier: "balance",
+        prompt: "hello",
+      }),
     )
-    mod.registerFusionSelection({
-      modelId: "discount-model",
-      sessionToken: "fusion-initial",
-      expiresAt: Math.floor(now / 1000) + 600,
-    })
+    mod.registerFusionSelection(
+      {
+        planVersion: "2" as const,
+        fusionPattern: "solo",
+        steps: [{ modelId: "discount-model" }],
+        sessionToken: "fusion-initial",
+        expiresAt: Math.floor(now / 1000) + 600,
+      },
+      createProbeCondition({
+        source: "fusion",
+        planVersion: "2",
+        fusionMode: "hydrafusion",
+        prompt: "hello",
+      }),
+    )
     expect(timers.map((timer) => timer.ms)).toEqual([600_000, 300_000])
     now += 300_000
     timers[1].callback()
@@ -1814,11 +2119,21 @@ describe("two-source discount pairings", () => {
         createResponse(selection("discount-model", "preserved-auto")),
       )
     }) as unknown as typeof fetch
-    mod.registerFusionSelection({
-      modelId: "discount-model",
-      sessionToken: "rejected-fusion",
-      expiresAt: Math.floor(Date.now() / 1000) + 3600,
-    })
+    mod.registerFusionSelection(
+      {
+        planVersion: "2" as const,
+        fusionPattern: "solo",
+        steps: [{ modelId: "discount-model" }],
+        sessionToken: "rejected-fusion",
+        expiresAt: Math.floor(Date.now() / 1000) + 3600,
+      },
+      createProbeCondition({
+        source: "fusion",
+        planVersion: "2",
+        fusionMode: "hydrafusion",
+        prompt: "hello",
+      }),
+    )
     try {
       // Exercise invalidation while all four seed requests are still in flight.
       await mod.prewarmAutoSession({ startupBudgetMs: 20 })
@@ -1874,11 +2189,21 @@ describe("two-source discount pairings", () => {
       mod.invalidateAutoSession()
       mod.stopProbeScheduler()
       expect(
-        mod.registerFusionSelection({
-          modelId: "discount-model",
-          sessionToken: "new-identity-fusion",
-          expiresAt: Math.floor(Date.now() / 1000) + 3600,
-        }),
+        mod.registerFusionSelection(
+          {
+            planVersion: "2" as const,
+            fusionPattern: "solo",
+            steps: [{ modelId: "discount-model" }],
+            sessionToken: "new-identity-fusion",
+            expiresAt: Math.floor(Date.now() / 1000) + 3600,
+          },
+          createProbeCondition({
+            source: "fusion",
+            planVersion: "2",
+            fusionMode: "hydrafusion",
+            prompt: "hello",
+          }),
+        ),
       ).toBe(true)
       stale.resolve()
       await mod.whenProbeSchedulerIdle()
@@ -1912,11 +2237,21 @@ describe("two-source discount pairings", () => {
     const pending = mod.runProbePoint("efficiency", "easy", "late-auto")
     try {
       expect(
-        mod.registerFusionSelection({
-          modelId: "discount-model",
-          sessionToken: "earlier-fusion",
-          expiresAt: Math.floor(Date.now() / 1000) + 3600,
-        }),
+        mod.registerFusionSelection(
+          {
+            planVersion: "2" as const,
+            fusionPattern: "solo",
+            steps: [{ modelId: "discount-model" }],
+            sessionToken: "earlier-fusion",
+            expiresAt: Math.floor(Date.now() / 1000) + 3600,
+          },
+          createProbeCondition({
+            source: "fusion",
+            planVersion: "2",
+            fusionMode: "hydrafusion",
+            prompt: "hello",
+          }),
+        ),
       ).toBe(true)
       auto.resolve(createResponse(selection("discount-model", "late-auto")))
       await pending
@@ -1946,26 +2281,39 @@ describe("two-source discount pairings", () => {
   })
 
   test("Fusion 保存题面的续期选到 N 后按真实模型登记，M 继续共享变体补采", async () => {
+    const clock = installProbeClock(Date.now())
     const mod = await loadAutoSessionModule()
-    let now = Date.now()
-    let advancing = false
-    spyOn(Date, "now").mockImplementation(() => {
-      if (advancing) now += 4_000
-      return now
+    getConfig().autoDiscovery = { models: ["discount-model"] }
+    const savedProbe = createProbeCondition({
+      source: "fusion",
+      planVersion: "2",
+      fusionMode: "hydrafusion",
+      prompt: "hello",
     })
     mod.resumeAutoSessionDiscoveryAfterRotation()
-    mod.registerFusionSelection({
-      modelId: "discount-model",
-      sessionToken: "expired-fusion",
-      expiresAt: Math.floor(now / 1000) + 600,
-    })
+    mod.registerFusionSelection(
+      {
+        planVersion: "2" as const,
+        fusionPattern: "solo",
+        steps: [{ modelId: "discount-model" }],
+        sessionToken: "expired-fusion",
+        expiresAt: Math.floor(clock.now / 1000) + 600,
+      },
+      savedProbe,
+    )
     mod.registerAutoSelection(
       selection("discount-model", "kept-auto", {
-        expiresAt: Math.floor(now / 1000) + 86400,
+        expiresAt: Math.floor(clock.now / 1000) + 86400,
         supportedEndpoints: ["/responses"],
+      }),
+      createProbeCondition({
+        source: "auto",
+        tier: "balance",
+        prompt: "hello",
       }),
     )
     const prompts: Array<string> = []
+    const conditionIds: Array<string> = []
     let recoverVariants = false
     globalThis.fetch = mock(
       (input: string | URL | Request, init?: RequestInit) => {
@@ -1974,9 +2322,24 @@ describe("two-source discount pairings", () => {
           throw new Error("unexpected selection endpoint")
         if (typeof init?.body !== "string")
           throw new Error("expected string request body")
-        const { prompt } = JSON.parse(init.body) as { prompt: string }
+        const {
+          prompt,
+          plan_version: planVersion,
+          fusion_mode: fusionMode,
+        } = JSON.parse(init.body) as {
+          prompt: string
+          plan_version: "1" | "2"
+          fusion_mode: "hydrafusion"
+        }
+        const condition = createProbeCondition({
+          source: "fusion",
+          planVersion,
+          fusionMode,
+          prompt,
+        })
         prompts.push(prompt)
-        const recovered = recoverVariants && prompt !== "hello"
+        conditionIds.push(condition.id)
+        const recovered = recoverVariants && condition.id !== savedProbe.id
         return Promise.resolve(
           fusionResponse(
             recovered ? "discount-model" : "other-model",
@@ -1985,8 +2348,7 @@ describe("two-source discount pairings", () => {
         )
       },
     ) as unknown as typeof fetch
-    now += 601_000
-    advancing = true
+    clock.now += 601_000
     const selections = await Promise.all(
       Array.from({ length: 20 }, () =>
         mod.getAutoSessionForModel({
@@ -1998,12 +2360,12 @@ describe("two-source discount pairings", () => {
     expect(selections.every((item) => item?.sessionToken === "kept-auto")).toBe(
       true,
     )
-    await mod.whenProbeSchedulerIdle()
+    await clock.finishCurrentRound(mod)
     expect(prompts).toHaveLength(10)
     expect(prompts[0]).toBe("hello")
-    expect(prompts[1]).not.toBe(prompts[0])
-    advancing = false
-    const exhaustedAt = now
+    expect(conditionIds[1]).not.toBe(conditionIds[0])
+    expect(new Set(conditionIds.slice(0, 10)).size).toBe(10)
+    const exhaustedAt = clock.now
     expect(
       (
         await mod.getAutoSessionForModel({
@@ -2020,15 +2382,14 @@ describe("two-source discount pairings", () => {
         })
       )?.sessionToken,
     ).toBe("kept-auto")
-    now = exhaustedAt + 89_999
+    clock.now = exhaustedAt + 89_999
     await mod.getAutoSessionForModel({
       model: "discount-model",
       endpoint: "/responses",
     })
     expect(prompts).toHaveLength(10)
-    now = exhaustedAt + 90_000
+    clock.now = exhaustedAt + 90_000
     recoverVariants = true
-    advancing = true
     await Promise.all(
       Array.from({ length: 20 }, () =>
         mod.getAutoSessionForModel({
@@ -2037,10 +2398,11 @@ describe("two-source discount pairings", () => {
         }),
       ),
     )
-    await mod.whenProbeSchedulerIdle()
+    await clock.finishCurrentRound(mod)
     expect(prompts).toHaveLength(12)
     expect(prompts[10]).toBe("hello")
-    expect(prompts[11]).not.toBe(prompts[10])
+    expect(conditionIds[11]).not.toBe(conditionIds[10])
+    expect(new Set(conditionIds.slice(10)).size).toBe(2)
     expect(
       (
         await mod.getAutoSessionForModel({
@@ -2053,33 +2415,10 @@ describe("two-source discount pairings", () => {
   })
 
   test("Fusion target 的定时续期和过期重获都有界，失败算十次预算且冷却后才能重开", async () => {
+    const clock = installProbeClock(Math.floor(Date.now() / 1000) * 1000)
+    const startedAt = clock.now
     const mod = await loadAutoSessionModule()
-    let now = Math.floor(Date.now() / 1000) * 1000
-    const startedAt = now
-    let advancing = false
-    spyOn(Date, "now").mockImplementation(() => {
-      if (advancing) now += 4_000
-      return now
-    })
-    const timers: Array<{
-      callback: () => void
-      ms: number
-      cancelled: boolean
-    }> = []
-    const realClearTimeout = globalThis.clearTimeout
-    spyOn(globalThis, "setTimeout").mockImplementation(((
-      callback: () => void,
-      ms = 0,
-    ) => {
-      const timer = { callback, ms, cancelled: false, unref() {} }
-      timers.push(timer)
-      return timer
-    }) as unknown as typeof setTimeout)
-    spyOn(globalThis, "clearTimeout").mockImplementation((timer: unknown) => {
-      const captured = timers.find((candidate) => candidate === timer)
-      if (captured) captured.cancelled = true
-      else realClearTimeout(timer as NodeJS.Timeout)
-    })
+    const timers = clock.timers
     const prompts: Array<string> = []
     let failing = false
     globalThis.fetch = mock(
@@ -2091,38 +2430,59 @@ describe("two-source discount pairings", () => {
           throw new Error("expected string request body")
         const { prompt } = JSON.parse(init.body) as { prompt: string }
         prompts.push(prompt)
+        if (failing) {
+          return Promise.resolve(
+            new Response(null, {
+              status: 503,
+              headers: { "retry-after": "1" },
+            }),
+          )
+        }
         return Promise.resolve(
-          failing ?
-            new Response(null, { status: 503, headers: { "retry-after": "1" } })
-          : fusionResponse(
-              "discount-model",
-              "fusion-target",
-              Math.floor(now / 1000) + 600,
-            ),
+          fusionResponse(
+            "discount-model",
+            "fusion-target",
+            Math.floor(clock.now / 1000) + 600,
+          ),
         )
       },
     ) as unknown as typeof fetch
+    getConfig().autoDiscovery = { models: ["discount-model"] }
     mod.resumeAutoSessionDiscoveryAfterRotation()
     mod.registerAutoSelection(
       selection("discount-model", "kept-auto", {
-        expiresAt: Math.floor(now / 1000) + 86400,
+        expiresAt: Math.floor(clock.now / 1000) + 86400,
         supportedEndpoints: ["/responses"],
       }),
+      createProbeCondition({
+        source: "auto",
+        tier: "balance",
+        prompt: "hello",
+      }),
     )
-    await mod.whenProbeSchedulerIdle()
+    await clock.finishCurrentRound(mod)
     expect(prompts).toHaveLength(1)
     const savedPrompt = prompts[0]
     const refresh = timers.find((timer) => timer.ms === 300_000)
     if (refresh === undefined) throw new Error("missing Fusion refresh timer")
     expect(refresh).toBeDefined()
     failing = true
-    now = startedAt + 300_000
+    clock.now = startedAt + 300_000
+    refresh.cancelled = true
     refresh.callback()
-    advancing = true
-    await mod.whenProbeSchedulerIdle()
+    await clock.finishCurrentRound(mod)
     expect(prompts).toHaveLength(2)
     expect(prompts[1]).toBe(savedPrompt)
-    now = startedAt + 601_000
+    expect(
+      (
+        await mod.getAutoSessionForModel({
+          model: "discount-model",
+          endpoint: "/responses",
+        })
+      )?.sessionToken,
+    ).toBe("fusion-target")
+    expect(prompts).toHaveLength(2)
+    clock.now = startedAt + 601_000
     expect(
       (
         await mod.getAutoSessionForModel({
@@ -2131,12 +2491,15 @@ describe("two-source discount pairings", () => {
         })
       )?.sessionToken,
     ).toBe("kept-auto")
-    await mod.whenProbeSchedulerIdle()
+    await clock.finishCurrentRound(mod)
     expect(prompts).toHaveLength(12)
     expect(new Set(prompts.slice(2)).size).toBeGreaterThan(1)
-    advancing = false
-    const exhaustedAt = now
-    now = exhaustedAt + 89_999
+    const cooldown = timers.find(
+      (timer) => !timer.cancelled && timer.ms === 90_000,
+    )
+    if (cooldown === undefined) throw new Error("missing Fusion cooldown timer")
+    expect(clock.now).toBeLessThan(cooldown.at)
+    await clock.advanceBy(cooldown.at - clock.now - 1)
     await Promise.all(
       Array.from({ length: 20 }, () =>
         mod.getAutoSessionForModel({
@@ -2146,13 +2509,13 @@ describe("two-source discount pairings", () => {
       ),
     )
     expect(prompts).toHaveLength(12)
-    now = exhaustedAt + 90_000
     failing = false
+    await clock.advanceBy(1)
     await mod.getAutoSessionForModel({
       model: "discount-model",
       endpoint: "/responses",
     })
-    await mod.whenProbeSchedulerIdle()
+    await clock.finishCurrentRound(mod)
     expect(prompts).toHaveLength(13)
     expect(
       (
