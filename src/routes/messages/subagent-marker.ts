@@ -26,6 +26,19 @@ export const parseSubagentMarkerFromFirstUser = (
   return null
 }
 
+const isValidMarker = (parsed: unknown): parsed is SubagentMarker => {
+  if (typeof parsed !== "object" || parsed === null) return false
+  const candidate = parsed as Record<string, unknown>
+  return (
+    typeof candidate.session_id === "string"
+    && candidate.session_id.trim().length > 0
+    && typeof candidate.agent_id === "string"
+    && candidate.agent_id.trim().length > 0
+    && typeof candidate.agent_type === "string"
+    && candidate.agent_type.trim().length > 0
+  )
+}
+
 const parseSubagentMarkerFromSystemReminder = (
   text: string,
 ): SubagentMarker | null => {
@@ -57,8 +70,8 @@ const parseSubagentMarkerFromSystemReminder = (
       .trim()
 
     try {
-      const parsed = JSON.parse(markerJson) as SubagentMarker
-      if (!parsed.session_id || !parsed.agent_id || !parsed.agent_type) {
+      const parsed: unknown = JSON.parse(markerJson)
+      if (!isValidMarker(parsed)) {
         searchFrom = reminderEnd + endTag.length
         continue
       }

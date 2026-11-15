@@ -5,6 +5,10 @@ export const BRIDGE_TOOL_SEARCH_ALIASES = [
   "mcp__plugin_tool-search_tool_search__search",
 ] as const
 export const MCP_TOOL_SEARCH_SENTINEL_TYPE = "copilot_api_tool_search"
+export const CLAUDE_TOOL_SEARCH_NAME = "ToolSearch"
+export const CLAUDE_DEFERRED_TOOL_PLACEHOLDER_NAME = "DeferredToolPlaceholder"
+
+export type ResponsesToolSearchMode = "native" | "bridge" | "disabled"
 
 export const ALWAYS_LOADED_TOOL_NAMES = [
   "Agent",
@@ -106,35 +110,28 @@ export const shouldEnableResponsesToolSearch = (params: {
   && hasBridgeToolSearchTool(params.tools)
   && hasDeferredToolCandidate(params.tools)
 
-export const hasDeferredNamespaceTool = (
-  tools: Array<unknown> | null | undefined,
-): boolean =>
-  Array.isArray(tools)
-  && tools.some((tool) => {
-    if (!tool || typeof tool !== "object") {
-      return false
-    }
+export const resolveResponsesToolSearchMode = (params: {
+  model: string
+  tools?: Array<ToolSearchToolLike>
+}): ResponsesToolSearchMode => {
+  if (!supportsResponsesToolSearchModel(params.model)) {
+    return "disabled"
+  }
 
-    const record = tool as Record<string, unknown>
-    if (record.type !== "namespace" || typeof record.name !== "string") {
-      return false
-    }
+  if (params.tools?.some((tool) => tool.name === CLAUDE_TOOL_SEARCH_NAME)) {
+    return "native"
+  }
 
-    if (!isDeferredToolName(record.name)) {
-      return false
-    }
+  return shouldEnableResponsesToolSearch(params) ? "bridge" : "disabled"
+}
 
-    const namespaceTools = record.tools
-    return (
-      Array.isArray(namespaceTools)
-      && namespaceTools.some(
-        (entry) =>
-          entry
-          && typeof entry === "object"
-          && (entry as Record<string, unknown>).defer_loading === true,
-      )
-    )
-  })
+export const resolveResponsesToolSearchName = (params: {
+  model: string
+  tools?: Array<ToolSearchToolLike>
+}): string =>
+  resolveResponsesToolSearchMode(params) === "native" ?
+    CLAUDE_TOOL_SEARCH_NAME
+  : resolveBridgeToolSearchName(params.tools)
 
 export const listDeferredToolNames = (
   tools: Array<ToolSearchToolLike>,
@@ -242,6 +239,30 @@ export const formatToolSearchBridgeArguments = (
   return { names: names.join(",") }
 }
 
+export const formatToolSearchArguments = (
+  argumentsValue: Record<string, unknown> | string,
+  toolSearchName: string,
+): Record<string, unknown> => {
+  if (toolSearchName !== CLAUDE_TOOL_SEARCH_NAME) {
+    return formatToolSearchBridgeArguments(argumentsValue)
+  }
+
+  if (typeof argumentsValue !== "string") {
+    return argumentsValue && !Array.isArray(argumentsValue) ?
+        argumentsValue
+      : {}
+  }
+
+  try {
+    const parsed: unknown = JSON.parse(argumentsValue)
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ?
+        (parsed as Record<string, unknown>)
+      : {}
+  } catch {
+    return {}
+  }
+}
+
 export const selectDeferredToolsByNames = (
   names: unknown,
   tools: Array<ToolSearchToolLike>,
@@ -262,5 +283,3 @@ export const selectDeferredToolsByNames = (
     return tool ? [tool] : []
   })
 }
-
-export const hasDeferredMcpNamespaceTool = hasDeferredNamespaceTool

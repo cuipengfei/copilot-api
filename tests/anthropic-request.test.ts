@@ -4,6 +4,7 @@ import { z } from "zod"
 import type {
   AnthropicAssistantContentBlock,
   AnthropicMessagesPayload,
+  AnthropicTextBlock,
 } from "~/lib/types/anthropic"
 import type { Model } from "~/lib/types/models"
 
@@ -113,12 +114,12 @@ function createThinkingModel(): Model {
 }
 
 describe("Anthropic to OpenAI translation logic", () => {
-  test("shares the main agent metadata cache key with marked subagents", () => {
+  test("shares the trace root cache key with sibling subagents", () => {
     for (const agentId of ["agent-a", "agent-b"]) {
       const payload: AnthropicMessagesPayload = {
         model: "qwen-plus",
         max_tokens: 128,
-        metadata: { user_id: JSON.stringify({ session_id: "root" }) },
+        metadata: { user_id: JSON.stringify({ session_id: "stale-session" }) },
         messages: [
           {
             role: "user",
@@ -131,8 +132,17 @@ describe("Anthropic to OpenAI translation logic", () => {
           },
         ],
       }
-
-      expect(translateToOpenAI(payload).prompt_cache_key).toBe("root")
+      requestContext.run(
+        {
+          traceId: "test-cache",
+          startTime: Date.now(),
+          userAgent: "test",
+          rootSessionId: "root",
+          sessionAffinity: agentId,
+          parentSessionId: undefined,
+        },
+        () => expect(translateToOpenAI(payload).prompt_cache_key).toBe("root"),
+      )
     }
   })
 
@@ -326,6 +336,13 @@ describe("Anthropic to OpenAI translation logic", () => {
   })
 
   test("maps inline Anthropic system messages to OpenAI user messages", () => {
+    const toolAdditionBlock = {
+      type: "tool_addition",
+      tool: {
+        type: "tool_reference",
+        name: "mcp__plugin_tool-search_tool_search__search",
+      },
+    } as unknown as AnthropicTextBlock
     const anthropicPayload: AnthropicMessagesPayload = {
       model: "gpt-4o",
       messages: [
@@ -333,7 +350,22 @@ describe("Anthropic to OpenAI translation logic", () => {
         { role: "system", content: "Follow the repo style." },
         {
           role: "system",
-          content: [{ type: "text", text: "Keep the change focused." }],
+          content: [
+            { type: "text", text: "Keep the change focused." },
+            toolAdditionBlock,
+          ],
+        },
+        {
+          role: "system",
+          content: [toolAdditionBlock],
+        },
+        {
+          role: "system",
+          content: "",
+        },
+        {
+          role: "system",
+          content: [{ type: "text", text: " \n\t" }],
         },
       ],
       max_tokens: 128,
@@ -347,6 +379,10 @@ describe("Anthropic to OpenAI translation logic", () => {
       {
         role: "user",
         content: [{ type: "text", text: "Keep the change focused." }],
+      },
+      {
+        role: "user",
+        content: [{ type: "text", text: " \n\t" }],
       },
     ])
   })

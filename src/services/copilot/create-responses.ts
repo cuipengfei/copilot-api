@@ -2,12 +2,14 @@ import consola from "consola"
 import { createHash, randomUUID } from "node:crypto"
 
 import type { SubagentMarker } from "~/lib/subagent"
+import type { ResponsesStreamChunk } from "~/lib/responses-stream-event"
 import type {
   CreateResponsesReturn,
   ResponsesPayload,
   ResponsesResult,
   ResponsesStream,
   ResponsesTransport,
+  ResponseStreamEvent,
 } from "~/lib/types/responses"
 import type { PooledWebSocketRequest } from "~/services/responses-websocket"
 
@@ -24,20 +26,16 @@ import {
   getUpstreamTransportConfig,
   isOutputEncryptedContentDisabled,
 } from "~/lib/config"
-import {
-  logCopilotQuotaSnapshots,
-  type CopilotQuotaSnapshot,
-} from "~/lib/copilot-rate-limit"
+import { logCopilotQuotaSnapshots } from "~/lib/copilot-rate-limit"
 import { HTTPError } from "~/lib/error"
 import { attachPremiumInfo, getPremiumInfoFromHeaders } from "~/lib/logger"
+import { getResponsesContinuationSession } from "~/lib/responses-continuation"
 import { setPluginRequestActualModel } from "~/lib/request-context"
 import { attachResponseHeaders } from "~/lib/response-headers"
 import { resolveInitiatorWithSmartAgent } from "~/lib/smart-agent"
 import { state } from "~/lib/state"
-import {
-  createPooledWebSocketStream,
-  createWebSocketUrl,
-} from "~/services/responses-websocket"
+import { createWebSocketUrl } from "~/services/responses-websocket"
+import { createContinuableResponsesWebSocketStream } from "~/services/responses-websocket-continuation"
 import {
   scheduleFeedbackEvents,
   schedulePostResponseEvents,
@@ -56,10 +54,15 @@ export type { CopilotUsage }
 
 import {
   createResponsesSafeStream,
+  decodeResponsesWebSocketChunk,
   encodePoolKeyPart,
   getResponsesStreamTerminalDisposition,
 } from "~/services/responses-websocket-helpers"
 import { createResponsesHttpEventStream } from "~/services/responses-http"
+
+// Copilot closes the Responses WebSocket with code 1009 (message too big) and
+// no terminal event for a message above 32 MiB.
+export const COPILOT_RESPONSES_WEBSOCKET_MAX_MESSAGE_BYTES = 32 * 1024 * 1024
 
 interface ResponsesRequestOptions {
   vision: boolean
@@ -139,6 +142,7 @@ export const createResponses = async (
     const stream = createPooledResponsesWebSocketStream(
       websocketRequest,
       clientSignal,
+      getResponsesContinuationSession(),
     )
     return stream
   }
@@ -335,12 +339,20 @@ export const getResponsesWebSocketInitiator = (
 const createPooledResponsesWebSocketStream = (
   request: ResponsesWebSocketRequest,
   clientSignal?: AbortSignal,
+  continuationSession?: string,
 ): ResponsesStream =>
   createResponsesSafeStream(
     createClientPreflightStream(
-      createPooledWebSocketStream(request, {
-        ...getResponsesWebSocketOptions(),
-      }),
+      createContinuableResponsesWebSocketStream(
+        request,
+        {
+          ...getResponsesWebSocketOptions(),
+        },
+        {
+          sessionId: continuationSession,
+          clientSignal,
+        },
+      ),
       clientSignal,
     ),
   )
@@ -351,6 +363,7 @@ const getResponsesWebSocketOptions = () => {
     createChunk: createResponsesWebSocketStreamChunk,
     maxBufferedBytes: transportConfig.websocketMaxBufferedBytes,
     maxBufferedMessages: transportConfig.websocketMaxBufferedMessages,
+    maxMessageBytes: COPILOT_RESPONSES_WEBSOCKET_MAX_MESSAGE_BYTES,
     getTerminalDisposition: getResponsesStreamTerminalDisposition,
     openErrorMessage: "Failed to create responses websocket",
     openTimeoutMs: transportConfig.websocketOpenTimeoutMs,
@@ -406,41 +419,19 @@ const getHeaderValue = (
 
 export const createResponsesWebSocketStreamChunk = (
   data: string,
-): { data?: string; event?: string; id?: string } => {
-  if (data === "[DONE]") {
-    return { data }
-  }
+): ResponsesStreamChunk =>
+  decodeResponsesWebSocketChunk(data, normalizeCopilotWebSocketEvent)
 
-  try {
-    const parsed = JSON.parse(data) as {
-      copilot_quota_snapshots?: Record<string, CopilotQuotaSnapshot>
-      id?: unknown
-      type?: unknown
-      error?: {
-        code: string | null
-        message: string
-      }
-      code?: string | null
-      message?: string
-    }
-    if (parsed.type === "response.completed") {
-      logCopilotQuotaSnapshots(parsed.copilot_quota_snapshots)
-    }
-    // Normal events have no payload changes: forward their original bytes.
-    // Error events still expose the legacy top-level code/message fields.
-    let forwardedData = data
-    if (parsed.type === "error" && parsed.error) {
-      consola.warn("Copilot responses websocket stream error:", parsed.error)
-      parsed.code = parsed.error.code
-      parsed.message = parsed.error.message
-      forwardedData = JSON.stringify(parsed)
-    }
-    return {
-      event: typeof parsed.type === "string" ? parsed.type : undefined,
-      data: forwardedData,
-      id: typeof parsed.id === "string" ? parsed.id : undefined,
-    }
-  } catch {
-    return { data }
+const normalizeCopilotWebSocketEvent = (
+  event: ResponseStreamEvent,
+): boolean => {
+  if (event.type === "response.completed") {
+    logCopilotQuotaSnapshots(event.copilot_quota_snapshots)
   }
+  if (event.type !== "error" || !event.error) return false
+
+  consola.warn("Copilot responses websocket stream error:", event.error)
+  event.code = event.error.code
+  event.message = event.error.message
+  return true
 }

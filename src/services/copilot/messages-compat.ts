@@ -14,9 +14,9 @@ import {
   getUpstreamTransportConfig,
 } from "~/lib/config"
 import { HTTPError } from "~/lib/error"
+import { requestContext } from "~/lib/request-context"
 import { resolveInitiatorWithSmartAgent } from "~/lib/smart-agent"
 import { state } from "~/lib/state"
-import { parseUserIdMetadata } from "~/lib/utils"
 import { attachAutoSessionToken } from "~/services/copilot/auto-session-retry"
 import type { CreateMessagesOptions } from "~/services/copilot/create-messages"
 import {
@@ -149,6 +149,7 @@ const allowedAnthropicBetas: Record<string, true> = {
   [ADVANCED_TOOL_USE_BETA]: true,
   "extended-cache-ttl-2025-04-11": true,
   "mid-conversation-output-config-2026-07-01": true,
+  "mid-conversation-tool-changes-2026-07-01": true,
   "per-turn-control-2026-07-01": true,
 }
 
@@ -279,10 +280,10 @@ export const buildMessagesHeaders = async (
     options.initiator ?? (isInitiateRequest ? "user" : "agent")
   const { initiator } = await resolveInitiatorWithSmartAgent(defaultInitiator)
   const headers = copilotHeaders(state, options.requestId, enableVision)
-  const { safetyIdentifier, sessionId } = parseUserIdMetadata(
-    payload.metadata?.user_id,
-  )
-  const useMessageProxy = safetyIdentifier && sessionId && !isOpencodeOauthApp()
+  // Claude proxy identity comes from the native Claude request context only;
+  // metadata or a legacy subagent marker never trigger it.
+  const useMessageProxy =
+    requestContext.getStore()?.isClaudeCode && !isOpencodeOauthApp()
   if (useMessageProxy) {
     headers["anthropic-version"] =
       options.anthropicVersionHeader ?? "2023-06-01"

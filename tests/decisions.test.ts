@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 
 import { state } from "../src/lib/state"
-import { server } from "../src/server"
+import { createServer } from "../src/server"
 
+const server = createServer()
 const originalFetch = globalThis.fetch
 const originalCopilotToken = state.copilotToken
 const originalAccountType = state.accountType

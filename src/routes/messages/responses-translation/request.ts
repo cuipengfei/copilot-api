@@ -1,13 +1,17 @@
 import consola from "consola"
 
 import {
+  CLAUDE_DEFERRED_TOOL_PLACEHOLDER_NAME,
+  CLAUDE_TOOL_SEARCH_NAME,
   isBridgeToolSearchName,
   isDeferredToolName,
   listDeferredToolNames,
   normalizeToolSearchBridgeArguments,
+  parseDeferredToolNames,
   parseMcpToolSearchSentinel,
+  resolveResponsesToolSearchMode,
   selectDeferredToolsByNames,
-  shouldEnableResponsesToolSearch,
+  type ResponsesToolSearchMode,
 } from "~/lib/tool-search"
 import { HTTPError } from "~/lib/error"
 import {
@@ -31,6 +35,7 @@ import {
   type ResponseFunctionCallOutputItem,
   type ResponseToolSearchCallItem,
   type ResponseToolSearchOutputItem,
+  type FunctionTool,
   type Tool,
   type ToolChoiceFunction,
   type ToolChoiceOptions,
@@ -69,14 +74,25 @@ export const translateAnthropicMessagesToResponsesPayload = (
 ): ResponsesPayload => {
   const input: Array<ResponseInputItem> = []
   const applyPhase = shouldApplyPhase(payload.model)
-  const toolSearchEnabled = shouldEnableResponsesToolSearch({
+  const toolSearchMode = resolveResponsesToolSearchMode({
     model: payload.model,
     tools: payload.tools,
   })
   const translationState: TranslationState = {
     originalTools: payload.tools ?? [],
-    toolSearchEnabled,
+    toolSearchMode,
     toolUseNameById: new Map(),
+    loadedToolNames: new Set(),
+    eagerToolNames: new Set(
+      (payload.tools ?? [])
+        .filter(
+          (tool) =>
+            !tool.defer_loading
+            && tool.name !== CLAUDE_TOOL_SEARCH_NAME
+            && !isBridgeToolSearchName(tool.name),
+        )
+        .map((tool) => tool.name),
+    ),
   }
 
   for (const message of payload.messages) {
@@ -87,17 +103,13 @@ export const translateAnthropicMessagesToResponsesPayload = (
 
   const hasOriginalTools =
     Array.isArray(payload.tools) && payload.tools.length > 0
-  const translatedTools = convertAnthropicTools(
-    payload.tools,
-    toolSearchEnabled,
-  )
+  const translatedTools = convertAnthropicTools(payload.tools, toolSearchMode)
   const toolChoice = convertAnthropicToolChoice(
     payload.tool_choice,
-    toolSearchEnabled,
+    toolSearchMode,
   )
 
-  // Remove safetyIdentifier to align with vscode copilot
-  const promptCacheKey = getPromptCacheKey(payload)
+  const promptCacheKey = getPromptCacheKey()
 
   const responsesPayload: ResponsesPayload = {
     model: payload.model,
@@ -150,8 +162,10 @@ export const translateAnthropicMessagesToResponsesPayload = (
 
 export interface TranslationState {
   originalTools: Array<AnthropicTool>
-  toolSearchEnabled: boolean
+  toolSearchMode: ResponsesToolSearchMode
   toolUseNameById: Map<string, string>
+  loadedToolNames: Set<string>
+  eagerToolNames: Set<string>
 }
 
 export const translateMessage = (
@@ -175,10 +189,14 @@ export const translateSystemMessage = (
   message: AnthropicSystemMessage,
 ): Array<ResponseInputItem> => {
   if (typeof message.content === "string") {
-    return [createMessage("developer", message.content)]
+    return message.content.length > 0 ?
+        [createMessage("developer", message.content)]
+      : []
   }
 
-  const content = message.content.map((block) => createTextContent(block.text))
+  const content = message.content
+    .filter((block) => block.type === "text" && block.text.length > 0)
+    .map((block) => createTextContent(block.text))
   return content.length > 0 ? [createMessage("developer", content)] : []
 }
 
@@ -494,37 +512,53 @@ export const parseReasoningSignature = (
 
 export const createFunctionToolCall = (
   block: AnthropicToolUseBlock,
-  state: TranslationState,
 ): ResponseFunctionToolCallItem => ({
   type: "function_call",
   call_id: block.id,
   name: block.name,
   arguments: JSON.stringify(block.input),
   status: "completed",
-  ...(state.toolSearchEnabled && isDeferredToolName(block.name) ?
-    { namespace: block.name }
-  : {}),
 })
 
 export const createToolSearchCall = (
   block: AnthropicToolUseBlock,
-): ResponseToolSearchCallItem => ({
-  type: "tool_search_call",
-  call_id: block.id,
-  arguments: normalizeToolSearchBridgeArguments(block.input),
-  execution: "client",
-  status: "completed",
-})
+  mode: ResponsesToolSearchMode = "bridge",
+): ResponseToolSearchCallItem => {
+  let args = normalizeToolSearchBridgeArguments(block.input)
+  if (mode === "native") {
+    if (block.name === CLAUDE_TOOL_SEARCH_NAME) {
+      args = block.input
+    } else {
+      const names = parseDeferredToolNames(args.names)
+      args = {
+        query: `select:${names.join(",")}`,
+        max_results: Math.max(5, names.length),
+      }
+    }
+  }
+  return {
+    type: "tool_search_call",
+    call_id: block.id,
+    arguments: args,
+    execution: "client",
+    status: "completed",
+  }
+}
 
 export const createToolCall = (
   block: AnthropicToolUseBlock,
   state: TranslationState,
 ): ResponseFunctionToolCallItem | ResponseToolSearchCallItem => {
-  if (state.toolSearchEnabled && isBridgeToolSearchName(block.name)) {
-    return createToolSearchCall(block)
+  if (
+    (state.toolSearchMode === "native"
+      && block.name === CLAUDE_TOOL_SEARCH_NAME)
+    || (state.toolSearchMode !== "disabled"
+      && isBridgeToolSearchName(block.name))
+  ) {
+    return createToolSearchCall(block, state.toolSearchMode)
   }
 
-  return createFunctionToolCall(block, state)
+  return createFunctionToolCall(block)
 }
 
 export const createFunctionCallOutput = (
@@ -541,11 +575,73 @@ export const createToolCallOutput = (
   state: TranslationState,
 ): ResponseFunctionCallOutputItem | ResponseToolSearchOutputItem => {
   const toolUseName = state.toolUseNameById.get(block.tool_use_id)
-  if (state.toolSearchEnabled && isBridgeToolSearchName(toolUseName ?? "")) {
+  if (
+    state.toolSearchMode === "native"
+    && (toolUseName === CLAUDE_TOOL_SEARCH_NAME
+      || isBridgeToolSearchName(toolUseName ?? ""))
+  ) {
+    return createNativeToolSearchOutput(block, state)
+  }
+  if (
+    state.toolSearchMode === "bridge"
+    && isBridgeToolSearchName(toolUseName ?? "")
+  ) {
     return createToolSearchOutput(block, state.originalTools)
   }
 
   return createFunctionCallOutput(block)
+}
+
+export const createNativeToolSearchOutput = (
+  block: AnthropicToolResultBlock,
+  state: TranslationState,
+): ResponseToolSearchOutputItem => {
+  const explicitReferences = extractToolReferenceNames(block.content)
+  const referencedToolNames = uniqueToolNames(
+    explicitReferences.length > 0 ?
+      explicitReferences
+    : (extractMcpToolSearchSentinel(block.content)?.names ?? []),
+  )
+  const tools: Array<FunctionTool> = []
+
+  for (const toolName of referencedToolNames) {
+    const converted = resolveNativeDeferredTool(toolName, state.originalTools)
+    if (state.eagerToolNames.has(toolName)) continue
+
+    if (state.loadedToolNames.has(toolName)) continue
+    state.loadedToolNames.add(toolName)
+    tools.push(converted)
+  }
+
+  return {
+    type: "tool_search_output",
+    call_id: block.tool_use_id,
+    tools,
+    execution: "client",
+    status: block.is_error ? "incomplete" : "completed",
+  }
+}
+
+export const resolveNativeDeferredTool = (
+  toolName: string,
+  originalTools: Array<AnthropicTool>,
+): FunctionTool => {
+  const matches = originalTools.filter((tool) => tool.name === toolName)
+  const tool = matches[0]
+  if (
+    toolName !== CLAUDE_DEFERRED_TOOL_PLACEHOLDER_NAME
+    && matches.length === 1
+    && tool.input_schema
+    && typeof tool.input_schema === "object"
+    && !Array.isArray(tool.input_schema)
+  ) {
+    // Responses uses its own defer_loading flag for client-loaded functions.
+    return { ...convertToolToFunction(tool), defer_loading: true }
+  }
+
+  throw createInvalidRequestError(
+    `Tool reference '${toolName}' has no unambiguous tool definition`,
+  )
 }
 
 export const createToolSearchOutput = (
@@ -560,11 +656,10 @@ export const createToolSearchOutput = (
   return {
     type: "tool_search_output",
     call_id: block.tool_use_id,
-    tools: referencedToolNames.map((toolName) =>
-      convertDeferredToolToNamespace(
-        resolveDeferredTool(toolName, originalTools),
-      ),
-    ),
+    tools: referencedToolNames.map((toolName) => ({
+      ...convertToolToFunction(resolveDeferredTool(toolName, originalTools)),
+      defer_loading: true,
+    })),
     execution: "client",
     status: block.is_error ? "incomplete" : "completed",
   }
@@ -684,7 +779,7 @@ export const translateSystemPrompt = (
 
 export const convertAnthropicTools = (
   tools: Array<AnthropicTool> | undefined,
-  toolSearchEnabled: boolean,
+  toolSearchMode: ResponsesToolSearchMode,
 ): Array<Tool> | null => {
   if (!tools || tools.length === 0) {
     return null
@@ -693,19 +788,35 @@ export const convertAnthropicTools = (
   const converted: Array<Tool> = []
   let addedToolSearch = false
   const searchableToolNames =
-    toolSearchEnabled ? listDeferredToolNames(tools) : []
+    toolSearchMode === "bridge" ? listDeferredToolNames(tools) : []
 
   for (const tool of tools) {
+    if (toolSearchMode === "native") {
+      if (tool.name === CLAUDE_TOOL_SEARCH_NAME) {
+        if (!addedToolSearch) {
+          converted.push(createNativeResponsesToolSearchDefinition(tool))
+          addedToolSearch = true
+        }
+        continue
+      }
+      if (
+        tool.name === CLAUDE_DEFERRED_TOOL_PLACEHOLDER_NAME
+        || isBridgeToolSearchName(tool.name)
+        || tool.defer_loading
+      ) {
+        continue
+      }
+    }
+
     if (isBridgeToolSearchName(tool.name)) {
-      if (toolSearchEnabled && !addedToolSearch) {
+      if (toolSearchMode === "bridge" && !addedToolSearch) {
         converted.push(createResponsesToolSearchDefinition(searchableToolNames))
         addedToolSearch = true
       }
       continue
     }
 
-    if (toolSearchEnabled && isDeferredToolName(tool.name)) {
-      converted.push(convertDeferredToolToNamespace(tool))
+    if (toolSearchMode === "bridge" && isDeferredToolName(tool.name)) {
       continue
     }
 
@@ -714,6 +825,16 @@ export const convertAnthropicTools = (
 
   return converted
 }
+
+export const createNativeResponsesToolSearchDefinition = (
+  tool: AnthropicTool,
+): Tool => ({
+  type: "tool_search",
+  execution: "client",
+  description:
+    "Find and load deferred tools using Claude Code ToolSearch. Use select:<name> for exact names, or search with keywords. Available tool names are provided in the conversation.",
+  parameters: normalizeToolSchema(tool.input_schema),
+})
 
 export const createResponsesToolSearchDefinition = (
   searchableToolNames: Array<string>,
@@ -740,7 +861,7 @@ export const createResponsesToolSearchDefinition = (
   },
 })
 
-export const convertToolToFunction = (tool: AnthropicTool): Tool => ({
+export const convertToolToFunction = (tool: AnthropicTool): FunctionTool => ({
   type: "function",
   name: tool.name,
   parameters: normalizeToolSchema(tool.input_schema),
@@ -748,25 +869,9 @@ export const convertToolToFunction = (tool: AnthropicTool): Tool => ({
   ...(tool.description ? { description: tool.description } : {}),
 })
 
-export const convertDeferredToolToNamespace = (tool: AnthropicTool): Tool => ({
-  type: "namespace",
-  name: tool.name,
-  ...(tool.description ? { description: tool.description } : {}),
-  tools: [
-    {
-      type: "function",
-      name: tool.name,
-      parameters: normalizeToolSchema(tool.input_schema),
-      strict: tool.strict ?? false,
-      defer_loading: true,
-      ...(tool.description ? { description: tool.description } : {}),
-    },
-  ],
-})
-
 export const convertAnthropicToolChoice = (
   choice: AnthropicMessagesPayload["tool_choice"],
-  toolSearchEnabled: boolean,
+  toolSearchMode: ResponsesToolSearchMode,
 ): ToolChoiceOptions | ToolChoiceFunction => {
   if (!choice) {
     return "auto"
@@ -781,9 +886,11 @@ export const convertAnthropicToolChoice = (
     }
     case "tool": {
       if (
-        toolSearchEnabled
+        toolSearchMode !== "disabled"
         && choice.name
-        && isBridgeToolSearchName(choice.name)
+        && (isBridgeToolSearchName(choice.name)
+          || (toolSearchMode === "native"
+            && choice.name === CLAUDE_TOOL_SEARCH_NAME))
       ) {
         return "auto"
       }

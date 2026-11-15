@@ -681,60 +681,44 @@ describe("translateAnthropicMessagesToResponsesPayload", () => {
     },
   )
 
-  it("extracts identifiers from JSON-like user_id metadata", () => {
-    const result = translateAnthropicMessagesToResponsesPayload({
-      ...samplePayload,
-      metadata: {
-        user_id: jsonStyleUserId,
-      },
-      tools: sampleTools,
-    })
-
-    expect(result.prompt_cache_key).toBe("2c4e1cf0-7a67-4d2e-9a4b-1d16d3f44752")
-  })
-
-  it.each([undefined, "agent-a", "agent-b"])(
-    "shares the metadata cache key between main and subagents (%s)",
-    (agentId) => {
+  it.each([jsonStyleUserId, legacyStyleUserId, emptySessionUserId])(
+    "preserves metadata without using it as the cache key (%s)",
+    (userId) => {
+      const metadata = { user_id: userId }
       const result = translateAnthropicMessagesToResponsesPayload({
         ...samplePayload,
-        metadata: { user_id: jsonStyleUserId },
+        metadata,
         tools: sampleTools,
-        messages: [
-          {
-            role: "user",
-            content: [
-              {
-                type: "text",
-                text:
-                  agentId ?
-                    `<system-reminder>__SUBAGENT_MARKER__${JSON.stringify({ session_id: "child", agent_id: agentId, agent_type: "Explore" })}</system-reminder>`
-                  : "hello",
-              },
-            ],
-          },
-        ],
       })
-
-      expect(result.prompt_cache_key).toBe(
-        "2c4e1cf0-7a67-4d2e-9a4b-1d16d3f44752",
-      )
+      expect(result.prompt_cache_key).toBeNull()
+      expect(result.metadata).toEqual(metadata)
     },
   )
 
-  it("keeps legacy user_id parsing before JSON fallback", () => {
-    const result = translateAnthropicMessagesToResponsesPayload({
-      ...samplePayload,
-      metadata: {
-        user_id: legacyStyleUserId,
-      },
-      tools: sampleTools,
-    })
+  it.each([undefined, "agent-a", "agent-b"])(
+    "shares the trace root cache key between main and subagents (%s)",
+    (agentId) => {
+      const result = requestContext.run(
+        {
+          parentSessionId: undefined,
+          rootSessionId: "root",
+          sessionAffinity: agentId ? `root:${agentId}` : "root",
+          startTime: Date.now(),
+          traceId: "trace-123",
+          userAgent: "test",
+        },
+        () =>
+          translateAnthropicMessagesToResponsesPayload({
+            ...samplePayload,
+            metadata: { user_id: jsonStyleUserId },
+            tools: sampleTools,
+          }),
+      )
+      expect(result.prompt_cache_key).toBe("root")
+    },
+  )
 
-    expect(result.prompt_cache_key).toBe("7d0e2f61-4b5c-4a9d-8f11-2c3d4e5f6a7b")
-  })
-
-  it("falls back to session affinity when metadata session id is empty", () => {
+  it("uses trace affinity when the root session is absent", () => {
     const result = requestContext.run(
       {
         parentSessionId: undefined,
@@ -746,13 +730,10 @@ describe("translateAnthropicMessagesToResponsesPayload", () => {
       () =>
         translateAnthropicMessagesToResponsesPayload({
           ...samplePayload,
-          metadata: {
-            user_id: emptySessionUserId,
-          },
+          metadata: { user_id: jsonStyleUserId },
           tools: sampleTools,
         }),
     )
-
     expect(result.prompt_cache_key).toBe("opencode-session")
   })
 
@@ -815,6 +796,83 @@ describe("translateAnthropicMessagesToResponsesPayload", () => {
         type: "message",
         role: "developer",
         content: "late system prompt",
+      },
+    ])
+  })
+
+  it("translates only text blocks in inline system messages", () => {
+    const toolAdditionBlock = {
+      type: "tool_addition",
+      tool: {
+        type: "tool_reference",
+        name: "mcp__plugin_tool-search_tool_search__search",
+      },
+    }
+    const payload = {
+      model: "gpt-5.4",
+      max_tokens: 1024,
+      messages: [
+        {
+          role: "system",
+          content: [
+            {
+              type: "text",
+              text: "tools are available",
+            },
+            toolAdditionBlock,
+          ],
+        },
+        {
+          role: "user",
+          content: "hello",
+        },
+        {
+          role: "system",
+          content: [toolAdditionBlock],
+        },
+        {
+          role: "system",
+          content: "",
+        },
+        {
+          role: "system",
+          content: [
+            {
+              type: "text",
+              text: " \n\t",
+            },
+          ],
+        },
+      ],
+    } as unknown as AnthropicMessagesPayload
+
+    const result = translateAnthropicMessagesToResponsesPayload(payload)
+
+    expect(result.input).toEqual([
+      {
+        type: "message",
+        role: "developer",
+        content: [
+          {
+            type: "input_text",
+            text: "tools are available",
+          },
+        ],
+      },
+      {
+        type: "message",
+        role: "user",
+        content: "hello",
+      },
+      {
+        type: "message",
+        role: "developer",
+        content: [
+          {
+            type: "input_text",
+            text: " \n\t",
+          },
+        ],
       },
     ])
   })
@@ -1010,7 +1068,7 @@ describe("translateAnthropicMessagesToResponsesPayload", () => {
     ])
   })
 
-  it("converts bridge and deferred tools into Responses tool_search and namespaces", () => {
+  it("keeps bridge deferred tools out of top-level tools until loaded", () => {
     const result = translateAnthropicMessagesToResponsesPayload({
       model: "gpt-5.4",
       max_tokens: 1024,
@@ -1087,48 +1145,6 @@ describe("translateAnthropicMessagesToResponsesPayload", () => {
           required: ["names"],
           additionalProperties: false,
         },
-      },
-      {
-        type: "namespace",
-        name: "mcp__fetch__fetch",
-        description: "Fetch a URL",
-        tools: [
-          {
-            type: "function",
-            name: "mcp__fetch__fetch",
-            description: "Fetch a URL",
-            parameters: {
-              type: "object",
-              properties: {
-                url: { type: "string" },
-              },
-              required: ["url"],
-            },
-            strict: false,
-            defer_loading: true,
-          },
-        ],
-      },
-      {
-        type: "namespace",
-        name: "chrome-devtools_click",
-        description: "Click an element",
-        tools: [
-          {
-            type: "function",
-            name: "chrome-devtools_click",
-            description: "Click an element",
-            parameters: {
-              type: "object",
-              properties: {
-                uid: { type: "string" },
-              },
-              required: ["uid"],
-            },
-            strict: false,
-            defer_loading: true,
-          },
-        ],
       },
       {
         type: "function",
@@ -1248,7 +1264,7 @@ describe("translateAnthropicMessagesToResponsesPayload", () => {
     },
   )
 
-  it("preserves namespace on deferred tool_use history", () => {
+  it("replays deferred tool_use history as a function call", () => {
     const result = translateAnthropicMessagesToResponsesPayload({
       model: "gpt-5.4",
       max_tokens: 1024,
@@ -1282,7 +1298,6 @@ describe("translateAnthropicMessagesToResponsesPayload", () => {
         type: "function_call",
         call_id: "call_shipping_eta",
         name: "get_shipping_eta",
-        namespace: "get_shipping_eta",
         arguments: '{"order_id":"order_42"}',
         status: "completed",
       },
@@ -1348,24 +1363,17 @@ describe("translateAnthropicMessagesToResponsesPayload", () => {
       execution: "client",
       tools: [
         {
-          type: "namespace",
+          type: "function",
           name: "mcp__fetch__fetch",
           description: "Fetch a URL",
-          tools: [
-            {
-              type: "function",
-              name: "mcp__fetch__fetch",
-              description: "Fetch a URL",
-              parameters: {
-                type: "object",
-                properties: {
-                  url: { type: "string" },
-                },
-              },
-              strict: false,
-              defer_loading: true,
+          parameters: {
+            type: "object",
+            properties: {
+              url: { type: "string" },
             },
-          ],
+          },
+          strict: false,
+          defer_loading: true,
         },
       ],
       status: "completed",

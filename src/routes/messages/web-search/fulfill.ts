@@ -38,7 +38,6 @@ import {
   generateRequestIdFromPayload,
   getRootSessionId,
   getUUID,
-  parseUserIdMetadata,
 } from "~/lib/utils"
 import type {
   ResponsesPayload,
@@ -85,7 +84,6 @@ export const webSearchFlowDependencies = {
       endpoint: "responses",
       fallbackSessionId: sessionId,
       model: webSearchModel ?? payload.model,
-      sessionId: parseUserIdMetadata(payload.metadata?.user_id).sessionId,
     }),
 }
 
@@ -352,7 +350,7 @@ export const tryHandleWebSearch = async (
   }
 
   if (route.kind === "responses") {
-    let sessionId = getRootSessionId(payload, c)
+    let sessionId = getRootSessionId()
     const requestId = generateRequestIdFromPayload(payload, sessionId)
     if (!sessionId) {
       sessionId = getUUID(requestId)

@@ -1,11 +1,24 @@
 import type { Context } from "hono"
 
 import consola from "consola"
-
 import type { Model } from "~/lib/types/models"
 
 import { COMPACT_REQUEST } from "~/lib/compact"
 import { setPluginRequestModel } from "~/lib/request-events"
+import {
+  appendClaudeContinuationMessage,
+  applyClaudeNoToolsEffort,
+  applyLastMessageCacheControl,
+  getCompactType,
+  getLastMessageContentCacheControl,
+  isClaudeAutoModelRequest,
+  mergeToolResultForClaude,
+  normalizeClaudeCodeBillingHeaderInSystem,
+  normalizeSystemMessages,
+  sanitizeIdeTools,
+  stripToolReferenceTurnBoundary,
+} from "./preprocess"
+import { parseSubagentMarkerFromFirstUser } from "./subagent-marker"
 import {
   getClaudeAutoModel,
   getSmallModel,
@@ -24,6 +37,7 @@ import { fromClaudeDiscoveryModelId } from "~/lib/claude-models"
 import { findEndpointModel } from "~/lib/models"
 import { resolveConfiguredProviderModelAlias } from "~/lib/provider-resolver"
 import { state } from "~/lib/state"
+import { requestContext } from "~/lib/request-context"
 import type { SubagentMarker } from "~/lib/subagent"
 import type { TokenUsageEndpoint } from "~/lib/token-usage"
 import {
@@ -43,20 +57,6 @@ import {
   handleWithMessagesApi,
   handleWithResponsesApi,
 } from "./api-flows"
-import {
-  appendClaudeContinuationMessage,
-  applyClaudeNoToolsEffort,
-  applyLastMessageCacheControl,
-  getCompactType,
-  getLastMessageContentCacheControl,
-  isClaudeAutoModelRequest,
-  mergeToolResultForClaude,
-  normalizeClaudeCodeBillingHeaderInSystem,
-  normalizeSystemMessages,
-  sanitizeIdeTools,
-  stripToolReferenceTurnBoundary,
-} from "./preprocess"
-import { parseSubagentMarkerFromFirstUser } from "./subagent-marker"
 import { tryHandleWebSearch } from "./web-search/fulfill"
 
 const logger = createHandlerLogger("messages-handler")
@@ -159,15 +159,22 @@ export async function handleCompletionPayload(
   }
   sanitizeIdeTools(anthropicPayload)
 
+  // Identity priority: non-empty dispatch object > authoritative native
+  // headers (child object / main null / unknown undefined) > valid legacy
+  // marker > normal Copilot identity. A null dispatch carries no info and
+  // must not block the marker fallback.
+  const contextSubagent = requestContext.getStore()?.subagent
   const subagentMarker =
     dispatchOptions.subagentMarker
-    ?? parseSubagentMarkerFromFirstUser(anthropicPayload)
+    ?? contextSubagent
+    ?? (contextSubagent === undefined ?
+      parseSubagentMarkerFromFirstUser(anthropicPayload)
+    : null)
   if (subagentMarker) {
-    debugJson(logger, "Detected Subagent marker:", subagentMarker)
+    debugJson(logger, "Detected subagent session:", subagentMarker)
   }
 
-  let sessionId =
-    dispatchOptions.sessionId ?? getRootSessionId(anthropicPayload, c)
+  let sessionId = dispatchOptions.sessionId ?? getRootSessionId()
 
   // fix claude code 2.0.28+ warmup request consume premium request, forcing small model if no tools are used
   // set "CLAUDE_CODE_SUBAGENT_MODEL": "you small model" also can avoid this

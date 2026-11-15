@@ -2,6 +2,8 @@ import type { Context } from "hono"
 
 import { streamSSE } from "hono/streaming"
 
+import type { SubagentMarker } from "~/lib/subagent"
+
 import {
   isResponsesApiWebSearchEnabled as isConfiguredResponsesApiWebSearchEnabled,
   resolveMappedModel,
@@ -18,6 +20,7 @@ import { resolveConfiguredProviderModelAlias } from "~/lib/provider-resolver"
 import { getReasoningReplayIdentity } from "~/lib/reasoning-replay"
 import { requestContext } from "~/lib/request-context"
 import { setPluginRequestModel } from "~/lib/request-events"
+import { readResponsesStreamEvent } from "~/lib/responses-stream-event"
 import { writeSSEIfConnected } from "~/lib/sse"
 import { isCodexUserAgent } from "~/routes/models/codex-models"
 import {
@@ -29,6 +32,7 @@ import {
   copilotUsageFromResponsesEvent,
   copilotUsageToTokens,
   normalizeOptionalToken,
+  mergeCopilotUsage,
   normalizeResponsesUsage,
   type CopilotUsageTokens,
   type UsageTokens,
@@ -36,9 +40,8 @@ import {
 import {
   generateRequestIdFromPayload,
   getUUID,
-  isAsyncIterable,
+  isResponsesStream,
 } from "~/lib/utils"
-import type { SubagentMarker } from "~/lib/subagent"
 import type {
   ResponsesPayload,
   ResponsesResult,
@@ -53,16 +56,19 @@ import {
   applyForwardableResponseHeaders,
   getAttachedResponseHeaders,
   jsonWithForwardedHeaders,
-  createResponsesStreamErrorEvent,
   logResponsesCompletion,
   prepareNativeResponsesRequest,
   retryResponsesWithoutImages,
   shouldUseChatFallback,
-  writeResponsesStreamError,
 } from "./local-behavior"
-import { createStreamIdTracker, fixStreamIds } from "./stream-id-sync"
+import { createResponsesStreamTerminalTracker } from "./stream-failure"
+import {
+  createCopilotResponsesSseMessage,
+  createStreamIdTracker,
+} from "./stream-id-sync"
 import { getCodexTaskTitleModel } from "./task-title"
 import {
+  applyDefaultReasoningSummary,
   applyResponsesApiContextManagement,
   compactInputByLatestCompaction,
   filterReasoningForTransport,
@@ -123,12 +129,15 @@ export const handleResponses = async (c: Context) => {
   const rootSessionId = store?.rootSessionId
   const sessionAffinity = store?.sessionAffinity
 
-  const subagentMarker = getCodexResponsesSubagentMarker(c, {
-    rootSessionId,
-    sessionAffinity,
-  })
+  // Dispatch-identified subagent (or explicit main) wins; fall back to the
+  // Codex subagent header only when the dispatch evidence is inconclusive.
+  const storeSubagent = store?.subagent
+  const subagentMarker =
+    storeSubagent !== undefined ? storeSubagent : (
+      getCodexResponsesSubagentMarker(c, { rootSessionId, sessionAffinity })
+    )
   if (subagentMarker) {
-    debugJson(logger, "Detected Codex subagent headers:", subagentMarker)
+    debugJson(logger, "Detected subagent session:", subagentMarker)
   }
 
   const sessionId = rootSessionId ? getUUID(rootSessionId) : undefined
@@ -268,6 +277,9 @@ export const handleResponses = async (c: Context) => {
     payload,
     supportedEfforts: selectedModel?.capabilities?.supports?.reasoning_effort,
   })
+  // Summary defaults apply only after configured effort resolution, keeping
+  // any explicit client-provided reasoning.summary.
+  applyDefaultReasoningSummary(payload)
 
   const { vision, initiator: inferredInitiator } =
     getResponsesRequestOptions(payload)
@@ -303,7 +315,7 @@ export const handleResponses = async (c: Context) => {
       }),
     )
 
-  if (isStreamingRequested(payload) && isAsyncIterable(response)) {
+  if (isStreamingRequested(payload) && isResponsesStream(response)) {
     logger.debug("Forwarding native Responses stream")
     const sourceHeaders = getAttachedResponseHeaders(response)
     applyForwardableResponseHeaders(c, sourceHeaders)
@@ -311,15 +323,18 @@ export const handleResponses = async (c: Context) => {
       const idTracker = createStreamIdTracker()
       let chunkCount = 0
       let terminalEventType: ResponseStreamEvent["type"] | undefined
+      let terminalForwarded = false
       let streamErrored = false
+      let upstreamErrored = false
+      const terminalTracker = createResponsesStreamTerminalTracker(publicModel)
       let usage: UsageTokens = {}
       let copilotUsage: CopilotUsageTokens = {}
       const iterator = response[Symbol.asyncIterator]()
 
       try {
-        for await (const chunk of {
-          [Symbol.asyncIterator]: () => iterator,
-        }) {
+        while (true) {
+          const { value: chunk, done } = await iterator.next()
+          if (done) break
           debugJson(logger, "Responses stream chunk:", chunk)
           chunkCount++
           writeStreamLog({
@@ -327,57 +342,94 @@ export const handleResponses = async (c: Context) => {
             chunks: chunkCount,
             done: false,
           })
-          const parsedEvent = parseResponsesStreamEvent(chunk)
+          let parsedEvent: ResponseStreamEvent | null
+          try {
+            parsedEvent = readResponsesStreamEvent(chunk)
+          } catch (error) {
+            streamErrored = true
+            terminalTracker.observeLocalFailure(error)
+            continue
+          }
+          terminalTracker.observe(parsedEvent)
           recordResponsesFirstToken(parsedEvent)
+          if (!terminalForwarded && parsedEvent?.type === "error")
+            upstreamErrored = true
           if (
             parsedEvent?.type === "response.completed"
             || parsedEvent?.type === "response.failed"
             || parsedEvent?.type === "response.incomplete"
           ) {
-            terminalEventType = parsedEvent.type
-            usage = {
-              ...normalizeResponsesUsage(parsedEvent.response.usage),
-              total_nano_aiu: normalizeOptionalToken(
-                parsedEvent.copilot_usage?.total_nano_aiu,
-              ),
+            if (parsedEvent.response.usage) {
+              usage = normalizeResponsesUsage(parsedEvent.response.usage)
             }
-            copilotUsage =
-              copilotUsageFromResponsesEvent(parsedEvent) ?? copilotUsage
+            copilotUsage = mergeCopilotUsage(
+              copilotUsage,
+              copilotUsageFromResponsesEvent(parsedEvent) ?? {},
+            )
+            if (
+              terminalForwarded
+              || streamErrored
+              || (upstreamErrored
+                && (parsedEvent.type === "response.completed"
+                  || parsedEvent.type === "response.incomplete"))
+            ) {
+              continue
+            }
           }
+          if (terminalForwarded || streamErrored) continue
 
-          const processedData = fixStreamIds(
-            (chunk as { data?: string }).data ?? "",
-            (chunk as { event?: string }).event,
-            idTracker,
-          )
-
-          await writeSSEIfConnected(
-            stream,
-            {
-              id: (chunk as { id?: string }).id,
-              event: (chunk as { event?: string }).event,
-              data: processedData,
-            },
-            parsedEvent?.type,
-          )
+          try {
+            const forwarded = await writeSSEIfConnected(
+              stream,
+              createCopilotResponsesSseMessage(chunk, parsedEvent, idTracker),
+              parsedEvent?.type,
+            )
+            if (
+              forwarded
+              && parsedEvent
+              && (parsedEvent.type === "response.completed"
+                || parsedEvent.type === "response.failed"
+                || parsedEvent.type === "response.incomplete")
+            ) {
+              terminalForwarded = true
+              terminalEventType = parsedEvent.type
+            }
+          } catch (error) {
+            streamErrored = true
+            terminalTracker.observeLocalFailure(error)
+          }
         }
       } catch (err) {
+        // Record only; the single finalize exit below emits the failure.
         streamErrored = true
-        await writeResponsesStreamError(
-          stream,
-          createResponsesStreamErrorEvent(payload.model, err),
-        )
+        terminalTracker.observeLocalFailure(err)
       } finally {
         let iteratorClosed = false
         try {
           await iterator.return?.()
           iteratorClosed = true
+        } catch (err) {
+          streamErrored = true
+          terminalTracker.observeLocalFailure(err)
         } finally {
           try {
             recordUsage(usage, copilotUsage)
-            if (
-              iteratorClosed
+            const failure =
+              terminalForwarded ? null : (
+                terminalTracker.finalize(idTracker.responseId)
+              )
+            if (failure && (await writeSSEIfConnected(stream, failure.sse))) {
+              logger.warn(
+                `Responses stream ended without a terminal event; sent response.failed (${failure.code}: ${failure.message})`,
+              )
+              writeStreamLog(
+                { model: payload.model, chunks: chunkCount, done: false },
+                true,
+              )
+            } else if (
+              !upstreamErrored
               && !streamErrored
+              && iteratorClosed
               && terminalEventType === "response.completed"
               && !stream.aborted
               && !c.req.raw.signal.aborted
@@ -447,21 +499,6 @@ const shouldFallbackToMessages = (
     supportedEndpoints.includes("/v1/messages")
     || supportedEndpoints.includes("/chat/completions")
   )
-}
-
-const parseResponsesStreamEvent = (
-  chunk: unknown,
-): ResponseStreamEvent | null => {
-  const data = (chunk as { data?: string }).data
-  if (!data || data === "[DONE]") {
-    return null
-  }
-
-  try {
-    return JSON.parse(data) as ResponseStreamEvent
-  } catch {
-    return null
-  }
 }
 
 const removeWebSearchTool = (payload: ResponsesPayload): void => {
@@ -534,6 +571,8 @@ const codexSubagentHeaderValues = new Set([
   "review",
 ])
 
+// Fallback when the dispatch subagent evidence is inconclusive: a Codex
+// subagent header paired with the current session affinity marks the request.
 const getCodexResponsesSubagentMarker = (
   c: Context,
   session: { rootSessionId?: string; sessionAffinity?: string },

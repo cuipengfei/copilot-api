@@ -991,6 +991,177 @@ describe("Responses Lite to Messages translation", () => {
     ])
   })
 
+  test.each<[string, Record<string, unknown>, Record<string, unknown>]>([
+    [
+      "oneOf",
+      {
+        type: "object",
+        properties: {
+          code: { type: "string" },
+          completion_summary: { type: "string" },
+          timeout_ms: { type: "integer" },
+        },
+        additionalProperties: false,
+        oneOf: [
+          {
+            type: "object",
+            properties: {
+              code: { type: "string" },
+              timeout_ms: { type: "integer" },
+            },
+            required: ["code"],
+            additionalProperties: false,
+          },
+          {
+            type: "object",
+            properties: { completion_summary: { type: "string" } },
+            required: ["completion_summary"],
+            additionalProperties: false,
+          },
+        ],
+      },
+      {
+        type: "object",
+        properties: {
+          code: { type: "string" },
+          completion_summary: { type: "string" },
+          timeout_ms: { type: "integer" },
+        },
+        additionalProperties: false,
+      },
+    ],
+    [
+      "anyOf",
+      {
+        anyOf: [
+          {
+            type: "object",
+            properties: {
+              kind: { const: "file" },
+              path: { type: "string" },
+            },
+            required: ["kind", "path"],
+          },
+          {
+            type: "object",
+            properties: { kind: { const: "url" }, url: { type: "string" } },
+            required: ["kind", "url"],
+          },
+        ],
+      },
+      {},
+    ],
+    [
+      "allOf",
+      {
+        type: "object",
+        properties: { path: { type: "string" } },
+        required: ["path"],
+        allOf: [
+          {
+            properties: { encoding: { type: "string" } },
+            required: ["encoding"],
+          },
+          { properties: { limit: { type: "integer" } } },
+        ],
+      },
+      {
+        type: "object",
+        properties: { path: { type: "string" } },
+        required: ["path"],
+      },
+    ],
+  ])(
+    "moves a top-level %s into the function tool description",
+    (key, parameters, inputSchema) => {
+      Object.freeze(parameters)
+      const result = translate({
+        input: "Run it",
+        tools: [
+          {
+            type: "function",
+            name: "js",
+            description: "Run JavaScript.",
+            parameters,
+            strict: false,
+          },
+        ],
+      })
+
+      expect(result.messagesPayload.tools?.[0]?.input_schema).toEqual(
+        inputSchema,
+      )
+      const description = result.messagesPayload.tools?.[0]?.description
+      const requirement =
+        key === "oneOf" ? "exactly one"
+        : key === "anyOf" ? "at least one"
+        : "all"
+      expect(description?.startsWith("Run JavaScript.\n\n")).toBe(true)
+      expect(description).toContain(`satisfy ${requirement} of`)
+      expect(description).toContain(`(${key})`)
+      expect(description).toContain(JSON.stringify(parameters[key]))
+    },
+  )
+
+  test("preserves nested schema unions without adding a description", () => {
+    const parameters = {
+      type: "object",
+      properties: {
+        value: { oneOf: [{ type: "string" }, { type: "integer" }] },
+      },
+    }
+    const result = translate({
+      input: "Run it",
+      tools: [{ type: "function", name: "js", parameters }],
+    })
+
+    expect(result.messagesPayload.tools?.[0]?.input_schema).toBe(parameters)
+    expect(result.messagesPayload.tools?.[0]).not.toHaveProperty("description")
+  })
+
+  test.each([
+    { model: "custom/CLAUDE-sonnet-4.6", describeUnions: true },
+    { model: "openrouter/anthropic/claude-sonnet-4.6", describeUnions: true },
+    { model: "custom/ANTHROPIC/CLAUDE-sonnet-4.6", describeUnions: true },
+    { model: "openrouter/anthropic/glm-5.3-flash", describeUnions: false },
+    { model: "claude-relay/glm-5.3-flash", describeUnions: false },
+    { model: "custom/vendor-Claude-model", describeUnions: false },
+  ])(
+    "limits schema union descriptions to Claude-prefixed target $model",
+    ({ model, describeUnions }) => {
+      const parameters = {
+        oneOf: [
+          {
+            type: "object",
+            properties: { value: { type: "string" } },
+            required: ["value"],
+          },
+        ],
+      }
+      const result = translateResponsesToMessages(
+        {
+          model: describeUnions ? "public-alias" : "claude-sonnet-4.6",
+          input: "Run it",
+          tools: [{ type: "function", name: "js", parameters, strict: false }],
+        },
+        { model },
+      )
+
+      expect(result.messagesPayload.tools?.[0]?.input_schema).toEqual(
+        describeUnions ? {} : parameters,
+      )
+      const description = result.messagesPayload.tools?.[0]?.description
+      if (describeUnions) {
+        expect(description?.startsWith("The complete arguments object")).toBe(
+          true,
+        )
+        expect(description).toContain("satisfy exactly one of")
+      } else {
+        expect(description).toBeUndefined()
+      }
+    },
+  )
+
   test.each([undefined, null, ""])(
     "reuses default tool aliases for historical namespace %j",
     (namespace) => {

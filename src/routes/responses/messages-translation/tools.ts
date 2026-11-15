@@ -20,14 +20,24 @@ import {
   isRecord,
 } from "./parse"
 
+interface MessagesToolOptions {
+  strictCustomTools: boolean
+  describeSchemaUnions: boolean
+}
+
 export function createToolRegistry(
   payload: ResponsesPayload,
   model: string,
 ): MessagesToolRegistry {
   // Claude-family upstream models skip strict custom tools. Match the upstream
   // model id only, so a provider prefix such as "claude-relay/" does not count.
-  const upstreamModel = parseProviderModelAlias(model)?.model ?? model
-  const strictCustomTools = !upstreamModel.toLowerCase().includes("claude")
+  const upstreamModel = (
+    parseProviderModelAlias(model)?.model ?? model
+  ).toLowerCase()
+  const options: MessagesToolOptions = {
+    strictCustomTools: !upstreamModel.includes("claude"),
+    describeSchemaUnions: /^(?:anthropic\/)?claude/u.test(upstreamModel),
+  }
   const registry: MessagesToolRegistry = {
     byAlias: new Map(),
     byOriginal: new Map(),
@@ -35,7 +45,7 @@ export function createToolRegistry(
   }
 
   for (const tool of payload.tools ?? []) {
-    registerTool(tool, registry, strictCustomTools)
+    registerTool(tool, registry, options)
   }
 
   if (Array.isArray(payload.input)) {
@@ -43,7 +53,7 @@ export function createToolRegistry(
       const type = getItemType(item)
       if (type !== "additional_tools") continue
       for (const tool of getArrayField(item, "tools")) {
-        registerTool(tool, registry, strictCustomTools)
+        registerTool(tool, registry, options)
       }
       break
     }
@@ -84,7 +94,7 @@ export function isNamespaceTool(tool: unknown): tool is NamespaceTool {
 export function registerTool(
   tool: unknown,
   registry: MessagesToolRegistry,
-  strictCustomTools: boolean,
+  options: MessagesToolOptions,
   namespaces: Array<string> = [],
 ): void {
   if (!isRecord(tool)) {
@@ -103,10 +113,7 @@ export function registerTool(
       )
     }
     for (const child of namespaceTool.tools) {
-      registerTool(child, registry, strictCustomTools, [
-        ...namespaces,
-        namespace,
-      ])
+      registerTool(child, registry, options, [...namespaces, namespace])
     }
     return
   }
@@ -137,36 +144,73 @@ export function registerTool(
         : null,
     },
     registry,
-    strictCustomTools,
+    options,
   )
 }
 
 export function registerMessagesTool(
   registration: ToolRegistration,
   registry: MessagesToolRegistry,
-  strictCustomTools: boolean,
+  options: MessagesToolOptions,
 ): MessagesToolDescriptor {
   const originalKey = createOriginalToolKey(registration)
   const existing = registry.byOriginal.get(originalKey)
   if (existing) return existing
 
   const descriptor = createMessagesToolDescriptor(registration, registry)
+  const { description, parameters } =
+    registration.kind === "function" && options.describeSchemaUnions ?
+      moveTopLevelSchemaUnionsToDescription(registration)
+    : registration
   registry.byAlias.set(descriptor.alias, descriptor)
   registry.byOriginal.set(originalKey, descriptor)
   registry.tools.push({
     name: descriptor.alias,
-    ...(registration.description ?
-      { description: registration.description }
-    : {}),
+    ...(description ? { description } : {}),
     input_schema:
       registration.kind === "custom" ?
         CUSTOM_TOOL_INPUT_SCHEMA
-      : (registration.parameters ?? { type: "object", properties: {} }),
-    ...(registration.kind === "custom" && strictCustomTools ?
+      : (parameters ?? { type: "object", properties: {} }),
+    ...(registration.kind === "custom" && options.strictCustomTools ?
       { strict: true }
     : {}),
   })
   return descriptor
+}
+
+const SCHEMA_UNIONS = [
+  ["allOf", "all"],
+  ["anyOf", "at least one"],
+  ["oneOf", "exactly one"],
+] as const
+
+/**
+ * Anthropic rejects top-level allOf, anyOf, and oneOf. Move those constraints
+ * into the tool description; tools remain responsible for validating arguments.
+ */
+function moveTopLevelSchemaUnionsToDescription(
+  tool: ToolRegistration,
+): ToolRegistration {
+  if (!tool.parameters) return tool
+
+  const parameters = { ...tool.parameters }
+  const constraints: Array<string> = []
+  for (const [key, requirement] of SCHEMA_UNIONS) {
+    const variants = parameters[key]
+    if (variants === undefined) continue
+    constraints.push(
+      `The complete arguments object must satisfy ${requirement} of these schemas (${key}):\n${JSON.stringify(variants)}`,
+    )
+    delete parameters[key]
+  }
+  if (constraints.length === 0) return tool
+  return {
+    ...tool,
+    parameters,
+    description: [tool.description, ...constraints]
+      .filter(Boolean)
+      .join("\n\n"),
+  }
 }
 
 export function createMessagesToolDescriptor(

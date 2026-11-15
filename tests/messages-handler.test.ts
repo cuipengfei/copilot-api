@@ -13,6 +13,7 @@ import type { AnthropicMessagesPayload } from "~/lib/types/anthropic"
 
 import { compactSummaryPromptStart, compactTextOnlyGuard } from "~/lib/compact"
 import { createFallbackModel } from "~/lib/provider-model"
+import { traceIdMiddleware } from "~/lib/trace"
 
 const actualStateModule = await import("~/lib/state")
 const actualConfigModule = await import("~/lib/config")
@@ -97,6 +98,7 @@ const defaultResponsesUtilsDependencies = { ...responsesUtilsDependencies }
 
 const createApp = () => {
   const app = new Hono()
+  app.use(traceIdMiddleware)
   app.post("/", handleCompletion)
   return app
 }
@@ -887,7 +889,7 @@ describe("messages handler orchestration", () => {
     ])
   })
 
-  test("applies warmup model override and passes request metadata to the selected flow", async () => {
+  test("uses native Claude subagent headers for warmup and selected-flow context", async () => {
     selectedModel = {
       id: "messages-model",
       supported_endpoints: ["/v1/messages"],
@@ -900,7 +902,7 @@ describe("messages handler orchestration", () => {
           content: [
             {
               type: "text",
-              text: '<system-reminder>__SUBAGENT_MARKER__{"session_id":"sub-session","agent_id":"agent-1","agent_type":"Explore"}</system-reminder>',
+              text: '<system-reminder>__SUBAGENT_MARKER__{"session_id":"stale-session","agent_id":"stale-agent","agent_type":"Explore"}</system-reminder>',
             },
             {
               type: "text",
@@ -918,6 +920,9 @@ describe("messages handler orchestration", () => {
         "content-type": "application/json",
         "anthropic-beta": "warmup-beta",
         "x-session-id": "session-123",
+        "x-claude-code-session-id": "sub-session",
+        "x-claude-code-agent-id": "agent-1",
+        "x-claude-code-agent-type": "Explore",
       },
       body: JSON.stringify(payload),
     })
@@ -928,7 +933,7 @@ describe("messages handler orchestration", () => {
       actualConfigModule.getSmallModel(),
     )
 
-    const expectedSessionId = actualUtilsModule.getUUID("session-123")
+    const expectedSessionId = actualUtilsModule.getUUID("sub-session")
     const expectedRequestId = actualUtilsModule.generateRequestIdFromPayload(
       payload,
       expectedSessionId,
@@ -939,8 +944,8 @@ describe("messages handler orchestration", () => {
     expect(options.sessionId).toBe(expectedSessionId)
     expect(options.subagentMarker).toEqual({
       session_id: "sub-session",
-      agent_id: "agent-1",
-      agent_type: "Explore",
+      agent_id: "sub-session:agent-1",
+      agent_type: "subagent",
     })
     expect(options.anthropicBetaHeader).toBe("warmup-beta")
   })
@@ -1103,6 +1108,89 @@ describe("messages handler orchestration", () => {
     )
   })
 
+  test.each<{
+    name: string
+    headers: Record<string, string>
+    affinity: string
+  }>([
+    {
+      name: "Claude Code",
+      affinity: "root:child",
+      headers: {
+        "x-claude-code-session-id": "root",
+        "x-claude-code-agent-id": "child",
+      },
+    },
+    {
+      name: "OpenCode v1",
+      affinity: "child",
+      headers: {
+        "x-root-session-id": "root",
+        "x-opencode-session-id": "child",
+      },
+    },
+    {
+      name: "OpenCode v2",
+      affinity: "child",
+      headers: {
+        "x-root-session-id": "root",
+        "x-session-id": "child",
+        "x-session-affinity": "child",
+        "x-parent-session-id": "root",
+      },
+    },
+  ])(
+    "passes $name header-only subagent context to the Messages flow",
+    async ({ headers, affinity }) => {
+      selectedModel = {
+        id: "messages-model",
+        supported_endpoints: ["/v1/messages"],
+      }
+      const response = await createApp().request("/", {
+        method: "POST",
+        headers: { ...headers, "content-type": "application/json" },
+        body: JSON.stringify(createPayload()),
+      })
+      expect(response.status).toBe(200)
+      expect(handleWithMessagesApi.mock.calls[0][2].subagentMarker).toEqual({
+        session_id: "root",
+        agent_id: affinity,
+        agent_type: "subagent",
+      })
+    },
+  )
+
+  test("does not classify a main request from a stale body marker", async () => {
+    selectedModel = {
+      id: "messages-model",
+      supported_endpoints: ["/v1/messages"],
+    }
+    const response = await createApp().request("/", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-claude-code-session-id": "root",
+      },
+      body: JSON.stringify(
+        createPayload({
+          messages: [
+            {
+              role: "user",
+              content: [
+                {
+                  type: "text",
+                  text: '<system-reminder>__SUBAGENT_MARKER__{"session_id":"root","agent_id":"old","agent_type":"Explore"}</system-reminder>',
+                },
+              ],
+            },
+          ],
+        }),
+      ),
+    })
+    expect(response.status).toBe(200)
+    expect(handleWithMessagesApi.mock.calls[0][2].subagentMarker).toBeNull()
+  })
+
   test("prefers dispatch-provided session, request, and subagent context", async () => {
     selectedModel = {
       id: "messages-model",
@@ -1112,7 +1200,7 @@ describe("messages handler orchestration", () => {
     const dispatchMarker = {
       session_id: "dispatch-sub-session",
       agent_id: "dispatch-agent",
-      agent_type: "collab_spawn",
+      agent_type: "subagent",
     }
 
     const app = new Hono()
@@ -1140,5 +1228,250 @@ describe("messages handler orchestration", () => {
     expect(options.sessionId).toBe("dispatch-session")
     expect(options.requestId).toBe("dispatch-request")
     expect(options.subagentMarker).toEqual(dispatchMarker)
+  })
+})
+
+describe("subagent identity resolution", () => {
+  const validMarkerText =
+    '<system-reminder>__SUBAGENT_MARKER__{"session_id":"marker-session","agent_id":"marker-agent","agent_type":"Explore"}</system-reminder>'
+  const expectedMarker = {
+    session_id: "marker-session",
+    agent_id: "marker-agent",
+    agent_type: "Explore",
+  }
+  const markerPayload = (text: string): AnthropicMessagesPayload =>
+    createPayload({
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text },
+            { type: "text", text: "hello" },
+          ],
+        },
+      ],
+    })
+
+  test.each([
+    { endpoint: "/v1/messages", responseBody: "messages" },
+    { endpoint: "/responses", responseBody: "responses" },
+    { endpoint: "/chat/completions", responseBody: "chat" },
+  ])(
+    "falls back to a legacy marker on the $endpoint flow without native headers",
+    async ({ endpoint, responseBody }) => {
+      selectedModel = { id: "messages-model", supported_endpoints: [endpoint] }
+      const response = await createApp().request("/", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(markerPayload(validMarkerText)),
+      })
+
+      expect(response.status).toBe(200)
+      expect(await response.text()).toBe(responseBody)
+      const flow =
+        responseBody === "messages" ? handleWithMessagesApi
+        : responseBody === "responses" ? handleWithResponsesApi
+        : handleWithChatCompletions
+      expect(flow.mock.calls[0][2].subagentMarker).toEqual(expectedMarker)
+    },
+  )
+
+  test.each([
+    { endpoint: "/v1/messages", responseBody: "messages" },
+    { endpoint: "/responses", responseBody: "responses" },
+    { endpoint: "/chat/completions", responseBody: "chat" },
+  ])(
+    "prefers native Claude child headers over a conflicting marker on the $endpoint flow",
+    async ({ endpoint, responseBody }) => {
+      selectedModel = { id: "messages-model", supported_endpoints: [endpoint] }
+      const response = await createApp().request("/", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-claude-code-session-id": "root",
+          "x-claude-code-agent-id": "child",
+        },
+        body: JSON.stringify(
+          markerPayload(
+            '<system-reminder>__SUBAGENT_MARKER__{"session_id":"stale","agent_id":"stale-agent","agent_type":"Explore"}</system-reminder>',
+          ),
+        ),
+      })
+
+      expect(response.status).toBe(200)
+      expect(await response.text()).toBe(responseBody)
+      const flow =
+        responseBody === "messages" ? handleWithMessagesApi
+        : responseBody === "responses" ? handleWithResponsesApi
+        : handleWithChatCompletions
+      expect(flow.mock.calls[0][2].subagentMarker).toEqual({
+        session_id: "root",
+        agent_id: "root:child",
+        agent_type: "subagent",
+      })
+    },
+  )
+
+  test("ignores a stale marker when OpenCode native headers say main", async () => {
+    selectedModel = {
+      id: "messages-model",
+      supported_endpoints: ["/v1/messages"],
+    }
+    const response = await createApp().request("/", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-root-session-id": "root",
+        "x-opencode-session-id": "root",
+      },
+      body: JSON.stringify(markerPayload(validMarkerText)),
+    })
+
+    expect(response.status).toBe(200)
+    expect(handleWithMessagesApi.mock.calls[0][2].subagentMarker).toBeNull()
+  })
+
+  test.each<{
+    name: string
+    headers: Record<string, string>
+  }>([
+    {
+      name: "a bare OpenCode root",
+      headers: { "x-root-session-id": "root" },
+    },
+    {
+      name: "a root plus a client request id",
+      headers: {
+        "x-root-session-id": "root",
+        "x-client-request-id": "request",
+      },
+    },
+    {
+      name: "a lone parent session header",
+      headers: { "x-parent-session-id": "parent" },
+    },
+    {
+      name: "whitespace session headers",
+      headers: {
+        "x-claude-code-session-id": " ",
+        "x-root-session-id": " ",
+        "x-opencode-session-id": " ",
+      },
+    },
+  ])("still falls back to a legacy marker with $name", async ({ headers }) => {
+    selectedModel = {
+      id: "messages-model",
+      supported_endpoints: ["/v1/messages"],
+    }
+    const response = await createApp().request("/", {
+      method: "POST",
+      headers: { ...headers, "content-type": "application/json" },
+      body: JSON.stringify(markerPayload(validMarkerText)),
+    })
+
+    expect(response.status).toBe(200)
+    expect(handleWithMessagesApi.mock.calls[0][2].subagentMarker).toEqual(
+      expectedMarker,
+    )
+  })
+
+  test.each<{
+    name: string
+    text: string
+  }>([
+    {
+      name: "malformed JSON",
+      text: "<system-reminder>__SUBAGENT_MARKER__{bad json}</system-reminder>",
+    },
+    {
+      name: "missing fields",
+      text: '<system-reminder>__SUBAGENT_MARKER__{"session_id":"s"}</system-reminder>',
+    },
+    {
+      name: "empty strings",
+      text: '<system-reminder>__SUBAGENT_MARKER__{"session_id":"","agent_id":"a","agent_type":"t"}</system-reminder>',
+    },
+    {
+      name: "whitespace identity",
+      text: '<system-reminder>__SUBAGENT_MARKER__{"session_id":"s","agent_id":" ","agent_type":"t"}</system-reminder>',
+    },
+    {
+      name: "wrong value types",
+      text: '<system-reminder>__SUBAGENT_MARKER__{"session_id":"s","agent_id":42,"agent_type":"t"}</system-reminder>',
+    },
+    {
+      name: "no system-reminder wrapping",
+      text: '__SUBAGENT_MARKER__{"session_id":"s","agent_id":"a","agent_type":"t"}',
+    },
+  ])("ignores an invalid legacy marker: $name", async ({ text }) => {
+    selectedModel = {
+      id: "messages-model",
+      supported_endpoints: ["/v1/messages"],
+    }
+    const response = await createApp().request("/", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(markerPayload(text)),
+    })
+
+    expect(response.status).toBe(200)
+    expect(handleWithMessagesApi.mock.calls[0][2].subagentMarker).toBeNull()
+  })
+
+  test("ignores a legacy marker outside the first user message", async () => {
+    selectedModel = {
+      id: "messages-model",
+      supported_endpoints: ["/v1/messages"],
+    }
+    const response = await createApp().request("/", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(
+        createPayload({
+          messages: [
+            {
+              role: "user",
+              content: [{ type: "text", text: "first question" }],
+            },
+            { role: "assistant", content: "answer" },
+            {
+              role: "user",
+              content: [
+                { type: "text", text: validMarkerText },
+                { type: "text", text: "follow up" },
+              ],
+            },
+          ],
+        }),
+      ),
+    })
+
+    expect(response.status).toBe(200)
+    expect(handleWithMessagesApi.mock.calls[0][2].subagentMarker).toBeNull()
+  })
+
+  test("still falls back to a marker when dispatch passes a null subagent", async () => {
+    selectedModel = {
+      id: "messages-model",
+      supported_endpoints: ["/v1/messages"],
+    }
+    const app = new Hono()
+    app.post("/", (c) =>
+      handleCompletionPayload(c, markerPayload(validMarkerText), {
+        subagentMarker: null,
+      }),
+    )
+
+    const response = await app.request("/", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(markerPayload(validMarkerText)),
+    })
+
+    expect(response.status).toBe(200)
+    expect(await response.text()).toBe("messages")
+    expect(handleWithMessagesApi.mock.calls[0][2].subagentMarker).toEqual(
+      expectedMarker,
+    )
   })
 })

@@ -6,9 +6,19 @@ For server-side request lifecycle and usage hooks, see [Gateway event plugins](g
 
 ## GPT Tool Search
 
-For GPT Responses models such as `gpt-5.4+`, this AI gateway can expose Responses `tool_search` through a small MCP bridge. The same bridge can be used by Claude Code and opencode v1, as long as the client loads MCP servers and sends Anthropic Messages traffic through this gateway.
+Choose the setup for your client and model; you do not need every plugin:
 
-Do not set Claude Code's native `ENABLE_TOOL_SEARCH` for GPT models. That flag enables Claude Code's own client-side tool search mode, and it may stop forwarding deferred tool definitions. This gateway needs the full tool definitions so it can keep the small always-loaded tool set eager and translate every other tool into Responses deferred namespaces.
+| Scenario | Setup |
+| --- | --- |
+| Claude Code with a Claude or GPT Responses upstream supporting native tool search | Set `ENABLE_TOOL_SEARCH: "true"`; no MCP bridge is needed. |
+| Claude Code using the GPT Responses MCP bridge compatibility path | Set `ENABLE_TOOL_SEARCH: "false"`; install `tool-search` or configure MCP manually, not both. |
+| OpenCode v2 | Use built-in Code Mode; this MCP bridge is unnecessary. |
+| OpenCode v1 using GPT Responses tool search through the gateway | Configure the MCP bridge as shown below. |
+
+
+Claude Code can use its native ToolSearch with `ENABLE_TOOL_SEARCH: "true"`. For GPT Responses requests whose resolved model is `gpt-5.4` or newer, the gateway translates client searches to Responses `tool_search`. The model and upstream service must support client mode, such as a compatible `gpt-6.1-sol` provider. Claude Code supplies the selected tool definitions on the follow-up request. Native search does not require the MCP bridge; see the [Claude Code configuration](claude-code.md#manual-configuration-with-settingsjson).
+
+The existing MCP bridge remains available for Claude Code and opencode v1 when the client loads MCP servers and sends Anthropic Messages traffic through this gateway. To use the bridge with Claude Code, set `ENABLE_TOOL_SEARCH` to `false`; native ToolSearch takes priority when both are enabled.
 
 If you install `tool-search@copilot-api-marketplace`, Claude Code receives this MCP bridge automatically and you can skip the manual Claude Code MCP setup below.
 
@@ -41,7 +51,7 @@ opencode v2 does not need this bridge. It already defers MCP tools through Code 
 
 For local development, use `bun` as the command and `["run", "./src/main.ts", "mcp"]` as the args.
 
-Internally, the gateway now configures OpenAI Responses `tool_search` in client-executed mode. Deferred tools are still exposed as searchable namespaces, but the model is explicitly asked to return the exact deferred tool names it wants to load next.
+Internally, the gateway configures OpenAI Responses `tool_search` in client-executed mode. Only eager tools and `tool_search` are sent in the top-level `tools` array; the selected deferred tool definitions are loaded as functions via `tool_search_output.tools`. The model is asked to return the exact deferred tool names it wants to load next.
 
 The bridge uses direct tool selection, not query search. Its tool input is `names`, a comma-separated list of exact deferred tool names, for example `TaskList,TaskGet,mcp__fetch__fetch`.
 
@@ -53,7 +63,7 @@ Plugin integrations are available for Claude Code and opencode.
 
 The Claude Code integration is packaged as two plugins:
 
-- `agent-inject` injects `__SUBAGENT_MARKER__...` on `SubagentStart`, so the gateway can infer `x-initiator: agent`.
+- `agent-inject` injects `__SUBAGENT_MARKER__...` on `SubagentStart` and supports optional reminder hooks.
 - `tool-search` registers the `tool_search` MCP bridge used for GPT Responses deferred tool loading.
 
 - Marketplace catalog in this repository: `.claude-plugin/marketplace.json`
@@ -65,14 +75,21 @@ Add the marketplace remotely:
 /plugin marketplace add https://github.com/caozhiyuan/copilot-api.git
 ```
 
-Install the plugins from the marketplace:
+**`agent-inject` is optional.** Native Claude Code headers already identify root sessions and subagents; legacy markers no longer control attribution. Install it if you need its reminder hooks.
+
+Install plugins from the marketplace as needed, for example:
 
 ```sh
 /plugin install agent-inject@copilot-api-marketplace
+```
+
+To use the MCP bridge, also install `tool-search`. Native ToolSearch does not require this plugin:
+
+```sh
 /plugin install tool-search@copilot-api-marketplace
 ```
 
-After installation, `agent-inject` injects `__SUBAGENT_MARKER__...` on `SubagentStart`, and the gateway uses it to infer `x-initiator: agent`.
+The gateway uses native `x-claude-code-session-id` and `x-claude-code-agent-id` headers for attribution: requests share a root session, with child affinity derived from the session and agent IDs. All children use the generic `subagent` type. The native Claude session header also selects Copilot Messages proxy mode. Existing plugins and reminder hooks remain compatible without an upgrade; legacy markers remain ordinary prompt text and no longer control attribution. `agent-inject` is optional for clients supplying native headers. See the [Claude Code gateway headers](https://code.claude.com/docs/en/llm-gateway-protocol#request-headers).
 
 The `agent-inject` plugin also registers a `UserPromptSubmit` hook that returns `{"continue": true}`, and it can inject `SessionStart` reminder rules through environment variables:
 
@@ -93,6 +110,7 @@ Copy the plugin file to your opencode plugins directory:
 
 ```sh
 # Clone or download this repository, then copy the plugin
+mkdir -p ~/.config/opencode/plugins
 cp plugin/opencode/agent-context.js ~/.config/opencode/plugins/
 ```
 
@@ -103,9 +121,11 @@ The same file supports the OpenCode v1 `server()` plugin entrypoint (checked aga
 **Features:**
 
 - Follows every `parentID` to the root session and sets `x-root-session-id` to that root ID, including nested subagents and restored sessions
-- On v1, prepends a marker system reminder (`__SUBAGENT_MARKER__...`) to the first child message so the gateway can identify subagent requests
+- On v1, prepends a marker system reminder (`__SUBAGENT_MARKER__...`) to the first child message while the gateway identifies children from the root and native current-session headers
 - On v2, uses the native `x-parent-session-id`; the plugin only sets the root session ID and preserves native child-session and session affinity headers
 
-v1 uses the `session.created`, `session.deleted`, `chat.message`, and `chat.headers` hooks. v2 updates headers through `session.hook("model.request", ...)`. The native `x-session-id` keeps the current session ID. The Messages API preserves the priority of `metadata.user_id`; without it, the API reads `x-root-session-id` before falling back to `x-session-id`. Prompt cache keys reverse that priority: `session-id`, then `x-root-session-id`, then `x-session-id`, then `metadata.user_id`, with session affinity as the last fallback, so sibling subagents share the root session's cache group. Missing parents, lookup failures, and cyclic ancestry leave existing headers intact.
+v1 uses the `session.created`, `session.deleted`, `chat.message`, and `chat.headers` hooks. v2 updates headers through `session.hook("model.request", ...)`. The native `x-session-id` keeps the current session ID. Messages interaction IDs, prompt cache keys and OpenCode Go cache grouping use the trace root session, falling back to session affinity. Usage uses current affinity, falling back to the root session. `metadata.user_id` is no longer parsed for session identity or proxy selection. Missing parents, lookup failures, and cyclic ancestry leave existing headers intact.
 
-The Responses API reads `session-id`, `x-root-session-id`, then `x-session-id`, skipping blank values.
+### Session attribution details
+
+Trace reads `x-claude-code-session-id`, `session-id`, `x-root-session-id`, then `x-session-id`, skipping blank values. OpenCode v1 retains `x-opencode-session-id` affinity; v2 retains native session affinity. Both Messages and Responses use trace subagent context: a request is a subagent only when the root and affinity are both present and differ, regardless of client or subagent hints. Subagent `session_id` uses the root and `agent_id` uses the affinity. Existing OpenCode plugins require no upgrade. `x-parent-session-id` is forwarded for OpenCode OAuth but does not determine identity or affinity.

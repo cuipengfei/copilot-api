@@ -6,7 +6,6 @@ import consola from "consola"
 import { HTTPError } from "~/lib/error"
 import type { ResponsesPayload } from "~/lib/types/responses"
 import {
-  createResponsesStreamErrorEvent,
   prepareNativeResponsesRequest,
   retryResponsesWithoutImages,
   shouldUseChatFallback,
@@ -234,18 +233,4 @@ test("图片重试失败直接传播且仅调用一次", async () => {
   )
   expect(attempts).toBe(1)
   expect(requests).toHaveLength(1)
-})
-
-test("流式错误事件保留模型、错误文本与失败状态", () => {
-  const event = createResponsesStreamErrorEvent(
-    "gpt-image",
-    new Error("interrupted"),
-  )
-  expect(event.type).toBe("response.failed")
-  expect(event.response.model).toBe("gpt-image")
-  expect(event.response.status).toBe("failed")
-  expect(event.response.error.message).toBe("interrupted")
-  expect(
-    createResponsesStreamErrorEvent("gpt-image", null).response.error.message,
-  ).toBe("Stream error")
 })

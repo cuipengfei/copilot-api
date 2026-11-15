@@ -2,9 +2,10 @@ import { describe, expect, test } from "bun:test"
 import { Hono } from "hono"
 import { streamSSE } from "hono/streaming"
 
+import type { SubagentMarker } from "~/lib/subagent"
+
 import { requestContext } from "~/lib/request-context"
 import { traceIdMiddleware } from "~/lib/trace"
-
 const createTracingApp = () => {
   const app = new Hono()
 
@@ -21,6 +22,15 @@ const createTracingApp = () => {
     }),
   )
 
+  app.get("/session", (c) => {
+    const context = requestContext.getStore()
+    return c.json({
+      rootSessionId: context?.rootSessionId ?? null,
+      sessionAffinity: context?.sessionAffinity ?? null,
+      subagent: context?.subagent === undefined ? "unknown" : context.subagent,
+    })
+  })
+
   app.get("/trace-stream", (c) => {
     return streamSSE(c, async (stream) => {
       const traceId = requestContext.getStore()?.traceId ?? null
@@ -36,6 +46,192 @@ const createTracingApp = () => {
 }
 
 describe("traceIdMiddleware", () => {
+  test.each<{
+    name: string
+    headers: Record<string, string>
+    root: string | null
+    affinity: string | null
+    subagent: SubagentMarker | "main" | "unknown"
+  }>([
+    {
+      name: "Claude main session takes precedence over legacy headers",
+      headers: {
+        "X-Claude-Code-Session-Id": " root ",
+        "x-claude-code-agent-id": " ",
+        "session-id": "legacy",
+        "x-session-affinity": "old",
+      },
+      root: "root",
+      affinity: "root",
+      subagent: "main",
+    },
+    {
+      name: "Claude nested child with native session headers",
+      headers: {
+        "x-claude-code-session-id": "root",
+        "x-claude-code-agent-id": " child ",
+        "x-claude-code-parent-agent-id": "parent",
+        "x-claude-code-agent-type": "Explore",
+      },
+      root: "root",
+      affinity: "root:child",
+      subagent: {
+        session_id: "root",
+        agent_id: "root:child",
+        agent_type: "subagent",
+      },
+    },
+    {
+      name: "orphan Claude agent header",
+      headers: { "x-claude-code-agent-id": "child" },
+      root: null,
+      affinity: null,
+      subagent: "unknown",
+    },
+    {
+      name: "OpenCode v1 main",
+      headers: { "x-root-session-id": "root", "x-opencode-session-id": "root" },
+      root: "root",
+      affinity: "root",
+      subagent: "main",
+    },
+    {
+      name: "OpenCode v1 child without parent header",
+      headers: {
+        "x-root-session-id": "root",
+        "x-opencode-session-id": "child",
+      },
+      root: "root",
+      affinity: "child",
+      subagent: {
+        session_id: "root",
+        agent_id: "child",
+        agent_type: "subagent",
+      },
+    },
+    {
+      name: "OpenCode v2 native affinity",
+      headers: {
+        "user-agent": "opencode/latest/2.0.18/cli",
+        "x-root-session-id": "root",
+        "x-session-id": "child",
+        "x-session-affinity": "child",
+        "x-parent-session-id": "parent",
+      },
+      root: "root",
+      affinity: "child",
+      subagent: {
+        session_id: "root",
+        agent_id: "child",
+        agent_type: "subagent",
+      },
+    },
+    {
+      name: "parent session header does not supply affinity or child identity",
+      headers: {
+        "x-root-session-id": "root",
+        "x-session-id": "child",
+        "x-parent-session-id": "root",
+      },
+      root: "root",
+      affinity: null,
+      subagent: "unknown",
+    },
+    {
+      name: "a client request id does not supply child identity",
+      headers: {
+        "x-root-session-id": "root",
+        "x-client-request-id": "request",
+      },
+      root: "root",
+      affinity: "request",
+      subagent: "unknown",
+    },
+    {
+      name: "matching Codex hint ids supply no child identity",
+      headers: {
+        "session-id": "child",
+        "thread-id": "child",
+        "x-openai-subagent": "review",
+      },
+      root: "child",
+      affinity: "child",
+      subagent: "unknown",
+    },
+    {
+      name: "a missing root supplies no child identity despite a Codex hint",
+      headers: { "thread-id": "child", "x-openai-subagent": "custom" },
+      root: null,
+      affinity: "child",
+      subagent: "unknown",
+    },
+    {
+      name: "Codex missing child affinity",
+      headers: { "session-id": "root", "x-openai-subagent": "review" },
+      root: "root",
+      affinity: null,
+      subagent: "unknown",
+    },
+    {
+      name: "OpenCode root without a current session header stays unknown",
+      headers: { "x-root-session-id": "root" },
+      root: "root",
+      affinity: null,
+      subagent: "unknown",
+    },
+    {
+      name: "current session header without a root stays unknown",
+      headers: { "x-opencode-session-id": "child" },
+      root: null,
+      affinity: "child",
+      subagent: "unknown",
+    },
+    {
+      name: "lone parent session header stays unknown",
+      headers: { "x-parent-session-id": "parent" },
+      root: null,
+      affinity: null,
+      subagent: "unknown",
+    },
+    {
+      name: "whitespace session headers stay unknown",
+      headers: {
+        "x-claude-code-session-id": " ",
+        "x-root-session-id": "  ",
+        "x-opencode-session-id": " ",
+      },
+      root: null,
+      affinity: null,
+      subagent: "unknown",
+    },
+  ])(
+    "derives session context for $name",
+    async ({ headers, root, affinity, subagent }) => {
+      const response = await createTracingApp().request("/session", { headers })
+      expect(await response.json()).toEqual({
+        rootSessionId: root,
+        sessionAffinity: affinity,
+        subagent: subagent === "main" ? null : subagent,
+      })
+    },
+  )
+
+  test("keeps Claude sibling affinities separate while sharing the root", async () => {
+    const app = createTracingApp()
+    const replies = await Promise.all(
+      ["a", "b", "a"].map(async (id) => {
+        const response = await app.request("/session", {
+          headers: {
+            "x-claude-code-session-id": "root",
+            "x-claude-code-agent-id": id,
+          },
+        })
+        return response.json()
+      }),
+    )
+    expect(replies[0]).toEqual(replies[2])
+    expect(replies[0]).not.toEqual(replies[1])
+  })
   test("sanitizes a valid client trace id and exposes it via request context", async () => {
     const app = createTracingApp()
 

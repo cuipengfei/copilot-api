@@ -360,7 +360,7 @@ describe("native JSON 响应", () => {
       const event = page.items[0]
       expect(event.endpoint).toBe("responses")
       expect(event.model).toBe(MODEL)
-      expect(event.session_id).toBe(getUUID(SESSION_ID))
+      expect(event.session_id).toBe(SESSION_ID)
       expect(event.input_tokens).toBe(3)
       expect(event.output_tokens).toBe(2)
       expect(event.cache_read_input_tokens).toBe(1)
@@ -680,8 +680,8 @@ describe("413 重试", () => {
     const secondBody = requestJsonBody(second)
     expect(firstBody.model).toBe(MODEL)
     expect(secondBody.model).toBe(MODEL)
-    expect(firstBody.reasoning).toEqual({ effort: "high" })
-    expect(secondBody.reasoning).toEqual({ effort: "high" })
+    expect(firstBody.reasoning).toEqual({ effort: "high", summary: "auto" })
+    expect(secondBody.reasoning).toEqual({ effort: "high", summary: "auto" })
 
     const firstInput = firstBody.input as Array<{
       content: Array<Record<string, unknown>>
@@ -844,7 +844,7 @@ describe("取消信号", () => {
       expect(page.items[0]).toMatchObject({
         endpoint: "responses",
         model: MODEL,
-        session_id: getUUID(SESSION_ID),
+        session_id: SESSION_ID,
         input_tokens: 4,
         output_tokens: 2,
         total_tokens: 6,

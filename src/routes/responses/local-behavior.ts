@@ -1,5 +1,3 @@
-import type { streamSSE } from "hono/streaming"
-
 import consola from "consola"
 
 import { resolveEffortForLog } from "~/lib/config"
@@ -12,7 +10,6 @@ import {
   writeStreamLog,
 } from "~/lib/logger"
 import { resolveSupportedReasoningEffort } from "~/lib/reasoning-effort"
-import { writeSSEIfConnected } from "~/lib/sse"
 import type {
   Reasoning,
   ResponsesPayload,
@@ -112,46 +109,4 @@ export const logResponsesCompletion = ({
 }): void => {
   const premium = getAttachedPremiumInfo(response)
   writeStreamLog({ model, chunks, done: true, premium }, true)
-}
-
-export const createResponsesStreamErrorEvent = (
-  model: string,
-  err: unknown,
-) => {
-  const message = err instanceof Error ? err.message : "Stream error"
-  return {
-    type: "response.failed",
-    sequence_number: 0,
-    response: {
-      id: "resp_stream_error",
-      object: "response",
-      created_at: Math.floor(Date.now() / 1000),
-      model,
-      output: [],
-      output_text: "",
-      status: "failed",
-      error: { message },
-      incomplete_details: null,
-      instructions: null,
-      metadata: null,
-      parallel_tool_calls: false,
-      temperature: null,
-      tool_choice: "auto",
-      tools: [],
-      top_p: null,
-      usage: null,
-    },
-  }
-}
-
-export const writeResponsesStreamError = async (
-  stream: Parameters<Parameters<typeof streamSSE>[1]>[0],
-  errorEvent: ReturnType<typeof createResponsesStreamErrorEvent>,
-) => {
-  await writeSSEIfConnected(stream, {
-    event: errorEvent.type,
-    data: JSON.stringify(errorEvent),
-  }).catch(() => {
-    // 连接已关闭时无法继续写入错误事件。
-  })
 }

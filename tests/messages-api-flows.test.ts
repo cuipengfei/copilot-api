@@ -19,7 +19,6 @@ import type {
 import type {
   CreateResponsesReturn,
   ResponsesPayload,
-  ResponsesResult,
   ResponsesTransport,
 } from "~/lib/types/responses"
 
@@ -33,6 +32,8 @@ import { closeUsageStore, getTokenUsageEventsPage } from "~/lib/token-usage"
 import { traceIdMiddleware } from "~/lib/trace"
 
 import { modelsDevCatalogFixture } from "./fixtures/models-dev-catalog"
+
+import { createResponsesResult } from "./fixtures/responses"
 
 const DB_PATH_ENV = "COPILOT_API_SQLITE_DB_PATH"
 
@@ -147,24 +148,35 @@ afterEach(async () => {
   Object.assign(responsesUtilsDependencies, defaultResponsesUtilsDependencies)
 })
 
-test("messages Chat Completions flow shares the main cache key with dispatched subagents", async () => {
-  const response = await handleWithChatCompletions(
-    createContext(),
+test("messages Chat Completions flow shares the trace root cache key with dispatched subagents", async () => {
+  const response = await requestContext.run(
     {
-      model: "gpt-test",
-      max_tokens: 128,
-      metadata: { user_id: JSON.stringify({ session_id: "root" }) },
-      messages: [{ role: "user", content: "hello" }],
+      traceId: "test-cache",
+      startTime: Date.now(),
+      userAgent: "test",
+      rootSessionId: "root",
+      sessionAffinity: "child",
+      parentSessionId: undefined,
     },
-    {
-      logger,
-      requestId: "request-subagent",
-      subagentMarker: {
-        session_id: "child",
-        agent_id: "agent-a",
-        agent_type: "collab_spawn",
-      },
-    },
+    () =>
+      handleWithChatCompletions(
+        createContext(),
+        {
+          model: "gpt-test",
+          max_tokens: 128,
+          metadata: { user_id: JSON.stringify({ session_id: "root" }) },
+          messages: [{ role: "user", content: "hello" }],
+        },
+        {
+          logger,
+          requestId: "request-subagent",
+          subagentMarker: {
+            session_id: "child",
+            agent_id: "agent-a",
+            agent_type: "subagent",
+          },
+        },
+      ),
   )
 
   expect(response.status).toBe(200)
@@ -1785,6 +1797,138 @@ test("messages Responses flow preserves the configured tool_search alias in non-
   })
 })
 
+test.each([false, true])(
+  "messages Responses flow returns native ToolSearch with stream=%s",
+  async (stream) => {
+    const argumentsValue = {
+      query: "select:mcp__probe__get_issue",
+      max_results: 5,
+    }
+    const call = {
+      type: "tool_search_call" as const,
+      call_id: "call-native-search",
+      arguments: argumentsValue,
+      status: "completed" as const,
+    }
+    createResponses.mockImplementationOnce((payload, options) => {
+      capturedResponsesPayload = payload
+      capturedResponsesOptions = options
+      const result = { ...createResponsesResult(payload.model), output: [call] }
+      if (!stream) return Promise.resolve(result)
+
+      return Promise.resolve(
+        createResponsesStream([
+          {
+            data: JSON.stringify({
+              type: "response.created",
+              response: { ...result, status: "in_progress" },
+            }),
+          },
+          {
+            data: JSON.stringify({
+              type: "response.output_item.added",
+              output_index: 0,
+              item: { ...call, arguments: {} },
+            }),
+          },
+          {
+            data: JSON.stringify({
+              type: "response.output_item.done",
+              output_index: 0,
+              item: call,
+            }),
+          },
+          {
+            data: JSON.stringify({
+              type: "response.completed",
+              response: result,
+            }),
+          },
+        ]) as unknown as CreateResponsesReturn,
+      )
+    })
+
+    const payload: AnthropicMessagesPayload = {
+      model: "gpt-6.1-sol",
+      max_tokens: 128,
+      stream,
+      messages: [{ role: "user", content: "find an issue" }],
+      tools: [
+        { name: "Read", input_schema: { type: "object" } },
+        {
+          name: "ToolSearch",
+          input_schema: {
+            type: "object",
+            properties: {
+              query: { type: "string" },
+              max_results: { type: "number" },
+            },
+            required: ["query", "max_results"],
+          },
+        },
+        {
+          name: "DeferredToolPlaceholder",
+          input_schema: { type: "object" },
+          defer_loading: true,
+        },
+      ],
+    }
+    const app = new Hono()
+    app.post("/", (c) =>
+      handleWithResponsesApi(c, payload, {
+        logger,
+        requestId: "request-native-search",
+        selectedModel: createModel(["/responses"]),
+      }),
+    )
+
+    const response = await app.request("/", { method: "POST" })
+    expect(response.status).toBe(200)
+    expect(capturedResponsesPayload?.tools).toHaveLength(2)
+    expect(
+      capturedResponsesPayload?.tools?.find(
+        (tool) => tool.type === "tool_search",
+      ),
+    ).toMatchObject({ type: "tool_search", execution: "client" })
+    if (!stream) {
+      const body = (await response.json()) as AnthropicResponse
+      expect(body.content).toEqual([
+        {
+          type: "tool_use",
+          id: call.call_id,
+          name: "ToolSearch",
+          input: argumentsValue,
+        },
+      ])
+    } else {
+      const events = parseSseEvents(await response.text())
+      const start = events.find(
+        (event) => event.event === "content_block_start",
+      )
+      const delta = events.find(
+        (event) => event.event === "content_block_delta",
+      )
+      expect(JSON.parse(start?.data ?? "{}") as unknown).toMatchObject({
+        type: "content_block_start",
+        content_block: {
+          type: "tool_use",
+          id: call.call_id,
+          name: "ToolSearch",
+          input: {},
+        },
+      })
+      expect(JSON.parse(delta?.data ?? "{}") as unknown).toMatchObject({
+        type: "content_block_delta",
+        delta: {
+          type: "input_json_delta",
+          partial_json: JSON.stringify(argumentsValue),
+        },
+      })
+      expect(events.at(-1)?.event).toBe("message_stop")
+    }
+  },
+)
+
 test("messages Responses flow stops on invalid JSON, emits an error, and records usage", async () => {
   const warnings: Array<Array<unknown>> = []
   createResponses.mockImplementationOnce(() =>
@@ -2320,26 +2464,6 @@ const parseSseEvents = (
   }
   return events
 }
-
-const createResponsesResult = (model: string): ResponsesResult => ({
-  created_at: 0,
-  error: null,
-  id: "resp-test",
-  incomplete_details: null,
-  instructions: null,
-  metadata: null,
-  model,
-  object: "response",
-  output: [],
-  output_text: "",
-  parallel_tool_calls: false,
-  status: "completed",
-  temperature: null,
-  tool_choice: "auto",
-  tools: [],
-  top_p: null,
-  usage: null,
-})
 
 test("messages Chat Completions flow forwards upstream quota headers", async () => {
   createChatCompletions.mockImplementationOnce(

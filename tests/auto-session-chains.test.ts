@@ -25,6 +25,7 @@ import {
 } from "../src/lib/auto-session"
 import { getConfig } from "../src/lib/config-store"
 import { HTTPError } from "../src/lib/error"
+import { requestContext } from "~/lib/request-context"
 import { state } from "../src/lib/state"
 import { attachAutoSessionToken } from "../src/services/copilot/auto-session-retry"
 import { createChatCompletions } from "../src/services/copilot/create-chat-completions"
@@ -50,6 +51,20 @@ const createMessagesPayload: AnthropicMessagesPayload = {
   max_tokens: 256,
   messages: [{ role: "user", content: "hello" }],
 }
+
+const createClaudeMessages = (...args: Parameters<typeof createMessages>) =>
+  requestContext.run(
+    {
+      traceId: "auto-chain-claude",
+      startTime: Date.now(),
+      userAgent: "claude-code",
+      isClaudeCode: true,
+      rootSessionId: "native-root",
+      sessionAffinity: "native-root",
+      parentSessionId: undefined,
+    },
+    () => createMessages(...args),
+  )
 
 const createChatPayload: ChatCompletionsPayload = {
   model: "gpt-5.3-codex",
@@ -305,11 +320,19 @@ afterAll(async () => {
 
 describe("auto-session token injection across chains", () => {
   test.each([
-    undefined,
-    { user_id: "user_device_account_account_session_session" },
+    { nativeClaude: false, metadata: undefined },
+    {
+      nativeClaude: false,
+      metadata: { user_id: "user_device_account_account_session_session" },
+    },
+    { nativeClaude: true, metadata: undefined },
+    {
+      nativeClaude: true,
+      metadata: { user_id: "user_device_account_account_session_session" },
+    },
   ])(
-    "messages chain preserves paired session token with metadata %j",
-    async (metadata) => {
+    "messages chain preserves paired session token with identity %j",
+    async ({ nativeClaude, metadata }) => {
       ;(
         globalThis as unknown as {
           __AUTO_SESSION_QUEUE__: Array<AutoSelectionResponse>
@@ -324,7 +347,8 @@ describe("auto-session token injection across chains", () => {
 
       await prewarmAutoSession()
       state.githubToken = "test-github-token"
-      await createMessages({ ...createMessagesPayload, metadata }, undefined, {
+      const send = nativeClaude ? createClaudeMessages : createMessages
+      await send({ ...createMessagesPayload, metadata }, undefined, {
         initiator: "user",
       })
 
@@ -333,9 +357,11 @@ describe("auto-session token injection across chains", () => {
       expect(new URL(url).pathname).toBe("/v1/messages")
       const headers = new Headers(init.headers)
       expect(headers.get("Authorization")).toBe(
-        metadata ? "Bearer test-github-token" : "Bearer test-copilot-token",
+        nativeClaude ? "Bearer test-github-token" : "Bearer test-copilot-token",
       )
-      if (metadata) expect(headers.get("OpenAI-Intent")).toBe("messages-proxy")
+      expect(headers.get("OpenAI-Intent")).toBe(
+        nativeClaude ? "messages-proxy" : "conversation-agent",
+      )
 
       const parsedBody: unknown = JSON.parse(requestBodyText(init))
       if (
@@ -376,9 +402,13 @@ describe("auto-session token injection across chains", () => {
     const metadata = { user_id: "user_device_account_account_session_session" }
 
     expect(
-      await createMessages({ ...createMessagesPayload, metadata }, undefined, {
-        initiator: "user",
-      }),
+      await createClaudeMessages(
+        { ...createMessagesPayload, metadata },
+        undefined,
+        {
+          initiator: "user",
+        },
+      ),
     ).toMatchObject({ id: "proxy-full-price" })
 
     const calls = getFinalCallSnapshots("/v1/messages")

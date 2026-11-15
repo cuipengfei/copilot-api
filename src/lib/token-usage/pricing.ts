@@ -73,6 +73,15 @@ const BUILTIN_PROVIDER_CURRENCIES: Record<string, string> = {
 export function resolveTokenUsageCost(
   input: TokenUsageCostInput,
 ): CalculatedTokenUsageCost | null {
+  if (input.endpoint === "alpha_search") {
+    const cost = normalizePrice(input.cost)
+    if (cost === null) return null
+    return {
+      currency: input.pricingCurrency === "CNY" ? "CNY" : "USD",
+      source: input.providerName === "codex" ? "builtin" : "estimate",
+      total_cost_nanos: Math.round(cost * COST_NANOS_PER_UNIT),
+    }
+  }
   if (
     input.source === "provider"
     && ["openrouter", "xai"].includes(
@@ -188,10 +197,6 @@ function resolveReportedProviderCost(
     source: "upstream",
     total_cost_nanos: totalCostNanos,
   }
-}
-
-export function getCostAmount(totalCostNanos: number): number {
-  return totalCostNanos / COST_NANOS_PER_UNIT
 }
 
 export function xaiUsdTicksToCost(value: unknown): number | undefined {

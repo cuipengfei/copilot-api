@@ -1,13 +1,16 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test'
-import { Window } from 'happy-dom'
+import type { Window } from 'happy-dom'
 import { act, createElement } from 'react'
 import type { Root } from 'react-dom/client'
+import { createTestDom } from './helpers/dom'
 import AdvancedConfigPage from '../src/pages/AdvancedConfigPage'
 import { LanguageProvider } from '../src/contexts/LanguageContext'
 import type {
   AppConfigDocument,
   AppConfigSaveResult,
   AppConfigUpdate,
+  ProviderManagementConfig,
+  ProviderModelOptions,
 } from '../src/types/ipc'
 import { defaultConfig, type AppConfig } from '../../src/lib/config-store'
 import type { ConfigEditorReply } from '../src/lib/config-editor-errors'
@@ -29,29 +32,16 @@ let apply: ReturnType<
     (revision: string) => Promise<ConfigEditorReply<AppConfigSaveResult>>
   >
 >
-const previousGlobals = new Map<string, PropertyDescriptor | undefined>()
+let getModelOptions: ReturnType<
+  typeof mock<() => Promise<ProviderModelOptions>>
+>
+let getProviders: ReturnType<
+  typeof mock<() => Promise<ProviderManagementConfig>>
+>
+let cleanupDom: () => Promise<void>
 
 beforeEach(async () => {
-  win = new Window({ url: 'http://localhost' })
-  const globals: Record<string, unknown> = {
-    window: win,
-    document: win.document,
-    navigator: win.navigator,
-    HTMLElement: win.HTMLElement,
-    HTMLInputElement: win.HTMLInputElement,
-    HTMLTextAreaElement: win.HTMLTextAreaElement,
-    Event: win.Event,
-    MouseEvent: win.MouseEvent,
-    IS_REACT_ACT_ENVIRONMENT: true,
-  }
-  for (const [name, value] of Object.entries(globals)) {
-    previousGlobals.set(name, Object.getOwnPropertyDescriptor(globalThis, name))
-    Object.defineProperty(globalThis, name, {
-      configurable: true,
-      writable: true,
-      value,
-    })
-  }
+  ;({ win, root, container, cleanup: cleanupDom } = await createTestDom())
   documentFixture = {
     configPath: '/custom-api-home/config.json',
     revision: 'initial-revision',
@@ -78,23 +68,40 @@ beforeEach(async () => {
   apply = mock((_revision: string) =>
     Promise.resolve({ ...documentFixture, saved: true, applied: true }),
   )
+  getModelOptions = mock(() =>
+    Promise.resolve({
+      codex: [
+        'codex-auto-review',
+        'gpt-reserve',
+        'gpt-6-luna',
+        'gpt-6.1-sol',
+        'gpt-image-2',
+      ],
+    }),
+  )
+  getProviders = mock(() =>
+    Promise.resolve({
+      configPath: documentFixture.configPath,
+      providers: [
+        { name: 'codex', type: 'openai-responses', enabled: true },
+        { name: 'github-copilot', type: 'github-copilot', enabled: true },
+      ],
+    }),
+  )
   Object.defineProperty(win, 'electronAPI', {
     configurable: true,
-    value: { getAppConfig: read, saveAppConfig: save, applyAppConfig: apply },
+    value: {
+      getAppConfig: read,
+      saveAppConfig: save,
+      applyAppConfig: apply,
+      getProviderModelOptions: getModelOptions,
+      getProviderManagementConfig: getProviders,
+    },
   })
-  container = document.createElement('div')
-  document.body.append(container)
-  const { createRoot } = await import('react-dom/client')
-  root = createRoot(container)
 })
 afterEach(async () => {
   await act(async () => root.unmount())
-  await win.happyDOM.close()
-  for (const [name, descriptor] of previousGlobals) {
-    if (descriptor) Object.defineProperty(globalThis, name, descriptor)
-    else Reflect.deleteProperty(globalThis, name)
-  }
-  previousGlobals.clear()
+  await cleanupDom()
 })
 async function render(serverRunning = false, active = true) {
   await act(async () =>
@@ -354,6 +361,156 @@ describe('Desktop config editor', () => {
     expect(
       (JSON.parse(jsonEditor().value) as Record<string, unknown>).modelMappings,
     ).toBeUndefined()
+  })
+
+  test('maps all Codex models into the shared draft and preserves unrelated mappings', async () => {
+    documentFixture.content = JSON.stringify({
+      future: { keep: true },
+      modelMappings: {
+        'codex-auto-review': 'custom/review',
+        'gpt-6-luna': 'custom/luna',
+        alias: 'custom/model',
+      },
+    })
+    await render(true)
+    await click('Map Codex models')
+    await click('Map Codex models')
+    expect(save).not.toHaveBeenCalled()
+    await click('JSON')
+    await reveal()
+    const expected = {
+      future: { keep: true },
+      modelMappings: {
+        'codex-auto-review': 'codex/codex-auto-review',
+        'gpt-reserve': 'codex/gpt-reserve',
+        'gpt-6-luna': 'codex/gpt-6-luna',
+        'gpt-6.1-sol': 'codex/gpt-6.1-sol',
+        'gpt-image-2': 'codex/gpt-image-2',
+        alias: 'custom/model',
+      },
+    }
+    expect(JSON.parse(jsonEditor().value)).toEqual(expected)
+    await click('Save and apply')
+    expect(JSON.parse(save.mock.calls[0][0].content)).toEqual(expected)
+    expect(save.mock.calls[0][0].revision).toBe('initial-revision')
+  })
+
+  test('Copilot changes only auto review and saves through the existing offline flow', async () => {
+    const modelMappings = {
+      'codex-auto-review': 'codex/codex-auto-review',
+      'gpt-reserve': 'codex/gpt-reserve',
+      'gpt-6-luna': 'codex/gpt-6-luna',
+      alias: 'custom/model',
+    }
+    documentFixture.content = JSON.stringify({ modelMappings })
+    await render()
+    await click('Map GitHub Copilot review')
+    await click('Map GitHub Copilot review')
+    expect(save).not.toHaveBeenCalled()
+    await click('Save configuration')
+    expect(JSON.parse(save.mock.calls[0][0].content)).toEqual({
+      modelMappings: { ...modelMappings, 'codex-auto-review': 'gpt-6-luna' },
+    })
+  })
+
+  test('keeps Codex disabled while models load without blocking the Copilot preset', async () => {
+    let resolveModels!: (options: ProviderModelOptions) => void
+    getModelOptions.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveModels = resolve
+        }),
+    )
+    await render()
+    expect(button('Map Codex models').disabled).toBe(true)
+    await click('Map GitHub Copilot review')
+    expect(button('Save configuration').disabled).toBe(false)
+    await act(async () => resolveModels({ codex: ['gpt-6.1-sol'] }))
+    expect(button('Map Codex models').disabled).toBe(false)
+    await click('Map Codex models')
+    await click('Save configuration')
+    expect(JSON.parse(save.mock.calls[0][0].content)).toMatchObject({
+      modelMappings: {
+        'codex-auto-review': 'gpt-6-luna',
+        'gpt-6.1-sol': 'codex/gpt-6.1-sol',
+      },
+    })
+  })
+
+  test('handles unavailable Codex models and recovers when reopening the section', async () => {
+    getModelOptions.mockRejectedValueOnce(new Error('read failed'))
+    await render()
+    expect(button('Map Codex models').disabled).toBe(true)
+    expect(container.textContent).toContain('Could not load quick mappings')
+    expect(button('Map GitHub Copilot review').disabled).toBe(false)
+    await click('Request settings')
+    await click('Model mappings')
+    expect(button('Map Codex models').disabled).toBe(false)
+    expect(container.textContent).not.toContain('Could not load quick mappings')
+    await click('Request settings')
+    getModelOptions.mockResolvedValueOnce({})
+    await click('Model mappings')
+    expect(button('Map Codex models').disabled).toBe(true)
+  })
+
+  test.each([
+    { codex: true, copilot: false },
+    { codex: false, copilot: true },
+    { codex: false, copilot: false },
+  ])(
+    'only shows presets for enabled providers: %j',
+    async ({ codex, copilot }) => {
+      getProviders.mockResolvedValueOnce({
+        configPath: documentFixture.configPath,
+        providers: [
+          { name: 'codex', type: 'openai-responses', enabled: codex },
+          { name: 'github-copilot', type: 'github-copilot', enabled: copilot },
+        ],
+      })
+      await render()
+      const labels = [...container.querySelectorAll('button')].map(
+        (el) => el.textContent,
+      )
+      expect(labels.includes('Map Codex models')).toBe(codex)
+      expect(labels.includes('Map GitHub Copilot review')).toBe(copilot)
+      expect(getModelOptions).toHaveBeenCalledTimes(codex ? 1 : 0)
+      expect(
+        container.textContent?.includes('Codex maps all its model names'),
+      ).toBe(codex || copilot)
+    },
+  )
+
+  test('hides presets for unconfigured providers and when provider loading fails', async () => {
+    getProviders.mockResolvedValueOnce({
+      configPath: documentFixture.configPath,
+      providers: [],
+    })
+    await render()
+    expect(container.textContent).not.toContain('Map Codex models')
+    expect(container.textContent).not.toContain('Map GitHub Copilot review')
+    await click('Request settings')
+    getProviders.mockRejectedValueOnce(new Error('read failed'))
+    await click('Model mappings')
+    expect(container.textContent).not.toContain('Map Codex models')
+    expect(container.textContent).not.toContain('Map GitHub Copilot review')
+    expect(container.textContent).toContain('Could not load quick mappings')
+  })
+
+  test('refreshes enabled providers when returning without discarding unsaved mappings', async () => {
+    await render()
+    await click('Map GitHub Copilot review')
+    await render(false, false)
+    getProviders.mockResolvedValueOnce({
+      configPath: documentFixture.configPath,
+      providers: [],
+    })
+    await render(false, true)
+    expect(container.textContent).not.toContain('Map Codex models')
+    expect(container.textContent).not.toContain('Map GitHub Copilot review')
+    await click('Save configuration')
+    expect(JSON.parse(save.mock.calls[0][0].content)).toMatchObject({
+      modelMappings: { 'codex-auto-review': 'gpt-6-luna' },
+    })
   })
 
   test('edits, saves and resets Codex Multi-Agent V1 through the visual form', async () => {

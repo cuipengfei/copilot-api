@@ -1,13 +1,91 @@
 import type { Locale } from './index'
 
 const en: Locale = {
+  clients: {
+    title: 'Client integrations',
+    description:
+      'Choose an agent to connect to this gateway. Configuration applies to your current OS user.',
+    agent: 'Agent',
+    gateway: 'Gateway address',
+    apiKey: 'Gateway API key',
+    noAuth: 'Authentication disabled · dummy',
+    keyNumber: 'Gateway key {{n}}',
+    refresh: 'Refresh',
+    loading: 'Checking…',
+    configure: 'Configure client',
+    update: 'Update configuration',
+    working: 'Working…',
+    open: 'Open configuration',
+    restore: 'Restore backup',
+    saved: 'Configuration saved. Restart the client to load the changes.',
+    restored:
+      'Original configuration restored. Restart the client to load the changes.',
+    pluginFailed: 'Configuration saved, but plugin installation failed.',
+    commandExit: 'Exit code: {{code}}',
+    stopped:
+      'Start the gateway to load the model lists. You can still update an existing configuration or install plugins while it is stopped.',
+    model: 'Default model',
+    fableModel: 'Fable model',
+    opusModel: 'Opus model',
+    sonnetModel: 'Sonnet model',
+    smallModel: 'Haiku model',
+    reviewModel: 'Review model',
+    clientDefault: 'Use client default',
+    sameModel: 'Use the default model',
+    chooseModel: 'Choose a model',
+    modelHint:
+      'The model list follows enabled providers and their Coding Agent model selections.',
+    claudeDescription:
+      'Connect Claude Code and choose its default, Fable, Opus, Sonnet, Haiku and review models separately.',
+    opencodeDescription:
+      'OpenCode v2 only. Install the provider plugin to discover gateway models automatically, including image models.',
+    codexDescription:
+      'Configure the Responses provider, default model and remote model catalog. Uses your existing Codex sign-in.',
+    nativeToolSearch: 'Enable native Tool Search (requires upstream support)',
+    agentInject: 'Agent reminder rules (agent-inject)',
+    toolSearchBridge: 'Tool Search MCP bridge (tool-search)',
+    agentContext: 'Install Agent Context for root session grouping',
+    optionalPlugins: 'Optional Claude Code plugins',
+    codexRestart:
+      'The gateway key is saved to your user environment. Fully quit and reopen Codex and your terminal; on Linux, sign in again for desktop apps.',
+    harnessDescription:
+      'Configure the gateway address and key, then install dsh-copilot-api into the selected Harness profile.',
+    harnessHint:
+      'Requires dsh. Saves COPILOT_API_BASE_URL and GITHUB_COPILOT_API_KEY in the Harness home .env file (DSH_HOME or ~/.dsh). Restart Harness after setup.',
+    profile: 'Harness profile',
+    installPlugin: 'Install plugin',
+    pluginInstalled: 'Plugin installed. Restart DeepSeek Harness.',
+    unconfigured: 'Not configured',
+    configured: 'Configured',
+    outdated: 'Needs update',
+    error: 'Check configuration',
+    errors: {
+      invalidConfig:
+        'The existing configuration is invalid or has an incompatible structure. Open it to correct it first.',
+      symlinkConfig:
+        'The configuration is a symbolic link. Edit its target manually.',
+      invalidInput: 'Check the selected model and installation options.',
+      conflict:
+        'Configuration changed on disk. Refresh before continuing. Restore is blocked when it would overwrite later edits.',
+      invalidKey: 'The gateway key changed. Refresh and choose a current key.',
+      noBackup: 'No backup is available.',
+      commandMissing:
+        'Client command not found. Install the client and reopen Copilot API.',
+      commandFailed:
+        'The client command failed. Check the client installation, profile and network, then retry.',
+      environmentFailed:
+        'Could not update the user environment. Check your OS permissions and retry.',
+      modelsFailed: 'Could not load the models. Check the gateway and refresh.',
+      operationFailed:
+        'The operation failed. Check file permissions and retry.',
+    },
+  },
   studio: {
     title: 'Create',
     description: 'Turn a prompt or an image into something new.',
     generate: 'Generate image',
     edit: 'Edit image',
     video: 'Generate video',
-    provider: 'Provider',
     gateway: 'Gateway default',
     model: 'Model',
     prompt: 'Prompt',
@@ -17,11 +95,6 @@ const en: Locale = {
     size: 'Image size',
     quality: 'Quality',
     count: 'Images',
-    outputFormat: 'Output format',
-    frameCount: 'Frame count',
-    frameDurationMs: 'Frame duration (ms)',
-    gifHint:
-      'Use a model that supports animated GIF output, such as codex/gpt-image-2.',
     auto: 'Auto',
     low: 'Low',
     medium: 'Medium',
@@ -49,7 +122,6 @@ const en: Locale = {
     saved: 'Saved',
     viewOriginal: 'View original',
     closePreview: 'Close preview',
-    useAsInput: 'Edit this image',
     failed: 'Request failed. Try again.',
     videoFailed: 'Video generation failed or expired.',
     pending: 'Generating video. Checking every 5 seconds…',
@@ -226,7 +298,6 @@ const en: Locale = {
     serviceAddress: 'Service address',
     authHeader: 'Auth header',
     copy: 'Copy',
-    quotaUsage: 'GitHub Copilot Quota',
     subscriptionQuota: 'Subscription quota',
     tabSubscriptions: 'Subscriptions',
     quotaRefreshAll: 'Refresh all',
@@ -266,7 +337,6 @@ const en: Locale = {
     quotaResetsOn: 'resets {{date}}',
     quotaUnavailable: 'No quota details reported.',
     quotaUsedPercent: '{{percent}}% used',
-    quotaRemainingPercent: '{{percent}}% remaining',
     providerOverview: 'Providers',
     providerOverviewSummary: '{{enabled}} / {{total}} enabled',
     providerOverviewManage: 'Manage',
@@ -275,12 +345,10 @@ const en: Locale = {
     refresh: 'Refresh',
     tokenUsage: 'Token usage',
     tokenUsageAllModels: 'All models',
-    tokenUsageCache: 'Cache',
     tokenUsageCacheRead: 'Cache read',
     tokenUsageCacheWrite: 'Cache write',
     tokenUsageCacheHitRate: 'Cache hit rate',
     tokenUsageCost: 'Cost',
-    tokenUsageEndpoint: 'Endpoint',
     tokenUsageAverageFirstToken: 'Avg. TTFT',
     tokenUsageOutputSpeed: 'Output speed',
     tokenUsageDuration: 'Duration',
@@ -298,14 +366,12 @@ const en: Locale = {
     tokenUsagePeriodThisMonth: 'This month',
     tokenUsagePeriodLast30Days: '30 days',
     tokenUsagePeriodLifetime: 'Lifetime',
-    tokenUsageProvider: 'Provider',
     tokenUsageRequests: 'Requests',
     tokenUsageSession: 'Session',
     tokenUsageSessionBreakdown: 'Session breakdown',
     tokenUsageSessionsCount: '{{n}} sessions',
     tokenUsageSessionsLoadFailed:
       'Failed to load session usage. Click Refresh to retry.',
-    tokenUsageSource: 'Source',
     tokenUsageTime: 'Time',
     tokenUsageTotal: 'Total',
     tokenUsageTotalCost: 'Total Cost',
@@ -328,7 +394,6 @@ const en: Locale = {
     stop: 'Stop',
     running: 'Running',
     notStarted: 'Not started',
-    logout: 'Log out',
     settings: 'Settings',
     appSettings: 'App settings',
     advancedConfig: 'Advanced config',
@@ -347,9 +412,6 @@ const en: Locale = {
     fileQuit: 'Quit',
     view: 'View',
     viewReload: 'Reload',
-    viewZoomIn: 'Zoom In',
-    viewZoomOut: 'Zoom Out',
-    viewZoomReset: 'Reset Zoom',
     help: 'Help',
     helpAbout: 'About',
     aboutVersion: 'Version',
@@ -360,7 +422,6 @@ const en: Locale = {
       'Bun >= 1.4.4 was not found; using the bundled Node.js runtime. Install or upgrade Bun to enable it.',
     runtime: 'Server runtime: {{runtime}}',
     spawnFailed: 'Failed to launch the server process: {{message}}',
-    tokenNotFound: 'Token not found',
     authRequired:
       'No usable authorization found. Configure a GitHub token or at least one provider first',
     portInUse:
@@ -500,7 +561,6 @@ const en: Locale = {
     close: 'Close',
     saveApply: 'Save and apply',
     save: 'Save configuration',
-    synced: 'Configuration synchronized',
     unsaved: '{{count}} unsaved changes',
     unsavedOther: 'Unsaved changes',
     offline:
@@ -636,34 +696,18 @@ const en: Locale = {
     },
   },
   advancedConfig: {
-    title: 'Model mappings',
-    subtitle:
-      'Manage the shared model mappings through the running service API so new requests to /v1/messages, /v1/messages/count_tokens, /v1/responses, and /v1/chat/completions pick up changes immediately.',
-    back: 'Back to dashboard',
-    modelMappingsTitle: 'Model mappings',
     modelMappingsDesc:
       'Map a requested model name to a target model ID or provider/model alias. Shared across all interfaces.',
-    scopeLabel: 'Scope',
-    scopeNote:
-      'One shared mapping set applies to POST /v1/messages, POST /v1/messages/count_tokens, POST /v1/responses, and POST /v1/chat/completions. Matching is exact and the app will not trim or normalize the model name for you.',
-    restartNote:
-      'Changes are applied to the running service immediately after a successful save.',
-    configPath: 'Config path',
     addMapping: 'Add mapping',
+    mapCodex: 'Map Codex models',
+    mapCopilot: 'Map GitHub Copilot review',
+    quickMappingsHelp:
+      'Codex maps all its model names to codex/model. GitHub Copilot only maps codex-auto-review to gpt-6-luna. Matching rules are updated; save to apply.',
+    quickMappingsLoadFailed:
+      'Could not load quick mappings. Reopen this section to retry.',
     sourceModel: 'Requested model',
     targetModel: 'Target model',
     remove: 'Remove',
-    emptyTitle: 'No mappings yet',
-    emptyDescription:
-      'Add a rule to remap an incoming model name before any supported top-level interface resolves the actual upstream model.',
-    saveHelp:
-      'Only the modelMappings field is updated through the service API. Other config values remain untouched.',
-    saved:
-      'Saved through the service API. New requests to /v1/messages, /v1/messages/count_tokens, /v1/responses, and /v1/chat/completions will use the updated mappings immediately.',
-    loadFailed: 'Failed to load model mappings',
-    saveFailed: 'Failed to save model mappings',
-    serverRequired:
-      'Start the local service before loading or saving model mappings through the API.',
     validationIncomplete:
       'Each mapping row must include both a requested model and a target model.',
     validationDuplicate: 'Duplicate requested model: {{model}}',

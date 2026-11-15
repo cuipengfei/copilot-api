@@ -29,7 +29,7 @@ import {
 import { getProviderModelPdfSupport } from "~/lib/model-pdf-support"
 import { getReasoningReplayIdentity } from "~/lib/reasoning-replay"
 import { writeSSEIfConnected } from "~/lib/sse"
-import { resolveBridgeToolSearchName } from "~/lib/tool-search"
+import { resolveResponsesToolSearchName } from "~/lib/tool-search"
 import {
   applyForwardableResponseHeaders,
   getAttachedResponseHeaders,
@@ -47,7 +47,7 @@ import {
   type TokenUsageEndpoint,
   type UsageTokens,
 } from "~/lib/token-usage"
-import { isAsyncIterable, parseUserIdMetadata } from "~/lib/utils"
+import { isAsyncIterable } from "~/lib/utils"
 import {
   buildErrorEvent,
   createResponsesStreamState,
@@ -174,7 +174,6 @@ export const handleWithChatCompletions = async (
     endpoint: options.usageEndpoint ?? "chat_completions",
     fallbackSessionId: sessionId,
     model: openAIPayload.model,
-    payload: anthropicPayload,
   })
   debugJson(logger, "Translated OpenAI request payload:", openAIPayload)
 
@@ -353,7 +352,6 @@ export const handleWithResponsesApi = async (
     endpoint: options.usageEndpoint ?? "responses",
     fallbackSessionId: requestOptions.sessionId,
     model: responsesPayload.model,
-    payload: anthropicPayload,
   })
 
   const shouldCompactInput = applyResponsesApiContextManagement(
@@ -396,7 +394,10 @@ export const handleWithResponsesApi = async (
     applyForwardableResponseHeaders(c, sourceHeaders)
     return streamSSE(c, async (stream) => {
       const streamState = createResponsesStreamState({
-        toolSearchName: resolveBridgeToolSearchName(anthropicPayload.tools),
+        toolSearchName: resolveResponsesToolSearchName({
+          model: anthropicPayload.model,
+          tools: anthropicPayload.tools,
+        }),
       })
       let usage: UsageTokens = {}
       let copilotUsage: CopilotUsageTokens | null = null
@@ -544,7 +545,10 @@ export const handleWithResponsesApi = async (
   const anthropicResponse = translateResponsesResultToAnthropic(
     response as ResponsesResult,
     {
-      toolSearchName: resolveBridgeToolSearchName(anthropicPayload.tools),
+      toolSearchName: resolveResponsesToolSearchName({
+        model: anthropicPayload.model,
+        tools: anthropicPayload.tools,
+      }),
     },
   )
   const responsesResult = response as ResponsesResult
@@ -578,7 +582,6 @@ export const handleWithMessagesApi = async (
     endpoint: options.usageEndpoint ?? "messages",
     fallbackSessionId: sessionId,
     model: anthropicPayload.model,
-    payload: anthropicPayload,
   })
 
   debugJson(logger, "Translated Messages payload:", anthropicPayload)
@@ -706,18 +709,12 @@ const createCopilotUsageRecorder = (options: {
   endpoint: TokenUsageEndpoint
   fallbackSessionId?: string
   model: string
-  payload: AnthropicMessagesPayload
 }): ((usage: UsageTokens, copilotUsage?: CopilotUsageTokens | null) => void) =>
   createCopilotTokenUsageRecorder({
     endpoint: options.endpoint,
     fallbackSessionId: options.fallbackSessionId,
     model: options.model,
-    sessionId: getMetadataSessionId(options.payload),
   })
-
-const getMetadataSessionId = (
-  payload: AnthropicMessagesPayload,
-): string | null => parseUserIdMetadata(payload.metadata?.user_id).sessionId
 
 const normalizeCopilotUsage = (
   copilotUsage: CopilotUsage | null | undefined,
