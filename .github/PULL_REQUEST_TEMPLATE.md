@@ -44,7 +44,7 @@
 
 - [ ] `bun run lint:all` passes
 - [ ] `bun run typecheck` passes (root and `desktop/` when touched)
-- [ ] `bun test` passes - targeted files run: <!-- e.g. bun test tests/provider-resolver.test.ts -->
+- [ ] `bun run test` passes - targeted files run: <!-- e.g. bun run test tests/provider-resolver.test.ts -->
 - [ ] `bun run build` succeeds (`bun run build:desktop` for desktop/shared changes)
 
 ## Screenshots

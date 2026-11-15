@@ -25,7 +25,8 @@
 - Responses 翻译中 reasoning id >64 字符的 thinking block 不转为 `ResponseInputReasoning`（跨实例不可移植的 ID 会导致上游报错）
 - `shouldApplyPhase` 从 `extraPrompts` 动态检测 `"## Intermediary updates"` 字符串，不再硬编码模型名
 - `requestId = generateRequestIdFromPayload(...)` 与 `sessionId = getRootSessionId(...)` 必须在三条分支（native / responses / chat）向下透传；不要只在某一路径生成
-- `parseSubagentMarkerFromFirstUser()` 必须在 compact 检测后尽早执行；marker 需传到 native / responses / chat 三条路径
+- 子 agent 身份采用三态优先级：`dispatchOptions.subagentMarker` > 原生会话头（Claude Code / OpenCode `requestContext.subagent`，明确主会话时为 `null` 并阻断回退）> `parseSubagentMarkerFromFirstUser()`（仅在原生头未知 `undefined` 时从首条 array user 消息解析 `__SUBAGENT_MARKER__`）；身份结果向下传给 native / responses / chat 三条路径
+- Claude native messages 的 `messages-proxy` 模式仅由原生 Claude 会话请求头（`requestContext.isClaudeCode`）触发；仅携带 `metadata.user_id` 的请求不再触发 proxy 模式或建立 metadata 缓存分组
 - 若 service 返回值附着了 upstream response headers，messages 路由必须把它们继续转发给客户端；native/raw SSE 允许保留原 body 语义，但外层响应头仍要经过统一 helper 过滤与改写
 
 ## Project-Specific Rules

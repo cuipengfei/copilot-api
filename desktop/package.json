@@ -12,7 +12,7 @@
     "dev": "node scripts/ensure-electron.mjs && electron-vite dev",
     "build": "electron-vite build",
     "build:server": "bun run --cwd .. build:desktop",
-    "test": "bun test tests",
+    "test": "bun run --cwd .. test desktop/tests",
     "typecheck": "tsc --noEmit -p tsconfig.node.local.json && tsc --noEmit -p tsconfig.web.json",
     "preview": "electron-vite preview",
     "gen-icons": "rsvg-convert -w 1024 -h 1024 assets/tray-icon-colored.svg -o assets/icon.png",

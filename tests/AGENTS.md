@@ -4,6 +4,8 @@
 
 测试统一使用 `bun:test`，覆盖路由翻译、native messages、telemetry、models、暗渡之门与 Responses 分支；主策略是 mock 上游服务，而不是打真实 Copilot API。
 
+> **环境隔离**：使用 `bun run test [files]`，由 `test:isolated-env` 在启动 Bun 前设置临时 `HOME`、`XDG_CACHE_HOME`、应用目录、日志目录和内存 SQLite。`bunfig.toml` 预加载的 `tests/setup.ts` 会检查启动隔离标记与 `homedir()`，未经隔离的直接 `bun test` 会在加载测试文件前终止。需要验证文件持久化的测试可在测试内显式指定自己的临时文件。自定义验证脚本使用 `bun run test:isolated-env <script>`；需要传递 Bun 测试参数时使用 `bun run test:isolated-env test <args>`。禁止读写实际用户目录。
+
 ## Structure
 
 - `create-messages.test.ts`, `create-chat-completions.test.ts`, `create-responses.test.ts`, `cache-models.test.ts` - service / cache 边界测试
@@ -37,8 +39,10 @@
 ## Commands
 
 ```bash
-bun run test  # 全量（bun test --isolate，防止跨文件 mock.module 泄漏）
-bun test tests/create-messages.test.ts  # 单文件无需 --isolate
+bun run test  # 全量：临时应用目录、内存 SQLite、bun test --isolate
+bun run test tests/create-messages.test.ts  # 隔离环境中的单文件测试
+bun run test:isolated-env <script.ts>  # 在临时隔离目录与内存 SQLite 下运行自定义验证脚本
+bun run check:all  # 一键执行 lint:all --fix、build、build:desktop、test、typecheck:all、lint:all
 ```
 
 ## Anti-Patterns

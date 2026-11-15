@@ -7,6 +7,7 @@
 ## Structure
 
 - `get-vscode-version.ts` - VSCode 版本探针（当前返回稳定 fallback）
+- `responses-websocket.ts`, `responses-websocket-continuation.ts`, `responses-websocket-helpers.ts`, `responses-websocket-interrupt.ts` - Responses WebSocket 传输、同连接同会话增量续传、字节计数与中断控制
 - `copilot/` - Copilot upstream service 边界（chat/messages/responses/models/embeddings）
 - `github/` - GitHub OAuth/device flow、Copilot token、usage 查询
 - `providers/` - 外部 Anthropic-compatible provider 转发
@@ -24,6 +25,7 @@
 | Task | Location | Notes |
 |------|----------|-------|
 | Copilot upstream behavior | `copilot/*` | messages/chat/responses 适配与重试策略在此收口 |
+| Responses WebSocket & continuation | `responses-websocket*.ts` | 根层共享 WebSocket 传输与续传封装（Copilot 与 Codex 共用），创建流时捕获 `sessionId` |
 | GitHub token/usage | `github/*` | 不在 route 层维护 token 状态副本 |
 | Provider proxy transport | `providers/anthropic-proxy.ts` | 只做 provider 转发，不混 Copilot telemetry 语义 |
 | Telemetry delivery | `telemetry/*` | 事件发送失败不可阻塞主请求 |

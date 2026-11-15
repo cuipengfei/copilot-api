@@ -30,6 +30,7 @@
   "scripts": {
     "build": "tsdown",
     "build:desktop": "tsdown --config tsdown.desktop.config.ts",
+    "check:all": "bun run lint:all --fix && bun run build && bun run build:desktop && bun run test && bun run typecheck:all && bun run lint:all",
     "dev": "NODE_USE_SYSTEM_CA=1 bun run --watch ./src/main.ts",
     "knip": "knip-bun",
     "lint": "eslint --cache --config eslint.config.js",
@@ -39,7 +40,8 @@
     "prepare": "simple-git-hooks",
     "release": "bumpp && bun publish --access public",
     "start": "NODE_USE_SYSTEM_CA=1 NODE_ENV=production bun run ./src/main.ts",
-    "test": "bun test --isolate",
+    "test": "bun run test:isolated-env test --isolate",
+    "test:isolated-env": "isolated_env() ( dir=$(mktemp -d /tmp/copilot-api-isolated.XXXXXX) && trap 'rm -rf -- \"$dir\"' EXIT && mkdir -p \"$dir/home\" \"$dir/cache\" && HOME=\"$dir/home\" XDG_CACHE_HOME=\"$dir/cache\" COPILOT_API_TEST_HOME=\"$dir/home\" COPILOT_API_SQLITE_DB_PATH=:memory: COPILOT_API_HOME=\"$dir/home\" COPILOT_API_LOG_DIR=\"$dir/log\" bun \"$@\" ); isolated_env",
     "typecheck": "tsc",
     "typecheck:all": "bun run typecheck && bun run --cwd desktop typecheck",
     "typecheck:desktop": "bun run --cwd desktop typecheck"

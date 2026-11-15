@@ -19,8 +19,10 @@ This is a Bun/TypeScript API gateway project. API protocol contract types (OpenA
 bun run dev            # 开发服务器（watch，启用 system CA）
 bun run build          # 构建（tsdown）
 bun run build:desktop  # 构建 desktop server bundle
-bun run test           # 全量测试（bun test --isolate，每文件全新 global，防止跨文件 mock 泄漏）
-bun test tests/foo.test.ts  # 跑单个测试文件
+bun run test           # 全量：临时应用目录、内存 SQLite、bun test --isolate
+bun run test:isolated-env <script.ts>  # 隔离环境运行验证脚本（内存 SQLite + 临时 HOME/缓存/应用目录/日志）
+bun run check:all      # 一键跑完下方全部必检项（含 desktop build 与 typecheck:all）
+bun run test tests/foo.test.ts  # 隔离环境中的单文件测试
 bun run lint:all --fix # Lint 并修复
 bun run typecheck      # 类型检查
 bun run typecheck:all # 网关与桌面端类型检查
@@ -35,7 +37,7 @@ pre-commit hook 只跑 `lint-staged`（仅暂存文件的 lint），不保证项
 
 1. `bun run lint:all --fix` — 先修复格式或 lint；若改动文件，继续后续所有检查
 2. `bun run build`
-3. `bun run test`（全量测试，即 `bun test --isolate`；不要只跑目标文件）
+3. `bun run test`（全量隔离测试；不要只跑目标文件）
 4. `bun run typecheck`
 5. `bun run lint:all` — 确认修复后零 lint 错误
 

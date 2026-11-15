@@ -10,6 +10,9 @@
 |------|----------|-------|
 | Route entry | `route.ts`, `handler.ts` | stream / non-stream 共用 `handleResponses()` |
 | Stream ID sync | `stream-id-sync.ts` | 修正 added/done 事件 ID 不一致 |
+| Local gateway behavior & stream log | `local-behavior.ts`, `stream-error.ts` | 本地 reasoning/effort 解析、SSE 进度日志、前置错误响应 |
+| Terminal stream failure guard | `stream-failure.ts` | 确保流式响应仅发送单次终态，缺少终态或本地异常时补发 `response.failed` |
+| WebSocket continuation state | `~/lib/responses-continuation/`, `~/services/responses-websocket-continuation.ts` | 同连接且同 `sessionAffinity` 下的 `previous_response_id` 增量续传与回退 |
 | Vision / initiator detection | `utils.ts` | 只看 `payload.input` 与最后一项 role |
 | Payload preflight | `preflight.ts` | Shared mutation: `removeUnsupportedTools` → conditional `removeWebSearchTool` |
 | Input normalization | `utils.ts` (`normalizeResponsesInputForReplay`) | HTTP 上游 `4xx` 的 `error.message` 包含 `belong` 时剥除 `encrypted_content` 并重试一次；同一明确身份、模型、上游 URL 和认证凭据命中学习缓存时，在首发前应用相同处理 |

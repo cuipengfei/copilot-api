@@ -87,6 +87,7 @@ Severity must follow verified impact, not reviewer confidence or preference. Do 
 3. **Streaming & Realtime**
    - SSE and websocket paths (`src/services/responses-websocket*.ts`, `fetch-event-stream` usage) keep correct event ordering, emit completion/termination events, propagate mid-stream errors, and handle client abort/cancellation without leaked or unterminated streams.
    - Rate-limit and token-usage accounting (`src/lib/copilot-rate-limit.ts`, `src/lib/codex-rate-limit.ts`, `src/lib/token-usage/`) stays correct when a stream aborts partway.
+   - Async generators (`async function*`) and deferred stream callbacks must capture `requestContext` fields (`sessionId`, `sessionAffinity`, `traceId`, `initiator`) when the stream is created rather than reading `requestContext.getStore()` during iteration, which can run outside `requestContext.run()`.
 4. **Auth, Credentials & Tokens**
    - Changes touching `src/auth.ts`, `src/lib/oauth/`, `src/lib/credential-store.ts`, `src/lib/token.ts`, or `src/services/github/` get extra scrutiny: token refresh, expiry, redaction, atomic persistence.
    - No tokens, secrets, or PII in logs, error messages, telemetry, client code, or committed config.
@@ -126,10 +127,10 @@ Run the commands that match the scope of the change and record results in `Test 
 
 - `bun run lint:all` (or `bun run lint --fix <changed files>` to format).
 - `bun run typecheck`.
-- `bun test`, or `bun test tests/<file>.test.ts` for targeted runs.
+- `bun run test`, or `bun run test tests/<file>.test.ts` for targeted runs. For additional Bun flags, use `bun run test:isolated-env test <args>`; the test preload rejects unisolated direct `bun test` runs.
 - `bun run build`; add `bun run build:desktop` when shared or desktop code is touched.
 
-CI (`.github/workflows/ci.yml`) runs lint:all, root and desktop typecheck, `bun test`, and `bun run build`; review conclusions should not contradict what CI would enforce.
+CI (`.github/workflows/ci.yml`) runs lint:all, root and desktop typecheck, `bun run test`, `bun run build`, and `bun run build:desktop`; review conclusions should not contradict what CI would enforce.
 
 ## Review Summaries
 

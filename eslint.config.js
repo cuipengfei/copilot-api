@@ -64,4 +64,24 @@ export default defineConfig(
       "unused-imports/no-unused-imports": "error",
     },
   },
+  {
+    files: ["src/**"],
+    rules: {
+      "no-restricted-syntax": [
+        "error",
+        {
+          selector:
+            ":matches(:matches(FunctionDeclaration, FunctionExpression, ArrowFunctionExpression)[generator=true][async=true], CallExpression[callee.name='streamSSE'] > :matches(FunctionExpression, ArrowFunctionExpression), NewExpression[callee.name='ReadableStream'] :matches(Property, MethodDefinition) > :matches(FunctionExpression, ArrowFunctionExpression)) :matches(CallExpression[callee.object.name='requestContext'][callee.property.name='getStore'], CallExpression[callee.name='getResponsesContinuationSession'])",
+          message:
+            "Capture requestContext values before entering async generators, streamSSE callbacks, or ReadableStream callbacks; AsyncLocalStorage context may be lost when the stream is consumed outside requestContext.run().",
+        },
+        {
+          selector:
+            "FunctionDeclaration[id.name='prepareResponsesContinuation'] CallExpression[callee.name='getResponsesContinuationSession']",
+          message:
+            "Pass the captured sessionId into prepareResponsesContinuation() instead of reading getResponsesContinuationSession() during stream iteration.",
+        },
+      ],
+    },
+  },
 )
