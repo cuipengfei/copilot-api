@@ -510,6 +510,25 @@
         border-bottom: 1px solid var(--color-bg-light-2);
       }
 
+      /* Breakdown tables: numeric columns hug their content, first column takes the rest and wraps. */
+      .breakdown-table th:not(:first-child),
+      .breakdown-table td:not(:first-child) {
+        white-space: nowrap;
+        padding-left: 10px;
+        padding-right: 10px;
+      }
+
+      .events-table th,
+      .events-table td {
+        padding-left: 10px;
+        padding-right: 10px;
+      }
+
+      .breakdown-table td:first-child {
+        min-width: 260px;
+        overflow-wrap: anywhere;
+      }
+
       .pill-button {
         border: 1px solid var(--color-bg-light-2);
         border-radius: 7px;
@@ -843,6 +862,7 @@
           modelsRequestId: 0,
           modelsSearch: "",
           isLoading: false,
+          isolateApiKeyUsage: false,
           isTokenUsageLoading: false,
           isEventsLoading: false,
           subscriptionUsage: {},
@@ -854,6 +874,9 @@
           subscriptionsLoaded: false,
           subscriptionsConnectionKey: null,
           subscriptionPageError: null,
+          tokenUsageConnectionKey: null,
+          tokenUsageRequestId: 0,
+          eventsRequestId: 0,
           tokenUsageDailySummary: null,
           tokenUsageSummary: null,
           tokenUsageSessionsPage: null,
@@ -1135,10 +1158,18 @@
           return url.toString();
         }
 
-        async function fetchJson(url) {
+        async function fetchJson(url, isCurrentRequest = () => true) {
+          const connectionKey = getConnectionKey();
           const response = await fetch(url, {
             headers: buildRequestHeaders(),
           });
+          const isolation = response.headers.get("x-api-key-usage-isolated");
+          if (
+            isCurrentRequest() && connectionKey === getConnectionKey()
+            && (response.ok || isolation !== null)
+          ) {
+            applyUsageIsolation(isolation === "true");
+          }
 
           if (!response.ok) {
             let message = response.statusText || "Request failed";
@@ -1172,6 +1203,24 @@
           }
 
           return response.json();
+        }
+
+        function applyUsageIsolation(isolated) {
+          if ((state.isolateApiKeyUsage === true) === isolated) return;
+          state.isolateApiKeyUsage = isolated;
+          state.tokenUsageSummary = null;
+          state.tokenUsageDailySummary = null;
+          state.tokenUsageEventsPage = null;
+          invalidateSessionsRequest();
+          state.subscriptionUsage = {};
+          state.subscriptionsLoaded = false;
+          if (isolated && state.activeTab === "subscriptions") {
+            state.activeTab = "usage";
+            syncUrlState();
+            void fetchData();
+          }
+          if (state.activeTab === "models") void fetchData();
+          render();
         }
 
         function syncUrlState() {
@@ -1214,6 +1263,9 @@
           contentArea.setAttribute("aria-labelledby", `${state.activeTab}-tab`);
           contentArea.setAttribute("aria-busy", String(isLoading));
           for (const button of tabButtons) {
+            const hidden = button.dataset.tab === "subscriptions" && state.isolateApiKeyUsage;
+            button.hidden = hidden;
+            button.style.display = hidden ? "none" : "";
             const selected = button.dataset.tab === state.activeTab;
             button.setAttribute("aria-selected", String(selected));
             button.tabIndex = selected ? 0 : -1;
@@ -1646,12 +1698,11 @@
           }
         }
 
-        function handleModelsConnectionChange() {
+        function handleConnectionChange() {
+          syncTokenUsageConnection();
           syncModelsConnection();
           syncSubscriptionsConnection();
-          if (state.activeTab === "models" || state.activeTab === "subscriptions") {
-            render();
-          }
+          render();
         }
 
         async function fetchModels() {
@@ -1671,7 +1722,9 @@
             if (!endpoint) {
               throw new Error("Endpoint URL cannot be empty.");
             }
-            const payload = await fetchJson(deriveEndpointUrl(endpoint, "models"));
+            const payload = await fetchJson(
+              deriveEndpointUrl(endpoint, "models"), isCurrentRequest
+            );
             if (!Array.isArray(payload?.data)) {
               throw new Error("Model response must contain a data array.");
             }
@@ -1694,7 +1747,9 @@
           if (!["usage", "subscriptions", "models"].includes(tab)) {
             return;
           }
+          if (tab === "subscriptions" && state.isolateApiKeyUsage) return;
           syncEndpointCredential();
+          syncTokenUsageConnection();
           syncModelsConnection();
           syncSubscriptionsConnection();
           state.activeTab = tab;
@@ -1714,12 +1769,13 @@
             return;
           }
           event.preventDefault();
-          const index = tabButtons.findIndex((button) => button.dataset.tab === state.activeTab);
+          const visibleTabs = tabButtons.filter((button) => !button.hidden);
+          const index = visibleTabs.findIndex((button) => button.dataset.tab === state.activeTab);
           const nextIndex = event.key === "Home" ? 0
-            : event.key === "End" ? tabButtons.length - 1
-            : (index + (event.key === "ArrowRight" ? 1 : -1) + tabButtons.length) % tabButtons.length;
-          activateTab(tabButtons[nextIndex].dataset.tab);
-          tabButtons[nextIndex].focus();
+            : event.key === "End" ? visibleTabs.length - 1
+            : (index + (event.key === "ArrowRight" ? 1 : -1) + visibleTabs.length) % visibleTabs.length;
+          activateTab(visibleTabs[nextIndex].dataset.tab);
+          visibleTabs[nextIndex].focus();
         }
 
         function handleModelsSearch(event) {
@@ -2515,7 +2571,7 @@
               const costBreakdown = getTokenUsageCostLines(model).join("\n");
               return `
                 <tr class="border-b last:border-b-0" style="border-color: var(--color-bg-light-1);">
-                  <td class="px-4 py-2 truncate${by === "session" ? " font-mono" : ""}" style="color: var(--color-fg-lightest);" title="${escapeHtml(
+                  <td class="px-4 py-2${by === "session" ? " font-mono" : ""}" style="color: var(--color-fg-lightest);" title="${escapeHtml(
                     name
                   )}">${escapeHtml(name)}</td>
                   <td class="px-4 py-2 text-right font-semibold" style="color: var(--color-yellow-accent);" title="${escapeHtml(costBreakdown)}">${formatUsdFromNano(
@@ -2556,10 +2612,10 @@
 
           return `
             <div class="overflow-auto [scrollbar-gutter:stable] ${state.isTokenUsageLoading ? "opacity-60" : ""}">
-              <table class="data-table ${by === "model" ? "min-w-[1280px]" : "min-w-[960px]"} table-fixed text-left">
+              <table class="data-table breakdown-table w-full text-left">
                 <thead>
                   <tr>
-                    <th class="w-[270px] px-4 py-2 font-semibold">${by === "session" ? "Session" : "Model"}</th>
+                    <th class="px-4 py-2 font-semibold">${by === "session" ? "Session" : "Model"}</th>
                     <th class="px-4 py-2 text-right font-semibold">Copilot AIU Cost</th>
                     <th class="px-4 py-2 text-right font-semibold">Requests</th>
                     <th class="px-4 py-2 text-right font-semibold">Input</th>
@@ -2609,7 +2665,7 @@
                   <td class="px-4 py-2 max-w-[140px] truncate" style="color: var(--color-fg-lightest);" title="${escapeHtml(
                     event.model
                   )}">${escapeHtml(event.model)}</td>
-                  <td class="px-4 py-2 max-w-[180px] truncate font-mono" style="color: var(--color-fg-dark);" title="${escapeHtml(
+                  <td class="px-4 py-2 whitespace-nowrap font-mono" style="color: var(--color-fg-dark);" title="${escapeHtml(
                     sessionId
                   )}">${escapeHtml(sessionId)}</td>
                   <td class="px-4 py-2 max-w-[200px] truncate font-mono" style="color: var(--color-fg-dark);" title="${escapeHtml(
@@ -2646,7 +2702,7 @@
 
           return `
             <div class="overflow-auto ${state.isEventsLoading ? "opacity-60" : ""}">
-              <table class="data-table min-w-[1140px] text-left">
+              <table class="data-table events-table w-full text-left">
                 <thead>
                   <tr>
                     <th class="px-4 py-2 font-semibold">Time</th>
@@ -2778,7 +2834,9 @@
             const isCurrent = () => requestId === state.subscriptionRequestId
               && connectionKey === getConnectionKey() && revision === state.subscriptionRequests[provider];
             try {
-              const usage = await fetchJson(deriveEndpointUrl(usageUrl, `usage/${provider}`));
+              const usage = await fetchJson(
+                deriveEndpointUrl(usageUrl, `usage/${provider}`), isCurrent
+              );
               if (!isCurrent()) return;
               if (usage?.provider !== provider || !Array.isArray(usage.windows)) throw new Error("Invalid subscription quota response");
               state.subscriptionUsage[provider] = usage;
@@ -2800,19 +2858,23 @@
          * Fetches usage data and token usage data from the specified API endpoint.
          */
         async function fetchData(page = 1) {
-          state.isLoading = true;
-          try {
-            await fetchTokenUsageSummaryAndEvents(page);
-          } finally {
-            state.isLoading = false;
-            render("usage");
-          }
+          await fetchTokenUsageSummaryAndEvents(page, true);
         }
 
-        async function fetchTokenUsageSummaryAndEvents(page = 1) {
+        async function fetchTokenUsageSummaryAndEvents(page = 1, showSpinner = false) {
+          const connectionKey = syncTokenUsageConnection();
+          const requestId = ++state.tokenUsageRequestId;
+          const eventsRequestId = ++state.eventsRequestId;
+          const isCurrentRequest = () =>
+            requestId === state.tokenUsageRequestId && connectionKey === getConnectionKey();
+          const isCurrentEventsRequest = () =>
+            eventsRequestId === state.eventsRequestId && isCurrentRequest();
           invalidateSessionsRequest();
+          state.isEventsLoading = false;
           const endpoint = endpointUrlInput.value.trim();
           if (!endpoint) {
+            state.isLoading = false;
+            state.isTokenUsageLoading = false;
             state.tokenUsageDailySummary = null;
             state.tokenUsageSummary = null;
             state.tokenUsageEventsPage = null;
@@ -2826,6 +2888,7 @@
           }
 
           const period = getSelectedPeriod();
+          state.isLoading = showSpinner;
           state.isTokenUsageLoading = true;
           state.tokenUsageDailySummary = null;
           state.tokenUsageSummary = null;
@@ -2839,10 +2902,11 @@
             const usageUrl = resolveUsageUrl(endpoint);
             const [summaryResult, dailyResult, eventsResult] =
               await Promise.allSettled([
-                fetchJson(buildTokenUsageSummaryUrl(usageUrl, period)),
-                fetchJson(buildTokenUsageDailyUrl(usageUrl, period)),
-                fetchJson(buildTokenUsageEventsUrl(usageUrl, period, page)),
+                fetchJson(buildTokenUsageSummaryUrl(usageUrl, period), isCurrentRequest),
+                fetchJson(buildTokenUsageDailyUrl(usageUrl, period), isCurrentRequest),
+                fetchJson(buildTokenUsageEventsUrl(usageUrl, period, page), isCurrentEventsRequest),
               ]);
+            if (!isCurrentRequest()) return;
 
             if (summaryResult.status === "fulfilled") {
               state.tokenUsageSummary = summaryResult.value;
@@ -2873,6 +2937,7 @@
               );
             }
 
+            if (!isCurrentEventsRequest()) return;
             if (eventsResult.status === "fulfilled") {
               state.tokenUsageEventsPage = eventsResult.value;
             } else if (
@@ -2887,22 +2952,33 @@
               );
             }
           } catch (error) {
+            if (!isCurrentRequest()) return;
             console.error("Token usage fetch error:", error);
             state.tokenUsageDailySummary = null;
             state.tokenUsageSummary = null;
-            state.tokenUsageEventsPage = null;
             state.tokenUsageDailyError = getErrorMessage(error);
             state.tokenUsageSummaryError = getErrorMessage(error);
-            state.tokenUsageEventsError = getErrorMessage(error);
+            if (isCurrentEventsRequest()) {
+              state.tokenUsageEventsPage = null;
+              state.tokenUsageEventsError = getErrorMessage(error);
+            }
           } finally {
-            state.isTokenUsageLoading = false;
-            render("usage");
+            if (isCurrentRequest()) {
+              state.isLoading = false;
+              state.isTokenUsageLoading = false;
+              render("usage");
+            }
           }
         }
 
         async function fetchTokenUsageEventsPage(page) {
+          const connectionKey = syncTokenUsageConnection();
+          const requestId = ++state.eventsRequestId;
+          const isCurrentRequest = () =>
+            requestId === state.eventsRequestId && connectionKey === getConnectionKey();
           const endpoint = endpointUrlInput.value.trim();
           if (!endpoint) {
+            state.isEventsLoading = false;
             state.tokenUsageEventsError =
               "Token usage requires a valid endpoint URL.";
             render();
@@ -2915,10 +2991,13 @@
 
           try {
             const usageUrl = resolveUsageUrl(endpoint);
-            state.tokenUsageEventsPage = await fetchJson(
-              buildTokenUsageEventsUrl(usageUrl, getSelectedPeriod(), page)
+            const result = await fetchJson(
+              buildTokenUsageEventsUrl(usageUrl, getSelectedPeriod(), page),
+              isCurrentRequest
             );
+            if (isCurrentRequest()) state.tokenUsageEventsPage = result;
           } catch (error) {
+            if (!isCurrentRequest()) return;
             if (isMissingTokenUsageEndpointError(error)) {
               state.tokenUsageEventsPage = null;
               state.tokenUsageEventsError = null;
@@ -2927,18 +3006,23 @@
               state.tokenUsageEventsError = getErrorMessage(error);
             }
           } finally {
-            state.isEventsLoading = false;
-            render("usage");
+            if (isCurrentRequest()) {
+              state.isEventsLoading = false;
+              render("usage");
+            }
           }
         }
 
         async function fetchTokenUsageSessionsPage(page) {
+          const connectionKey = syncTokenUsageConnection();
           const endpoint = endpointUrlInput.value.trim();
           if (!endpoint) {
             return;
           }
 
           const requestId = ++state.sessionsRequestId;
+          const isCurrentRequest = () =>
+            requestId === state.sessionsRequestId && connectionKey === getConnectionKey();
           state.isSessionsLoading = true;
           state.tokenUsageSessionsError = null;
           render();
@@ -2950,14 +3034,15 @@
                 getSelectedPeriod(),
                 page,
                 "sessions"
-              )
+              ),
+              isCurrentRequest
             );
-            if (requestId !== state.sessionsRequestId) {
+            if (!isCurrentRequest()) {
               return;
             }
             state.tokenUsageSessionsPage = result;
           } catch (error) {
-            if (requestId !== state.sessionsRequestId) {
+            if (!isCurrentRequest()) {
               return;
             }
             // Older servers have no sessions endpoint; show the empty state.
@@ -2980,6 +3065,26 @@
           state.isSessionsLoading = false;
           state.tokenUsageSessionsPage = null;
           state.tokenUsageSessionsError = null;
+        }
+
+        function syncTokenUsageConnection() {
+          const key = getConnectionKey();
+          if (state.tokenUsageConnectionKey !== key) {
+            state.tokenUsageConnectionKey = key;
+            state.tokenUsageRequestId += 1;
+            state.eventsRequestId += 1;
+            state.isLoading = false;
+            state.isTokenUsageLoading = false;
+            state.isEventsLoading = false;
+            state.tokenUsageSummary = null;
+            state.tokenUsageDailySummary = null;
+            state.tokenUsageEventsPage = null;
+            state.tokenUsageSummaryError = null;
+            state.tokenUsageDailyError = null;
+            state.tokenUsageEventsError = null;
+            invalidateSessionsRequest();
+          }
+          return key;
         }
 
         // --- Event Handlers & Initialization ---
@@ -3133,12 +3238,12 @@
               apiKeyInput.value,
               endpointUrlInput.value.trim()
             );
-            handleModelsConnectionChange();
+            handleConnectionChange();
           });
-          endpointUrlInput.addEventListener("input", handleModelsConnectionChange);
+          endpointUrlInput.addEventListener("input", handleConnectionChange);
           endpointUrlInput.addEventListener("change", () => {
             syncEndpointCredential();
-            handleModelsConnectionChange();
+            handleConnectionChange();
           });
           contentArea.addEventListener("click", handleContentAreaClick);
           contentArea.addEventListener("change", handleContentAreaChange);

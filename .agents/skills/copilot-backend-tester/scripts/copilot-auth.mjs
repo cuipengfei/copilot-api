@@ -1,5 +1,5 @@
 // Shared authentication for copilot-backend-tester scripts.
-// Mirrors the repo chain src/start.ts -> src/lib/token.ts -> get-copilot-token.ts.
+// Mirrors src/start.ts -> src/lib/auth/token.ts -> get-copilot-token.ts.
 // Versions and constants are read from repo sources at runtime; nothing is
 // hardcoded, so upstream version bumps never require edits here.
 
@@ -94,10 +94,10 @@ export async function copilotAuthInit(proxyUrl, options) {
   // options: legacy expectedAccount string, or { expectedAccount, signal }.
   const expectedAccount = typeof options === "string" ? options : options?.expectedAccount
   const signal = typeof options === "string" ? undefined : options?.signal
-  const copilotVersion = readSourceConst("COPILOT_VERSION", "src/lib/api-config.ts")
+  const copilotVersion = readSourceConst("COPILOT_VERSION", "src/lib/providers/api-config.ts")
   const vscodeVersion = readSourceConst("FALLBACK", "src/services/get-vscode-version.ts")
-  const apiVersion = readSourceConst("API_VERSION", "src/lib/api-config.ts")
-  const githubApiVersion = readSourceHeaderConst("x-github-api-version", "src/lib/api-config.ts")
+  const apiVersion = readSourceConst("API_VERSION", "src/lib/providers/api-config.ts")
+  const githubApiVersion = readSourceHeaderConst("x-github-api-version", "src/lib/providers/api-config.ts")
 
   const githubToken = resolveGithubToken(proxyUrl)
 

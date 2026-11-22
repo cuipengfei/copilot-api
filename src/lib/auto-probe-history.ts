@@ -6,8 +6,8 @@ import {
   createProbeCondition,
   type ProbeCondition,
 } from "~/lib/auto-probe-prompts"
-import { writeFileAtomically } from "~/lib/atomic-file"
-import { PATHS } from "~/lib/paths"
+import { writeFileAtomically } from "~/lib/storage/atomic-file"
+import { PATHS } from "~/lib/storage/paths"
 
 export interface ProbeObservation {
   condition: ProbeCondition

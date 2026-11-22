@@ -2,9 +2,11 @@ import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test"
 import { Hono } from "hono"
 
 import type { ResolvedProviderConfig } from "~/lib/config"
-import { installModelsDevCatalog } from "~/lib/models-dev-cache"
+import { installModelsDevCatalog } from "~/lib/catalog/models-dev-cache"
 import { state } from "~/lib/state"
 import type { ResponsesPayload, ResponsesResult } from "~/lib/types/responses"
+import { encodeMessagesCompaction } from "~/routes/responses/messages-translation"
+import { COMPACTION_REPLAY_PROMPT } from "~/routes/responses/messages-translation/constants"
 import { codexResponsesDependencies } from "~/services/codex/create-responses"
 
 import { modelsDevCatalogFixture } from "./fixtures/models-dev-catalog"
@@ -773,6 +775,85 @@ describe("provider Responses context management", () => {
     }
   })
 
+  test("closes an unterminated provider Responses stream with response.failed", async () => {
+    const created = {
+      response: createResponsesResult("gpt-test"),
+      sequence_number: 0,
+      type: "response.created",
+    }
+    fetchMock.mockImplementation(() =>
+      Promise.resolve(
+        new Response(
+          `event: response.created\ndata: ${JSON.stringify(created)}\n\n`,
+          {
+            headers: { "content-type": "text/event-stream" },
+            status: 200,
+          },
+        ),
+      ),
+    )
+
+    const response = await createApp().request("/openai/v1/responses", {
+      body: JSON.stringify({ input: "hello", model: "gpt-test", stream: true }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    })
+
+    expect(response.status).toBe(200)
+    const events = (await response.text())
+      .split("\n")
+      .filter((line) => line.startsWith("data: "))
+      .map((line) => JSON.parse(line.slice(6)) as { type: string })
+    expect(events.map((event) => event.type)).toEqual([
+      "response.created",
+      "response.failed",
+    ])
+  })
+
+  test("filters unsafe headers on initial provider Responses stream error events", async () => {
+    const errorEvent = {
+      code: "rate_limit",
+      error: { code: "rate_limit", message: "Too many requests" },
+      headers: {
+        connection: "keep-alive",
+        "proxy-authenticate": "Basic",
+        "retry-after": "5",
+        "set-cookie": "upstream-session=secret; Path=/",
+        "transfer-encoding": "chunked",
+        "x-models-etag": 'W/"etag"',
+        "x-request-id": "req-err-1",
+      },
+      message: "Too many requests",
+      param: null,
+      sequence_number: 0,
+      status_code: 429,
+      type: "error",
+    }
+    fetchMock.mockImplementation(() =>
+      Promise.resolve(
+        new Response(`event: error\ndata: ${JSON.stringify(errorEvent)}\n\n`, {
+          headers: { "content-type": "text/event-stream" },
+          status: 200,
+        }),
+      ),
+    )
+
+    const response = await createApp().request("/openai/v1/responses", {
+      body: JSON.stringify({ input: "hello", model: "gpt-test", stream: true }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    })
+
+    expect(response.status).toBe(429)
+    expect(response.headers.get("retry-after")).toBe("5")
+    expect(response.headers.get("x-request-id")).toBe("req-err-1")
+    expect(response.headers.get("set-cookie")).toBeNull()
+    expect(response.headers.get("proxy-authenticate")).toBeNull()
+    expect(response.headers.get("x-models-etag")).toBeNull()
+    expect(response.headers.has("connection")).toBe(false)
+    expect(response.headers.has("transfer-encoding")).toBe(false)
+  })
+
   test("keeps codex-prefixed provider models on the native Responses route for Codex clients", async () => {
     providerConfig = {
       apiKey: "provider-key",
@@ -1150,6 +1231,56 @@ describe("provider Responses context management", () => {
       input: "*** Begin Patch",
     })
   })
+})
+
+describe("provider Responses Messages compaction replay", () => {
+  test.each(["/v1/responses", "/openai/v1/responses"])(
+    "restores summary text after context pruning on %s",
+    async (endpoint) => {
+      responsesUtilsDependencies.isContextManagementEnabledForResponses = () =>
+        true
+      const summary =
+        "DeepSeek completed the investigation; the next action reads a file."
+      const action = {
+        type: "message",
+        role: "user",
+        content: "Review the action",
+      }
+      const response = await createApp().request(endpoint, {
+        body: JSON.stringify({
+          model: endpoint === "/v1/responses" ? "openai/gpt-test" : "gpt-test",
+          input: [
+            { role: "user", content: "Superseded history" },
+            {
+              type: "compaction",
+              id: "cmp-deepseek",
+              encrypted_content: encodeMessagesCompaction(summary),
+            },
+            action,
+          ],
+        }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      })
+
+      expect(response.status).toBe(200)
+      expect(fetchMock).toHaveBeenCalledTimes(1)
+      const body = parseJsonRequestBody(
+        fetchMock.mock.calls[0][1]?.body,
+      ) as ResponsesPayload
+      expect(body.context_management).toEqual([
+        { type: "compaction", compact_threshold: 160000 },
+      ])
+      expect(body.input).toEqual([
+        {
+          type: "message",
+          role: "user",
+          content: `${COMPACTION_REPLAY_PROMPT}${summary}`,
+        },
+        action,
+      ])
+    },
+  )
 })
 
 describe("provider Responses reasoning transport isolation", () => {

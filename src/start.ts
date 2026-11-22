@@ -2,35 +2,39 @@
 
 import { defineCommand } from "citty"
 import consola from "consola"
+import { setTimeout as delay } from "node:timers/promises"
 import { serve } from "srvx"
 
 import { runProviderSetup } from "./auth"
-import { isGitHubCopilotEnabled } from "./lib/github-copilot-provider"
+import { isGitHubCopilotEnabled } from "./lib/providers/github-copilot-provider"
 import { listEnabledProviders, mergeConfigWithDefaults } from "./lib/config"
-import { setupCopilotRuntime } from "~/lib/copilot-runtime"
+import { setupCopilotRuntime } from "~/lib/providers/copilot-runtime"
 import {
   GITHUB_TOKEN_ENV,
   readGitHubToken,
   readGitHubTokenFromEnv,
-} from "./lib/credential-store"
-import { startModelsDevCache } from "./lib/models-dev-cache"
-import { initOpencodeVersion } from "./lib/opencode"
+} from "./lib/auth/credential-store"
+import { startModelsDevCache } from "./lib/catalog/models-dev-cache"
+import { initOpencodeVersion } from "./lib/providers/opencode"
 import { formatModelsLog } from "./lib/models-log"
-import { ensurePaths, PATHS } from "./lib/paths"
-import { initProxyFromEnv } from "./lib/proxy"
+import { ensurePaths, PATHS } from "./lib/storage/paths"
+import { initProxyFromEnv } from "./lib/http/proxy"
 import {
   getConfiguredApiKeys,
   getMissingApiKeysMessage,
-} from "./lib/request-auth"
+} from "./lib/auth/request-auth"
 import {
   DEFAULT_SERVER_HOST,
   formatServerUrl,
   resolveServerBinding,
-} from "./lib/server-host"
+} from "./lib/http/server-host"
 import { state } from "./lib/state"
 import { prewarmAutoSession, STARTUP_PROBE_BUDGET_MS } from "./lib/auto-session"
-import { loadGatewayPlugins } from "./lib/gateway-plugins"
-import { registerProcessCleanup } from "./lib/process-cleanup"
+import { loadGatewayPlugins } from "./lib/plugins/gateway-plugins"
+import {
+  registerProcessCleanup,
+  registerProcessShutdownDrain,
+} from "./lib/process-cleanup"
 
 interface RunServerOptions {
   host: string
@@ -118,12 +122,12 @@ async function setupProviderMode(instanceId: string): Promise<void> {
 }
 
 export async function runServer(options: RunServerOptions): Promise<void> {
-  const tlsModule = await import("./lib/tls")
+  const tlsModule = await import("./lib/http/tls")
   tlsModule.enableSystemCACompat()
 
   consola.options.throttle = 0
 
-  mergeConfigWithDefaults()
+  const config = mergeConfigWithDefaults()
 
   const configuredApiKeys = getConfiguredApiKeys()
   const binding = resolveServerBinding(
@@ -186,16 +190,47 @@ export async function runServer(options: RunServerOptions): Promise<void> {
     plugins,
   })
 
-  const { startTokenUsageRetention } = await import("./lib/token-usage/store")
+  const { initializeApiKeyQuotas } =
+    await import("./lib/auth/api-key-quota-runtime")
+  const { startTokenUsageRetention } =
+    await import("./lib/token-usage/retention")
+  const { startVideoUsageSettlement } = await import("./lib/video-settlement")
+  const { settlePendingVideoUsage } =
+    await import("./services/xai/video-usage-settlement")
   await startTokenUsageRetention()
+  if (config.auth?.apiKeyConfigs?.some((key) => key.quota)) {
+    try {
+      await initializeApiKeyQuotas()
+    } catch (error) {
+      consola.warn("Failed to load API key quotas", error)
+    }
+  }
+  startVideoUsageSettlement(settlePendingVideoUsage)
 
-  serve({
+  const listener = serve({
     fetch: server.fetch,
     hostname: binding.hostname,
     port: options.port,
+    // The process cleanup runtime drains the listener before closing storage.
+    gracefulShutdown: false,
     bun: {
       idleTimeout: 0,
     },
+  })
+  registerProcessShutdownDrain(async () => {
+    const timeoutMs =
+      (Number.parseInt(process.env.SERVER_SHUTDOWN_TIMEOUT ?? "", 10) || 5)
+      * 1000
+    const timer = new AbortController()
+    try {
+      const drained = await Promise.race([
+        listener.close().then(() => true),
+        delay(timeoutMs, false, { signal: timer.signal }),
+      ])
+      if (!drained) await listener.close(true)
+    } finally {
+      timer.abort()
+    }
   })
 }
 

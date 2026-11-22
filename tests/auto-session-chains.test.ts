@@ -23,9 +23,9 @@ import {
   stopProbeScheduler,
   whenProbeSchedulerIdle,
 } from "../src/lib/auto-session"
-import { getConfig } from "../src/lib/config-store"
-import { HTTPError } from "../src/lib/error"
-import { requestContext } from "~/lib/request-context"
+import { getConfig } from "../src/lib/config/config-store"
+import { HTTPError } from "../src/lib/http/error"
+import { requestContext } from "~/lib/http/request-context"
 import { state } from "../src/lib/state"
 import { attachAutoSessionToken } from "../src/services/copilot/auto-session-retry"
 import { createChatCompletions } from "../src/services/copilot/create-chat-completions"

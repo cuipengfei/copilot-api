@@ -5,15 +5,15 @@ import { streamSSE } from "hono/streaming"
 import {
   getChatCompletionFailure,
   guardChatCompletionsStream,
-} from "~/lib/chat-completions-stream"
+} from "~/lib/http/chat-completions-stream"
 import { createHandlerLogger, writeStreamLog } from "~/lib/logger"
 import {
   applyForwardableResponseHeaders,
   getAttachedResponseHeaders,
   jsonWithForwardedHeaders,
 } from "~/lib/response-headers"
-import { writeSSEIfConnected } from "~/lib/sse"
-import type { SubagentMarker } from "~/lib/subagent"
+import { writeSSEIfConnected } from "~/lib/http/sse"
+import type { SubagentMarker } from "~/lib/http/subagent"
 import {
   copilotUsageToTokens,
   createCopilotTokenUsageRecorder,

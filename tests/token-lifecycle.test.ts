@@ -3,7 +3,7 @@ import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 
-import type { CodexCredentials } from "~/lib/oauth/codex"
+import type { CodexCredentials } from "~/lib/auth/oauth/codex"
 import type { GetCopilotTokenResponse } from "~/services/github/get-copilot-token"
 import type { DeviceCodeResponse } from "~/services/github/get-device-code"
 
@@ -129,13 +129,13 @@ const notStubbed = (name: string) => () =>
   Promise.reject(new Error(`${name} not stubbed`))
 
 const realTimers = await import("node:timers/promises")
-const actualCodex = await import("~/lib/oauth/codex")
+const actualCodex = await import("~/lib/auth/oauth/codex")
 
 await mock.module("node:timers/promises", () => ({
   ...realTimers,
   setTimeout: fakeDelay,
 }))
-await mock.module("~/lib/oauth/codex", () => ({
+await mock.module("~/lib/auth/oauth/codex", () => ({
   ...actualCodex,
   refreshCodexCredentials: (credentials: CodexCredentials) =>
     refreshCodexImpl(credentials),
@@ -161,11 +161,11 @@ const {
   setupGitHubToken,
   stopCodexRefreshLoop,
   stopCopilotRefreshLoop,
-} = await import("~/lib/token")
-const { PATHS } = await import("~/lib/paths")
+} = await import("~/lib/auth/token")
+const { PATHS } = await import("~/lib/storage/paths")
 const { state } = await import("~/lib/state")
 const { invalidateConfigCache } = await import("~/lib/config")
-const { HTTPError } = await import("~/lib/error")
+const { HTTPError } = await import("~/lib/http/error")
 
 const originalPaths = { ...PATHS }
 

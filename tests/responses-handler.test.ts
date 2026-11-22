@@ -11,7 +11,7 @@ import { Hono, type Context } from "hono"
 import { SSEStreamingApi } from "hono/streaming"
 
 import { attachResponseHeaders } from "../src/lib/response-headers"
-import { requestEventsMiddleware } from "~/lib/request-events"
+import { requestEventsMiddleware } from "~/lib/http/request-events"
 import type { TokenUsageEventRecord } from "~/lib/token-usage"
 import type {
   AnthropicMessagesPayload,
@@ -22,7 +22,7 @@ import type {
   ChatCompletionsPayload,
   ChatCompletionResponse,
 } from "~/lib/types/chat-completions"
-import { HTTPError } from "~/lib/error"
+import { HTTPError } from "~/lib/http/error"
 import type {
   ResponseInputReasoning,
   ResponsesResult,
@@ -30,6 +30,7 @@ import type {
   ResponseStreamEvent,
 } from "~/lib/types/responses"
 import type { CompletionPayloadOptions } from "~/routes/messages/handler"
+import { COMPACTION_REPLAY_PROMPT } from "~/routes/responses/messages-translation/constants"
 import {
   encodeMessagesCompaction,
   MESSAGES_TOOL_CALL_TIPS,
@@ -103,7 +104,7 @@ const createMessagesResponse = (
 
 const { state } = await import("~/lib/state")
 const { closeUsageStore } = await import("~/lib/token-usage")
-const { traceIdMiddleware } = await import("~/lib/trace")
+const { traceIdMiddleware } = await import("~/lib/http/trace")
 const { tokenUsageRoute } = await import("~/routes/token-usage/route")
 const { responsesHandlerDependencies } =
   await import("~/routes/responses/handler")
@@ -557,6 +558,47 @@ describe("responses injected page context", () => {
           output_text: "Hi!",
         })
       }
+    },
+  )
+})
+
+describe("Responses Messages compaction replay", () => {
+  test.each([false, true])(
+    "restores handoff text for Copilot with stream=%s",
+    async (stream) => {
+      const summary =
+        "DeepSeek prepared the change; preserve this context for review."
+      const action = { role: "user", content: "Review the next command" }
+      createResponses.mockImplementation((payload) =>
+        Promise.resolve(createResponsesResult(payload.model)),
+      )
+
+      const response = await createApp().request("/v1/responses", {
+        body: JSON.stringify({
+          model: "gpt-test",
+          stream,
+          input: [
+            {
+              type: "compaction",
+              id: "cmp-deepseek",
+              encrypted_content: encodeMessagesCompaction(summary),
+            },
+            action,
+          ],
+        }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      })
+
+      expect(response.status).toBe(200)
+      expect(createResponses.mock.calls[0][0].input).toEqual([
+        {
+          type: "message",
+          role: "user",
+          content: `${COMPACTION_REPLAY_PROMPT}${summary}`,
+        },
+        action,
+      ])
     },
   )
 })
@@ -2246,6 +2288,48 @@ describe("responses handler token usage", () => {
         role: "user",
       },
     ])
+  })
+
+  test("enables vision header option when input images appear only in tool call outputs", async () => {
+    createResponses.mockImplementation((payload) =>
+      Promise.resolve(createResponsesResult(payload.model)),
+    )
+
+    const app = createApp()
+    const response = await app.request("/v1/responses", {
+      body: JSON.stringify({
+        input: [
+          {
+            content: [{ text: "take a screenshot", type: "input_text" }],
+            role: "user",
+          },
+          {
+            call_id: "call_vision_1",
+            output: [
+              {
+                detail: "low",
+                image_url: `data:image/png;base64,${"A".repeat(8)}`,
+                type: "input_image",
+              },
+            ],
+            status: "completed",
+            type: "function_call_output",
+          },
+        ],
+        model: "gpt-test",
+      }),
+      headers: {
+        "content-type": "application/json",
+      },
+      method: "POST",
+    })
+
+    expect(response.status).toBe(200)
+    expect(createResponses).toHaveBeenCalledTimes(1)
+    expect(createResponses.mock.calls[0][1]).toMatchObject({
+      initiator: "agent",
+      vision: true,
+    })
   })
 
   test("records usage from failed streaming responses and falls back to interaction id", async () => {

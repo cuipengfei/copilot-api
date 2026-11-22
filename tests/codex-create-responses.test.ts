@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, mock, test } from "bun:test"
 
 import { getAttachedResponseHeaders } from "../src/lib/response-headers"
-import { requestContext } from "~/lib/request-context"
+import { requestContext } from "~/lib/http/request-context"
 import { state } from "~/lib/state"
 import { getModels } from "~/services/codex/get-models"
 import {
@@ -210,6 +210,63 @@ describe("codex api helpers", () => {
     )
   })
 
+  test("excludes tracing headers from websocket pool keys", () => {
+    state.codexAccessToken = "codex-token"
+    state.codexAccountId = "codex-account"
+
+    const prepare = (headers: Record<string, string> = {}) =>
+      prepareCodexResponsesWebSocketRequest(
+        { input: "hello", model: "gpt-5.4", stream: true },
+        new Headers({
+          "user-agent": "test-agent",
+          "session-id": "session-1",
+          ...headers,
+        }),
+      )
+    const baseline = prepare()
+    const traceId = "52a64ee0f3631c9e1292db876e42bde0"
+
+    for (const spanId of ["c029695a2b515d4c", "55a7923ad197a664"]) {
+      const sampled = spanId === "c029695a2b515d4c" ? "1" : "0"
+      const tracingHeaders = {
+        b3: `${traceId}-${spanId}-${sampled}`,
+        traceparent: `00-${traceId}-${spanId}-0${sampled}`,
+        tracestate: `vendor=${spanId}`,
+        baggage: `request=${spanId}`,
+        "x-b3-traceid": traceId,
+        "x-b3-spanid": spanId,
+        "x-b3-parentspanid": spanId,
+        "x-b3-sampled": sampled,
+        "x-b3-flags": sampled,
+        "x-b3-custom": spanId,
+      }
+      for (const [name, value] of Object.entries(tracingHeaders)) {
+        expect(prepare({ [name]: value }).poolKey).toBe(baseline.poolKey)
+        expect(prepare({ [name.toUpperCase()]: value }).poolKey).toBe(
+          baseline.poolKey,
+        )
+      }
+
+      const request = prepare(tracingHeaders)
+      expect(request.poolKey).toBe(baseline.poolKey)
+      for (const name of [
+        "b3",
+        "baggage",
+        "x-b3-spanid",
+        "x-b3-parentspanid",
+        "x-b3-sampled",
+        "x-b3-flags",
+        "x-b3-custom",
+      ] as const) {
+        expect(request.headers[name]).toBe(tracingHeaders[name])
+      }
+    }
+
+    expect(prepare({ "session-id": "session-2" }).poolKey).not.toBe(
+      baseline.poolKey,
+    )
+  })
+
   test("returns the static codex model catalog", () => {
     const models = getModels()
 
@@ -223,6 +280,8 @@ describe("codex api helpers", () => {
       "gpt-6-sol",
       "gpt-6.1-sol",
       "gpt-6.1-terra",
+      "gpt-6.2-sol",
+      "gpt-6.2-astra",
       "codex-auto-review",
       "gpt-reserve",
     ])

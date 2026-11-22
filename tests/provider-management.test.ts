@@ -7,15 +7,15 @@ import {
   getConfig,
   invalidateConfigCache,
   type AppConfig,
-} from "~/lib/config-store"
-import { PATHS } from "~/lib/paths"
+} from "~/lib/config/config-store"
+import { PATHS } from "~/lib/storage/paths"
 import {
   applyProviderManagementUpdate,
   getProviderAgentModels,
   getProviderManagementConfig,
   isProviderAgentModelVisible,
   saveProviderManagementConfig,
-} from "~/lib/provider-management"
+} from "~/lib/config/provider-management"
 
 const originalPath = PATHS.CONFIG_PATH
 let tempDir: string | undefined
@@ -27,7 +27,10 @@ afterEach(() => {
 })
 function fixture(): AppConfig {
   return {
-    auth: { apiKeys: ["secret"], adminApiKey: "admin-secret" },
+    auth: {
+      apiKeyConfigs: [{ id: "test-key", key: "secret" }],
+      adminApiKey: "admin-secret",
+    },
     modelMappings: { a: "b" },
     providers: {
       dashscope: {

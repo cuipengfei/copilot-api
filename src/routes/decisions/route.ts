@@ -1,8 +1,8 @@
 import { Hono } from "hono"
 
 import { resolveMappedModel } from "~/lib/config"
-import { forwardError } from "~/lib/error"
-import { setPluginRequestModel } from "~/lib/request-events"
+import { forwardError } from "~/lib/http/error"
+import { setPluginRequestModel } from "~/lib/http/request-events"
 import {
   getAttachedResponseHeaders,
   jsonWithForwardedHeaders,

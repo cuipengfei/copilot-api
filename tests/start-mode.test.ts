@@ -1,16 +1,17 @@
 import { afterEach, beforeEach, expect, mock, spyOn, test } from "bun:test"
 import consola from "consola"
 
+import * as credentialStore from "~/lib/auth/credential-store"
 import * as config from "~/lib/config"
-import { getConfig } from "~/lib/config-store"
-import * as copilotProvider from "~/lib/github-copilot-provider"
-import { PATHS } from "~/lib/paths"
+import { getConfig } from "~/lib/config/config-store"
+import * as copilotProvider from "~/lib/providers/github-copilot-provider"
+import { PATHS } from "~/lib/storage/paths"
 import { state } from "~/lib/state"
 
 const originalState = { ...state }
 const originalAuth = getConfig().auth
 const originalLogLevel = consola.level
-let environmentToken: string | null = null
+let environmentToken: string | undefined
 let fileToken: string | null = null
 let enabledProviders: Array<string> = []
 let copilotEnabled = true
@@ -18,13 +19,8 @@ let setupAction: () => Promise<void> = () => Promise.resolve()
 let authenticatedToken: string | undefined
 let exposed = false
 
-await mock.module("~/lib/credential-store", () => ({
-  GITHUB_TOKEN_ENV: "GITHUB_TOKEN",
-  readGitHubTokenFromEnv: () => environmentToken,
-  readGitHubToken: () => Promise.resolve(fileToken),
-}))
 await mock.module("~/auth", () => ({ runProviderSetup: () => setupAction() }))
-await mock.module("~/lib/copilot-runtime", () => ({
+await mock.module("~/lib/providers/copilot-runtime", () => ({
   setupCopilotRuntime: (token: string) => {
     authenticatedToken = token
     state.githubToken = token
@@ -34,25 +30,29 @@ await mock.module("~/lib/copilot-runtime", () => ({
 await mock.module("~/lib/auto-session", () => ({
   STARTUP_PROBE_BUDGET_MS: 3_000,
   prewarmAutoSession: () => Promise.resolve(),
+  invalidateAutoSession: () => {},
+  resumeAutoSessionDiscoveryAfterRotation: () => {},
 }))
-await mock.module("~/lib/opencode", () => ({
+await mock.module("~/lib/providers/opencode", () => ({
   initOpencodeVersion: () => Promise.resolve(),
+  getCachedOpencodeVersion: () => undefined,
 }))
-await mock.module("~/lib/paths", () => ({
+await mock.module("~/lib/storage/paths", () => ({
   PATHS,
   ensurePaths: () => Promise.resolve(),
 }))
-await mock.module("~/lib/models-dev-cache", () => ({
+await mock.module("~/lib/catalog/models-dev-cache", () => ({
   startModelsDevCache: () => Promise.resolve(),
 }))
-await mock.module("~/lib/proxy", () => ({ initProxyFromEnv: () => {} }))
-await mock.module("~/lib/tls", () => ({ enableSystemCACompat: () => {} }))
+await mock.module("~/lib/http/proxy", () => ({ initProxyFromEnv: () => {} }))
+await mock.module("~/lib/http/tls", () => ({ enableSystemCACompat: () => {} }))
 await mock.module("~/server", () => ({
   createServer: () => ({ fetch: () => new Response(null) }),
 }))
 await mock.module("srvx", () => ({
   serve: () => {
     exposed = true
+    return { close: () => Promise.resolve() }
   },
 }))
 
@@ -73,13 +73,19 @@ beforeEach(() => {
     models: undefined,
   })
   getConfig().auth = { apiKeys: [] }
-  environmentToken = null
+  environmentToken = undefined
   fileToken = null
   enabledProviders = []
   copilotEnabled = true
   authenticatedToken = undefined
   exposed = false
   setupAction = () => Promise.resolve()
+  spyOn(credentialStore, "readGitHubTokenFromEnv").mockImplementation(
+    () => environmentToken,
+  )
+  spyOn(credentialStore, "readGitHubToken").mockImplementation(() =>
+    Promise.resolve(fileToken),
+  )
   spyOn(config, "mergeConfigWithDefaults").mockReturnValue({})
   spyOn(config, "listEnabledProviders").mockImplementation(
     () => enabledProviders,
@@ -114,7 +120,7 @@ test.each([
   {
     source: "file",
     cli: undefined,
-    env: null,
+    env: undefined,
     file: "file-token",
     expected: "file-token",
   },

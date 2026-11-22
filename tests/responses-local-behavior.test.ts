@@ -3,7 +3,7 @@ import { rejects } from "node:assert/strict"
 
 import consola from "consola"
 
-import { HTTPError } from "~/lib/error"
+import { HTTPError } from "~/lib/http/error"
 import type { ResponsesPayload } from "~/lib/types/responses"
 import {
   prepareNativeResponsesRequest,

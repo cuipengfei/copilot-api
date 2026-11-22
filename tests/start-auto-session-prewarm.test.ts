@@ -33,12 +33,12 @@ describe("runServer auto-session prewarm order", () => {
     })
     spyOn(config, "mergeConfigWithDefaults").mockImplementation(() => ({}))
 
-    await mock.module("../src/lib/opencode", () => ({
+    await mock.module("../src/lib/providers/opencode", () => ({
       getCachedOpencodeVersion: () => undefined,
       initOpencodeVersion: async () => {},
     }))
 
-    await mock.module("../src/lib/paths", () => ({
+    await mock.module("../src/lib/storage/paths", () => ({
       PATHS: {
         APP_DIR: "/tmp/copilot-api-test",
         CONFIG_PATH: "/tmp/copilot-api-test/config.json",
@@ -46,9 +46,10 @@ describe("runServer auto-session prewarm order", () => {
       ensurePaths: async () => {},
     }))
 
-    await mock.module("../src/lib/token", () => ({
+    await mock.module("../src/lib/auth/token", () => ({
       setupGitHubToken: async () => {},
       setupCopilotToken: async () => {},
+      setupCodexToken: async () => {},
       logUser: async () => {},
       persistCodexCredentials: async () => {},
       getCodexAccounts: () => [],
@@ -57,7 +58,7 @@ describe("runServer auto-session prewarm order", () => {
     }))
 
     await mock.module("srvx", () => ({
-      serve: () => {},
+      serve: () => ({ close: () => Promise.resolve() }),
     }))
 
     await mock.module("../src/server", () => ({

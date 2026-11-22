@@ -15,7 +15,7 @@ import { fileURLToPath } from "node:url"
 
 import type { ResolvedProviderConfig } from "~/lib/config"
 import type { ResponsesPayload } from "~/lib/types/responses"
-import { installModelsDevCatalog } from "~/lib/models-dev-cache"
+import { installModelsDevCatalog } from "~/lib/catalog/models-dev-cache"
 
 import { modelsDevProviderCatalogFixture } from "./fixtures/models-dev-catalog"
 
@@ -49,10 +49,12 @@ if (process.env.COPILOT_API_XAI_TEST_PROCESS !== "1") {
     invalidateConfigCache,
     listEnabledProviders,
   } = await import("~/lib/config")
-  const { PATHS } = await import("~/lib/paths")
-  const { resolveProviderConfig } = await import("~/lib/provider-resolver")
-  const { requestContext } = await import("~/lib/request-context")
-  const { traceIdMiddleware } = await import("~/lib/trace")
+  const { PATHS } = await import("~/lib/storage/paths")
+  const { closeUsageStore } = await import("~/lib/token-usage")
+  const { resolveProviderConfig } =
+    await import("~/lib/providers/provider-resolver")
+  const { requestContext } = await import("~/lib/http/request-context")
+  const { traceIdMiddleware } = await import("~/lib/http/trace")
   const {
     getXaiAccessToken,
     persistXaiCredentials,
@@ -60,7 +62,7 @@ if (process.env.COPILOT_API_XAI_TEST_PROCESS !== "1") {
     getXaiAccounts,
     selectXaiAccount,
     removeXaiAccount,
-  } = await import("~/lib/xai-token")
+  } = await import("~/lib/auth/xai-token")
   const {
     buildProviderUpstreamHeaders,
     resolveProviderEndpointUrl,
@@ -68,6 +70,7 @@ if (process.env.COPILOT_API_XAI_TEST_PROCESS !== "1") {
   } = await import("~/services/providers/provider-proxy")
 
   const savedPaths = { ...PATHS }
+  const originalDbPath = process.env.COPILOT_API_SQLITE_DB_PATH
   const originalFetch = globalThis.fetch
   const credentials = {
     accountId: "xai-account",
@@ -84,6 +87,10 @@ if (process.env.COPILOT_API_XAI_TEST_PROCESS !== "1") {
     PATHS.CONFIG_PATH = path.join(taskDir, "config.json")
     PATHS.GITHUB_TOKEN_PATH = path.join(taskDir, "github_token")
     PATHS.XAI_CREDENTIAL_PATH = path.join(taskDir, "xai_credentials.json")
+    process.env.COPILOT_API_SQLITE_DB_PATH = path.join(
+      taskDir,
+      "copilot-api.sqlite",
+    )
     fs.writeFileSync(PATHS.CONFIG_PATH, "{}")
     invalidateConfigCache()
     for (const level of ["info", "success", "log"] as const)
@@ -92,10 +99,14 @@ if (process.env.COPILOT_API_XAI_TEST_PROCESS !== "1") {
       )
   })
 
-  afterEach(() => {
+  afterEach(async () => {
+    await closeUsageStore()
     mock.restore()
     globalThis.fetch = originalFetch
     Object.assign(PATHS, savedPaths)
+    if (originalDbPath === undefined)
+      delete process.env.COPILOT_API_SQLITE_DB_PATH
+    else process.env.COPILOT_API_SQLITE_DB_PATH = originalDbPath
     invalidateConfigCache()
     if (!taskDir.startsWith(path.join(os.tmpdir(), "copilot-api-xai-")))
       throw new Error("Invalid test directory")

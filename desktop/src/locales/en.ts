@@ -1,6 +1,58 @@
 import type { Locale } from './index'
 
 const en: Locale = {
+  apiKeys: {
+    title: 'API Keys',
+    add: 'Add key',
+    edit: 'Edit',
+    remove: 'Delete',
+    rotate: 'Rotate key',
+    copy: 'Copy',
+    name: 'Name',
+    secret: 'Key',
+    enabled: 'Enabled',
+    disabled: 'Disabled',
+    expired: 'Expired',
+    expires: 'Expires at',
+    expiryDate: 'Expiration date',
+    expiryDatePlaceholder: 'YYYY-MM-DD',
+    expiryTime: 'Expiration time (local)',
+    pickExpiryDate: 'Choose expiration date',
+    clearExpiry: 'Clear expiry',
+    previousMonth: 'Previous month',
+    nextMonth: 'Next month',
+    invalidExpiry: 'Enter a valid date and time using YYYY-MM-DD and HH:mm.',
+    models: 'Allowed models',
+    restrictModels: 'Restrict models',
+    modelsHint:
+      'One model or pattern per line, for example codex/*. An empty restricted list denies every model.',
+    quota: 'Spending limit (USD)',
+    unlimited: 'Unlimited',
+    day: 'Daily',
+    month: 'Monthly',
+    lifetime: 'Lifetime',
+    limit: 'Amount (USD)',
+    usage: 'Used / limit',
+    remaining: 'Remaining',
+    resets: 'Next reset',
+    unavailable: 'Start the service to load usage.',
+    save: 'Save key',
+    cancel: 'Cancel',
+    empty: 'No API keys configured.',
+    unnamed: 'Unnamed key',
+    removeConfirm: 'Delete this API key? Usage history will be preserved.',
+    saveError: 'Could not save the API key',
+    loadError: 'Could not load API keys',
+    immediate:
+      'Manage client access to this gateway. Key changes apply when saved.',
+    isolateUsage: 'Restrict keys to their own usage',
+    isolateUsageHint:
+      'Off by default: keys can view all usage and history. When enabled, each key sees only its own usage and the web Subscriptions tab is hidden. Applies when saved; refresh the web page to update.',
+    allKeys: 'All keys',
+    unattributed: 'Unattributed history',
+    keyFilter: 'API key',
+    required: 'Enter a key and a non-negative USD amount.',
+  },
   clients: {
     title: 'Client integrations',
     description:
@@ -21,6 +73,7 @@ const en: Locale = {
     restored:
       'Original configuration restored. Restart the client to load the changes.',
     pluginFailed: 'Configuration saved, but plugin installation failed.',
+    pluginUninstallFailed: 'Configuration restored, but plugin removal failed.',
     commandExit: 'Exit code: {{code}}',
     stopped:
       'Start the gateway to load the model lists. You can still update an existing configuration or install plugins while it is stopped.',
@@ -41,6 +94,37 @@ const en: Locale = {
       'OpenCode v2 only. Install the provider plugin to discover gateway models automatically, including image models.',
     codexDescription:
       'Configure the Responses provider, default model and remote model catalog. Uses your existing Codex sign-in.',
+    sandboxMode: 'Sandbox mode',
+    sandboxModes: {
+      'danger-full-access': 'Full access',
+      'workspace-write': 'Workspace write',
+      'read-only': 'Read only',
+    },
+    approvalsReviewer: 'Approval reviewer',
+    approvalReviewers: {
+      auto_review: 'Automatic review',
+      user: 'User review',
+    },
+    webSearch: 'Web search',
+    webSearchModes: {
+      live: 'Live',
+      indexed: 'Index-gated access',
+      cached: 'Cached',
+      disabled: 'Disabled',
+    },
+    reasoningEffort: 'Reasoning effort',
+    reasoningEffortHint:
+      'Changing models selects the highest supported reasoning effort.',
+    daemonAutoStart: 'Automatically start the Codex daemon',
+    defaultModeRequestUserInput: 'Allow questions in default mode',
+    preventIdleSleep: 'Prevent sleep while a turn is running',
+    modelSettings: 'Models',
+    permissionsSettings: 'Sandbox and approvals',
+    searchSettings: 'Search',
+    featuresSettings: 'Features',
+    toolsSettings: 'Tools and plugins',
+    pluginsSettings: 'Plugins',
+    connectionSettings: 'Connection',
     nativeToolSearch: 'Enable native Tool Search (requires upstream support)',
     agentInject: 'Agent reminder rules (agent-inject)',
     toolSearchBridge: 'Tool Search MCP bridge (tool-search)',
@@ -455,7 +539,7 @@ const en: Locale = {
     showCreateDesc: 'Show the Create tab for image and video generation',
     sectionSecurity: 'Security',
     serverKeysNote:
-      'API Keys and Admin Key are stored in config.json. Saving automatically refreshes the running service.',
+      'Manage client keys in the API Keys tab. Admin Key is stored in config.json; saving refreshes the running service.',
     serverKeysSaveFailed: 'Server key saving or refresh failed',
     desktopSettingsSaveFailed:
       'Desktop settings saving or service refresh failed',

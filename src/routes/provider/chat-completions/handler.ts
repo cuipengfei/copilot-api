@@ -6,7 +6,7 @@ import { streamSSE } from "hono/streaming"
 import {
   getChatCompletionFailure,
   guardChatCompletionsStream,
-} from "~/lib/chat-completions-stream"
+} from "~/lib/http/chat-completions-stream"
 import {
   type ModelConfig,
   type ResolvedProviderConfig,
@@ -16,16 +16,16 @@ import {
   applyDashScopePreserveThinkingDefault,
   applyOpenAICompatibleContextCache,
   isDashScopeAliyunProvider,
-} from "~/lib/dashscope"
-import { HTTPError } from "~/lib/error"
-import { recordChatCompletionFirstToken } from "~/lib/first-token"
+} from "~/lib/providers/dashscope"
+import { HTTPError } from "~/lib/http/error"
+import { recordChatCompletionFirstToken } from "~/lib/http/first-token"
 import { createHandlerLogger, debugJson } from "~/lib/logger"
-import { resolveProviderConfig } from "~/lib/provider-resolver"
+import { resolveProviderConfig } from "~/lib/providers/provider-resolver"
 import {
   applyForwardableResponseHeaders,
   jsonWithForwardedHeaders,
 } from "~/lib/response-headers"
-import { writeSSEIfConnected } from "~/lib/sse"
+import { writeSSEIfConnected } from "~/lib/http/sse"
 import {
   copilotUsageToTokens,
   createProviderTokenUsageRecorder,

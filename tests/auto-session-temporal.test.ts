@@ -4,7 +4,7 @@ import os from "node:os"
 import path from "node:path"
 import * as timersPromises from "node:timers/promises"
 
-import { getConfig } from "../src/lib/config-store"
+import { getConfig } from "../src/lib/config/config-store"
 import { state } from "../src/lib/state"
 import type * as AutoSession from "../src/lib/auto-session"
 import type { Model } from "../src/lib/types/models"

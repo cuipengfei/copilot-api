@@ -1,3 +1,4 @@
+import { getIsolatedApiKeyId } from "~/lib/auth/request-auth"
 import { Hono, type Context } from "hono"
 
 import {
@@ -41,18 +42,19 @@ function parsePositiveInt(value: string | undefined, fallback: number): number {
 
 tokenUsageRoute.get("/", async (c) => {
   const period = parsePeriod(c.req.query("period"))
-  const summary = await getTokenUsageSummary(period)
+  const summary = await getTokenUsageSummary(period, apiKeyScope(c))
   return c.json(summary)
 })
 
 tokenUsageRoute.get("/daily", async (c) => {
   const period = parsePeriod(c.req.query("period"))
-  const summary = await getTokenUsageDailySummary(period)
+  const summary = await getTokenUsageDailySummary(period, apiKeyScope(c))
   return c.json(summary)
 })
 
 function parsePageQuery(c: Context) {
   return {
+    apiKeyId: apiKeyScope(c),
     period: parsePeriod(c.req.query("period")),
     page: parsePositiveInt(c.req.query("page"), 1),
     pageSize: parsePositiveInt(
@@ -69,3 +71,11 @@ tokenUsageRoute.get("/events", async (c) =>
 tokenUsageRoute.get("/sessions", async (c) =>
   c.json(await getTokenUsageSessionsPage(parsePageQuery(c))),
 )
+
+function apiKeyScope(c: Context): string | null | undefined {
+  const isolatedKeyId = getIsolatedApiKeyId()
+  if (isolatedKeyId !== undefined) return isolatedKeyId
+  const id =
+    c.req.path.startsWith("/admin/") ? c.req.query("api_key_id") : undefined
+  return id === "__unattributed__" ? null : id
+}

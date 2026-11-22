@@ -1,7 +1,7 @@
 import {
   UpstreamHeadersTimeoutError,
   UpstreamStreamInactivityTimeoutError,
-} from "~/lib/error"
+} from "~/lib/http/error"
 
 export interface UpstreamHttpLifecycleOptions {
   clientSignal?: AbortSignal
@@ -15,12 +15,17 @@ export async function fetchUpstreamWithLifecycle(
   options: UpstreamHttpLifecycleOptions,
 ): Promise<Response> {
   options.clientSignal?.throwIfAborted()
+  init.signal?.throwIfAborted()
   const lifecycle = createRequestLifecycle(options)
+  const signal =
+    init.signal ?
+      AbortSignal.any([init.signal, lifecycle.signal])
+    : lifecycle.signal
 
   try {
     const response = await fetch(input, {
       ...init,
-      signal: lifecycle.signal,
+      signal,
     })
     lifecycle.headersReceived()
     return createManagedResponse(response, lifecycle, options)

@@ -7,8 +7,8 @@ import {
   copilotHeaders,
   copilotWebSocketHeaders,
   prepareForCompact,
-} from "../src/lib/api-config"
-import { COMPACT_REQUEST } from "../src/lib/compact"
+} from "../src/lib/providers/api-config"
+import { COMPACT_REQUEST } from "../src/lib/http/compact"
 import { state } from "../src/lib/state"
 
 const baseState = (): State => ({

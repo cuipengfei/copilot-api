@@ -22,11 +22,12 @@ import {
   copilotWebSocketHeaders,
   prepareForCompact,
   prepareInteractionHeaders,
-} from "../src/lib/api-config"
-import { COMPACT_REQUEST } from "../src/lib/compact"
+} from "~/lib/providers/api-config"
+import { COMPACT_REQUEST } from "~/lib/http/compact"
 import { getConfig, invalidateConfigCache } from "~/lib/config"
-import { PATHS } from "~/lib/paths"
-import { state } from "../src/lib/state"
+import { PATHS } from "~/lib/storage/paths"
+import { state } from "~/lib/state"
+import { translateAnthropicMessagesToResponsesPayload } from "~/routes/messages/responses-translation"
 import {
   buildResponsesWebSocketPoolKey,
   buildResponsesWebSocketPayload,
@@ -261,6 +262,55 @@ describe("Interaction headers (Wave 1/2)", () => {
     ).headers
     expect(headers["x-agent-task-id"]).toBe(headers["x-request-id"])
   })
+
+  test("raises the one-token Messages model probe to the Copilot minimum", async () => {
+    const payload = translateAnthropicMessagesToResponsesPayload({
+      model: "gpt-6-astra",
+      max_tokens: 1,
+      stream: false,
+      messages: [{ role: "user", content: "Hi" }],
+    })
+
+    await createResponses(payload, {
+      initiator: "user",
+      requestId: "request-model-probe",
+      vision: false,
+    })
+
+    const [, init] = fetchMock.mock.calls[0]
+    const body = JSON.parse(init?.body as string) as ResponsesPayload
+    expect(body.max_output_tokens).toBe(16)
+    expect(payload.max_output_tokens).toBe(1)
+  })
+
+  test.each([
+    { maxOutputTokens: 15, expected: 16 },
+    { maxOutputTokens: 16, expected: 16 },
+    { maxOutputTokens: 64, expected: 64 },
+    { maxOutputTokens: null, expected: null },
+    { maxOutputTokens: 0, expected: 0 },
+    { maxOutputTokens: -1, expected: -1 },
+    { maxOutputTokens: 1.5, expected: 1.5 },
+  ])(
+    "sends the expected Copilot HTTP limit for max_output_tokens %j",
+    async ({ maxOutputTokens, expected }) => {
+      const payload: ResponsesPayload = {
+        input: "hello",
+        model: "gpt-test",
+        max_output_tokens: maxOutputTokens,
+      }
+
+      await createResponses(payload, {
+        initiator: "user",
+        requestId: "request-output-limit",
+        vision: false,
+      })
+
+      const [, init] = fetchMock.mock.calls[0]
+      const body = JSON.parse(init?.body as string) as ResponsesPayload
+      expect(body.max_output_tokens).toBe(expected)
+    },
+  )
 
   test.each([
     { models: undefined },

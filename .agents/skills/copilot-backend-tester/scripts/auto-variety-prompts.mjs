@@ -18,9 +18,9 @@ const DEFAULT_SOURCE_ROOT = resolve(REPO_ROOT, "src")
 
 // 四个 task case 共用的完整跨文件上下文（相对 sourceRoot；tests 在 sourceRoot 的兄弟目录）
 const TASK_CONTEXT_FILES = [
-  { file: "lib/request-auth.ts", inTests: false },
+  { file: "lib/auth/request-auth.ts", inTests: false },
   { file: "server.ts", inTests: false },
-  { file: "lib/config.ts", inTests: false },
+  { file: "lib/config/index.ts", inTests: false },
   { file: "request-auth.test.ts", inTests: true },
 ]
 

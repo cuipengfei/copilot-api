@@ -35,9 +35,9 @@ const SNIPPET_ERROR_MESSAGE =
   "auto-variety: unable to sample a 100-line TypeScript snippet from the source root"
 
 const TASK_CONTEXT_FILES = [
-  "src/lib/request-auth.ts",
+  "src/lib/auth/request-auth.ts",
   "src/server.ts",
-  "src/lib/config.ts",
+  "src/lib/config/index.ts",
   "tests/request-auth.test.ts",
 ] as const
 
@@ -661,14 +661,18 @@ export const authTestMarker = "fixture-auth-test-marker-value"
   ): { srcDir: string; testsDir: string } => {
     const srcDir = path.join(root, "src")
     const testsDir = path.join(root, "tests")
-    fs.mkdirSync(path.join(srcDir, "lib"), { recursive: true })
+    fs.mkdirSync(path.join(srcDir, "lib", "auth"), { recursive: true })
+    fs.mkdirSync(path.join(srcDir, "lib", "config"), { recursive: true })
     fs.mkdirSync(testsDir, { recursive: true })
     fs.writeFileSync(
-      path.join(srcDir, "lib", "request-auth.ts"),
+      path.join(srcDir, "lib", "auth", "request-auth.ts"),
       REQUEST_AUTH_FIXTURE,
     )
     fs.writeFileSync(path.join(srcDir, "server.ts"), SERVER_FIXTURE)
-    fs.writeFileSync(path.join(srcDir, "lib", "config.ts"), CONFIG_FIXTURE)
+    fs.writeFileSync(
+      path.join(srcDir, "lib", "config", "index.ts"),
+      CONFIG_FIXTURE,
+    )
     if (options.withTestFile !== false) {
       fs.writeFileSync(
         path.join(testsDir, "request-auth.test.ts"),
@@ -726,9 +730,9 @@ export const authTestMarker = "fixture-auth-test-marker-value"
 
     // 任务 case：完整跨文件上下文（4 文件全文），sources 可回溯
     const fixtureFiles = [
-      path.join(srcDir, "lib", "request-auth.ts"),
+      path.join(srcDir, "lib", "auth", "request-auth.ts"),
       path.join(srcDir, "server.ts"),
-      path.join(srcDir, "lib", "config.ts"),
+      path.join(srcDir, "lib", "config", "index.ts"),
       path.join(testsDir, "request-auth.test.ts"),
     ]
     const expectedFiles = fixtureFiles.map((file) =>

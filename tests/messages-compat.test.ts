@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 import type { Server } from "bun"
 
-import { HTTPError } from "~/lib/error"
+import { HTTPError } from "~/lib/http/error"
 import { state } from "~/lib/state"
 import type { AnthropicMessagesPayload } from "~/lib/types/anthropic"
 import type { Model } from "~/lib/types/models"

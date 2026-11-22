@@ -4,7 +4,7 @@ import consola from "consola"
 
 import type { ResponsesPayload } from "~/lib/types/responses"
 
-import { logCopilotRateLimits } from "~/lib/copilot-rate-limit"
+import { logCopilotRateLimits } from "~/lib/providers/copilot-rate-limit"
 import { state } from "~/lib/state"
 import {
   isReasoningItem,

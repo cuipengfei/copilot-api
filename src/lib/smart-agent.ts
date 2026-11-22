@@ -1,10 +1,8 @@
 import consola from "consola"
 
 import { state } from "~/lib/state"
-import {
-  getSmartAgentDecision,
-  type SmartAgentDecision,
-} from "~/services/github/get-copilot-usage"
+import type { SmartAgentDecision } from "~/lib/types/copilot-rate-limit"
+import { getSmartAgentDecision } from "~/services/github/get-copilot-usage"
 
 let lastQuotaLogTime = 0
 
@@ -205,4 +203,4 @@ export async function resolveInitiatorWithSmartAgent(
   return { initiator: defaultInitiator, decision }
 }
 
-export { type SmartAgentDecision } from "~/services/github/get-copilot-usage"
+export { type SmartAgentDecision } from "~/lib/types/copilot-rate-limit"

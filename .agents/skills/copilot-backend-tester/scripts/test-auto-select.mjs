@@ -3,7 +3,7 @@
 // and hydra_scores in a single response.
 //
 // The shared auth module reads the X-GitHub-Api-Version value from
-// src/lib/api-config.ts at runtime, so upstream version bumps never require
+// src/lib/providers/api-config.ts at runtime, so upstream version bumps never require
 // edits here.
 //
 // Identity headers (EDITOR_DEVICE_ID, VSCODE_SESSION_ID, VSCODE_MACHINE_ID)

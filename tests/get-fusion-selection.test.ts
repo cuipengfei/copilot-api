@@ -9,8 +9,8 @@ import {
 } from "bun:test"
 import consola from "consola"
 
-import * as configStore from "~/lib/config-store"
-import { HTTPError } from "~/lib/error"
+import * as configStore from "~/lib/config/config-store"
+import { HTTPError } from "~/lib/http/error"
 import { state } from "~/lib/state"
 import { getAutoSelection } from "~/services/copilot/get-auto-selection"
 import { getFusionSelection } from "~/services/copilot/get-fusion-selection"

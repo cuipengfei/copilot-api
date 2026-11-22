@@ -18,7 +18,7 @@ import { invalidateAutoSession } from "~/lib/auto-session"
 import { shutdownLoggerRuntime } from "~/lib/logger"
 import { state } from "~/lib/state"
 import { closeUsageStore } from "~/lib/token-usage"
-import { traceIdMiddleware } from "~/lib/trace"
+import { traceIdMiddleware } from "~/lib/http/trace"
 import type {
   ChatCompletionResponse,
   ChatCompletionsPayload,

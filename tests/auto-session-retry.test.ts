@@ -22,7 +22,7 @@ import {
   whenProbeSchedulerIdle,
 } from "../src/lib/auto-session"
 import { createProbeCondition } from "../src/lib/auto-probe-prompts"
-import { getConfig } from "../src/lib/config-store"
+import { getConfig } from "../src/lib/config/config-store"
 import { state } from "../src/lib/state"
 import {
   attachAutoSessionToken,

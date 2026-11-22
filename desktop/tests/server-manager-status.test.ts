@@ -12,6 +12,7 @@ function runManagerScenario(scenario: string): void {
       import { mock, spyOn } from 'bun:test'
       import childProcess from 'node:child_process'
       import { EventEmitter } from 'node:events'
+      import net from 'node:net'
       import path from 'node:path'
       import { PassThrough } from 'node:stream'
       let stopExitCode = 0
@@ -191,6 +192,25 @@ test('rejects an invalid host without stopping the healthy server', () => {
   `)
 })
 
+test('probes a changed host before stopping to reuse the port', () => {
+  runManagerScenario(`
+    await manager.startServer(0, { host: '127.0.0.1' })
+    events.length = 0
+    const probe = new EventEmitter()
+    probe.listen = (port, hostname) => {
+      assert.equal(port, 0)
+      assert.equal(hostname, '192.0.2.123')
+      probe.emit('error', { code: 'EADDRNOTAVAIL' })
+    }
+    spyOn(net, 'createServer').mockReturnValue(probe)
+    const status = await manager.startServer(0, { host: '192.0.2.123' })
+    assert.deepEqual(status, { running: false, error: 'server.invalidHost' })
+    assert.equal(manager.isRunning(), true)
+    assert.equal(manager.getHost(), '127.0.0.1')
+    assert.deepEqual(events, [])
+  `)
+})
+
 test('starts the packaged JavaScript directly with supported Bun and preserves proxy flags', () => {
   runManagerScenario(`
     delete process.env.NODE_USE_SYSTEM_CA
@@ -318,11 +338,76 @@ test('forces an unresponsive external process to exit before completing a stop',
       return true
     }
     const originalSetTimeout = globalThis.setTimeout
-    globalThis.setTimeout = (callback, delay, ...args) => originalSetTimeout(callback, delay === 5000 ? 1 : delay, ...args)
+    globalThis.setTimeout = (callback, delay, ...args) => originalSetTimeout(callback, delay === 7000 ? 1 : delay, ...args)
     try {
       await manager.stopServer()
       assert.deepEqual(signals, ['SIGTERM', 'SIGKILL'])
       assert.equal(manager.isRunning(), false)
     } finally { globalThis.setTimeout = originalSetTimeout }
+  `)
+})
+
+test('serializes overlapping startServer calls so superseded processes are stopped', () => {
+  runManagerScenario(`
+    const killed = []
+    const firstHealthStarted = Promise.withResolvers()
+    const releaseFirstHealth = Promise.withResolvers()
+    let healthChecks = 0
+    globalThis.fetch = () => {
+      healthChecks += 1
+      if (healthChecks === 1) {
+        firstHealthStarted.resolve()
+        return releaseFirstHealth.promise
+      }
+      return Promise.resolve(new Response('ready'))
+    }
+
+    const firstPromise = manager.startServer(0, { host: '127.0.0.1' })
+    const secondPromise = manager.startServer(0, { host: '0.0.0.0' })
+
+    await firstHealthStarted.promise
+    assert.equal(processes.length, 1)
+    const firstProc = processes[0]
+    const originalKill = firstProc.kill.bind(firstProc)
+    firstProc.kill = (...args) => {
+      killed.push(firstProc)
+      return originalKill(...args)
+    }
+
+    releaseFirstHealth.resolve(new Response('ready'))
+    const [firstStatus, secondStatus] = await Promise.all([
+      firstPromise,
+      secondPromise,
+    ])
+    assert.deepEqual(firstStatus, { running: true, port: 0, host: '127.0.0.1' })
+    assert.deepEqual(secondStatus, { running: true, port: 0, host: '0.0.0.0' })
+    assert.equal(processes.length, 2)
+    assert.deepEqual(killed, [firstProc])
+    assert.equal(manager.isRunning(), true)
+    assert.equal(manager.getHost(), '0.0.0.0')
+  `)
+})
+
+test('serializes stopServer behind an in-flight startServer', () => {
+  runManagerScenario(`
+    const healthStarted = Promise.withResolvers()
+    const releaseHealth = Promise.withResolvers()
+    globalThis.fetch = () => {
+      healthStarted.resolve()
+      return releaseHealth.promise
+    }
+
+    const startPromise = manager.startServer(0)
+    const stopPromise = manager.stopServer()
+
+    await healthStarted.promise
+    assert.equal(processes.length, 1)
+    releaseHealth.resolve(new Response('ready'))
+
+    const status = await startPromise
+    await stopPromise
+    assert.equal(status.running, true)
+    assert.equal(manager.isRunning(), false)
+    assert.deepEqual(events.at(-1), { running: false, intentional: true })
   `)
 })

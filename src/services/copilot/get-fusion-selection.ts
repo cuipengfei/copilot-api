@@ -1,8 +1,11 @@
 import consola from "consola"
 import { z } from "zod"
 
-import { copilotBaseUrl, copilotModelsHeaders } from "~/lib/api-config"
-import { HTTPError } from "~/lib/error"
+import {
+  copilotBaseUrl,
+  copilotModelsHeaders,
+} from "~/lib/providers/api-config"
+import { HTTPError } from "~/lib/http/error"
 import { state } from "~/lib/state"
 
 export interface FusionSelectionResponse {

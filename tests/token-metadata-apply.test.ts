@@ -4,8 +4,8 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterAll, afterEach, beforeEach, expect, test } from "bun:test"
 
-import { invalidateConfigCache, reloadConfig } from "~/lib/config-store"
-import { PATHS } from "~/lib/paths"
+import { invalidateConfigCache, reloadConfig } from "~/lib/config/config-store"
+import { PATHS } from "~/lib/storage/paths"
 import {
   getAutoSessionForModel,
   invalidateAutoSession,
@@ -19,7 +19,7 @@ import {
   applyCopilotTokenResponse,
   setupCopilotToken,
   stopCopilotRefreshLoop,
-} from "~/lib/token"
+} from "~/lib/auth/token"
 import { applyCopilotTokenMetadata } from "~/lib/token-metadata"
 
 const BUSINESS_API_URL = "https://api.business.githubcopilot.com"

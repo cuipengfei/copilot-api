@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, expect, mock, spyOn, test } from "bun:test"
 import { Hono } from "hono"
 import { z } from "zod"
+import { requestContext, type RequestTiming } from "~/lib/http/request-context"
 
 import type {
   AnthropicMessagesPayload,
@@ -22,14 +23,13 @@ import type {
   ResponsesTransport,
 } from "~/lib/types/responses"
 
-import { COMPACT_REQUEST } from "~/lib/compact"
+import { COMPACT_REQUEST } from "~/lib/http/compact"
 import * as configModule from "~/lib/config"
-import { installModelsDevCatalog } from "~/lib/models-dev-cache"
-import { requestContext, type RequestTiming } from "~/lib/request-context"
-import { requestEventsMiddleware } from "~/lib/request-events"
+import { installModelsDevCatalog } from "~/lib/catalog/models-dev-cache"
+import { requestEventsMiddleware } from "~/lib/http/request-events"
 import { attachResponseHeaders } from "~/lib/response-headers"
 import { closeUsageStore, getTokenUsageEventsPage } from "~/lib/token-usage"
-import { traceIdMiddleware } from "~/lib/trace"
+import { traceIdMiddleware } from "~/lib/http/trace"
 
 import { modelsDevCatalogFixture } from "./fixtures/models-dev-catalog"
 
@@ -2381,6 +2381,58 @@ test.each([
     expect(timing.protocolFailed === true).toBe(failed)
   },
 )
+
+test("messages Responses flow enables vision option for tool_result images", async () => {
+  const payload: AnthropicMessagesPayload = {
+    max_tokens: 128,
+    messages: [
+      { role: "user", content: "capture screenshot" },
+      {
+        role: "assistant",
+        content: [
+          {
+            id: "toolu_shot_1",
+            input: {},
+            name: "take_screenshot",
+            type: "tool_use",
+          },
+        ],
+      },
+      {
+        role: "user",
+        content: [
+          {
+            content: [
+              {
+                source: {
+                  data: "AAAA",
+                  media_type: "image/png",
+                  type: "base64",
+                },
+                type: "image",
+              },
+            ],
+            tool_use_id: "toolu_shot_1",
+            type: "tool_result",
+          },
+        ],
+      },
+    ],
+    model: "gpt-test",
+    stream: false,
+  }
+
+  const response = await handleWithResponsesApi(createContext(), payload, {
+    logger,
+    requestId: "request-tool-result-image",
+  })
+
+  expect(response.status).toBe(200)
+  expect(createResponses).toHaveBeenCalledTimes(1)
+  expect(createResponses.mock.calls[0][1]).toMatchObject({
+    vision: true,
+  })
+})
 
 const createModel = (
   supportedEndpoints: Array<string>,

@@ -2,8 +2,6 @@ import consola from "consola"
 import { events } from "fetch-event-stream"
 import { randomUUID } from "node:crypto"
 
-import type { CompactType } from "~/lib/compact"
-import type { SubagentMarker } from "~/lib/subagent"
 import type {
   AnthropicMessagesPayload,
   AnthropicResponse,
@@ -23,28 +21,19 @@ import {
   getAnthropicEffortForModel,
   prepareMessagesRequest,
   sendWithSignatureRetry,
+  type CreateMessagesOptions,
 } from "~/services/copilot/messages-compat"
 
-import { copilotBaseUrl } from "~/lib/api-config"
-import { logCopilotRateLimits } from "~/lib/copilot-rate-limit"
-import { HTTPError } from "~/lib/error"
+import { copilotBaseUrl } from "~/lib/providers/api-config"
+import { logCopilotRateLimits } from "~/lib/providers/copilot-rate-limit"
+import { HTTPError } from "~/lib/http/error"
 import { attachPremiumInfo, getPremiumInfoFromHeaders } from "~/lib/logger"
-import { setPluginRequestActualModel } from "~/lib/request-context"
+import { setPluginRequestActualModel } from "~/lib/http/request-context"
 import { attachResponseHeaders } from "~/lib/response-headers"
 import { state } from "~/lib/state"
 
 export type MessagesStream = ReturnType<typeof events>
 export type CreateMessagesReturn = AnthropicResponse | MessagesStream
-
-export interface CreateMessagesOptions {
-  anthropicVersionHeader?: string
-  clientSignal?: AbortSignal
-  initiator?: "user" | "agent"
-  subagentMarker?: SubagentMarker | null
-  requestId?: string
-  sessionId?: string
-  compactType?: CompactType
-}
 
 export { getAnthropicEffortForModel }
 

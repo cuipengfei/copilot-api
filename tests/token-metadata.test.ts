@@ -56,7 +56,7 @@ describe("setupCopilotToken metadata", () => {
     }))
 
     const { setupCopilotToken, stopCopilotRefreshLoop: importedStop } =
-      await import("../src/lib/token")
+      await import("../src/lib/auth/token")
 
     await setupCopilotToken()
 

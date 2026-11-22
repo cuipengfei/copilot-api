@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto"
 
 import type { ModelsResponse } from "~/lib/types/models"
-import type { SmartAgentDecision } from "~/services/github/get-copilot-usage"
+import type { SmartAgentDecision } from "~/lib/types/copilot-rate-limit"
 
 export interface State {
   interactionId: string

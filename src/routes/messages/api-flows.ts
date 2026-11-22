@@ -3,22 +3,22 @@ import type { Context } from "hono"
 
 import { streamSSE } from "hono/streaming"
 
-import type { CompactType } from "~/lib/compact"
-import type { SubagentMarker } from "~/lib/subagent"
+import type { CompactType } from "~/lib/http/compact"
+import type { SubagentMarker } from "~/lib/http/subagent"
 import type { Model } from "~/lib/types/models"
 
 import {
   getChatCompletionFailure,
   guardChatCompletionsStream,
   type ChatCompletionFailure,
-} from "~/lib/chat-completions-stream"
+} from "~/lib/http/chat-completions-stream"
 import { getRawProviderConfig } from "~/lib/config"
 import {
   recordAnthropicFirstToken,
   recordChatCompletionFirstToken,
   recordResponsesFirstToken,
-} from "~/lib/first-token"
-import { GITHUB_COPILOT_PROVIDER } from "~/lib/github-copilot-provider"
+} from "~/lib/http/first-token"
+import { GITHUB_COPILOT_PROVIDER } from "~/lib/providers/github-copilot-provider"
 import {
   debugJson,
   debugJsonTail,
@@ -26,10 +26,10 @@ import {
   getAttachedPremiumInfo,
   writeStreamLog,
 } from "~/lib/logger"
-import { getProviderModelPdfSupport } from "~/lib/model-pdf-support"
+import { getProviderModelPdfSupport } from "~/lib/catalog/model-pdf-support"
 import { getReasoningReplayIdentity } from "~/lib/reasoning-replay"
-import { writeSSEIfConnected } from "~/lib/sse"
-import { resolveResponsesToolSearchName } from "~/lib/tool-search"
+import { writeSSEIfConnected } from "~/lib/http/sse"
+import { resolveResponsesToolSearchName } from "~/lib/cli/tool-search"
 import {
   applyForwardableResponseHeaders,
   getAttachedResponseHeaders,

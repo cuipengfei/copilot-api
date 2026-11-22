@@ -10,6 +10,8 @@
 
 推荐使用 Codex `0.160.0` 或更高版本：这些客户端会从 `model_catalog_url` 加载模型目录，因此本地 `model_catalog_json` 文件是可选的。
 
+桌面端 **客户端接入 → Codex** 按 **模型**、**沙箱与审批**、**搜索** 和 **Features** 分组。选择模型后会联动更新可选思考程度，默认使用该模型支持的最高思考档位（支持时为 `max`）；`ultra` 作为独立执行模式保留为可选项。已有配置会从 `config.toml` 回显，保存前可自行修改。Features 开关在未配置时默认为 `daemon_auto_start = false`、`default_mode_request_user_input = true`、`prevent_idle_sleep = true`。
+
 ### Codex `config.toml` 参考配置
 
 在 `~/.codex/config.toml` 中加入：
@@ -24,10 +26,12 @@ plan_mode_reasoning_effort = "max"
 # ChatGPT 账号登录的 Codex，输入超过 272000 token 不加收长上下文费用。
 # API Key 调用则适用独立的 OpenAI API 定价。
 model_context_window = 400000
-# 沙箱策略。可改用 "workspace-write" 以启用限制。
+# 沙箱选项："read-only"、"workspace-write"、"danger-full-access"。
 sandbox_mode = "danger-full-access"
+# 审批审核者选项："user"、"auto_review"。
 approvals_reviewer = "auto_review"
 suppress_unstable_features_warning = true
+# 网页搜索选项："disabled"、"cached"、"indexed"、"live"。
 web_search = "live"
 service_tier = "default"
 # 可选：Codex 0.160.0+ 使用下方配置的远程目录。仅当需要使用由
@@ -63,6 +67,8 @@ enabled-reasoning-efforts = ["low", "medium", "high", "xhigh", "ultra", "max"]
 [analytics]
 enabled = false
 ```
+
+沙箱、审批审核者和搜索模式的含义见[官方配置参考](https://learn.chatgpt.com/docs/config-file/config-reference)。思考程度选项取决于所选模型。
 
 > [!NOTE]
 > `name` 一定要配置为 `"OpenAI"`。
@@ -123,7 +129,7 @@ setx GITHUB_COPILOT_API_KEY dummy
 
 ### 一键生成 `model_catalog.json`
 
-需要完整模型列表、使用 Codex `0.160.0` 之前的版本，或需要避开远程响应的 1 MiB 限制时，使用本地目录文件。生成脚本携带 `x-full-model-catalog: true`，绕过大小和默认模型排除限制，仍遵守 provider 启停状态、`agentsModels` 名单和仅输出图片模型的过滤规则；该 header 不会转发给上游。Provider 名单设置详见[配置说明](configuration.md)。
+需要完整模型列表或使用 Codex `0.160.0` 之前的版本时，可以使用本地目录文件。生成脚本会发送 `x-full-model-catalog: true`，Codex `0.166.0` 及以上版本也可在目录请求中发送这个请求头。网关在本地处理该请求头，跳过大小和默认模型排除限制，并遵守 provider 启停状态、`agentsModels` 名单和仅输出图片模型的过滤规则。Provider 名单设置详见[配置说明](configuration.md)。
 
 启动网关，安装 `curl` 及 Bun 或 Node.js，然后在仓库根目录运行[生成脚本](../../generate-model-catalog.sh)：
 
@@ -139,11 +145,13 @@ sh docs/generate-model-catalog.sh
 
 ### Codex 模型目录与协议适配
 
-远程目录响应限制为 1 MiB JSON。合并后的目录超出该限制时，网关会优先保留通过 provider `agentsModels` 选中的模型，其余模型会被丢弃。请在 Provider 管理页选择需要的模型；如果需要完整列表，则生成本地目录文件。
+对于低于 `0.166.0` 的 Codex 版本和无法识别版本的请求，网关会将目录 JSON 限制在 1 MiB。应用上限时，网关优先保留 `agentsModels` 显式选中的模型，并跳过超出剩余空间的条目。
 
 Codex 客户端目录始终排除仅输出图片的模型，即使 `agentsModels` 显式选择也不会展示；支持图片输入的聊天模型仍可按筛选规则展示。OpenCode 可以通过同一份名单发现仅输出图片的模型；普通聚合目录也包含图片模型，不受 `agentsModels` 限制。
 
 当 `modelMappings` 已将裸名 `model` 映射到同一个 `codex/model` 时，Codex 目录会省略重复的 `codex/model` 条目并保留裸名的完整元数据。默认的 `codex-auto-review` 和 `gpt-reserve` 映射也适用。显式前缀调用继续可用；映射到其他模型或 provider 时保留前缀条目。
+
+使用 DeepSeek 等 Messages 适配模型后，自动审批可能将历史发送给 `codex-auto-review`。网关会把自身生成的压缩检查点还原为文本摘要再转发，保留审批所需的前文，避免 Codex 将摘要包装误当成原生密文而报 `invalid_encrypted_content`。此转换也适用于其他原生 Responses 模型；真正由上游加密的检查点仍原样透传。
 
 模型目录会按客户端版本适配：Codex `0.160.0` 及以上版本使用规范字段 `model_messages.instructions_template`，不再返回重复的旧字段 `base_instructions`；较旧客户端保留兼容字段。
 
@@ -155,6 +163,6 @@ Codex 模型选择界面会展示网关已配置 provider 提供的模型：
 
 内置 `codex` provider 展示的是按照 [ChatGPT Enterprise Token 美元费率表](https://help.openai.com/en/articles/20001415-chatgpt-rate-card-enterprise-token-based-pricing)计算的 **USD 费用估算**，不代表订阅套餐实际扣费、Credit 扣减或额度消耗。**使用 ChatGPT 账号登录的 Codex**，即使输入超过 272K tokens，也按相同的输入、缓存输入和输出标准费率计算，**不会因长上下文加价**；Codex 也不单独收取缓存写入费用。[Enterprise Credit 费率表](https://help.openai.com/en/articles/11481834-chatgpt-rate-card-business-enterpriseedu-credit-based-pricing) 同样明确了该长上下文例外。使用 API Key 的 Codex 则适用 [OpenAI API 定价](https://developers.openai.com/api/docs/pricing)，可能产生长上下文附加费用。
 
-上述 USD 估算根据请求中的 `service_tier` 统一计算：`fast` / `priority` 使用 2×，`ultrafast` 使用 6×，其余 tier 使用标准价格，不按模型过滤。订阅内含额度和 Credit 消耗可能采用不同的倍率。上游响应返回 `default` 不会覆盖请求中的 tier。
+上述 USD 估算按请求中的 `service_tier` 计算。`fast` / `priority` 使用 2×。GPT-6.2 Sol 和 GPT-6.2 Astra 的 `ultrafast` 截至太平洋时间 2027 年 2 月 28 日使用 3×，3 月 1 日起使用 6×。其他模型的 `ultrafast` 使用 6×。其余 tier 使用标准价格。订阅内含额度和 Credit 消耗可能采用不同的倍率。上游响应返回 `default` 不会覆盖请求中的 tier。
 
 ---

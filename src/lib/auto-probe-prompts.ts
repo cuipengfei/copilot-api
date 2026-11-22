@@ -2,7 +2,7 @@ import { createHash } from "node:crypto"
 
 import type { AutoSelectionTier } from "~/services/copilot/get-auto-selection"
 
-import { getConfig } from "~/lib/config-store"
+import { getConfig } from "~/lib/config/config-store"
 
 import probeSample from "~/lib/auto-probe-sample.json"
 

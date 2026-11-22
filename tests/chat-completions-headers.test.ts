@@ -10,13 +10,13 @@ import {
 import consola from "consola"
 import { Hono } from "hono"
 
-import { requestEventsMiddleware } from "~/lib/request-events"
+import { requestEventsMiddleware } from "~/lib/http/request-events"
 import { state } from "../src/lib/state"
 import {
   closeUsageStore,
   type TokenUsageEventsPage,
 } from "../src/lib/token-usage"
-import { traceIdMiddleware } from "../src/lib/trace"
+import { traceIdMiddleware } from "../src/lib/http/trace"
 import { completionRoutes } from "../src/routes/chat-completions/route"
 import { tokenUsageRoute } from "../src/routes/token-usage/route"
 

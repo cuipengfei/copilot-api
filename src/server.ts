@@ -1,17 +1,19 @@
 import type { MiddlewareHandler } from "hono/types"
 
+import { apiKeyPolicyMiddleware } from "./lib/auth/api-key-policy"
+import { apiKeyUsageRoutes } from "./routes/admin/api-keys/route"
 import { Hono, type Context } from "hono"
 import { cors } from "hono/cors"
 import { logger } from "hono/logger"
-import { readFileSync } from "node:fs"
+import fsPromises from "node:fs/promises"
 
 import {
   createAuthMiddleware,
   getConfiguredAdminApiKeys,
-} from "./lib/request-auth"
-import { traceIdMiddleware } from "./lib/trace"
-import type { GatewayPlugins } from "./lib/gateway-plugins"
-import { requestEventsMiddleware } from "./lib/request-events"
+} from "./lib/auth/request-auth"
+import { traceIdMiddleware } from "./lib/http/trace"
+import type { GatewayPlugins } from "./lib/plugins/gateway-plugins"
+import { requestEventsMiddleware } from "./lib/http/request-events"
 import { alphaSearchRoutes } from "./routes/alpha-search/route"
 import { completionRoutes } from "./routes/chat-completions/route"
 import { configRoutes } from "./routes/admin/config/route"
@@ -51,6 +53,29 @@ function resolveSameOriginCorsOrigin(
   }
 }
 
+let cachedUsageViewerHtml: Promise<string> | null = null
+
+function readUsageViewerHtml(): Promise<string> {
+  const usageViewerFileUrl = new URL("../pages/index.html", import.meta.url)
+  if (process.env.NODE_ENV !== "production") {
+    return fsPromises.readFile(usageViewerFileUrl, "utf8")
+  }
+
+  if (!cachedUsageViewerHtml) {
+    const pending: Promise<string> = fsPromises
+      .readFile(usageViewerFileUrl, "utf8")
+      .catch((error: unknown) => {
+        if (cachedUsageViewerHtml === pending) {
+          cachedUsageViewerHtml = null
+        }
+        throw error
+      })
+    cachedUsageViewerHtml = pending
+  }
+
+  return cachedUsageViewerHtml
+}
+
 export function createServer(options: CreateServerOptions = {}): Hono {
   const server = new Hono()
   const networkExposed = options.networkExposed ?? false
@@ -68,7 +93,10 @@ export function createServer(options: CreateServerOptions = {}): Hono {
     return honoLogger(loggerContext, next)
   })
   server.use(
-    networkExposed ? cors({ origin: resolveSameOriginCorsOrigin }) : cors(),
+    cors({
+      ...(networkExposed ? { origin: resolveSameOriginCorsOrigin } : {}),
+      exposeHeaders: ["X-API-Key-Usage-Isolated"],
+    }),
   )
   server.use(
     "*",
@@ -88,16 +116,15 @@ export function createServer(options: CreateServerOptions = {}): Hono {
     }),
   )
 
+  server.use("*", apiKeyPolicyMiddleware)
+
   server.use(
     "*",
     requestEventsMiddleware(options.plugins, options.port ?? 4141),
   )
 
   server.get("/", (c) => c.text("Server running"))
-  server.get("/usage-viewer", (c) => {
-    const usageViewerFileUrl = new URL("../pages/index.html", import.meta.url)
-    return c.html(readFileSync(usageViewerFileUrl, "utf8"))
-  })
+  server.get("/usage-viewer", async (c) => c.html(await readUsageViewerHtml()))
   server.get("/usage-viewer/", (c) => c.redirect("/usage-viewer", 301))
 
   server.route("/chat/completions", completionRoutes)
@@ -106,7 +133,10 @@ export function createServer(options: CreateServerOptions = {}): Hono {
   server.route("/embeddings", embeddingRoutes)
   server.route("/decisions", decisionRoutes)
   server.route("/usage", usageRoute)
+  server.route("/admin/usage", usageRoute)
   server.route("/token-usage", tokenUsageRoute)
+  server.route("/admin/token-usage", tokenUsageRoute)
+  server.route("/admin/api-keys/usage", apiKeyUsageRoutes)
   server.route("/responses", responsesRoutes)
   server.route("/alpha/search", alphaSearchRoutes)
   server.route("/images", imageRoutes)

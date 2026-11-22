@@ -9,9 +9,9 @@ import {
   invalidateConfigCache,
   type ResolvedProviderConfig,
 } from "~/lib/config"
-import { PATHS } from "~/lib/paths"
-import { requestContext } from "~/lib/request-context"
-import { openSqliteDatabase } from "~/lib/sqlite"
+import { PATHS } from "~/lib/storage/paths"
+import { requestContext } from "~/lib/http/request-context"
+import { openSqliteDatabase } from "~/lib/storage/sqlite"
 import { state } from "~/lib/state"
 import {
   closeUsageStore,
@@ -19,17 +19,29 @@ import {
   getTokenUsageEventsPage,
   getTokenUsageSessionsPage,
   getTokenUsageSummary,
+  pruneTokenUsageEvents,
   recordTokenUsageEvent,
 } from "~/lib/token-usage"
 import { xaiUsdTicksToCost } from "~/lib/token-usage/pricing"
+import {
+  getApiKeyQuotaUsage,
+  saveVideoUsageJob,
+  startVideoUsageSettlement,
+} from "~/lib/token-usage/store"
+import { recordVideoResultUsage } from "~/lib/token-usage/videos"
 import { videoRouteDependencies, videoRoutes } from "~/routes/videos/route"
 import { createServer } from "~/server"
+import {
+  settlePendingVideoUsage,
+  videoUsageSettlementDependencies,
+} from "~/services/xai/video-usage-settlement"
 import { forwardXaiVideos, XaiVideosRequestError } from "~/services/xai/videos"
 
 const model = "xai/grok-imagine-video-1.5"
 const originalFetch = globalThis.fetch
 const originalConfigPath = PATHS.CONFIG_PATH
 const originalDependencies = { ...videoRouteDependencies }
+const originalSettlementDependencies = { ...videoUsageSettlementDependencies }
 const originalDbPath = process.env.COPILOT_API_SQLITE_DB_PATH
 const originalVerbose = state.verbose
 const fetchMock = mock(
@@ -102,6 +114,7 @@ beforeEach(async () => {
   resolveProviderMock.mockReset()
   resolveProviderMock.mockImplementation(() => Promise.resolve(providerConfig))
   videoRouteDependencies.resolveProviderConfig = resolveProviderMock
+  videoUsageSettlementDependencies.resolveProviderConfig = resolveProviderMock
   fetchMock.mockReset()
   fetchMock.mockImplementation(() =>
     Promise.resolve(Response.json({ request_id: "video-job" })),
@@ -117,6 +130,10 @@ afterEach(async () => {
   state.verbose = originalVerbose
   globalThis.fetch = originalFetch
   Object.assign(videoRouteDependencies, originalDependencies)
+  Object.assign(
+    videoUsageSettlementDependencies,
+    originalSettlementDependencies,
+  )
   PATHS.CONFIG_PATH = originalConfigPath
   invalidateConfigCache()
   if (!tempDir.startsWith(path.join(os.tmpdir(), "copilot-api-videos-"))) {
@@ -132,6 +149,245 @@ afterEach(async () => {
 })
 
 describe("video routes", () => {
+  test("persists usage while shutdown drains the video poll and SQLite writes", async () => {
+    const dbPath = path.join(tempDir, "shutdown-usage.sqlite")
+    process.env.COPILOT_API_SQLITE_DB_PATH = dbPath
+    const apiKey = { id: "owner", key: "fixture-key" }
+    const job = {
+      provider_name: "xai",
+      request_id: "video-job",
+      api_key_id: apiKey.id,
+      api_key_name: null,
+      model: doneResult.model,
+      trace_id: "video-trace",
+      session_id: "video-session",
+      settled: 0,
+      next_poll_at_ms: null,
+    }
+    await saveVideoUsageJob(job)
+
+    const locker = await openSqliteDatabase(dbPath)
+    locker.exec("BEGIN IMMEDIATE")
+    const finishPoll = Promise.withResolvers<void>()
+    const usageRecorded = Promise.withResolvers<void>()
+    startVideoUsageSettlement(async () => {
+      await finishPoll.promise
+      try {
+        await recordVideoResultUsage(Response.json(doneResult), {
+          providerConfig,
+          requestId: job.request_id,
+          defaultModel: job.model,
+          job,
+        })
+      } finally {
+        usageRecorded.resolve()
+      }
+    })
+
+    const closing = closeUsageStore()
+    try {
+      finishPoll.resolve()
+      await usageRecorded.promise
+      // The video write stays queued while the store drains its worker.
+      await Bun.sleep(20)
+      recordTokenUsageEvent({
+        source: "provider",
+        endpoint: "responses",
+        providerName: "xai",
+        model: "grok-4",
+        apiKey,
+        cost: 0.25,
+      })
+    } finally {
+      locker.exec("COMMIT")
+      locker.close?.()
+      await closing
+    }
+
+    expect((await events()).total).toBe(2)
+    expect((await getApiKeyQuotaUsage(apiKey)).usedAmount).toBe(1.38)
+  })
+
+  test("settles persisted video jobs after restart and charges results once after history pruning", async () => {
+    process.env.COPILOT_API_SQLITE_DB_PATH = path.join(
+      tempDir,
+      "key-video.sqlite",
+    )
+    const key = {
+      id: "owner",
+      key: "secret",
+      quota: { period: "lifetime" as const, amount: 10 },
+    }
+    const run = <T>(apiKey: typeof key, callback: () => T): T =>
+      requestContext.run(
+        {
+          apiKey,
+          traceId: "video-key",
+          startTime: Date.now(),
+          userAgent: "video-client",
+          sessionAffinity: undefined,
+          parentSessionId: undefined,
+        },
+        callback,
+      )
+    await getApiKeyQuotaUsage(key)
+    expect((await run(key, () => generate())).status).toBe(200)
+    expect(
+      (
+        await run({ ...key, id: "other" }, () =>
+          createApp().request("/v1/videos/video-job"),
+        )
+      ).status,
+    ).toBe(403)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const pollTime = Date.now() + 10_000
+    const signal = new AbortController().signal
+    fetchMock.mockResolvedValueOnce(Response.json({ status: "pending" }))
+    await settlePendingVideoUsage(signal, pollTime)
+    expect((await getApiKeyQuotaUsage(key)).usedAmount).toBe(0)
+    await closeUsageStore()
+
+    fetchMock.mockImplementation(() =>
+      Promise.resolve(Response.json(doneResult)),
+    )
+    await settlePendingVideoUsage(signal, pollTime + 60_000)
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+    expect(await getApiKeyQuotaUsage(key)).toMatchObject({
+      usedAmount: 1.13,
+      remainingAmount: 8.87,
+    })
+    expect((await events()).items).toMatchObject([
+      { api_key_id: "owner", trace_id: "video-key" },
+    ])
+    await pruneTokenUsageEvents({
+      nowMs: Date.now() + 2 * 86_400_000,
+      retentionDays: 1,
+    })
+    expect((await events()).items).toHaveLength(0)
+
+    for (let i = 0; i < 3; i++)
+      expect(
+        (await run(key, () => createApp().request("/v1/videos/video-job")))
+          .status,
+      ).toBe(200)
+    expect(await getApiKeyQuotaUsage(key)).toMatchObject({
+      usedAmount: 1.13,
+      remainingAmount: 8.87,
+    })
+    await closeUsageStore()
+    expect((await getApiKeyQuotaUsage(key)).usedAmount).toBe(1.13)
+    expect((await events()).items).toHaveLength(0)
+  })
+
+  test("resumes settlement for jobs stored in legacy pending usage events", async () => {
+    process.env.COPILOT_API_SQLITE_DB_PATH = path.join(
+      tempDir,
+      "legacy-video.sqlite",
+    )
+    const key = { id: "legacy-owner", key: "test-key" }
+    requestContext.run(
+      {
+        apiKey: key,
+        traceId: "legacy-video",
+        startTime: Date.now(),
+        userAgent: "",
+        sessionAffinity: "legacy-video-session",
+        parentSessionId: undefined,
+      },
+      () =>
+        recordTokenUsageEvent({
+          source: "provider",
+          providerName: "xai",
+          endpoint: "videos_generations",
+          model: doneResult.model,
+          cost: 0,
+          upstreamRequestId: "pending:legacy-job",
+        }),
+    )
+    await closeUsageStore()
+    fetchMock.mockResolvedValueOnce(Response.json(doneResult))
+    await settlePendingVideoUsage(new AbortController().signal)
+    expect(getUpstreamUrl(0)).toBe("https://api.x.ai/v1/videos/legacy-job")
+    expect((await getApiKeyQuotaUsage(key)).usedAmount).toBe(1.13)
+  })
+
+  test("aborts in-flight settlement fetches on shutdown and stops polling on 404 or unbilled done results", async () => {
+    await saveVideoUsageJob({
+      provider_name: "xai",
+      request_id: "job-404",
+      api_key_id: "owner",
+      api_key_name: null,
+      model: doneResult.model,
+      trace_id: "trace-404",
+      session_id: "session-404",
+    })
+    await saveVideoUsageJob({
+      provider_name: "xai",
+      request_id: "job-unbilled-done",
+      api_key_id: "owner",
+      api_key_name: null,
+      model: doneResult.model,
+      trace_id: "trace-unbilled",
+      session_id: "session-unbilled",
+    })
+
+    const pollTime = Date.now() + 10_000
+    fetchMock.mockImplementation((input) => {
+      const url = input instanceof Request ? input.url : input.toString()
+      if (url.endsWith("/job-404")) {
+        return Promise.resolve(new Response("Not found", { status: 404 }))
+      }
+      return Promise.resolve(
+        Response.json({ status: "done", model: doneResult.model, usage: {} }),
+      )
+    })
+
+    await settlePendingVideoUsage(new AbortController().signal, pollTime)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+
+    // Neither terminal job should be polled again on subsequent cycles.
+    await settlePendingVideoUsage(
+      new AbortController().signal,
+      pollTime + 120_000,
+    )
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+
+    // Verify an in-flight settlement fetch aborts when the settlement signal aborts.
+    await saveVideoUsageJob({
+      provider_name: "xai",
+      request_id: "job-hung",
+      api_key_id: "owner",
+      api_key_name: null,
+      model: doneResult.model,
+      trace_id: "trace-hung",
+      session_id: "session-hung",
+    })
+    let inFlightSignal: AbortSignal | undefined
+    const fetchStarted = Promise.withResolvers<void>()
+    fetchMock.mockImplementation(
+      (_input, init) =>
+        new Promise<Response>((_resolve, reject) => {
+          inFlightSignal = init?.signal ?? undefined
+          fetchStarted.resolve()
+          inFlightSignal?.addEventListener(
+            "abort",
+            () => reject(new Error("Settlement aborted")),
+            { once: true },
+          )
+        }),
+    )
+
+    const shutdownController = new AbortController()
+    const settlementPromise = settlePendingVideoUsage(
+      shutdownController.signal,
+      pollTime + 240_000,
+    )
+    await fetchStarted.promise
+    shutdownController.abort()
+    await settlementPromise
+    expect(inFlightSignal?.aborted).toBe(true)
+  })
+
   test("persists native video costs in SQLite and usage summaries without tokens", async () => {
     const dbPath = path.join(tempDir, "usage.sqlite")
     process.env.COPILOT_API_SQLITE_DB_PATH = dbPath
@@ -269,14 +525,14 @@ describe("video routes", () => {
   })
 
   test.each([
-    undefined,
-    null,
-    [],
-    "text",
-    {},
-    { cost_in_usd_ticks: -1 },
-    { cost_in_usd_ticks: "11300000000" },
-  ])("ignores missing or invalid video usage %#", async (usage) => {
+    { usage: undefined },
+    { usage: null },
+    { usage: [] },
+    { usage: "text" },
+    { usage: {} },
+    { usage: { cost_in_usd_ticks: -1 } },
+    { usage: { cost_in_usd_ticks: "11300000000" } },
+  ])("ignores missing or invalid video usage %#", async ({ usage }) => {
     fetchMock.mockImplementation(() =>
       Promise.resolve(Response.json({ ...doneResult, usage })),
     )

@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { isValidCostAmount } from '../../../src/lib/token-usage/currency'
 import { ConfigEditorError } from './config-editor-errors'
 
 export type ConfigObject = Record<string, unknown>
@@ -85,8 +86,37 @@ const providerSchema = z.looseObject({
 export const appConfigSchema = z.looseObject({
   auth: z
     .looseObject({
-      apiKeys: z.array(nonEmptyString).optional(),
+      apiKeyConfigs: z
+        .array(
+          z.looseObject({
+            id: z.string().regex(/^[\w-]{1,128}$/),
+            key: nonEmptyString,
+            name: nonEmptyString.optional(),
+            enabled: z.boolean().optional(),
+            expiresAt: z
+              .string()
+              .refine(
+                (value) => Number.isFinite(Date.parse(value)),
+                'Invalid expiry date',
+              )
+              .optional(),
+            allowedModels: z.array(nonEmptyString).optional(),
+            quota: z
+              .looseObject({
+                period: z.enum(['day', 'month', 'lifetime']),
+                amount: z
+                  .number()
+                  .refine(
+                    isValidCostAmount,
+                    'Amount must be non-negative and fit in cost nanos',
+                  ),
+              })
+              .optional(),
+          }),
+        )
+        .optional(),
       adminApiKey: z.string().optional(),
+      isolateApiKeyUsage: z.boolean().optional(),
     })
     .optional(),
   providers: z.record(z.string(), providerSchema).optional(),
@@ -152,7 +182,6 @@ export function parseConfigContent(content: string): ConfigObject {
 // legacy values may bypass strict validation; newly entered values still fail.
 function legacyField(path: PropertyKey[]): string[] | undefined {
   const keys = path.map(String)
-  if (keys[0] === 'auth' && keys[1] === 'apiKeys') return keys.slice(0, 2)
   if (keys[0] === 'opencodeModelContextWindow') return keys.slice(0, 1)
   if (keys[0] === 'contextManagement') return keys.slice(0, 1)
   if (

@@ -13,18 +13,19 @@ import os from "node:os"
 import path from "node:path"
 
 import type { ResolvedProviderConfig } from "~/lib/config"
-import { fromClaudeDiscoveryModelId } from "~/lib/claude-models"
-import { PATHS } from "~/lib/paths"
-import { defaultConfig, invalidateConfigCache } from "~/lib/config-store"
+import { fromClaudeDiscoveryModelId } from "~/lib/catalog/claude-models"
+import { CODEX_MODEL_CATALOG_MAX_BYTES } from "~/lib/catalog/codex-model-catalog"
+import { installModelsDevCatalog } from "~/lib/catalog/models-dev-cache"
+import { PATHS } from "~/lib/storage/paths"
+import { defaultConfig, invalidateConfigCache } from "~/lib/config/config-store"
 import type { ModelsResponse } from "~/lib/types/models"
-import type { CodexModelsResponse } from "~/routes/models/codex-models-types"
+import type { CodexModelsResponse } from "~/lib/types/codex-models"
 import {
   isOpencodeUserAgent,
   type OpencodeModel,
 } from "~/routes/models/opencode-models"
 import bundledCodexCatalogJson from "~/routes/models/models.json"
 
-import { installModelsDevCatalog } from "~/lib/models-dev-cache"
 import rawModelsResponse from "./fixtures/copilot-models-raw-response.json"
 import {
   modelsDevCatalogFixture,
@@ -32,8 +33,8 @@ import {
   modelsDevProviderCatalogFixture,
 } from "./fixtures/models-dev-catalog"
 
-const actualConfigModule = await import("../src/lib/config")
-const actualTokenModule = await import("../src/lib/token")
+const actualConfigModule = await import("~/lib/config")
+const actualTokenModule = await import("~/lib/auth/token")
 
 let enabledProviders: Array<string> = []
 let providerConfigs: Record<
@@ -82,7 +83,7 @@ await mock.module("~/lib/config", () => ({
   listEnabledProviders: () => enabledProviders,
 }))
 
-await mock.module("~/lib/token", () => ({
+await mock.module("~/lib/auth/token", () => ({
   ...actualTokenModule,
   setupCodexToken: () => {
     if (codexSetupError) return Promise.reject(codexSetupError)
@@ -2761,6 +2762,39 @@ describe("model routes", () => {
     expect(response.status).toBe(502)
     expect((await response.text()).length).toBeLessThan(200)
   })
+  test.each(["/models", "/codex/v1/models"])(
+    "%s limits oversized catalogs according to the client version",
+    async (endpoint) => {
+      enableCodexCatalog()
+      const model = createDefaultCodexCatalogModels()[0]
+      codexCatalogModels = ["gpt-first", "gpt-last"].map((slug, priority) => ({
+        ...model,
+        slug,
+        priority,
+        base_instructions: "x".repeat(550_000),
+      }))
+
+      const app = createApp(false)
+      for (const { version, supportsLargeCatalog } of [
+        { version: "0.165.0", supportsLargeCatalog: false },
+        { version: "0.166.0", supportsLargeCatalog: true },
+      ]) {
+        const response = await app.request(
+          `${endpoint}?client_version=${version}`,
+          { headers: { "user-agent": "codex-tui" } },
+        )
+        expect(response.status).toBe(200)
+        const body = await response.text()
+        expect(Buffer.byteLength(body) > CODEX_MODEL_CATALOG_MAX_BYTES).toBe(
+          supportsLargeCatalog,
+        )
+        const { models } = JSON.parse(body) as CodexModelsResponse
+        const slugs = models.map((entry) => entry.slug)
+        expect(slugs).toContain("gpt-first")
+        expect(slugs.includes("gpt-last")).toBe(supportsLargeCatalog)
+      }
+    },
+  )
   test("applies the same policy to provider-scoped Codex catalogs", async () => {
     enableCodexCatalog()
     providerConfigs.codex!.agentsModels = ["gpt-native"]
@@ -3273,6 +3307,24 @@ describe("model routes", () => {
       )
       expect(body.data.map((model) => model.id)).toContain("codex/gpt-reserve")
       expect(body.data.map((model) => model.id)).toContain("codex/gpt-5.6-sol")
+      for (const name of ["Sol", "Astra"]) {
+        const id = `codex/gpt-6.2-${name.toLowerCase()}`
+        expect(body.data.find((model) => model.id === id)).toMatchObject({
+          capabilities: {
+            limits: {
+              max_context_window_tokens: 872_000,
+              max_output_tokens: 128_000,
+              max_prompt_tokens: 872_000,
+            },
+            supports: {
+              reasoning_effort: ["low", "medium", "high", "xhigh", "max"],
+              vision: true,
+            },
+          },
+          id,
+          name: `GPT-6.2 ${name}`,
+        })
+      }
       expect(
         body.data.find((model) => model.id === "codex/gpt-6.1-sol"),
       ).toMatchObject({
@@ -3659,6 +3711,20 @@ describe("model routes", () => {
       throw new Error("Bundled Codex catalog has no visible API model")
     }
     expect(body.models).toContainEqual(template)
+    const gpt62Models = body.models.slice(0, 2)
+    expect(gpt62Models.map((model) => model.slug)).toEqual([
+      "gpt-6.2-sol",
+      "gpt-6.2-astra",
+    ])
+    expect(gpt62Models.map((model) => model.context_window)).toEqual([
+      500_000, 272_000,
+    ])
+    for (const model of gpt62Models) {
+      expect(model.max_context_window).toBe(872_000)
+      expect(
+        model.supported_reasoning_levels.map((level) => level.effort),
+      ).toEqual(["low", "medium", "high", "xhigh", "max", "ultra"])
+    }
     const gpt61Sol = body.models.find((model) => model.slug === "gpt-6.1-sol")
     expect(gpt61Sol).toMatchObject({
       context_window: 272_000,

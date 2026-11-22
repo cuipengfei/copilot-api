@@ -1,8 +1,8 @@
 // OpenAI Chat Completions API Types
 
-import type { CopilotUsage } from "~/lib/token-usage"
+import type { CopilotUsage } from "./token-usage"
 
-export type { CopilotUsage } from "~/lib/token-usage"
+export type { CopilotUsage } from "./token-usage"
 
 // Streaming types
 
@@ -15,6 +15,8 @@ export interface ChatCompletionChunk {
   copilot_usage?: CopilotUsage | null
   system_fingerprint?: string
   usage?: {
+    cost?: number
+    cost_in_usd_ticks?: number
     prompt_tokens: number
     completion_tokens: number
     total_tokens: number
@@ -68,6 +70,8 @@ export interface ChatCompletionResponse {
   copilot_usage?: CopilotUsage | null
   system_fingerprint?: string
   usage?: {
+    cost?: number
+    cost_in_usd_ticks?: number
     prompt_tokens: number
     completion_tokens: number
     total_tokens: number

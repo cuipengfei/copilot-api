@@ -1,9 +1,61 @@
 import type { ConfigFieldId, ConfigSection } from '../lib/config-fields'
 import en from './en'
 import zh from './zh'
-import type { ClientErrorCode } from '../../shared/client-integrations'
+import type {
+  ClientErrorCode,
+  CodexClientOptions,
+} from '../../shared/client-integrations'
 
 export interface Locale {
+  apiKeys: {
+    title: string
+    add: string
+    edit: string
+    remove: string
+    rotate: string
+    copy: string
+    name: string
+    secret: string
+    enabled: string
+    disabled: string
+    expired: string
+    expires: string
+    expiryDate: string
+    expiryDatePlaceholder: string
+    expiryTime: string
+    pickExpiryDate: string
+    clearExpiry: string
+    previousMonth: string
+    nextMonth: string
+    invalidExpiry: string
+    models: string
+    restrictModels: string
+    modelsHint: string
+    quota: string
+    unlimited: string
+    day: string
+    month: string
+    lifetime: string
+    limit: string
+    usage: string
+    remaining: string
+    resets: string
+    unavailable: string
+    save: string
+    cancel: string
+    empty: string
+    unnamed: string
+    removeConfirm: string
+    saveError: string
+    loadError: string
+    immediate: string
+    isolateUsage: string
+    isolateUsageHint: string
+    allKeys: string
+    unattributed: string
+    keyFilter: string
+    required: string
+  }
   clients: {
     title: string
     description: string
@@ -22,6 +74,7 @@ export interface Locale {
     saved: string
     restored: string
     pluginFailed: string
+    pluginUninstallFailed: string
     commandExit: string
     stopped: string
     model: string
@@ -37,6 +90,24 @@ export interface Locale {
     claudeDescription: string
     opencodeDescription: string
     codexDescription: string
+    sandboxMode: string
+    sandboxModes: Record<CodexClientOptions['sandboxMode'], string>
+    approvalsReviewer: string
+    approvalReviewers: Record<CodexClientOptions['approvalsReviewer'], string>
+    webSearch: string
+    webSearchModes: Record<CodexClientOptions['webSearch'], string>
+    reasoningEffort: string
+    reasoningEffortHint: string
+    daemonAutoStart: string
+    defaultModeRequestUserInput: string
+    preventIdleSleep: string
+    modelSettings: string
+    permissionsSettings: string
+    searchSettings: string
+    featuresSettings: string
+    toolsSettings: string
+    pluginsSettings: string
+    connectionSettings: string
     nativeToolSearch: string
     agentInject: string
     toolSearchBridge: string

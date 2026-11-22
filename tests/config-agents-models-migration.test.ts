@@ -12,12 +12,12 @@ import {
   writeConfigToDisk,
   type AppConfig,
   type ProviderConfig,
-} from "~/lib/config-store"
-import { PATHS } from "~/lib/paths"
+} from "~/lib/config/config-store"
+import { PATHS } from "~/lib/storage/paths"
 import {
   getProviderManagementConfig,
   saveProviderManagementConfig,
-} from "~/lib/provider-management"
+} from "~/lib/config/provider-management"
 
 type LegacyProviderConfig = ProviderConfig & { codexModels?: Array<string> }
 const originalConfigPath = PATHS.CONFIG_PATH
@@ -28,7 +28,10 @@ function seedConfig(provider: LegacyProviderConfig): AppConfig {
   PATHS.CONFIG_PATH = path.join(tempDir, "config.json")
   const config = {
     ...defaultConfig,
-    auth: { apiKeys: ["gateway-test-key"], adminApiKey: "existing-admin-key" },
+    auth: {
+      apiKeyConfigs: [{ id: "test-key", key: "gateway-test-key" }],
+      adminApiKey: "existing-admin-key",
+    },
     modelMappings: { ...defaultConfig.modelMappings, friendly: "custom/model" },
     providers: {
       custom: {

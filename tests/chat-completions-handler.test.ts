@@ -15,7 +15,9 @@ import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 
-import type { RequestTiming } from "~/lib/request-context"
+import { requestContext, type RequestTiming } from "~/lib/http/request-context"
+import { requestEventsMiddleware } from "~/lib/http/request-events"
+import { traceIdMiddleware } from "~/lib/http/trace"
 import type { ChatCompletionChunk } from "~/lib/types/chat-completions"
 
 const originalHome = process.env.COPILOT_API_HOME
@@ -41,9 +43,6 @@ const { chatCompletionsHandlerDependencies, handleCompletion } =
   })
 const { completionRoutes } =
   await import("../src/routes/chat-completions/route")
-const { requestContext } = await import("~/lib/request-context")
-const { requestEventsMiddleware } = await import("~/lib/request-events")
-const { traceIdMiddleware } = await import("~/lib/trace")
 const originalCreateChatCompletions =
   chatCompletionsHandlerDependencies.createChatCompletions
 

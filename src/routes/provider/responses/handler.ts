@@ -1,28 +1,29 @@
 import type { Context } from "hono"
+import type { ContentfulStatusCode } from "hono/utils/http-status"
 
 import { streamSSE } from "hono/streaming"
 
-import { logCodexRateLimitsEvent } from "~/lib/codex-rate-limit"
+import { logCodexRateLimitsEvent } from "~/lib/providers/codex-rate-limit"
 import {
   type ModelConfig,
   type ProviderType,
   resolveProviderConfigForModel,
 } from "~/lib/config"
-import { HTTPError } from "~/lib/error"
-import { recordResponsesFirstToken } from "~/lib/first-token"
+import { HTTPError } from "~/lib/http/error"
+import { recordResponsesFirstToken } from "~/lib/http/first-token"
 import { createHandlerLogger, debugJson } from "~/lib/logger"
-import { resolveProviderConfig } from "~/lib/provider-resolver"
+import { resolveProviderConfig } from "~/lib/providers/provider-resolver"
 import {
   applyForwardableResponseHeaders,
   getAttachedResponseHeaders,
   jsonWithForwardedHeaders,
 } from "~/lib/response-headers"
-import { requestContext } from "~/lib/request-context"
+import { requestContext } from "~/lib/http/request-context"
 import {
   readResponsesStreamEvent,
   type ResponsesStreamChunk,
-} from "~/lib/responses-stream-event"
-import { writeSSEIfConnected } from "~/lib/sse"
+} from "~/lib/http/responses-stream-event"
+import { writeSSEIfConnected } from "~/lib/http/sse"
 import {
   createProviderTokenUsageRecorder,
   normalizeResponsesUsage,
@@ -35,8 +36,10 @@ import {
   applyResponsesApiContextManagement,
   compactInputByLatestCompaction,
   filterReasoningForTransport,
+  replayMessagesCompactionForResponses,
 } from "~/routes/responses/utils"
 import { handleResponsesViaMessages } from "~/routes/responses/messages-handler"
+import { createResponsesStreamTerminalTracker } from "~/routes/responses/stream-failure"
 import { getCodexTaskTitleModel } from "~/routes/responses/task-title"
 import {
   forwardProviderResponseHeaders,
@@ -158,6 +161,7 @@ export async function handleProviderResponsesForProvider(
   if (shouldCompactInput) {
     compactInputByLatestCompaction(payload)
   }
+  replayMessagesCompactionForResponses(payload)
 
   debugJson(logger, "Translated Responses request payload:", {
     contextManagement: payload.context_management,
@@ -197,6 +201,7 @@ export async function handleProviderResponsesForProvider(
       return streamProviderResponses(c, upstreamResponse, {
         normalizeCodex: true,
         provider,
+        publicModel,
         recordUsage,
         streamAbort,
       })
@@ -235,6 +240,7 @@ export async function handleProviderResponsesForProvider(
     return streamProviderResponses(c, getResponsesEvents(upstreamResponse), {
       normalizeCodex: false,
       provider,
+      publicModel,
       recordUsage,
     })
   }
@@ -293,6 +299,7 @@ const streamProviderResponses = async (
   options: {
     normalizeCodex: boolean
     provider: string
+    publicModel: string
     recordUsage: (usage: UsageTokens) => void
     streamAbort?: AbortController
   },
@@ -316,29 +323,26 @@ const streamProviderResponses = async (
   if (firstEvent?.type === "error") {
     const statusCode = firstEvent.status_code ?? 500
     await iterator.return?.()
-    return jsonWithForwardedHeaders(
+    applyForwardableResponseHeaders(c, sourceHeaders)
+    forwardProviderResponseHeaders(c, new Headers(firstEvent.headers))
+    return c.json(
       {
         error: {
           message: firstEvent.message,
           ...firstEvent.error,
         },
       },
-      sourceHeaders,
-      {
-        status: statusCode,
-        overrides: Object.fromEntries(
-          Object.entries(firstEvent.headers ?? {}).map(([name, value]) => [
-            name,
-            value,
-          ]),
-        ),
-      },
+      statusCode as ContentfulStatusCode,
     )
   }
 
   applyForwardableResponseHeaders(c, sourceHeaders)
   return streamSSE(c, async (stream) => {
     stream.onAbort(() => options.streamAbort?.abort())
+    const terminalTracker = createResponsesStreamTerminalTracker(
+      options.publicModel,
+    )
+    let responseId: string | undefined
     let usage: UsageTokens = {}
 
     const writeChunk = async (
@@ -348,6 +352,16 @@ const streamProviderResponses = async (
       debugJson(logger, "Responses stream chunk:", chunk)
       if (options.normalizeCodex) {
         logCodexRateLimitsEvent(event)
+      }
+
+      terminalTracker.observe(event)
+      if (
+        event
+        && "response" in event
+        && typeof event.response.id === "string"
+        && event.response.id
+      ) {
+        responseId = event.response.id
       }
 
       recordResponsesFirstToken(event)
@@ -379,6 +393,13 @@ const streamProviderResponses = async (
     } finally {
       await iterator.return?.()
       options.recordUsage(usage)
+
+      const failure = terminalTracker.finalize(responseId)
+      if (failure && (await writeSSEIfConnected(stream, failure.sse))) {
+        logger.warn(
+          `Responses stream ended without a terminal event; sent response.failed (${failure.code}: ${failure.message})`,
+        )
+      }
     }
   })
 }

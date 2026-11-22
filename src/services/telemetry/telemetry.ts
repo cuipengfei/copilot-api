@@ -2,7 +2,7 @@ import consola from "consola"
 import { arch, platform, release } from "node:os"
 import { request } from "undici"
 
-import { COPILOT_VERSION } from "~/lib/api-config"
+import { COPILOT_VERSION } from "~/lib/providers/api-config"
 import { getConfig } from "~/lib/config"
 import { state } from "~/lib/state"
 

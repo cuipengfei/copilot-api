@@ -12,7 +12,7 @@ import type {
   ResponsesTransport,
 } from "~/lib/types/responses"
 
-import { COMPACT_REQUEST, type CompactType } from "~/lib/compact"
+import { COMPACT_REQUEST, type CompactType } from "~/lib/http/compact"
 import {
   getModelResponsesApiCompactThreshold as getConfiguredModelResponsesApiCompactThreshold,
   isContextManagementEnabledForMessages as isConfiguredContextManagementEnabledForMessages,
@@ -23,9 +23,13 @@ import {
 import {
   resolveSupportedReasoningEffort,
   type ResponsesReasoningEffort,
-} from "~/lib/reasoning-effort"
+} from "~/lib/catalog/reasoning-effort"
 
-import { isMessagesReasoningId } from "./messages-translation"
+import {
+  decodeMessagesCompaction,
+  isMessagesReasoningId,
+} from "./messages-translation"
+import { COMPACTION_REPLAY_PROMPT } from "./messages-translation/constants"
 
 export const RESPONSES_ENDPOINT = "/responses"
 export const RESPONSES_WS_ENDPOINT = "ws:/responses"
@@ -442,6 +446,32 @@ export const filterReasoningForTransport = (
   })
 }
 
+export const replayMessagesCompactionForResponses = (
+  payload: ResponsesPayload,
+): void => {
+  if (!Array.isArray(payload.input)) return
+
+  payload.input = payload.input.map((item) => {
+    if (
+      item.type !== "compaction"
+      || typeof item.encrypted_content !== "string"
+    ) {
+      return item
+    }
+
+    const summary = decodeMessagesCompaction(item.encrypted_content)
+    if (summary === null) return item
+
+    // Messages checkpoints contain our encoded text, not upstream ciphertext.
+    // Native Responses backends must receive the summary as a regular message.
+    return {
+      type: "message",
+      role: "user",
+      content: `${COMPACTION_REPLAY_PROMPT}${summary}`,
+    }
+  })
+}
+
 export const applyResponsesApiContextManagement = (
   payload: ResponsesPayload,
   maxPromptTokens: number | undefined,
@@ -589,8 +619,12 @@ const containsVisionContent = (value: unknown): boolean => {
     return true
   }
 
-  if (Array.isArray(record.content)) {
-    return record.content.some((entry) => containsVisionContent(entry))
+  if (Array.isArray(record.content) && containsVisionContent(record.content)) {
+    return true
+  }
+
+  if (Array.isArray(record.output) && containsVisionContent(record.output)) {
+    return true
   }
 
   return false

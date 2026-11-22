@@ -1,8 +1,8 @@
 import consola from "consola"
-
-import { getGitHubApiBaseUrl, githubHeaders } from "~/lib/api-config"
-import { HTTPError } from "~/lib/error"
+import { getGitHubApiBaseUrl, githubHeaders } from "~/lib/providers/api-config"
+import { HTTPError } from "~/lib/http/http-error"
 import { state } from "~/lib/state"
+import type { SmartAgentDecision } from "~/lib/types/copilot-rate-limit"
 
 export interface ShouldUseAgentModeParams {
   entitlement: number
@@ -27,17 +27,6 @@ export function shouldUseAgentMode(params: ShouldUseAgentModeParams): boolean {
   const idealDaily = entitlement / daysInMonth
   const expectedRemaining = Math.max(5, entitlement - dayOfMonth * idealDaily)
   return remaining <= expectedRemaining
-}
-
-export type SmartAgentReason = "over_budget" | "hysteresis" | "error"
-
-export interface SmartAgentDecision {
-  forceAgent: boolean
-  remaining?: number
-  expected?: number
-  idealDaily?: number
-  error?: string
-  reason?: SmartAgentReason
 }
 
 /**

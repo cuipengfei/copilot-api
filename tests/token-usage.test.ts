@@ -8,8 +8,8 @@ import {
 } from "bun:test"
 import { Hono } from "hono"
 
-import { installModelsDevCatalog } from "~/lib/models-dev-cache"
-import { requestContext } from "~/lib/request-context"
+import { installModelsDevCatalog } from "~/lib/catalog/models-dev-cache"
+import { requestContext } from "~/lib/http/request-context"
 import { state } from "~/lib/state"
 import {
   closeUsageStore,
@@ -27,9 +27,10 @@ import {
   resolveTokenUsageCost,
   type TokenUsageCostInput,
 } from "~/lib/token-usage/pricing"
-import { traceIdMiddleware } from "~/lib/trace"
+import { traceIdMiddleware } from "~/lib/http/trace"
 import { tokenUsageRoute } from "~/routes/token-usage/route"
 import { translateToOpenAI } from "~/routes/messages/completions-translation"
+import { getApiKeyQuotaUsage } from "~/lib/token-usage/store"
 
 import {
   modelsDevCatalogFixture,
@@ -511,6 +512,59 @@ describe("token usage storage", () => {
     })
   })
 
+  test("retains API key quota and Copilot usage for delayed recorder calls", async () => {
+    const apiKey = {
+      id: "delayed-key",
+      key: "secret",
+      name: "Delayed key",
+      quota: { period: "lifetime" as const, amount: 2 },
+    }
+    const recordUsage = requestContext.run(
+      {
+        apiKey,
+        parentSessionId: undefined,
+        sessionAffinity: "delayed-session",
+        startTime: Date.now(),
+        traceId: "trace-delayed-recorder",
+        userAgent: "test",
+      },
+      () =>
+        createCopilotTokenUsageRecorder({
+          endpoint: "responses",
+          model: "delayed-copilot-usage",
+        }),
+    )
+
+    await Promise.resolve()
+    recordUsage(
+      { input_tokens: 4 },
+      {
+        token_details: [
+          {
+            batch_size: 1_000_000,
+            cost_per_batch: 25_000_000_000,
+            token_count: 4,
+            token_type: "input",
+          },
+        ],
+        total_nano_aiu: 100_000_000_000,
+      },
+    )
+
+    expect((await fetchEventsPage()).items[0]).toMatchObject({
+      api_key_id: "delayed-key",
+      api_key_name: "Delayed key",
+      nano_cost_input: 100_000,
+      session_id: "delayed-session",
+      total_nano_aiu: 100_000_000_000,
+      trace_id: "trace-delayed-recorder",
+    })
+    expect(await getApiKeyQuotaUsage(apiKey)).toMatchObject({
+      remainingAmount: 1,
+      usedAmount: 1,
+    })
+  })
+
   test("uses one canonical Copilot AIU value for storage and pricing", async () => {
     const cases = [
       {
@@ -521,7 +575,7 @@ describe("token usage storage", () => {
         topLevelTotalNanoAiu: 100_000_000_000,
       },
       {
-        expectedCostNanos: null,
+        expectedCostNanos: 0,
         expectedTotalNanoAiu: 0,
         model: "nested-zero-aiu",
         nestedTotalNanoAiu: 0,
@@ -596,7 +650,7 @@ describe("token usage storage", () => {
     })
   })
 
-  test("does not use provider-reported cost for non-OpenRouter providers", () => {
+  test("prefers reported USD cost for other providers as well", () => {
     expect(
       resolveTokenUsageCost({
         cost: 0.0002928408,
@@ -613,8 +667,8 @@ describe("token usage storage", () => {
       }),
     ).toEqual({
       currency: "USD",
-      source: "config",
-      total_cost_nanos: 20_000,
+      source: "upstream",
+      total_cost_nanos: 292_841,
     })
   })
 

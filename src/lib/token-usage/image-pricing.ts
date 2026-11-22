@@ -1,5 +1,9 @@
-import type { CalculatedTokenUsageCost, TokenUsageCostInput } from "./pricing"
-import { normalizeToken, type ImageTokenDetails } from "./store"
+import type {
+  CalculatedTokenUsageCost,
+  TokenUsageCostInput,
+} from "../types/pricing"
+import type { ImageTokenDetails } from "../types/token-usage"
+import { normalizeToken } from "./normalize"
 
 // USD per million tokens, checked 2026-10-30. These are API price estimates
 // for Codex subscription usage, not charges to the subscription account.
@@ -36,14 +40,19 @@ function splitTokens(
     : { image: 0, text: tokens }
 }
 
+export function hasBuiltinImagePricing(model: string): boolean {
+  return IMAGE_MODELS.has(
+    model
+      .trim()
+      .toLowerCase()
+      .replace(/-\d{4}-\d{2}-\d{2}$/u, ""),
+  )
+}
+
 export function resolveBuiltinImageCost(
   input: TokenUsageCostInput,
 ): CalculatedTokenUsageCost | null {
-  const model = input.model
-    .trim()
-    .toLowerCase()
-    .replace(/-\d{4}-\d{2}-\d{2}$/u, "")
-  if (!IMAGE_MODELS.has(model)) return null
+  if (!hasBuiltinImagePricing(input.model)) return null
 
   const prompt = splitTokens(
     input.input_tokens,

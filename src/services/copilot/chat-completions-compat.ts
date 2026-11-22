@@ -3,7 +3,7 @@ import consola from "consola"
 import type { ChatCompletionsPayload } from "~/lib/types/chat-completions"
 
 import { getUpstreamTransportConfig } from "~/lib/config"
-import { HTTPError } from "~/lib/error"
+import { HTTPError } from "~/lib/http/error"
 import { sendCopilotHttpRequest } from "~/services/copilot/request"
 import { trackResponseError } from "~/services/telemetry/telemetry"
 

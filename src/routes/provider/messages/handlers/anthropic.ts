@@ -10,13 +10,13 @@ import type {
 } from "~/lib/types/anthropic"
 
 import { type ModelConfig } from "~/lib/config"
-import { recordAnthropicFirstToken } from "~/lib/first-token"
+import { recordAnthropicFirstToken } from "~/lib/http/first-token"
 import { debugJson } from "~/lib/logger"
 import {
   applyForwardableResponseHeaders,
   jsonWithForwardedHeaders,
 } from "~/lib/response-headers"
-import { writeSSEIfConnected } from "~/lib/sse"
+import { writeSSEIfConnected } from "~/lib/http/sse"
 import {
   mergeAnthropicUsage,
   normalizeAnthropicUsage,

@@ -1,7 +1,7 @@
 import type { Context } from "hono"
 
 import type { ModelConfig, ResolvedProviderConfig } from "~/lib/config"
-import { builtinProviderModelRegistry } from "~/lib/builtin-provider-models"
+import { builtinProviderModelRegistry } from "~/lib/catalog/builtin-provider-models"
 import { applyForwardableResponseHeaders } from "~/lib/response-headers"
 import type { ChatCompletionsPayload } from "~/lib/types/chat-completions"
 import type { ResponsesStream } from "~/lib/types/responses"

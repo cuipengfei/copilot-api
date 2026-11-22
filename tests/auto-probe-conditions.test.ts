@@ -2,7 +2,9 @@ import { createHash } from "node:crypto"
 import { describe, expect, mock, test } from "bun:test"
 
 const config: { autoDiscovery?: unknown } = {}
-await mock.module("~/lib/config-store", () => ({ getConfig: () => config }))
+await mock.module("~/lib/config/config-store", () => ({
+  getConfig: () => config,
+}))
 // Load after installing the config boundary mock so tests never read user configuration.
 
 const {

@@ -12,8 +12,8 @@ import {
   resolveResponsesToolSearchMode,
   selectDeferredToolsByNames,
   type ResponsesToolSearchMode,
-} from "~/lib/tool-search"
-import { HTTPError } from "~/lib/error"
+} from "~/lib/cli/tool-search"
+import { HTTPError } from "~/lib/http/error"
 import {
   getExtraPromptForModel,
   getReasoningEffortForModel,
@@ -110,11 +110,22 @@ export const translateAnthropicMessagesToResponsesPayload = (
   )
 
   const promptCacheKey = getPromptCacheKey()
+  const systemPrompt = translateSystemPrompt(payload.system, payload.model)
+  const isGrok = payload.model.includes("grok")
+  const gptMajorVersion = /(?:^|\/)gpt-(\d+)(?:\.\d+)*(?:-[^/]+)?$/u.exec(
+    payload.model,
+  )?.[1]
+  // Keep the system prompt in the cacheable prefix for GPT-6 and later.
+  const sendSystemPromptInInput = isGrok || Number(gptMajorVersion ?? 0) >= 6
+
+  if (systemPrompt && sendSystemPromptInInput) {
+    input.unshift(createMessage(isGrok ? "system" : "developer", systemPrompt))
+  }
 
   const responsesPayload: ResponsesPayload = {
     model: payload.model,
     input,
-    instructions: translateSystemPrompt(payload.system, payload.model),
+    ...(sendSystemPromptInInput ? {} : { instructions: systemPrompt }),
     temperature: 1, // reasoning high temperature fixed to 1
     top_p: payload.top_p ?? null,
     max_output_tokens: payload.max_tokens,
@@ -129,7 +140,7 @@ export const translateAnthropicMessagesToResponsesPayload = (
         payload.output_config?.effort ?
           mapAnthropicEffortToResponses(payload.output_config.effort)
         : getReasoningEffortForModel(payload.model),
-      summary: payload.model.includes("grok") ? "concise" : "auto",
+      summary: isGrok ? "concise" : "auto",
       context: isSupportAllTurns(payload) ? "all_turns" : "auto",
     },
     include: ["reasoning.encrypted_content"],
@@ -145,16 +156,12 @@ export const translateAnthropicMessagesToResponsesPayload = (
   }
 
   // grok meatadata is not supported
-  if (responsesPayload.model.includes("grok")) {
+  if (isGrok) {
     delete responsesPayload.metadata
     delete responsesPayload.temperature
     delete responsesPayload.top_p
     // Match Grok Build: omit the output limit and use upstream defaults.
     delete responsesPayload.max_output_tokens
-    if (responsesPayload.instructions) {
-      input.unshift(createMessage("system", responsesPayload.instructions))
-    }
-    delete responsesPayload.instructions
   }
 
   return responsesPayload

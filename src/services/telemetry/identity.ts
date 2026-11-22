@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { homedir, networkInterfaces, platform, arch, release } from "node:os"
 import { join } from "node:path"
 
-import { COPILOT_VERSION } from "~/lib/api-config"
+import { COPILOT_VERSION } from "~/lib/providers/api-config"
 
 // Stable session ID for the lifetime of this process
 export const SESSION_ID: string = randomUUID()

@@ -8,6 +8,8 @@ Configure the gateway address and key in Codex to use its models.
 
 Recommended Codex version: `0.160.0` or newer. These clients can load the model catalog from `model_catalog_url`, so the local `model_catalog_json` file is optional.
 
+Desktop **Client integrations → Codex** groups settings into **Models**, **Sandbox and approvals**, **Search**, and **Features**. Selecting a model updates its available reasoning levels and defaults to its highest reasoning effort (`max` when supported); `ultra` remains a separate selectable execution mode. Existing choices are loaded from `config.toml` and can be changed before saving. The Features switches default to `daemon_auto_start = false`, `default_mode_request_user_input = true`, and `prevent_idle_sleep = true` when not configured.
+
 ### Codex `config.toml` Reference
 
 Add this to `~/.codex/config.toml`:
@@ -22,10 +24,12 @@ plan_mode_reasoning_effort = "max"
 # ChatGPT-signed-in Codex has no long-context surcharge above 272000 tokens.
 # API-key usage follows separate OpenAI API pricing.
 model_context_window = 400000
-# Sandbox policy. Use "workspace-write" to restrict it.
+# Sandbox options: "read-only", "workspace-write", "danger-full-access".
 sandbox_mode = "danger-full-access"
+# Approval reviewer options: "user", "auto_review".
 approvals_reviewer = "auto_review"
 suppress_unstable_features_warning = true
+# Web search options: "disabled", "cached", "indexed", "live".
 web_search = "live"
 service_tier = "default"
 # Optional: Codex 0.160.0+ loads the remote catalog configured below. Uncomment this only
@@ -61,6 +65,8 @@ enabled-reasoning-efforts = ["low", "medium", "high", "xhigh", "ultra", "max"]
 [analytics]
 enabled = false
 ```
+
+See the [official configuration reference](https://learn.chatgpt.com/docs/config-file/config-reference) for sandbox, reviewer, and search mode behavior. Reasoning levels depend on the selected model.
 
 > [!NOTE]
 > `name` must be set to `"OpenAI"`.
@@ -121,7 +127,7 @@ Alternatively, set `"codex-auto-review": "codex/codex-auto-review"` to use the b
 
 ### Generate `model_catalog.json`
 
-Use a local catalog for the complete list, for Codex versions before `0.160.0`, or to avoid the 1 MiB remote response limit. The generator sends `x-full-model-catalog: true`, bypassing the size and default-exclusion limits while still respecting provider enable states, `agentsModels` selections, and the image-only model filter. This header never reaches upstream providers. See [configuration](configuration.md) for provider selections.
+Use a local catalog to get the complete model list or to use Codex versions before `0.160.0`. The generator sends `x-full-model-catalog: true`. Codex `0.166.0` and later can also send this header on catalog requests. It bypasses the gateway's size limit and default exclusions while respecting provider enable states, `agentsModels` selections, and the image-only model filter. The gateway consumes the header locally. See [configuration](configuration.md) for provider selections.
 
 Start the gateway, install `curl` and Bun or Node.js, then run [the generator](../../generate-model-catalog.sh) from the repository root:
 
@@ -137,11 +143,13 @@ Defaults: gateway `http://localhost:4141`, output `$HOME/.codex/model_catalog.js
 
 ### Codex Model Catalog and Protocol Adapters
 
-Remote catalog responses are limited to 1 MiB of JSON. When the merged catalog is larger, the gateway keeps models selected through provider `agentsModels` first and drops the rest. Select the models you need on the Providers page, or generate a local catalog for the complete list.
+The gateway applies a 1 MiB JSON budget to Codex versions older than `0.166.0` and requests without a recognized version. Under that budget, it gives models selected through `agentsModels` priority and skips entries that exceed the remaining space.
 
 Codex client catalogs always exclude image-only models, even when `agentsModels` explicitly selects them. Chat models that accept images remain eligible. OpenCode can discover image-only models through the same selection; the ordinary aggregated catalog also includes image models independently of `agentsModels`.
 
 When `modelMappings` maps a bare `model` to the same `codex/model`, the Codex catalog omits the duplicate `codex/model` entry and retains the bare entry's complete metadata. This also applies to the default `codex-auto-review` and `gpt-reserve` mappings. Explicit prefixed requests remain supported; mappings to another model or provider retain the prefixed entry.
+
+After using a Messages-backed model such as DeepSeek, automatic approval may send its history to `codex-auto-review`. The gateway restores its own compaction checkpoints as plain-text handoff summaries before forwarding them, preserving review context and preventing `invalid_encrypted_content` errors caused by Codex treating the summary wrapper as native ciphertext. This also applies to other native Responses models; checkpoints encrypted by an upstream backend remain unchanged.
 
 The catalog response adapts to the client version: Codex `0.160.0` and newer receive the canonical `model_messages.instructions_template` field without the deprecated `base_instructions` duplicate; older clients retain the legacy instruction fields.
 
@@ -153,6 +161,6 @@ Codex's model picker includes models from the gateway's configured providers:
 
 Costs shown for the built-in `codex` provider are **USD estimates** using the standard model rates in the [ChatGPT Enterprise token-based rate card](https://help.openai.com/en/articles/20001415-chatgpt-rate-card-enterprise-token-based-pricing), not actual subscription charges, credit deductions, or allowance consumption. For **Codex signed in with ChatGPT**, the same input, cached-input, and output rates apply even above 272K input tokens: **there is no long-context surcharge** and Codex does not charge for cache writes. The [credit-based Enterprise rate card](https://help.openai.com/en/articles/11481834-chatgpt-rate-card-business-enterpriseedu-credit-based-pricing) confirms the same long-context exception. Codex using an API key instead follows [OpenAI API pricing](https://developers.openai.com/api/docs/pricing), including any applicable long-context charges.
 
-For these USD estimates, the request's `service_tier` determines the uniform multiplier: `fast` / `priority` use 2×, and `ultrafast` uses 6×, without filtering by model. Other tiers use Standard prices. Included subscription allowances and credits may use different multipliers. An upstream response reporting `default` does not override the requested tier.
+For these USD estimates, the request's `service_tier` determines the multiplier. `fast` / `priority` use 2×. `ultrafast` uses 3× for GPT-6.2 Sol and GPT-6.2 Astra through February 28, 2027 (Pacific time), and 6× starting March 1. Other models use 6× for `ultrafast`. Other tiers use Standard prices. Included subscription allowances and credits may use different multipliers. An upstream response reporting `default` does not override the requested tier.
 
 ---

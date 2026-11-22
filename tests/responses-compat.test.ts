@@ -20,7 +20,7 @@ import {
   stopProbeScheduler,
   whenProbeSchedulerIdle,
 } from "../src/lib/auto-session"
-import { getConfig } from "../src/lib/config-store"
+import { getConfig } from "../src/lib/config/config-store"
 import { state } from "../src/lib/state"
 import {
   attachAutoSessionToken,

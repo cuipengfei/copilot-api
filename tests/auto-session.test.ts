@@ -13,7 +13,7 @@ import { createProbeCondition } from "../src/lib/auto-probe-prompts"
 
 import { state } from "../src/lib/state"
 import type { AutoSelectionResponse } from "../src/services/copilot/get-auto-selection"
-import { getConfig } from "../src/lib/config-store"
+import { getConfig } from "../src/lib/config/config-store"
 import type { Model } from "../src/lib/types/models"
 import type * as AutoSession from "../src/lib/auto-session"
 import consola from "consola"

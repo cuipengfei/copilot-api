@@ -1,21 +1,29 @@
-import { requestContext, generateTraceId } from "~/lib/request-context"
+import { requestContext, generateTraceId } from "~/lib/http/request-context"
 import { state } from "~/lib/state"
+import type {
+  CopilotUsage,
+  CopilotUsageTokens,
+  PersistedTokenUsageEvent,
+  TokenUsageEndpoint,
+  TokenUsageSource,
+  TokenUsageTokenDetail,
+  UsageTokens,
+} from "~/lib/types/token-usage"
 
-import { EventBus } from "../event-bus"
-import { resolveTokenUsageCost, type TokenUsagePricingConfig } from "./pricing"
+import { EventBus } from "../plugins/event-bus"
+import type { GatewayApiKeyConfig } from "../config/api-key-config"
+import { toUsdCostNanos } from "./currency"
+import {
+  resolveTokenUsageCost,
+  xaiUsdTicksToCost,
+  type TokenUsagePricingConfig,
+} from "./pricing"
 import {
   enqueueTokenUsageWrite,
   hasAnyToken,
   normalizeOptionalToken,
   normalizeToken,
   resolveTotalTokens,
-  type CopilotUsage,
-  type CopilotUsageTokens,
-  type PersistedTokenUsageEvent,
-  type TokenUsageEndpoint,
-  type TokenUsageSource,
-  type TokenUsageTokenDetail,
-  type UsageTokens,
 } from "./store"
 
 export {
@@ -49,9 +57,10 @@ export type {
   TokenUsageSummary,
   TokenUsageTotals,
   UsageTokens,
-} from "./store"
+} from "~/lib/types/token-usage"
 
 export interface TokenUsageEventInput extends UsageTokens {
+  apiKey?: Pick<GatewayApiKeyConfig, "id" | "name">
   copilotUsage?: CopilotUsageTokens | null
   upstreamRequestId?: string | null
   serviceTier?: string | null
@@ -195,7 +204,12 @@ function toPersistedEvent(
   }
 
   const timing = requestContext.getStore()?.requestTiming
+  const apiKey = input.apiKey ?? requestContext.getStore()?.apiKey
   return {
+    api_key_id: apiKey?.id ?? null,
+    api_key_name: apiKey?.name ?? null,
+    api_key_cost_nanos:
+      cost ? toUsdCostNanos(cost.currency, cost.total_cost_nanos) : null,
     request_id: timing?.id ?? null,
     first_token_ms: timing?.firstTokenMs ?? null,
     duration_ms: timing?.durationMs ?? null,
@@ -240,6 +254,18 @@ export function recordTokenUsageEvent(input: TokenUsageEventInput): void {
     return
   }
 
+  const context = requestContext.getStore()
+  if (context?.apiKey && event.upstream_request_id) {
+    const usageId = JSON.stringify([
+      event.source,
+      event.provider_name,
+      event.endpoint,
+      event.upstream_request_id,
+    ])
+    context.apiKeyUsageIds ??= new Set()
+    if (context.apiKeyUsageIds.has(usageId)) return
+    context.apiKeyUsageIds.add(usageId)
+  }
   const observer = requestContext.getStore()?.pluginRequest
   const timing = requestContext.getStore()?.requestTiming
   if (timing) timing.hasUsage = true
@@ -253,6 +279,7 @@ export function createTokenUsageRecorder(
 ): (usage: UsageTokens, copilotUsage?: CopilotUsageTokens | null) => void {
   const store = requestContext.getStore()
   const traceId = options.traceId ?? store?.traceId
+  const apiKey = store?.apiKey
   const sessionId = resolveTokenUsageSessionId(
     options.sessionId,
     options.fallbackSessionId,
@@ -264,6 +291,7 @@ export function createTokenUsageRecorder(
       ...usage,
       ...options,
       copilotUsage,
+      apiKey,
       sessionId,
       traceId,
     })
@@ -292,6 +320,8 @@ export function normalizeOpenAIUsage(
   usage:
     | {
         completion_tokens?: number
+        cost?: number
+        cost_in_usd_ticks?: number
         prompt_tokens?: number
         total_tokens?: number
         prompt_cache_hit_tokens?: number
@@ -304,12 +334,16 @@ export function normalizeOpenAIUsage(
     | null
     | undefined,
 ): UsageTokens {
+  const cost =
+    xaiUsdTicksToCost(usage?.cost_in_usd_ticks)
+    ?? normalizeOptionalCost(usage?.cost)
   if (
     usage
     && (Object.hasOwn(usage, "prompt_cache_hit_tokens")
       || Object.hasOwn(usage, "prompt_cache_miss_tokens"))
   ) {
     return {
+      ...(cost !== undefined && { cost }),
       cache_read_input_tokens: normalizeToken(usage.prompt_cache_hit_tokens),
       input_tokens: normalizeToken(usage.prompt_cache_miss_tokens),
       output_tokens: normalizeToken(usage.completion_tokens),
@@ -331,6 +365,7 @@ export function normalizeOpenAIUsage(
   )
   const promptTokens = normalizeToken(usage?.prompt_tokens)
   return {
+    ...(cost !== undefined && { cost }),
     ...(hasCacheCreationTokens && {
       cache_creation_input_tokens: cacheCreationTokens,
     }),
@@ -350,6 +385,7 @@ export function normalizeResponsesUsage(
   usage:
     | {
         cost?: number
+        cost_in_usd_ticks?: number
         input_tokens?: number
         input_tokens_details?: {
           cached_tokens?: number
@@ -373,7 +409,9 @@ export function normalizeResponsesUsage(
       cache_creation_input_tokens: cacheWriteTokens,
     }),
     cache_read_input_tokens: cachedTokens,
-    cost: normalizeOptionalCost(usage?.cost),
+    cost:
+      xaiUsdTicksToCost(usage?.cost_in_usd_ticks)
+      ?? normalizeOptionalCost(usage?.cost),
     input_tokens: Math.max(0, inputTokens - cachedTokens - cacheWriteTokens),
     output_tokens: normalizeToken(usage?.output_tokens),
     total_tokens: normalizeOptionalToken(usage?.total_tokens),

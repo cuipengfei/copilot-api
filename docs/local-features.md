@@ -1,7 +1,7 @@
 # 本地功能与上游接入
 
-- 上游采用本仓库已经集成的 `czy-all`；本次整理的上游基准为 `c45d58e`。
-- 行为对照采用 `dev` 已有提交 `55ef87d`；当前未提交修改调整本地策略的文件位置、调用位置和测试组织。功能行为分别列在各节。
+- 上游基准为 `czy-all` 的 `3b2147d`（`2.9.19`），本地功能基准为 `dev` 的 `8eba831`。
+- 内部模块采用按职责分类的目录；功能行为与必要的上游接入分别列在各节。
 - 本地策略由独立文件承载，共用入口保留上游的请求组织、JSON/SSE 结果处理和必要的策略调用。
 - 同步上游时，按以下行为检查受影响的接入位置，并执行完整回归验证。
 - 独有文档、图谱和测试文件通常没有同路径的上游修改；双方新增同名文件仍可能发生文本冲突，测试也需要跟随实际行为更新。
@@ -157,14 +157,14 @@
 - smart-agent 沿用现有配置、配额判断和缓存，状态仍以共享 `state` 为来源。
 - upstream headers 与 premium 信息分别通过现有 metadata 机制传递。
 - route 层保留实际响应头转发；用量统计和成本展示沿用实际返回字段。
-- token 响应由 [token-metadata.ts](../src/lib/token-metadata.ts) 的 `applyCopilotTokenExchange` 设置 token 与 endpoint，更新 Auto-session、账号与组织元数据，随后初始化 Telemetry；[token.ts](../src/lib/token.ts) 保留原有调用入口和导出。
+- token 响应由 [token-metadata.ts](../src/lib/token-metadata.ts) 的 `applyCopilotTokenExchange` 设置 token 与 endpoint，更新 Auto-session、账号与组织元数据，随后初始化 Telemetry；[token.ts](../src/lib/auth/token.ts) 保留调用入口和导出。
 
 **本地实现**：[smart-agent.ts](../src/lib/smart-agent.ts)、[response-headers.ts](../src/lib/response-headers.ts)。
 
 **必要的上游接入**：
 
 - 三个 Copilot service 的 initiator、响应附加信息与 route 回包位置。
-- [get-copilot-usage.ts](../src/services/github/get-copilot-usage.ts)、[token.ts](../src/lib/token.ts)、[state.ts](../src/lib/state.ts)、[api-config.ts](../src/lib/api-config.ts)。
+- [get-copilot-usage.ts](../src/services/github/get-copilot-usage.ts)、[token.ts](../src/lib/auth/token.ts)、[state.ts](../src/lib/state.ts)、[api-config.ts](../src/lib/providers/api-config.ts)。
 - [token-usage/index.ts](../src/lib/token-usage/index.ts)、[token-usage/store.ts](../src/lib/token-usage/store.ts)、[logger.ts](../src/lib/logger.ts)。
 
 **验证入口**：
@@ -205,7 +205,7 @@
 
 **行为**：Messages handler 识别 compact 与 auto-continue 请求后，按 `compactUseSmallModel` 配置选择 `getSmallModel()`。该配置默认开启。启用 `forceAgent` 时，`prepareForCompact` 保留 smart-agent 已确定的 initiator。
 
-**源码与接入**：[Messages handler](../src/routes/messages/handler.ts)、[model-policy.ts](../src/lib/model-policy.ts)、[config-store.ts](../src/lib/config-store.ts)、[api-config.ts](../src/lib/api-config.ts) 与 [start.ts](../src/start.ts)。
+**源码与接入**：[Messages handler](../src/routes/messages/handler.ts)、[model-policy.ts](../src/lib/config/model-policy.ts)、[config-store.ts](../src/lib/config/config-store.ts)、[api-config.ts](../src/lib/providers/api-config.ts) 与 [start.ts](../src/start.ts)。
 
 **验证范围**：现有配置样本使用 `compactUseSmallModel`；功能清单调查未找到独立覆盖模型替换条件的测试。
 
@@ -225,7 +225,7 @@ stdout 同步写入失败时省略该条进度日志，继续原有响应与流�
 
 Responses 的 Chat fallback 持续发送内容与工具调用事件，整体 `response.completed` 或 `response.incomplete` 在上游流结束时发送。上游流内错误及传输异常生成 `response.failed`，保留错误前输出和已收集用量；错误后的上游内容不继续发送。Chat 与 Messages 的成功日志同时检查请求取消信号，取消后仍执行原有用量记录与流关闭流程。
 
-**源码与接入**：[logger.ts](../src/lib/logger.ts)、[server.ts](../src/server.ts)、[Messages handler](../src/routes/messages/handler.ts)、[preprocess.ts](../src/routes/messages/preprocess.ts)、[non-stream-translation.ts](../src/routes/messages/non-stream-translation.ts)、[Responses request translation](../src/routes/messages/responses-translation/request.ts)、[provider Messages handler](../src/routes/provider/messages/handler.ts) 与 [provider Messages local-behavior.ts](../src/routes/provider/messages/local-behavior.ts)。
+**源码与接入**：[logger.ts](../src/lib/logger.ts)、[server.ts](../src/server.ts)、[Messages handler](../src/routes/messages/handler.ts)、[preprocess.ts](../src/routes/messages/preprocess.ts)、[Chat Completions 翻译](../src/routes/messages/completions-translation.ts)、[Responses request translation](../src/routes/messages/responses-translation/request.ts)、[provider Messages handler](../src/routes/provider/messages/handler.ts) 与 [provider Messages local-behavior.ts](../src/routes/provider/messages/local-behavior.ts)。
 
 **验证入口**：[logger.test.ts](../tests/logger.test.ts)、[logger-local.test.ts](../tests/logger-local.test.ts)、[models-log.test.ts](../tests/models-log.test.ts) 与 [translation-drop-observation.test.ts](../tests/translation-drop-observation.test.ts)。测试调用实际 handler/service，仅隔离上游；日志断言同时覆盖 chunk 进度行、正常完成行与失败/取消不写 `✓`，不能只断言最终日志。本地日志观察使用实际转换结果，转换算法继续由原模块负责。
 
@@ -273,7 +273,7 @@ Responses 的 Chat fallback 持续发送内容与工具调用事件，整体 `re
 
 **行为**：`logCopilotRateLimits` 接受缺失 headers 的结果，WebSocket 等路径无需构造额外 headers；quota remaining 使用 debug 日志。
 
-**源码与接入**：[copilot-rate-limit.ts](../src/lib/copilot-rate-limit.ts) 与各 service 的现有日志调用。
+**源码与接入**：[copilot-rate-limit.ts](../src/lib/providers/copilot-rate-limit.ts) 与各 service 的现有日志调用。
 
 **验证范围**：功能清单调查未找到独立空值测试；保留现有 WebSocket 与 service 回归。
 
@@ -282,7 +282,7 @@ Responses 的 Chat fallback 持续发送内容与工具调用事件，整体 `re
 - `-F` / `--force-agent` 会被 CLI 接受并传入 `runServer`；`runServer` 初始化时将 `-F` 赋给 `state.forceAgent`。`-M` / `--native-messages` 旧限制仍在：仅被接受与传入，尚未经该启动路径赋给 `state`。
 - `state.forceAgent` 与 `state.nativeMessages` 的初始值均为 `false`（以 [state.ts](../src/lib/state.ts) 默认值为准）。Messages API 的启用条件通过 `isMessagesApiEnabled()` 读取 `useMessagesApi` 配置。
 
-**源码与接入**：[start.ts](../src/start.ts)、[state.ts](../src/lib/state.ts)、[config-store.ts](../src/lib/config-store.ts) 与 [Messages handler](../src/routes/messages/handler.ts)。`runServer` 将 CLI 的 `-F` 参数写入共享 `state.forceAgent`；Messages API 启用条件继续由现有配置控制。
+**源码与接入**：[start.ts](../src/start.ts)、[state.ts](../src/lib/state.ts)、[config-store.ts](../src/lib/config/config-store.ts) 与 [Messages handler](../src/routes/messages/handler.ts)。`runServer` 将 CLI 的 `-F` 参数写入共享 `state.forceAgent`；Messages API 启用条件继续由现有配置控制。
 
 **验证入口**：[start-auto-session-prewarm.test.ts](../tests/start-auto-session-prewarm.test.ts)（`runServer` 启动参数与 `state.forceAgent` 映射）。
 
@@ -297,3 +297,16 @@ Messages 的 Chat fallback 仍在 route 层无条件调用共享 helper，非 Ge
 **源码与接入**：[context-cache.ts](../src/services/copilot/context-cache.ts) 的 `applyCopilotContextCache` 负责选择与写入；[create-chat-completions.ts](../src/services/copilot/create-chat-completions.ts) 在发送前按模型 metadata 调用；[Messages api-flows.ts](../src/routes/messages/api-flows.ts) 保留 route 层调用。三个入口分别经过 [Chat handler](../src/routes/chat-completions/handler.ts)、Messages api-flows.ts 和 [Responses chat-handler.ts](../src/routes/responses/chat-handler.ts)。
 
 **验证入口**：[copilot-context-cache.test.ts](../tests/copilot-context-cache.test.ts) 覆盖消息选择与已有标记保留；[copilot-context-cache-local-http.test.ts](../tests/copilot-context-cache-local-http.test.ts) 覆盖三个实际 handler 到本地 HTTP 的标记行为。
+
+## 20. Copilot 请求兼容与后台用量存储
+
+**行为**：发送到 Copilot `/responses` 的正整数输出上限在 1–15 tokens 时提高到 16 tokens。Messages 转 Responses 时，GPT-6 及更新模型将系统提示词放在对话输入开头，以保留可缓存前缀；Messages 压缩摘要还原为普通对话输入。工具返回图片同样开启 Copilot 视觉请求标记。
+
+流式错误先结束已经打开的内容块，再返回错误事件；正常终态继续传递 `copilot_usage` 与配额快照。换取 Copilot token 支持调用方取消，默认超时为 15 秒，完整保留 token 响应中的账号、组织及 endpoint 元数据。
+
+用量数据库读写由后台 Worker 执行，保留 Copilot AIU 的输入、输出、缓存读取、缓存写入四项成本及按上游请求 ID 去重。摘要、每日、模型与会话分组、事件列表均保留这些成本。创建用量记录器时捕获 API Key、trace 与 session，流式延迟回调继续归属原请求的密钥和会话。网关关停先等待请求收尾，再清理用量数据库。
+
+**源码与接入**：[Copilot Responses](../src/services/copilot/create-responses.ts)、[请求翻译](../src/routes/messages/responses-translation/request.ts)、[流式终态](../src/routes/messages/responses-stream-translation/terminal.ts)、[token exchange](../src/services/github/get-copilot-token.ts)、[用量记录](../src/lib/token-usage/index.ts)、[Worker 存储](../src/lib/token-usage/store.ts)、[数据库升级](../src/lib/token-usage/db.ts) 与 [用量查询](../src/lib/token-usage/queries.ts)。
+
+**验证入口**：[create-responses.test.ts](../tests/create-responses.test.ts)、[responses-messages-compaction-replay.test.ts](../tests/responses-messages-compaction-replay.test.ts)、[messages-api-flows.test.ts](../tests/messages-api-flows.test.ts)、[token-usage.test.ts](../tests/token-usage.test.ts)、[token-usage-modules.test.ts](../tests/token-usage-modules.test.ts)、[start-shutdown.test.ts](../tests/start-shutdown.test.ts) 与 [usage-viewer.test.ts](../tests/usage-viewer.test.ts)。
+

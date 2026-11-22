@@ -1,7 +1,7 @@
 import {
   getChatCompletionFailure,
   type ChatCompletionFailure,
-} from "~/lib/chat-completions-stream"
+} from "~/lib/http/chat-completions-stream"
 import { mergeCopilotUsage } from "~/lib/token-usage"
 import {
   type ChatCompletionChunk,

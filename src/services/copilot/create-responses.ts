@@ -1,8 +1,8 @@
 import consola from "consola"
 import { createHash, randomUUID } from "node:crypto"
 
-import type { SubagentMarker } from "~/lib/subagent"
-import type { ResponsesStreamChunk } from "~/lib/responses-stream-event"
+import type { SubagentMarker } from "~/lib/http/subagent"
+import type { ResponsesStreamChunk } from "~/lib/http/responses-stream-event"
 import type {
   CreateResponsesReturn,
   ResponsesPayload,
@@ -19,18 +19,18 @@ import {
   copilotWebSocketHeaders,
   prepareForCompact,
   prepareInteractionHeaders,
-} from "~/lib/api-config"
+} from "~/lib/providers/api-config"
 import { logAutoSessionSelection } from "~/lib/auto-session"
-import { COMPACT_REQUEST, type CompactType } from "~/lib/compact"
+import { COMPACT_REQUEST, type CompactType } from "~/lib/http/compact"
 import {
   getUpstreamTransportConfig,
   isOutputEncryptedContentDisabled,
 } from "~/lib/config"
-import { logCopilotQuotaSnapshots } from "~/lib/copilot-rate-limit"
-import { HTTPError } from "~/lib/error"
+import { logCopilotQuotaSnapshots } from "~/lib/providers/copilot-rate-limit"
+import { HTTPError } from "~/lib/http/error"
 import { attachPremiumInfo, getPremiumInfoFromHeaders } from "~/lib/logger"
 import { getResponsesContinuationSession } from "~/lib/responses-continuation"
-import { setPluginRequestActualModel } from "~/lib/request-context"
+import { setPluginRequestActualModel } from "~/lib/http/request-context"
 import { attachResponseHeaders } from "~/lib/response-headers"
 import { resolveInitiatorWithSmartAgent } from "~/lib/smart-agent"
 import { state } from "~/lib/state"
@@ -63,6 +63,7 @@ import { createResponsesHttpEventStream } from "~/services/responses-http"
 // Copilot closes the Responses WebSocket with code 1009 (message too big) and
 // no terminal event for a message above 32 MiB.
 export const COPILOT_RESPONSES_WEBSOCKET_MAX_MESSAGE_BYTES = 32 * 1024 * 1024
+const COPILOT_RESPONSES_MIN_OUTPUT_TOKENS = 16
 
 interface ResponsesRequestOptions {
   vision: boolean
@@ -116,7 +117,19 @@ export const createResponses = async (
 
   // service_tier is not supported by github copilot
   payload.service_tier = undefined
-  const upstreamPayload = omitUnsupportedCopilotInclude(payload)
+  let upstreamPayload = omitUnsupportedCopilotInclude(payload)
+  const maxOutputTokens = upstreamPayload.max_output_tokens
+  if (
+    typeof maxOutputTokens === "number"
+    && Number.isInteger(maxOutputTokens)
+    && maxOutputTokens > 0
+    && maxOutputTokens < COPILOT_RESPONSES_MIN_OUTPUT_TOKENS
+  ) {
+    upstreamPayload = {
+      ...upstreamPayload,
+      max_output_tokens: COPILOT_RESPONSES_MIN_OUTPUT_TOKENS,
+    }
+  }
 
   consola.debug(`<-- model: ${payload.model}`)
 

@@ -6,9 +6,9 @@ import {
   copilotHeaders,
   prepareForCompact,
   prepareMessageProxyHeaders,
-} from "~/lib/api-config"
-import { COMPACT_AUTO_CONTINUE, COMPACT_REQUEST } from "~/lib/compact"
-import { requestContext } from "~/lib/request-context"
+} from "~/lib/providers/api-config"
+import { COMPACT_AUTO_CONTINUE, COMPACT_REQUEST } from "~/lib/http/compact"
+import { requestContext } from "~/lib/http/request-context"
 import { state } from "~/lib/state"
 
 const originalOauthApp = process.env.COPILOT_API_OAUTH_APP

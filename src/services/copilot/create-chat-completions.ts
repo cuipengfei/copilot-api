@@ -2,8 +2,8 @@ import consola from "consola"
 import { events } from "fetch-event-stream"
 import { randomUUID } from "node:crypto"
 
-import type { CompactType } from "~/lib/compact"
-import type { SubagentMarker } from "~/lib/subagent"
+import type { CompactType } from "~/lib/http/compact"
+import type { SubagentMarker } from "~/lib/http/subagent"
 import type {
   ChatCompletionErrorResponse,
   ChatCompletionResponse,
@@ -15,15 +15,15 @@ import {
   copilotHeaders,
   prepareForCompact,
   prepareInteractionHeaders,
-} from "~/lib/api-config"
+} from "~/lib/providers/api-config"
 import {
   getReasoningEffortForModel,
   getUpstreamTransportConfig,
 } from "~/lib/config"
-import { logCopilotRateLimits } from "~/lib/copilot-rate-limit"
+import { logCopilotRateLimits } from "~/lib/providers/copilot-rate-limit"
 import { attachPremiumInfo, getPremiumInfoFromHeaders } from "~/lib/logger"
-import { resolveSupportedReasoningEffort } from "~/lib/reasoning-effort"
-import { setPluginRequestActualModel } from "~/lib/request-context"
+import { resolveSupportedReasoningEffort } from "~/lib/catalog/reasoning-effort"
+import { setPluginRequestActualModel } from "~/lib/http/request-context"
 import { attachResponseHeaders } from "~/lib/response-headers"
 import { resolveInitiatorWithSmartAgent } from "~/lib/smart-agent"
 import { state } from "~/lib/state"

@@ -6,9 +6,9 @@ import { streamSSE, type SSEMessage } from "hono/streaming"
 import {
   getChatCompletionFailure,
   guardChatCompletionsStream,
-} from "~/lib/chat-completions-stream"
+} from "~/lib/http/chat-completions-stream"
 import { resolveMappedModel } from "~/lib/config"
-import { recordChatCompletionFirstToken } from "~/lib/first-token"
+import { recordChatCompletionFirstToken } from "~/lib/http/first-token"
 import {
   colorizeModel,
   createHandlerLogger,
@@ -17,10 +17,10 @@ import {
   shouldUseColor,
   writeStreamLog,
 } from "~/lib/logger"
-import { findEndpointModel } from "~/lib/models"
-import { writeSSEIfConnected } from "~/lib/sse"
-import { setPluginRequestModel } from "~/lib/request-events"
-import { resolveConfiguredProviderModelAlias } from "~/lib/provider-resolver"
+import { findEndpointModel } from "~/lib/catalog/models"
+import { writeSSEIfConnected } from "~/lib/http/sse"
+import { setPluginRequestModel } from "~/lib/http/request-events"
+import { resolveConfiguredProviderModelAlias } from "~/lib/providers/provider-resolver"
 import {
   copilotUsageToTokens,
   createCopilotTokenUsageRecorder,

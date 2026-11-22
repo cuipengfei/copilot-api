@@ -8,7 +8,7 @@ import { setImmediate as nextTurn } from "node:timers/promises"
 
 import { state } from "../src/lib/state"
 import type { AutoSelectionResponse } from "../src/services/copilot/get-auto-selection"
-import { getConfig } from "../src/lib/config-store"
+import { getConfig } from "../src/lib/config/config-store"
 
 import type * as AutoSessionModule from "../src/lib/auto-session"
 import type { Model } from "../src/lib/types/models"

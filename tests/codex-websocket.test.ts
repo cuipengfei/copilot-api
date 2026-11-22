@@ -2,6 +2,8 @@ import { afterEach, beforeEach, expect, mock, spyOn, test } from "bun:test"
 import { Hono } from "hono"
 
 import type { ResponsesPayload, ResponsesResult } from "~/lib/types/responses"
+import { encodeMessagesCompaction } from "~/routes/responses/messages-translation"
+import { COMPACTION_REPLAY_PROMPT } from "~/routes/responses/messages-translation/constants"
 
 type ListenerEvent = {
   data?: string
@@ -11,7 +13,7 @@ type ListenerEvent = {
 
 type Listener = (event: ListenerEvent) => void
 
-const { requestContext } = await import("~/lib/request-context")
+const { requestContext } = await import("~/lib/http/request-context")
 const originalFetch = globalThis.fetch
 const originalSetTimeout = globalThis.setTimeout
 
@@ -206,12 +208,14 @@ await mock.module("~/lib/config", () => ({
 
 // Load consumers after module mocks; static imports would bind the real transport.
 const { state } = await import("~/lib/state")
-const { traceIdMiddleware } = await import("~/lib/trace")
+const { traceIdMiddleware } = await import("~/lib/http/trace")
 const { codexResponsesDependencies, forwardCodexResponses } =
   await import("~/services/codex/create-responses")
 const { providerResponsesRoutes } =
   await import("~/routes/provider/responses/route")
 const { responsesRoutes } = await import("~/routes/responses/route")
+const { responsesHandlerDependencies } =
+  await import("~/routes/responses/handler")
 const { providerResponsesHandlerDependencies } =
   await import("~/routes/provider/responses/handler")
 
@@ -763,6 +767,78 @@ test("provider Responses handles a first Codex websocket error without metadata"
   } finally {
     providerResponsesHandlerDependencies.resolveProviderConfig =
       originalResolveProviderConfig
+  }
+})
+
+test("Codex auto-review replays a Messages-backed model's compaction as text over websocket", async () => {
+  const originalResolveProviderConfig =
+    providerResponsesHandlerDependencies.resolveProviderConfig
+  const originalResolveMappedModel =
+    responsesHandlerDependencies.resolveMappedModel
+  providerResponsesHandlerDependencies.resolveProviderConfig = () =>
+    Promise.resolve({
+      apiKey: "",
+      authType: "oauth2",
+      baseUrl: "https://chatgpt.example/backend-api",
+      models: { "codex-auto-review": {} },
+      name: "codex",
+      type: "openai-responses",
+    })
+  responsesHandlerDependencies.resolveMappedModel = (model) =>
+    model === "codex-auto-review" ? "codex/codex-auto-review" : model
+  const summary =
+    "The user approved reading src/main.ts. DeepSeek is inspecting the gateway."
+  const review = { role: "developer", content: "Review the pending file read" }
+  const action = { role: "user", content: "Get-Content src/main.ts" }
+
+  try {
+    const app = new Hono()
+    app.route("/responses", responsesRoutes)
+    const response = await app.request("/responses", {
+      body: JSON.stringify({
+        model: "codex-auto-review",
+        stream: true,
+        input: [
+          review,
+          {
+            type: "compaction",
+            id: "cmp-deepseek",
+            encrypted_content: encodeMessagesCompaction(summary),
+          },
+          action,
+        ],
+      }),
+      headers: {
+        "content-type": "application/json",
+        "user-agent": "codex-tui/0.167.0",
+      },
+      method: "POST",
+    })
+
+    expect(response.status).toBe(200)
+    expect(await response.text()).toContain("response.completed")
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(MockWebSocket.instances).toHaveLength(1)
+    const sent = JSON.parse(
+      MockWebSocket.instances[0].sent[0],
+    ) as ResponsesPayload
+    expect(sent.model).toBe("codex-auto-review")
+    expect(sent.input).toEqual([
+      review,
+      {
+        type: "message",
+        role: "user",
+        content: `${COMPACTION_REPLAY_PROMPT}${summary}`,
+      },
+      action,
+    ])
+    expect(sent.input).not.toContainEqual(
+      expect.objectContaining({ type: "compaction" }),
+    )
+  } finally {
+    providerResponsesHandlerDependencies.resolveProviderConfig =
+      originalResolveProviderConfig
+    responsesHandlerDependencies.resolveMappedModel = originalResolveMappedModel
   }
 })
 

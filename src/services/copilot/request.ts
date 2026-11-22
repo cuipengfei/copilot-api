@@ -1,4 +1,4 @@
-import type { UpstreamTransportConfig } from "~/lib/config-store"
+import type { UpstreamTransportConfig } from "~/lib/config"
 
 import { retryAfterAutoSessionTokenRejection } from "~/services/copilot/auto-session-retry"
 import { retryAfterTlsCertificateVerificationFailure } from "~/services/tls-retry"

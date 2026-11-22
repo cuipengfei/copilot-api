@@ -30,7 +30,7 @@ import {
   type ProbeHistoryStore,
   type ProbeObservation,
 } from "~/lib/auto-probe-history"
-import { HTTPError } from "./error"
+import { HTTPError } from "./http/error"
 import { colorizeModel, shouldUseColor } from "./logger"
 import { registerProcessCleanup } from "./process-cleanup"
 import { state } from "./state"

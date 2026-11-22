@@ -3,7 +3,7 @@ import consola from "consola"
 import type { ToolContentSupportType } from "~/lib/config"
 import type { Model } from "~/lib/types/models"
 
-import { getChatCompletionFailure } from "~/lib/chat-completions-stream"
+import { getChatCompletionFailure } from "~/lib/http/chat-completions-stream"
 import { state } from "~/lib/state"
 import {
   type ChatCompletionResponse,
@@ -90,7 +90,9 @@ export function translateToOpenAI(
     toolContentSupportType: options.toolContentSupportType ?? [],
   }
   const tools = translateAnthropicToolsToOpenAI(payload.tools)
-  const parallelToolCalls = translateParallelToolCalls(payload.tool_choice)
+  const hasTools = Boolean(tools && tools.length > 0)
+  const parallelToolCalls =
+    hasTools ? translateParallelToolCalls(payload.tool_choice) : undefined
   return {
     model: modelId,
     messages: translateAnthropicMessagesToOpenAI(
@@ -106,7 +108,7 @@ export function translateToOpenAI(
     user: payload.metadata?.user_id,
     tools,
     tool_choice:
-      tools && tools.length > 0 ?
+      hasTools ?
         translateAnthropicToolChoiceToOpenAI(payload.tool_choice)
       : undefined,
     thinking_budget: thinkingBudget,

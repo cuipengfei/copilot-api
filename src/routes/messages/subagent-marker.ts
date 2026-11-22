@@ -1,4 +1,4 @@
-import { subagentMarkerPrefix, type SubagentMarker } from "~/lib/subagent"
+import { subagentMarkerPrefix, type SubagentMarker } from "~/lib/http/subagent"
 
 import type { AnthropicMessagesPayload } from "~/lib/types/anthropic"
 

@@ -3,7 +3,7 @@ import type { Server } from "bun"
 
 import type { ChatCompletionsPayload } from "../src/lib/types/chat-completions"
 
-import { HTTPError } from "../src/lib/error"
+import { HTTPError } from "../src/lib/http/error"
 import {
   ensureChatCompletionOkResponse,
   stripReasoningFields,

@@ -5,7 +5,7 @@ import {
 } from "../src/lib/auto-probe-prompts"
 import consola from "consola"
 
-import { getConfig } from "../src/lib/config-store"
+import { getConfig } from "../src/lib/config/config-store"
 import { state } from "../src/lib/state"
 import type { Model } from "../src/lib/types/models"
 import type * as AutoSession from "../src/lib/auto-session"

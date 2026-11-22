@@ -3,12 +3,12 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
-import { PATHS } from '../../src/lib/paths'
+import { PATHS } from '../../src/lib/storage/paths'
 import {
   defaultConfig,
   invalidateConfigCache,
   writeConfigToDisk,
-} from '../../src/lib/config-store'
+} from '../../src/lib/config/config-store'
 import {
   createAppConfigEditor,
   configEditorReply,
@@ -66,6 +66,25 @@ function fixture(running = true) {
 }
 
 describe('desktop configuration document', () => {
+  test('validates API key quota amounts at the supported boundaries', () => {
+    const maxAmount = Number.MAX_SAFE_INTEGER / 1_000_000_000
+    const withQuota = (amount: number) =>
+      JSON.stringify({
+        auth: {
+          apiKeyConfigs: [
+            { id: 'key', key: 'test-key', quota: { period: 'day', amount } },
+          ],
+        },
+      })
+
+    expect(() => validateConfigContent(withQuota(0))).not.toThrow()
+    expect(() => validateConfigContent(withQuota(maxAmount))).not.toThrow()
+    expect(() => validateConfigContent(withQuota(-1))).toThrow('quota.amount')
+    expect(() => validateConfigContent(withQuota(maxAmount + 1))).toThrow(
+      'quota.amount',
+    )
+  })
+
   test('accepts empty or positive token usage retention and rejects other numbers', () => {
     expect(validateConfigContent('{}')).not.toHaveProperty(
       'tokenUsageRetentionDays',
@@ -84,7 +103,7 @@ describe('desktop configuration document', () => {
 
   test('preserves tolerated legacy values only when unchanged from the current disk revision', () => {
     const legacy = {
-      auth: { apiKeys: [''], adminApiKey: 'test-admin' },
+      auth: { apiKeys: [''], apiKeyConfigs: [], adminApiKey: 'test-admin' },
       opencodeModelContextWindow: 0,
       contextManagement: { messages: null },
       upstreamTransport: { headersTimeoutMs: -1 },
@@ -93,7 +112,6 @@ describe('desktop configuration document', () => {
     const document = readAppConfigDocument()
     const content = serializeConfig({ ...legacy, useMessagesApi: false })
     expect(getConfigValidation(content, document.content).warnings).toEqual([
-      'auth.apiKeys',
       'contextManagement',
       'opencodeModelContextWindow',
       'upstreamTransport.headersTimeoutMs',
@@ -113,8 +131,11 @@ describe('desktop configuration document', () => {
 
   test('does not exempt new invalid fields or masked secrets as legacy values', () => {
     expect(() =>
-      validateConfigContent('{"auth":{"apiKeys":[""]}}', '{}'),
-    ).toThrow('apiKeys')
+      validateConfigContent(
+        '{"auth":{"apiKeyConfigs":[{"id":"test","key":""}]}}',
+        '{}',
+      ),
+    ).toThrow('apiKeyConfigs')
     expect(() =>
       validateConfigContent('{"opencodeModelContextWindow":0}', '{}'),
     ).toThrow('opencodeModelContextWindow')
@@ -201,7 +222,10 @@ describe('desktop configuration document', () => {
           models: { 'model.1': { futureFlag: true } },
         },
       },
-      auth: { adminApiKey: 'admin-secret', apiKeys: ['gateway-secret'] },
+      auth: {
+        adminApiKey: 'admin-secret',
+        apiKeyConfigs: [{ id: 'test-key', key: 'gateway-secret' }],
+      },
     }
     persist(original)
     const doc = readAppConfigDocument()
@@ -490,7 +514,7 @@ describe('configuration validation and editing helpers', () => {
     '{"modelReasoningEfforts":{"model":"ultra"}}',
     '{"extraPrompts":{"model":false}}',
     '{"providers":{"custom":{"models":{"model":{"maxOutputTokens":"bad"}}}}}',
-    '{"auth":{"apiKeys":[""]}}',
+    '{"auth":{"apiKeyConfigs":[{"id":"test","key":""}]}}',
     '{"smallModels":[]}',
     '{"noEncryptedOutputModels":"gpt-6-astra"}',
     '{"noEncryptedOutputModels":[1]}',

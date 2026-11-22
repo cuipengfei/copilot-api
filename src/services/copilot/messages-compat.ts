@@ -1,6 +1,8 @@
 import consola from "consola"
 
 import type { AnthropicMessagesPayload } from "~/lib/types/anthropic"
+import type { CompactType } from "~/lib/http/compact"
+import type { SubagentMarker } from "~/lib/http/subagent"
 
 import {
   copilotHeaders,
@@ -8,23 +10,31 @@ import {
   prepareForCompact,
   prepareInteractionHeaders,
   prepareMessageProxyHeaders,
-} from "~/lib/api-config"
+} from "~/lib/providers/api-config"
 import {
   getReasoningEffortForModel,
   getUpstreamTransportConfig,
 } from "~/lib/config"
-import { HTTPError } from "~/lib/error"
-import { requestContext } from "~/lib/request-context"
+import { HTTPError } from "~/lib/http/error"
+import { requestContext } from "~/lib/http/request-context"
 import { resolveInitiatorWithSmartAgent } from "~/lib/smart-agent"
 import { state } from "~/lib/state"
 import { attachAutoSessionToken } from "~/services/copilot/auto-session-retry"
-import type { CreateMessagesOptions } from "~/services/copilot/create-messages"
 import {
   sendCopilotHttpRequest,
   sendCopilotRequest,
   type CopilotHttpRequestOptions,
 } from "~/services/copilot/request"
 
+export interface CreateMessagesOptions {
+  anthropicVersionHeader?: string
+  clientSignal?: AbortSignal
+  initiator?: "user" | "agent"
+  subagentMarker?: SubagentMarker | null
+  requestId?: string
+  sessionId?: string
+  compactType?: CompactType
+}
 /**
  * Payload that is actually sent to Copilot's native /v1/messages:
  * top_p stripped and temperature forced to 1, optionally with adaptive

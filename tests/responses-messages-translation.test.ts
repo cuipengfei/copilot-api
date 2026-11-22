@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test"
+import { describe, expect, spyOn, test } from "bun:test"
 
 import type {
   AnthropicMessagesPayload,
@@ -9,7 +9,7 @@ import type {
   ResponsesPayload,
   ResponseStreamEvent,
 } from "~/lib/types/responses"
-import { requestContext } from "~/lib/request-context"
+import { requestContext } from "~/lib/http/request-context"
 import {
   buildOutputFormatInstruction,
   createMessagesBackedResponsesResult,
@@ -647,6 +647,44 @@ describe("Responses Lite to Messages translation", () => {
     expect(decodeMessagesCompaction("not base64")).toBeNull()
   })
 
+  test.each(["A", "0", "中文", "🙂"])(
+    "recognizes the Base64 prefix with summary %s",
+    (summary) => {
+      expect(decodeMessagesCompaction(encodeMessagesCompaction(summary))).toBe(
+        summary,
+      )
+    },
+  )
+
+  test("skips decoding content without a Messages compaction prefix", () => {
+    const values = [
+      "",
+      "native-ciphertext",
+      Buffer.from("native encrypted content").toString("base64"),
+    ]
+    const fromSpy = spyOn(Buffer, "from")
+
+    try {
+      for (const value of values) {
+        expect(decodeMessagesCompaction(value)).toBeNull()
+      }
+      expect(fromSpy).not.toHaveBeenCalled()
+    } finally {
+      fromSpy.mockRestore()
+    }
+  })
+
+  test("still validates the complete decoded prefix and canonical Base64", () => {
+    const wrongPrefix = MESSAGES_COMPACTION_PREFIX.replace(":v1:", ":v2:")
+    const wrongPayload = Buffer.from(`${wrongPrefix}QQ`).toString("base64")
+
+    expect(decodeMessagesCompaction(wrongPayload)).toBeNull()
+    expect(
+      decodeMessagesCompaction(`${encodeMessagesCompaction("handoff")}\n`),
+    ).toBeNull()
+    expect(decodeMessagesCompaction(encodeMessagesCompaction(""))).toBeNull()
+  })
+
   test("removes built-in web search while preserving other top-level tools", () => {
     const tools: NonNullable<ResponsesPayload["tools"]> = [
       { type: "function", name: "web_search", parameters: null, strict: null },
@@ -1049,7 +1087,7 @@ describe("Responses Lite to Messages translation", () => {
           },
         ],
       },
-      {},
+      { type: "object" },
     ],
     [
       "allOf",
@@ -1103,6 +1141,44 @@ describe("Responses Lite to Messages translation", () => {
     },
   )
 
+  test("keeps $defs for $ref variants of a union-only schema", () => {
+    const $defs = {
+      FileTarget: {
+        type: "object",
+        properties: { path: { type: "string" } },
+        required: ["path"],
+      },
+      UrlTarget: {
+        type: "object",
+        properties: { url: { type: "string" } },
+        required: ["url"],
+      },
+    }
+    const anyOf = [
+      { $ref: "#/$defs/FileTarget" },
+      { $ref: "#/$defs/UrlTarget" },
+    ]
+    const result = translate({
+      input: "Run it",
+      tools: [
+        {
+          type: "function",
+          name: "open",
+          parameters: { $defs, anyOf },
+          strict: false,
+        },
+      ],
+    })
+
+    expect(result.messagesPayload.tools?.[0]?.input_schema).toEqual({
+      type: "object",
+      $defs,
+    })
+    expect(result.messagesPayload.tools?.[0]?.description).toContain(
+      JSON.stringify(anyOf),
+    )
+  })
+
   test("preserves nested schema unions without adding a description", () => {
     const parameters = {
       type: "object",
@@ -1148,7 +1224,7 @@ describe("Responses Lite to Messages translation", () => {
       )
 
       expect(result.messagesPayload.tools?.[0]?.input_schema).toEqual(
-        describeUnions ? {} : parameters,
+        describeUnions ? { type: "object" } : parameters,
       )
       const description = result.messagesPayload.tools?.[0]?.description
       if (describeUnions) {

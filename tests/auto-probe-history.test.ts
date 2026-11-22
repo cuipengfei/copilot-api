@@ -9,7 +9,9 @@ import type { ProbeObservation } from "~/lib/auto-probe-history"
 const config = {
   autoDiscovery: { models: ["wanted-a", "wanted-b", "wanted-a"] },
 }
-await mock.module("~/lib/config-store", () => ({ getConfig: () => config }))
+await mock.module("~/lib/config/config-store", () => ({
+  getConfig: () => config,
+}))
 // Load after installing the config boundary mock so tests never read user configuration.
 const { createProbeCondition, getWantedModels } =
   await import("~/lib/auto-probe-prompts")

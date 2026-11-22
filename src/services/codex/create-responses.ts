@@ -16,13 +16,13 @@ import {
   getUpstreamTransportConfig,
   isResponsesApiWebSocketEnabled as isConfiguredResponsesApiWebSocketEnabled,
 } from "~/lib/config"
-import { HTTPError } from "~/lib/error"
+import { HTTPError } from "~/lib/http/error"
 import { getResponsesContinuationSession } from "~/lib/responses-continuation"
 import {
   readResponsesStreamEvent,
   type ResponsesStreamChunk,
-} from "~/lib/responses-stream-event"
-import { FULL_MODEL_CATALOG_HEADER } from "~/lib/internal-headers"
+} from "~/lib/http/responses-stream-event"
+import { FULL_MODEL_CATALOG_HEADER } from "~/lib/http/internal-headers"
 import { state } from "~/lib/state"
 import {
   createWebSocketUrl,
@@ -40,7 +40,7 @@ import { createResponsesHttpEventStream } from "~/services/responses-http"
 import {
   requestContext,
   setPluginRequestActualModel,
-} from "~/lib/request-context"
+} from "~/lib/http/request-context"
 import consola from "consola"
 
 import {
@@ -689,5 +689,11 @@ const normalizeCodexWebSocketEvent = (event: ResponseStreamEvent): boolean => {
 
 function shouldIncludeHeader(headerName: string): boolean {
   const header = headerName.toLowerCase()
-  return !header.includes("trace") && !header.startsWith("x-codex-turn")
+  return (
+    header !== "b3"
+    && header !== "baggage"
+    && !header.startsWith("x-b3-")
+    && !header.includes("trace")
+    && !header.startsWith("x-codex-turn")
+  )
 }

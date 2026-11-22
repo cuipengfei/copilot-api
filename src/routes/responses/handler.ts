@@ -2,7 +2,7 @@ import type { Context } from "hono"
 
 import { streamSSE } from "hono/streaming"
 
-import type { SubagentMarker } from "~/lib/subagent"
+import type { SubagentMarker } from "~/lib/http/subagent"
 
 import {
   isResponsesApiWebSearchEnabled as isConfiguredResponsesApiWebSearchEnabled,
@@ -14,14 +14,14 @@ import {
   debugJsonTail,
   writeStreamLog,
 } from "~/lib/logger"
-import { recordResponsesFirstToken } from "~/lib/first-token"
-import { findEndpointModel } from "~/lib/models"
-import { resolveConfiguredProviderModelAlias } from "~/lib/provider-resolver"
+import { recordResponsesFirstToken } from "~/lib/http/first-token"
+import { findEndpointModel } from "~/lib/catalog/models"
+import { resolveConfiguredProviderModelAlias } from "~/lib/providers/provider-resolver"
 import { getReasoningReplayIdentity } from "~/lib/reasoning-replay"
-import { requestContext } from "~/lib/request-context"
-import { setPluginRequestModel } from "~/lib/request-events"
-import { readResponsesStreamEvent } from "~/lib/responses-stream-event"
-import { writeSSEIfConnected } from "~/lib/sse"
+import { requestContext } from "~/lib/http/request-context"
+import { setPluginRequestModel } from "~/lib/http/request-events"
+import { readResponsesStreamEvent } from "~/lib/http/responses-stream-event"
+import { writeSSEIfConnected } from "~/lib/http/sse"
 import { isCodexUserAgent } from "~/routes/models/codex-models"
 import {
   handleProviderResponsesForProvider,
@@ -77,6 +77,7 @@ import {
   normalizeGuardianAgentMessages,
   normalizeInputImageDetails,
   normalizeResponsesReasoningEffort,
+  replayMessagesCompactionForResponses,
   sanitizeOversizedInputImages,
   sanitizeUnsupportedInputFields,
 } from "./utils"
@@ -270,6 +271,7 @@ export const handleResponses = async (c: Context) => {
   if (shouldCompactInput) {
     compactInputByLatestCompaction(payload)
   }
+  replayMessagesCompactionForResponses(payload)
 
   debugJson(logger, "Translated Responses payload:", payload)
 

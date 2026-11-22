@@ -1,12 +1,13 @@
 import type { ResolvedProviderConfig } from "~/lib/config"
-import { GITHUB_COPILOT_PROVIDER } from "~/lib/github-copilot-provider"
-import { ImageJsonMetadataReader } from "~/lib/image-json-metadata"
-import { requestContext } from "~/lib/request-context"
+import { GITHUB_COPILOT_PROVIDER } from "~/lib/providers/github-copilot-provider"
+import { ImageJsonMetadataReader } from "~/lib/images/image-json-metadata"
+import { requestContext } from "~/lib/http/request-context"
 import { createProviderProxyResponse } from "~/services/providers/provider-proxy"
+import type { ImageTokenDetails, UsageTokens } from "~/lib/types/token-usage"
 
-import { createTokenUsageRecorder, type UsageTokens } from "./index"
+import { createTokenUsageRecorder } from "./index"
 import { xaiUsdTicksToCost } from "./pricing"
-import { normalizeToken, type ImageTokenDetails } from "./store"
+import { normalizeToken } from "./store"
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value)
@@ -35,9 +36,16 @@ export function normalizeImagesUsage(
   const outputDetails = tokenDetails(usage.output_tokens_details)
   return {
     cost:
-      provider.toLowerCase() === "xai" ?
+      (provider.toLowerCase() === "xai" ?
         xaiUsdTicksToCost(usage.cost_in_usd_ticks)
-      : undefined,
+      : undefined)
+      ?? ((
+        typeof usage.cost === "number"
+        && Number.isFinite(usage.cost)
+        && usage.cost >= 0
+      ) ?
+        usage.cost
+      : undefined),
     input_tokens:
       token(usage.input_tokens)
       ?? (inputDetails?.image_tokens ?? 0) + (inputDetails?.text_tokens ?? 0),

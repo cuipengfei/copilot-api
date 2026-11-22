@@ -8,7 +8,7 @@ import {
   MASK_FIELD_NAMES,
   resolveImageMime,
 } from "~/lib/image-form"
-import { createTimeoutDispatcher } from "~/lib/timeout-dispatcher"
+import { createTimeoutDispatcher } from "~/lib/http/timeout-dispatcher"
 import { CODEX_API_BASE_URL } from "~/services/codex/constants"
 import { buildCodexRequestHeaders } from "~/services/codex/create-responses"
 

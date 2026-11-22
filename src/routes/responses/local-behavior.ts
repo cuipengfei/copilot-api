@@ -1,7 +1,7 @@
 import consola from "consola"
 
 import { resolveEffortForLog } from "~/lib/config"
-import { HTTPError } from "~/lib/error"
+import { HTTPError } from "~/lib/http/error"
 import {
   colorizeModel,
   createHandlerLogger,
@@ -9,7 +9,7 @@ import {
   shouldUseColor,
   writeStreamLog,
 } from "~/lib/logger"
-import { resolveSupportedReasoningEffort } from "~/lib/reasoning-effort"
+import { resolveSupportedReasoningEffort } from "~/lib/catalog/reasoning-effort"
 import type {
   Reasoning,
   ResponsesPayload,

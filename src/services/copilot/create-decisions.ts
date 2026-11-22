@@ -1,5 +1,5 @@
-import { copilotBaseUrl, copilotHeaders } from "~/lib/api-config"
-import { HTTPError } from "~/lib/error"
+import { copilotBaseUrl, copilotHeaders } from "~/lib/providers/api-config"
+import { HTTPError } from "~/lib/http/error"
 import { attachResponseHeaders } from "~/lib/response-headers"
 import { state } from "~/lib/state"
 
