@@ -35,3 +35,11 @@ Check that its provider is enabled and that **Models shown in Coding Agent** (`a
 ### WebSocket requests fail through a proxy
 
 If the model supports HTTP Responses, set `useResponsesApiWebSocket` to `false` in `config.json` and apply the configuration to use HTTP. WebSocket-only models require a proxy or network that permits WebSocket traffic. The gateway does not automatically retry failed WebSocket requests over HTTP. See [connection settings](configuration.md#protocols-reasoning-and-connections).
+
+### A chat completion fails after HTTP 200
+
+An SSE response can report a provider error after its HTTP response has started. Check `<application directory>/logs/chat-completions-handler-YYYY-MM-DD.log` (Linux default: `~/.local/share/copilot-api/logs/`; override with `COPILOT_API_LOG_DIR`).
+
+Error records include the model, request/response identifiers, listening port and process ID, client cancellation state, and final reported usage when available. Streaming failures also include `upstreamEvent`, retaining the failed SSE event's provider-specific error JSON while redacting credentials, headers, request bodies, generated content and tool arguments.
+
+Logs are split by date. Files not modified for more than seven days are cleaned at startup and daily.

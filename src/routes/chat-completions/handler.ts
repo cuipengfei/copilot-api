@@ -6,7 +6,9 @@ import { streamSSE, type SSEMessage } from "hono/streaming"
 import {
   getChatCompletionFailure,
   guardChatCompletionsStream,
+  serializeChatCompletionFailureLog,
 } from "~/lib/http/chat-completions-stream"
+import { requestContext } from "~/lib/http/request-context"
 import { resolveMappedModel } from "~/lib/config"
 import { recordChatCompletionFirstToken } from "~/lib/http/first-token"
 import {
@@ -124,6 +126,9 @@ export async function handleCompletion(c: Context) {
       sessionId,
     })
   const sourceHeaders = getAttachedResponseHeaders(response)
+  const requestInfo = requestContext.getStore()
+  const gatewayRequestId = requestInfo?.requestTiming?.id
+  const port = requestInfo?.port
 
   if (!isAsyncIterable(response)) {
     recordUsage(
@@ -132,11 +137,24 @@ export async function handleCompletion(c: Context) {
     )
     const failure = getChatCompletionFailure(response)
     if (failure) {
-      logger.error("Chat completion failed", {
-        type: failure.type,
-        code: failure.code,
-        message: failure.message,
-      })
+      logger.error(
+        "Chat completion failed",
+        serializeChatCompletionFailureLog({
+          ...failure,
+          model: payload.model,
+          requestId,
+          gatewayRequestId,
+          responseId: response.id,
+          upstreamRequestId:
+            sourceHeaders?.get("x-github-request-id")
+            ?? sourceHeaders?.get("x-request-id"),
+          port,
+          pid: process.pid,
+          clientAborted: c.req.raw.signal.aborted,
+          usage: response.usage,
+          copilotUsage: response.copilot_usage,
+        }),
+      )
       return jsonWithForwardedHeaders({ error: failure }, sourceHeaders, {
         status: 502,
       })
@@ -155,6 +173,7 @@ export async function handleCompletion(c: Context) {
   return streamSSE(c, async (stream) => {
     let usage: UsageTokens = {}
     let copilotUsage: CopilotUsageTokens = {}
+    let responseId: string | undefined
     let chunkCount = 0
     let completed = false
     let sawTerminal = false
@@ -164,13 +183,31 @@ export async function handleCompletion(c: Context) {
         message: chunk,
         completion: parsedChunk,
         failure,
+        upstreamError,
       } of guardChatCompletionsStream(response)) {
+        if (typeof parsedChunk?.id === "string") {
+          responseId = parsedChunk.id
+        }
         if (failure) {
-          logger.error("Chat completion failed", {
-            type: failure.type,
-            code: failure.code,
-            message: failure.message,
-          })
+          logger.error(
+            "Chat completion failed",
+            serializeChatCompletionFailureLog({
+              ...failure,
+              model: payload.model,
+              requestId,
+              gatewayRequestId,
+              responseId,
+              upstreamRequestId:
+                sourceHeaders?.get("x-github-request-id")
+                ?? sourceHeaders?.get("x-request-id"),
+              port,
+              pid: process.pid,
+              clientAborted: stream.aborted || c.req.raw.signal.aborted,
+              usage,
+              copilotUsage,
+              upstreamEvent: upstreamError,
+            }),
+          )
         } else {
           debugJson(logger, "Streaming chunk:", chunk)
         }

@@ -682,7 +682,6 @@ test("successful probe points are usable at startup return while a stalled tier 
         "\n",
       ),
     )
-    const mod = await loadAutoSessionModule()
     installRouter((body) => {
       if (body.tier === "balance") {
         return gate.promise.then(() => okSelection("balance-model"))

@@ -219,6 +219,151 @@ afterAll(async () => {
 
 describe("chat completions handler logging", () => {
   test.each([true, false])(
+    "records error diagnostics without persisting credentials or generated content (stream=%s)",
+    async (stream) => {
+      if (!handlerLogger)
+        throw new Error("Chat completion logger was not captured")
+      const credential = "opaque-upstream-credential"
+      const privateBody = "PRIVATE_DIAGNOSTIC_REQUEST"
+      const partialAnswer = "PRIVATE_PARTIAL_ANSWER"
+      const toolArguments = "PRIVATE_TOOL_ARGUMENTS"
+      const detail = "provider-validation-" + "x".repeat(2200)
+      const generated = {
+        content: partialAnswer,
+        tool_calls: [
+          {
+            id: "call-failed",
+            type: "function",
+            function: { name: "read", arguments: toolArguments },
+          },
+        ],
+      }
+      const failed = {
+        id: "chatcmpl-failed",
+        object: stream ? "chat.completion.chunk" : "chat.completion",
+        model: "gpt-test",
+        created: 0,
+        choices: [
+          {
+            index: 0,
+            finish_reason: "error",
+            ...(stream ?
+              { delta: generated }
+            : { message: { role: "assistant", ...generated } }),
+          },
+        ],
+        error: {
+          code: "generation_failed",
+          message: `Generation failed. Authorization: Bearer sk-diagnostic-token; request: ${privateBody}`,
+          headers: { "Copilot-Edits-Session": credential },
+          request: { body: privateBody },
+          metadata: [
+            {
+              access_token: credential,
+              sessionId: credential,
+              reason: "tool_validation",
+            },
+          ],
+        },
+        provider_metadata: {
+          reason: "invalid_tool_arguments",
+          detail,
+          retryable: false,
+          count: 7,
+          optional: null,
+        },
+        usage: { prompt_tokens: 12, completion_tokens: 5, total_tokens: 17 },
+        copilot_usage: { total_nano_aiu: 1_612_500 },
+      }
+      const upstream =
+        stream ?
+          streamingResponse(sseBody([failed, { ...usageChunk, id: failed.id }]))
+        : Response.json(failed)
+      upstream.headers.set("x-github-request-id", "github-failure-request")
+      installFetch(mock(() => Promise.resolve(upstream)))
+      const errorLogs: Array<Array<unknown>> = []
+      const reporter = {
+        log: (event: { type: string; args: Array<unknown> }) => {
+          if (event.type === "error") errorLogs.push(event.args)
+        },
+      }
+      handlerLogger.addReporter(reporter)
+      try {
+        const app = new Hono()
+        app.use(traceIdMiddleware)
+        app.use(requestEventsMiddleware(undefined, 4146))
+        app.route("/v1/chat/completions", completionRoutes)
+        const response = await app.request("/v1/chat/completions", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            model: "gpt-test",
+            stream,
+            messages: [{ role: "user", content: privateBody }],
+          }),
+        })
+        const body = await response.text()
+        expect(response.status).toBe(stream ? 200 : 502)
+        expect(body).toContain("generation_failed")
+        expect(errorLogs).toHaveLength(1)
+        const diagnostic = JSON.parse(errorLogs[0][1] as string) as Record<
+          string,
+          unknown
+        > & { upstreamEvent?: { data?: unknown } }
+        expect(diagnostic).toMatchObject({
+          model: "gpt-test",
+          responseId: failed.id,
+          upstreamRequestId: "github-failure-request",
+          port: 4146,
+          pid: process.pid,
+          clientAborted: false,
+          copilotUsage: failed.copilot_usage,
+        })
+        expect(diagnostic.requestId).toEqual(expect.any(String))
+        expect(diagnostic.gatewayRequestId).toEqual(expect.any(String))
+        if (stream) {
+          expect(diagnostic.upstreamEvent?.data).toMatchObject({
+            id: failed.id,
+            choices: [
+              {
+                finish_reason: "error",
+                delta: { content: "[redacted]", tool_calls: "[redacted]" },
+              },
+            ],
+            error: {
+              headers: "[redacted]",
+              request: "[redacted]",
+              metadata: [
+                {
+                  access_token: "[redacted]",
+                  sessionId: "[redacted]",
+                  reason: "tool_validation",
+                },
+              ],
+            },
+            provider_metadata: failed.provider_metadata,
+          })
+          expect(body).toContain(partialAnswer)
+        } else {
+          expect(diagnostic).not.toHaveProperty("upstreamEvent")
+        }
+        expect(body).not.toContain("provider_metadata")
+        const serialized = JSON.stringify(errorLogs)
+        for (const secret of [
+          credential,
+          privateBody,
+          partialAnswer,
+          toolArguments,
+          "sk-diagnostic-token",
+        ]) {
+          expect(serialized).not.toContain(secret)
+        }
+      } finally {
+        handlerLogger.removeReporter(reporter)
+      }
+    },
+  )
+  test.each([true, false])(
     "keeps upstream credentials and request bodies out of real debug and failure logs (stream=%s)",
     async (stream) => {
       if (!handlerLogger) {

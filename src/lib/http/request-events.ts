@@ -35,6 +35,7 @@ export function requestEventsMiddleware(
     }
     const store = requestContext.getStore()
     if (!store) return await next()
+    store.port = port
     // Images retain SQLite timing without publishing plugin events.
     const requestPlugins = isImageRequest ? undefined : plugins
     const started = performance.now()

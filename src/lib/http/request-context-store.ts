@@ -10,6 +10,7 @@ export interface RequestContext {
   apiKeyUsageIds?: Set<string>
   traceId: string
   startTime: number
+  port?: number
   userAgent: string
   sessionAffinity: string | undefined
   rootSessionId?: string

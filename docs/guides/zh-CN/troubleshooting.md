@@ -35,3 +35,11 @@ npx @jeffreycao/copilot-api@latest start --proxy-env
 ### 使用代理后 WebSocket 请求仍失败
 
 如果目标模型支持 HTTP Responses 接口，可将 `config.json` 中的 `useResponsesApiWebSocket` 设为 `false`，应用配置后改走 HTTP。如果模型只支持 WebSocket，需要换用允许 WebSocket 的代理或网络；网关不会在 WebSocket 失败后自动改用 HTTP 重试。详见[连接设置](configuration.md#协议推理与连接)。
+
+### Chat Completions 返回 HTTP 200 后报错
+
+SSE 响应开始后仍可能返回模型服务错误。请查看 `<应用目录>/logs/chat-completions-handler-YYYY-MM-DD.log`；Linux 默认目录为 `~/.local/share/copilot-api/logs/`，可通过 `COPILOT_API_LOG_DIR` 覆盖。
+
+错误记录包含模型、请求与响应编号、监听端口、进程编号、客户端取消状态，以及服务返回的最终用量（存在时）。流式错误的 `upstreamEvent` 保留报错 SSE 事件中的服务端专有错误 JSON，凭据、headers、请求正文、生成内容和工具参数会被遮蔽。
+
+日志按日期分文件，启动时及每天清理最后修改时间超过七天的文件。

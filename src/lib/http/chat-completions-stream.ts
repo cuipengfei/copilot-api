@@ -19,6 +19,7 @@ interface ChatCompletionStreamEvent {
   message: ServerSentEventMessage
   completion: ChatCompletionChunk | null
   failure?: ChatCompletionFailure
+  upstreamError?: Omit<ServerSentEventMessage, "data"> & { data: unknown }
 }
 
 export function getChatCompletionFailure(
@@ -75,6 +76,7 @@ export async function* guardChatCompletionsStream(
   let terminalSeen = false
   let doneSeen = false
   let failure: ChatCompletionFailure | null = null
+  let upstreamError: ChatCompletionStreamEvent["upstreamError"]
   let usage: ChatCompletionChunk["usage"]
   let copilotUsage: ChatCompletionChunk["copilot_usage"]
   let metadata: Partial<ChatCompletionChunk> = {}
@@ -128,6 +130,7 @@ export async function* guardChatCompletionsStream(
       if (failure) continue
       failure = getChatCompletionFailure(data, message.event)
       if (failure) {
+        upstreamError = { ...message, data }
         const partial = partialCompletion(completion)
         if (partial) {
           yield {
@@ -188,6 +191,7 @@ export async function* guardChatCompletionsStream(
     message: { event: "error", data: JSON.stringify({ error: failure }) },
     completion: null,
     failure,
+    ...(upstreamError && { upstreamError }),
   }
 }
 
@@ -219,18 +223,36 @@ function safeErrorIdentifier(value: unknown): string | null {
     : null
 }
 
+const ERROR_METADATA_PATTERN =
+  /\b(?:authorization|proxy-authorization|copilot[-_ ]edits[-_ ]session|session(?:[-_ ](?:id|token))?|(?:x[-_])?api[-_ ]key|access[-_ ]token|refresh[-_ ]token|cookie|set-cookie|headers?|request(?:[-_ ]body)?)\b["']?\s*[:={[]/iu
+const ERROR_URL_PATTERN = /https?:\/\/[^\s]+/giu
+const ERROR_CREDENTIAL_PATTERN =
+  /\b(?:Bearer\s+\S+|sk-[a-z\d_-]+|gh[pousr]_[a-z\d_]+|github_pat_[a-z\d_]+|eyJ[a-z\d_-]+\.[a-z\d_-]+\.[a-z\d_-]+)/giu
+const SENSITIVE_ERROR_KEY_PATTERN =
+  /^(?:auth|authorization|proxy[-_ ]?authorization|headers?|cookies?|set[-_ ]?cookie|request(?:[-_ ]?body)?|body|messages|prompt|input|content|tool[-_]?calls?|function[-_]?call|arguments|credentials?|.*(?:api[-_ ]?key|token|secret|password)|(?:copilot[-_ ]?edits[-_ ]?)?session(?:[-_ ]?(?:id|token))?)$/iu
+
+function redactErrorText(value: string): string {
+  // Error text sometimes appends a serialized request or credential headers.
+  return value
+    .split(ERROR_METADATA_PATTERN)[0]
+    .replace(ERROR_URL_PATTERN, "[redacted URL]")
+    .replace(ERROR_CREDENTIAL_PATTERN, "[redacted]")
+}
+
+export function serializeChatCompletionFailureLog(
+  value: Record<string, unknown>,
+): string {
+  return JSON.stringify(value, (key: string, item: unknown): unknown => {
+    if (SENSITIVE_ERROR_KEY_PATTERN.test(key)) {
+      return "[redacted]"
+    }
+    return typeof item === "string" ? redactErrorText(item) : item
+  })
+}
+
 function safeErrorMessage(value: unknown): string | null {
   if (typeof value !== "string") return null
-  // Error text sometimes appends a serialized request or credential headers.
-  const message = value
-    .split(
-      /\b(?:authorization|proxy-authorization|copilot[-_ ]edits[-_ ]session|session(?:[-_ ](?:id|token))?|(?:x[-_])?api[-_ ]key|access[-_ ]token|refresh[-_ ]token|cookie|set-cookie|headers?|request(?:[-_ ]body)?)\b["']?\s*[:={[]/iu,
-    )[0]
-    .replace(/https?:\/\/[^\s]+/giu, "[redacted URL]")
-    .replace(
-      /\b(?:Bearer\s+\S+|sk-[a-z\d_-]+|gh[pousr]_[a-z\d_]+|github_pat_[a-z\d_]+|eyJ[a-z\d_-]+\.[a-z\d_-]+\.[a-z\d_-]+)/giu,
-      "[redacted]",
-    )
+  const message = redactErrorText(value)
     .replace(/\p{Cc}/gu, " ")
     .replace(/[\s;,{"']+$/gu, "")
     .trim()

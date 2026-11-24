@@ -24,6 +24,47 @@ const collect = async (
 }
 
 describe("native chat completion stream completion checks", () => {
+  test("retains the original failed event for logging while draining usage without exposing it to clients", async () => {
+    const failed = {
+      id: "chatcmpl-failed",
+      choices: [{ index: 0, delta: {}, finish_reason: "error" }],
+      copilot_errors: [
+        {
+          code: "generation_failed",
+          provider_detail: { reason: "invalid_tool_arguments" },
+        },
+      ],
+    }
+    const usage = { prompt_tokens: 8, completion_tokens: 4, total_tokens: 12 }
+    let drained = false
+    async function* source() {
+      await Promise.resolve()
+      yield {
+        id: "failed-event",
+        event: "message",
+        data: JSON.stringify(failed),
+      }
+      yield { data: JSON.stringify({ id: failed.id, choices: [], usage }) }
+      yield { data: "[DONE]" }
+      drained = true
+    }
+    const result = []
+    for await (const event of guardChatCompletionsStream(source()))
+      result.push(event)
+    const error = result.find((event) => event.failure)
+    expect(error?.upstreamError).toEqual({
+      id: "failed-event",
+      event: "message",
+      data: failed,
+    })
+    expect(error?.message.event).toBe("error")
+    expect(error?.message.data).not.toContain("provider_detail")
+    expect(
+      result.find((event) => event.completion?.usage)?.completion?.usage,
+    ).toEqual(usage)
+    expect(drained).toBe(true)
+  })
+
   test("returns parsed completion data and a null completion for DONE", async () => {
     const completion: ChatCompletionChunk = {
       id: "chatcmpl-test",
