@@ -133,4 +133,110 @@ describe("decisions routes", () => {
     )
     expect(calls[0]?.body).toEqual(requestBody)
   })
+
+  test("forwards POST /v1/systemone and /systemone to Copilot upstream /v1/systemone", async () => {
+    const calls: Array<{ url: string; method: string; body: unknown }> = []
+
+    globalThis.fetch = ((
+      input: Parameters<typeof fetch>[0],
+      init?: Parameters<typeof fetch>[1],
+    ) => {
+      const url =
+        typeof input === "string" ? input
+        : input instanceof URL ? input.toString()
+        : input.url
+      calls.push({
+        url,
+        method: init?.method ?? "GET",
+        body:
+          typeof init?.body === "string" ? JSON.parse(init.body) : undefined,
+      })
+
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            model: "microsoft-decision-1-1",
+            answers: {
+              damaged_goods: {
+                probability: 1,
+              },
+            },
+            usage: {
+              input_tokens: 167,
+              input_tokens_details: {
+                cached_tokens: 0,
+                cache_write_tokens: 0,
+              },
+              output_tokens: 0,
+              output_tokens_details: {
+                reasoning_tokens: 0,
+              },
+              total_tokens: 167,
+            },
+          }),
+          {
+            status: 200,
+            headers: {
+              "content-type": "application/json",
+              "x-github-request-id": "req-systemone-123",
+            },
+          },
+        ),
+      )
+    }) as typeof fetch
+
+    const requestBody = {
+      model: "microsoft-decision-1-1",
+      state: "The customer says their keyboard arrived with three broken keys.",
+      questions: {
+        damaged_goods: {
+          type: "predicate",
+          instructions: "Does the customer report receiving damaged goods?",
+        },
+      },
+    }
+
+    for (const path of ["/v1/systemone", "/systemone"]) {
+      const response = await server.request(path, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(requestBody),
+      })
+
+      expect(response.status).toBe(200)
+      expect(response.headers.get("x-github-request-id")).toBe(
+        "req-systemone-123",
+      )
+      const json = await response.json()
+      expect(json).toEqual({
+        model: "microsoft-decision-1-1",
+        answers: {
+          damaged_goods: {
+            probability: 1,
+          },
+        },
+        usage: {
+          input_tokens: 167,
+          input_tokens_details: {
+            cached_tokens: 0,
+            cache_write_tokens: 0,
+          },
+          output_tokens: 0,
+          output_tokens_details: {
+            reasoning_tokens: 0,
+          },
+          total_tokens: 167,
+        },
+      })
+    }
+
+    expect(calls).toHaveLength(2)
+    expect(calls[0]?.url).toBe(
+      "https://api.business.githubcopilot.com/v1/systemone",
+    )
+    expect(calls[1]?.url).toBe(
+      "https://api.business.githubcopilot.com/v1/systemone",
+    )
+    expect(calls[0]?.body).toEqual(requestBody)
+  })
 })

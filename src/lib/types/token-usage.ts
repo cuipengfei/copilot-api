@@ -15,6 +15,7 @@ export type TokenUsageSource = "copilot" | "provider"
 export type TokenUsageEndpoint =
   | "alpha_search"
   | "decisions"
+  | "systemone"
   | "chat_completions"
   | "embeddings"
   | "images_generations"

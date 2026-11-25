@@ -28,6 +28,7 @@ import { providerMessageRoutes } from "./routes/provider/messages/route"
 import { providerModelRoutes } from "./routes/provider/models/route"
 import { providerResponsesRoutes } from "./routes/provider/responses/route"
 import { responsesRoutes } from "./routes/responses/route"
+import { systemOneRoutes } from "./routes/systemone/route"
 import { tokenUsageRoute } from "./routes/token-usage/route"
 import { usageRoute } from "./routes/usage/route"
 import { videoRoutes } from "./routes/videos/route"
@@ -132,6 +133,7 @@ export function createServer(options: CreateServerOptions = {}): Hono {
   server.route("/models", modelRoutes)
   server.route("/embeddings", embeddingRoutes)
   server.route("/decisions", decisionRoutes)
+  server.route("/systemone", systemOneRoutes)
   server.route("/usage", usageRoute)
   server.route("/admin/usage", usageRoute)
   server.route("/token-usage", tokenUsageRoute)
@@ -147,6 +149,7 @@ export function createServer(options: CreateServerOptions = {}): Hono {
   server.route("/v1/models", modelRoutes)
   server.route("/v1/embeddings", embeddingRoutes)
   server.route("/v1/decisions", decisionRoutes)
+  server.route("/v1/systemone", systemOneRoutes)
   server.route("/v1/responses", responsesRoutes)
   server.route("/v1/alpha/search", alphaSearchRoutes)
   server.route("/v1/images", imageRoutes)
