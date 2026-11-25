@@ -46,6 +46,8 @@ const createRequestLifecycle = (
   options: UpstreamHttpLifecycleOptions,
 ): RequestLifecycle => {
   const controller = new AbortController()
+  const clientSignal = options.clientSignal
+  const onClientAbort = () => controller.abort(clientSignal?.reason)
   let finished = false
   let headersTimer: ReturnType<typeof setTimeout> | null = setTimeout(() => {
     controller.abort(new UpstreamHeadersTimeoutError(options.headersTimeoutMs))
@@ -61,7 +63,10 @@ const createRequestLifecycle = (
     if (finished) return
     finished = true
     clearHeadersTimer()
+    clientSignal?.removeEventListener("abort", onClientAbort)
   }
+
+  clientSignal?.addEventListener("abort", onClientAbort, { once: true })
 
   return {
     abort: (reason) => {

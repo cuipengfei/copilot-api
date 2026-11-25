@@ -881,26 +881,43 @@ describe("chat completions handler logging", () => {
 
   test("does not log a success line when the request signal aborts mid-stream", async () => {
     const gate = Promise.withResolvers<void>()
+    const upstreamCancelled = Promise.withResolvers<void>()
+    const producerSettled = Promise.withResolvers<void>()
     const head = `data: ${JSON.stringify(contentChunk("he"))}\n\n`
     const tail = sseBody([contentChunk("llo"), usageChunk])
+    let upstreamSignal: AbortSignal | null | undefined
+    let upstreamBodyCancelled = false
+    let tailSent = false
+    const upstreamBody = new ReadableStream<Uint8Array>({
+      async start(controller) {
+        const encoder = new TextEncoder()
+        controller.enqueue(encoder.encode(head))
+        try {
+          await gate.promise
+          if (upstreamBodyCancelled) return
+          controller.enqueue(encoder.encode(tail))
+          tailSent = true
+          controller.close()
+        } finally {
+          producerSettled.resolve()
+        }
+      },
+      cancel() {
+        upstreamBodyCancelled = true
+        gate.resolve()
+        upstreamCancelled.resolve()
+      },
+    })
     installFetch(
-      mock(() =>
-        Promise.resolve(
-          new Response(
-            new ReadableStream({
-              start(controller) {
-                const encoder = new TextEncoder()
-                controller.enqueue(encoder.encode(head))
-                void gate.promise.then(() => {
-                  controller.enqueue(encoder.encode(tail))
-                  controller.close()
-                })
-              },
-            }),
-            { status: 200, headers: { "content-type": "text/event-stream" } },
-          ),
-        ),
-      ),
+      mock((_input: unknown, init?: RequestInit) => {
+        upstreamSignal = init?.signal
+        return Promise.resolve(
+          new Response(upstreamBody, {
+            status: 200,
+            headers: { "content-type": "text/event-stream" },
+          }),
+        )
+      }),
     )
     const stdout = captureStdout()
     const close = Reflect.get(SSEStreamingApi.prototype, "close")
@@ -932,9 +949,10 @@ describe("chat completions handler logging", () => {
         body += decoder.decode(value, { stream: true })
         return true
       }
-      await read()
+      expect(await read()).toBe(true)
       abort.abort()
-      gate.resolve()
+      await upstreamCancelled.promise
+      await producerSettled.promise
       let more = true
       while (more) more = await read()
       await closeSettled.promise
@@ -942,24 +960,25 @@ describe("chat completions handler logging", () => {
       const logs = streamLogWrites(stdout.writes)
       expect(logs.some((write) => write.includes("✓"))).toBe(false)
       const final = logs.at(-1) as string
-      expect(final).toStartWith("\x1b[2K\r↪ gpt-test 3")
+      expect(final).toStartWith("\x1b[2K\r↪ gpt-test ")
       expect(final.endsWith("\n")).toBe(true)
-      expect(body).toContain('"content":"llo"')
-      expect(body).toContain('"total_tokens":17')
-      expect(body).toContain("[DONE]")
+      expect(body).toContain('"content":"he"')
+      expect(body).not.toContain('"content":"llo"')
+      expect(body).not.toContain('"total_tokens"')
+      expect(body).not.toContain("[DONE]")
+      expect(upstreamSignal?.aborted).toBe(true)
+      expect(upstreamBodyCancelled).toBe(true)
+      expect(tailSent).toBe(false)
       expect(streamClosed).toBe(true)
       const events = await getTokenUsageEventsPage({
         page: 1,
         pageSize: 10,
         period: "today",
       })
-      expect(events.items).toHaveLength(1)
-      expect(events.items[0]).toMatchObject({
-        input_tokens: 12,
-        output_tokens: 5,
-      })
+      expect(events.items).toHaveLength(0)
     } finally {
       gate.resolve()
+      await producerSettled.promise
       stdout.restore()
       closeSpy.mockRestore()
     }

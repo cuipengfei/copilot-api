@@ -1,4 +1,5 @@
-import { afterEach, expect, mock, test } from "bun:test"
+import { afterEach, expect, mock, spyOn, test } from "bun:test"
+import type { ReadableStreamDefaultReader as WebStreamReader } from "node:stream/web"
 
 import {
   defaultUpstreamTransportConfig,
@@ -14,6 +15,7 @@ import { fetchUpstreamWithLifecycle } from "~/services/upstream-http"
 const originalFetch = globalThis.fetch
 
 afterEach(() => {
+  mock.restore()
   ;(globalThis as unknown as { fetch: typeof fetch }).fetch = originalFetch
 })
 
@@ -34,95 +36,225 @@ test("upstream transport configuration validates positive integer limits", () =>
   })
 })
 
-test("a client cancelled before dispatch does not call fetch", async () => {
-  const fetchMock = mock(() => Promise.resolve(Response.json({ ok: true })))
-  ;(globalThis as unknown as { fetch: typeof fetch }).fetch =
-    fetchMock as unknown as typeof fetch
-  const client = new AbortController()
-  client.abort()
+test.each(["client", "init"] as const)(
+  "a %s cancelled before dispatch does not call fetch",
+  async (source) => {
+    const fetchMock = mock(() => Promise.resolve(Response.json({ ok: true })))
+    ;(globalThis as unknown as { fetch: typeof fetch }).fetch =
+      fetchMock as unknown as typeof fetch
+    const client = new AbortController()
+    const request = new AbortController()
+    ;(source === "client" ? client : request).abort()
 
-  expect(
-    await getRejectedError(
-      fetchUpstreamWithLifecycle(
-        "https://upstream.example/responses",
-        { method: "POST" },
-        lifecycleOptions(client.signal),
+    expect(
+      await getRejectedError(
+        fetchUpstreamWithLifecycle(
+          "https://upstream.example/responses",
+          { method: "POST", signal: request.signal },
+          lifecycleOptions(client.signal),
+        ),
       ),
-    ),
-  ).toHaveProperty("name", "AbortError")
-  expect(fetchMock).not.toHaveBeenCalled()
-})
+    ).toHaveProperty("name", "AbortError")
+    expect(fetchMock).not.toHaveBeenCalled()
+  },
+)
 
-test("client cancellation while awaiting headers does not abort upstream", async () => {
-  const headers = createDeferred<Response>()
-  let upstreamSignal: AbortSignal | undefined
-  const fetchMock = mock(
-    (_input: string | URL | Request, init?: RequestInit) => {
-      upstreamSignal = init?.signal as AbortSignal
-      return headers.promise
-    },
-  )
-  ;(globalThis as unknown as { fetch: typeof fetch }).fetch =
-    fetchMock as unknown as typeof fetch
-  const client = new AbortController()
+test.each(["client", "init"] as const)(
+  "%s cancellation while awaiting headers aborts upstream",
+  async (source) => {
+    let upstreamSignal: AbortSignal | undefined
+    ;(globalThis as unknown as { fetch: typeof fetch }).fetch = mock(
+      (_input: string | URL | Request, init?: RequestInit) => {
+        upstreamSignal = init?.signal as AbortSignal
+        const signal = upstreamSignal
+        return new Promise<Response>((_resolve, reject) => {
+          signal.addEventListener(
+            "abort",
+            () => reject(signal.reason as Error),
+            {
+              once: true,
+            },
+          )
+        })
+      },
+    ) as unknown as typeof fetch
+    const client = new AbortController()
+    const request = new AbortController()
+    const removeListener = spyOn(client.signal, "removeEventListener")
 
-  const responsePromise = fetchUpstreamWithLifecycle(
-    "https://upstream.example/responses",
-    { method: "POST" },
-    lifecycleOptions(client.signal),
-  )
-  client.abort(new Error("client disconnected"))
+    const responsePromise = fetchUpstreamWithLifecycle(
+      "https://upstream.example/responses",
+      { method: "POST", signal: request.signal },
+      lifecycleOptions(client.signal),
+    )
+    const rejection = getRejectedError(responsePromise)
+    const error = new Error("client disconnected")
+    ;(source === "client" ? client : request).abort(error)
 
-  expect(upstreamSignal?.aborted).toBe(false)
-  headers.resolve(Response.json({ ok: true }))
-  expect(await (await responsePromise).json()).toEqual({ ok: true })
-  expect(upstreamSignal?.aborted).toBe(false)
-})
+    expect(upstreamSignal?.aborted).toBe(true)
+    expect(upstreamSignal?.reason).toBe(error)
+    expect(await rejection).toBe(error)
+    expect(removeListener).toHaveBeenCalledWith("abort", expect.any(Function))
+  },
+)
 
-test("client cancellation after headers continues draining the body", async () => {
-  let bodyController: ReadableStreamDefaultController<Uint8Array> | undefined
-  let upstreamSignal: AbortSignal | undefined
-  let cancelledBodies = 0
-  ;(globalThis as unknown as { fetch: typeof fetch }).fetch = mock(
-    (_input: string | URL | Request, init?: RequestInit) => {
-      upstreamSignal = init?.signal as AbortSignal
-      return Promise.resolve(
-        new Response(
+test.each(["client", "init"] as const)(
+  "%s cancellation after headers rejects pending body consumption",
+  async (source) => {
+    let upstreamSignal: AbortSignal | undefined
+    let upstreamBody: ReadableStream<Uint8Array> | undefined
+    ;(globalThis as unknown as { fetch: typeof fetch }).fetch = mock(
+      (_input: string | URL | Request, init?: RequestInit) => {
+        upstreamSignal = init?.signal as AbortSignal
+        const signal = upstreamSignal
+        upstreamBody = new ReadableStream<Uint8Array>({
+          start(controller) {
+            signal.addEventListener(
+              "abort",
+              () => controller.error(signal.reason),
+              { once: true },
+            )
+          },
+        })
+        return Promise.resolve(new Response(upstreamBody))
+      },
+    ) as unknown as typeof fetch
+    const client = new AbortController()
+    const request = new AbortController()
+    const response = await fetchUpstreamWithLifecycle(
+      "https://upstream.example/responses",
+      { method: "POST", signal: request.signal },
+      lifecycleOptions(client.signal),
+    )
+    const reader = response.body!.getReader()
+    const rejection = getRejectedError(reader.read())
+    const error = new Error("client disconnected")
+    ;(source === "client" ? client : request).abort(error)
+
+    expect(upstreamSignal?.aborted).toBe(true)
+    expect(upstreamSignal?.reason).toBe(error)
+    expect(await rejection).toBe(error)
+    expect(upstreamBody?.locked).toBe(false)
+    expect(await getRejectedError(reader.read())).toBe(error)
+  },
+)
+
+test.each(["body", "no body"] as const)(
+  "normal completion releases client listeners and timers with %s",
+  async (mode) => {
+    const client = new AbortController()
+    const addListener = spyOn(client.signal, "addEventListener")
+    const removeListener = spyOn(client.signal, "removeEventListener")
+    const timers = spyOn(globalThis, "setTimeout")
+    const clearTimer = spyOn(globalThis, "clearTimeout")
+    let upstreamSignal: AbortSignal | undefined
+    ;(globalThis as unknown as { fetch: typeof fetch }).fetch = mock(
+      (_input: string | URL | Request, init?: RequestInit) => {
+        upstreamSignal = init?.signal as AbortSignal
+        return Promise.resolve(
+          new Response(mode === "body" ? "done" : null, {
+            status: mode === "body" ? 200 : 204,
+            headers: { "x-upstream-test": "preserved" },
+          }),
+        )
+      },
+    ) as unknown as typeof fetch
+
+    const response = await fetchUpstreamWithLifecycle(
+      "https://upstream.example/responses",
+      { method: "POST" },
+      lifecycleOptions(client.signal),
+    )
+    expect(await response.text()).toBe(mode === "body" ? "done" : "")
+    expect(response.headers.get("x-upstream-test")).toBe("preserved")
+    expect(addListener).toHaveBeenCalledWith("abort", expect.any(Function), {
+      once: true,
+    })
+    for (const [event, listener] of addListener.mock.calls) {
+      expect(removeListener).toHaveBeenCalledWith(event, listener)
+    }
+    for (const result of timers.mock.results) {
+      expect(clearTimer).toHaveBeenCalledWith(result.value)
+    }
+    client.abort()
+    expect(upstreamSignal?.aborted).toBe(false)
+  },
+)
+
+test.each(["headers", "body"] as const)(
+  "client cancellation closes the real upstream connection while awaiting %s",
+  async (mode) => {
+    const started = createDeferred<void>()
+    const aborted = createDeferred<void>()
+    const headers = createDeferred<Response>()
+    const deadline = Promise.withResolvers<never>()
+    const timer = setTimeout(
+      () => deadline.reject(new Error("Local upstream cancellation timed out")),
+      2000,
+    )
+    const client = new AbortController()
+    const server = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch(request) {
+        request.signal.addEventListener(
+          "abort",
+          () => {
+            aborted.resolve()
+            headers.resolve(new Response(null))
+          },
+          { once: true },
+        )
+        started.resolve()
+        if (mode === "headers") return headers.promise
+        return new Response(
           new ReadableStream<Uint8Array>({
             start(controller) {
-              bodyController = controller
-            },
-            cancel() {
-              cancelledBodies += 1
+              controller.enqueue(new TextEncoder().encode("started"))
             },
           }),
-        ),
+          { headers: { "content-type": "application/octet-stream" } },
+        )
+      },
+    })
+    let reader: WebStreamReader<Uint8Array> | undefined
+    try {
+      const responsePromise = fetchUpstreamWithLifecycle(
+        server.url,
+        { method: "POST" },
+        {
+          clientSignal: client.signal,
+          headersTimeoutMs: 10000,
+          streamInactivityTimeoutMs: 10000,
+        },
       )
-    },
-  ) as unknown as typeof fetch
-  const client = new AbortController()
-  const response = await fetchUpstreamWithLifecycle(
-    "https://upstream.example/responses",
-    { method: "POST" },
-    lifecycleOptions(client.signal),
-  )
-  const reader = response.body!.getReader()
-  const firstRead = reader.read()
-
-  client.abort(new Error("client disconnected"))
-  bodyController?.enqueue(new TextEncoder().encode("continued"))
-
-  const firstResult = await firstRead
-  const firstValue = firstResult.value as Uint8Array | undefined
-  expect(firstValue).toBeDefined()
-  expect(new TextDecoder().decode(firstValue as Uint8Array)).toBe("continued")
-  expect(upstreamSignal?.aborted).toBe(false)
-  expect(cancelledBodies).toBe(0)
-
-  bodyController?.close()
-  expect((await reader.read()).done).toBe(true)
-  expect(upstreamSignal?.aborted).toBe(false)
-})
+      const error = new Error("client disconnected")
+      if (mode === "headers") {
+        const rejection = getRejectedError(responsePromise)
+        await Promise.race([started.promise, deadline.promise])
+        client.abort(error)
+        expect(await Promise.race([rejection, deadline.promise])).toBe(error)
+      } else {
+        const response = await Promise.race([responsePromise, deadline.promise])
+        const bodyReader =
+          response.body!.getReader() as WebStreamReader<Uint8Array>
+        reader = bodyReader
+        const first = await Promise.race([bodyReader.read(), deadline.promise])
+        expect(new TextDecoder().decode(first.value)).toBe("started")
+        const rejection = getRejectedError(bodyReader.read())
+        client.abort(error)
+        expect(await Promise.race([rejection, deadline.promise])).toBe(error)
+      }
+      await Promise.race([aborted.promise, deadline.promise])
+    } finally {
+      clearTimeout(timer)
+      client.abort()
+      headers.resolve(new Response(null))
+      await reader?.cancel().catch(() => {})
+      await server.stop(true)
+    }
+  },
+)
 
 test("early SSE iterator return cancels the managed upstream body", async () => {
   let cancelledBodies = 0
@@ -168,12 +300,18 @@ test("concurrent upstream lifecycles use independent controllers", async () => {
   const bodyControllers: Array<ReadableStreamDefaultController<Uint8Array>> = []
   ;(globalThis as unknown as { fetch: typeof fetch }).fetch = mock(
     (_input: string | URL | Request, init?: RequestInit) => {
-      upstreamSignals.push(init?.signal as AbortSignal)
+      const signal = init?.signal as AbortSignal
+      upstreamSignals.push(signal)
       return Promise.resolve(
         new Response(
           new ReadableStream<Uint8Array>({
             start(controller) {
               bodyControllers.push(controller)
+              signal.addEventListener(
+                "abort",
+                () => controller.error(signal.reason),
+                { once: true },
+              )
               controller.enqueue(new TextEncoder().encode("event"))
             },
           }),
@@ -182,22 +320,27 @@ test("concurrent upstream lifecycles use independent controllers", async () => {
     },
   ) as unknown as typeof fetch
 
+  const firstClient = new AbortController()
+  const secondClient = new AbortController()
   const firstResponse = await fetchUpstreamWithLifecycle(
     "https://first.example/responses",
     { method: "POST" },
-    lifecycleOptions(),
+    lifecycleOptions(firstClient.signal),
   )
   const secondResponse = await fetchUpstreamWithLifecycle(
     "https://second.example/responses",
     { method: "POST" },
-    lifecycleOptions(),
+    lifecycleOptions(secondClient.signal),
   )
   const firstReader = firstResponse.body!.getReader()
   const secondReader = secondResponse.body!.getReader()
   await firstReader.read()
   await secondReader.read()
 
-  await firstReader.cancel(new Error("first finished early"))
+  const rejection = getRejectedError(firstReader.read())
+  const error = new Error("first client disconnected")
+  firstClient.abort(error)
+  expect(await rejection).toBe(error)
 
   expect(upstreamSignals[0]?.aborted).toBe(true)
   expect(upstreamSignals[1]?.aborted).toBe(false)

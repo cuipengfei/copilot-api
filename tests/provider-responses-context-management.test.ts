@@ -892,18 +892,25 @@ describe("provider Responses context management", () => {
     })
   })
 
-  test("drains provider-scoped requests after client cancellation", async () => {
+  test("aborts provider-scoped requests after client cancellation", async () => {
     let upstreamSignal: AbortSignal | undefined
     const upstreamStarted = createDeferred()
-    const upstreamCompletion = createResponseDeferred()
-    fetchMock.mockImplementation((_url, init) => {
+    fetchMock.mockImplementation((url, init) => {
+      expect(url).toBe("https://openai-responses.example/v1/responses")
+      const headers = new Headers(init?.headers)
+      expect(headers.get("authorization")).toBe("Bearer provider-key")
+      expect(headers.has("chatgpt-account-id")).toBe(false)
       const signal = init?.signal
       if (!(signal instanceof AbortSignal)) {
         throw new Error("Expected upstream abort signal")
       }
       upstreamSignal = signal
+      const { promise, reject } = Promise.withResolvers<Response>()
+      signal.addEventListener("abort", () => reject(signal.reason), {
+        once: true,
+      })
       upstreamStarted.resolve()
-      return upstreamCompletion.promise
+      return promise
     })
     const controller = new AbortController()
     const responsePromise = createApp().fetch(
@@ -917,20 +924,21 @@ describe("provider Responses context management", () => {
     await upstreamStarted.promise
 
     controller.abort()
-    expect(upstreamSignal?.aborted).toBe(false)
-    upstreamCompletion.resolve(createJsonResponsesResponse("gpt-test"))
+    expect(upstreamSignal?.aborted).toBe(true)
+    expect(upstreamSignal?.reason).toBe(controller.signal.reason)
 
     const response = await responsePromise
-    expect(response.status).toBe(200)
-    expect(upstreamSignal?.aborted).toBe(false)
+    expect(response.status).toBe(499)
+    expect(response.statusText).toBe("Client Closed Request")
+    expect(await response.text()).toBe("")
+    expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 
-  test("drains provider-prefixed Codex requests after client cancellation", async () => {
+  test("aborts provider-prefixed Codex requests after client cancellation", async () => {
     const originalCodexAccessToken = state.codexAccessToken
     const originalCodexAccountId = state.codexAccountId
     let upstreamSignal: AbortSignal | undefined
     const upstreamStarted = createDeferred()
-    const upstreamCompletion = createResponseDeferred()
     providerConfig = {
       apiKey: "",
       authType: "oauth2",
@@ -943,13 +951,22 @@ describe("provider Responses context management", () => {
     state.codexAccountId = "synthetic-account"
     fetchMock.mockImplementation((url, init) => {
       expect(url).toBe("https://chatgpt.example/backend-api/codex/responses")
+      const headers = new Headers(init?.headers)
+      expect(headers.get("authorization")).toBe(
+        `Bearer ${state.codexAccessToken}`,
+      )
+      expect(headers.get("chatgpt-account-id")).toBe("synthetic-account")
       const signal = init?.signal
       if (!(signal instanceof AbortSignal)) {
         throw new Error("Expected upstream abort signal")
       }
       upstreamSignal = signal
+      const { promise, reject } = Promise.withResolvers<Response>()
+      signal.addEventListener("abort", () => reject(signal.reason), {
+        once: true,
+      })
       upstreamStarted.resolve()
-      return upstreamCompletion.promise
+      return promise
     })
 
     try {
@@ -965,12 +982,14 @@ describe("provider Responses context management", () => {
       await upstreamStarted.promise
 
       controller.abort()
-      expect(upstreamSignal?.aborted).toBe(false)
-      upstreamCompletion.resolve(createJsonResponsesResponse("gpt-test"))
+      expect(upstreamSignal?.aborted).toBe(true)
+      expect(upstreamSignal?.reason).toBe(controller.signal.reason)
 
       const response = await responsePromise
-      expect(response.status).toBe(200)
-      expect(upstreamSignal?.aborted).toBe(false)
+      expect(response.status).toBe(499)
+      expect(response.statusText).toBe("Client Closed Request")
+      expect(await response.text()).toBe("")
+      expect(fetchMock).toHaveBeenCalledTimes(1)
     } finally {
       state.codexAccessToken = originalCodexAccessToken
       state.codexAccountId = originalCodexAccountId
@@ -1395,19 +1414,3 @@ const createDeferred = (): {
   })
   return { promise, resolve }
 }
-
-const createResponseDeferred = (): {
-  promise: Promise<Response>
-  resolve: (response: Response) => void
-} => {
-  let resolve!: (response: Response) => void
-  const promise = new Promise<Response>((deferredResolve) => {
-    resolve = deferredResolve
-  })
-  return { promise, resolve }
-}
-
-const createJsonResponsesResponse = (model: string): Response =>
-  new Response(JSON.stringify(createResponsesResult(model)), {
-    headers: { "content-type": "application/json" },
-  })

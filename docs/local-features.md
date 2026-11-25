@@ -13,7 +13,7 @@
 **必须保留的行为**：
 
 - 继续使用上游的 `fetchUpstreamWithLifecycle` 管理取消、headers 超时、流读取超时和响应体清理。
-- 发送前已经取消的请求不访问上游；请求发出后继续读取上游响应并记录用量。headers 超时和流读取超时仍可终止上游请求。
+- 发送前已经取消的请求不访问上游；请求发出后客户端取消会将原取消原因传递给当前 HTTP 上游，等待 headers 和读取响应体时均会终止。保留调用方 init.signal、headers 超时与流读取超时；正常结束或出错后释放取消监听器和计时器，各请求互不影响。用量记录使用取消前已收到的数据。
 - 每次实际发送时序列化当前 payload，保留同一 headers 对象与调用方的 `AbortSignal`。
 - TLS 重试继续由既有 `retryAfterTlsCertificateVerificationFailure` 判定，最多重试一次。
 - [auto-session-retry.test.ts](../tests/auto-session-retry.test.ts) 验证共享折扣降级链每次最多三次业务发送，依次为 Fusion、Auto、无 token。携带 token 的明确 session 拒绝 `400` 或 `401` 会定向失效并进入下一来源，普通参数错误 `400` 保留原响应与配对，`belong` 拒绝沿用既有处理。配对刷新失败不阻止使用另一来源或原价发送。原价生成失败、`429`、`5xx`、取消及流开始后的错误沿用原路径。`413` 图片处理可能重新进入生成链，signature、effort 与 `belong` 修正各有既有兼容发送，TLS 重试独立计数，各类发送分别记录。
@@ -37,12 +37,13 @@
 - [auto-probe-prompts.ts](../src/lib/auto-probe-prompts.ts) 提供共享条件、完整题面身份与唯一 wanted 读取。[auto-probe-history.ts](../src/lib/auto-probe-history.ts) 保存每实例与 writer 的条件和观察记录。[auto-probe-sample.json](../src/lib/auto-probe-sample.json) 保存冻结源码样本及原始文件、零起点行号和行数。
 - [tls-retry.ts](../src/services/tls-retry.ts)：既有 TLS 错误判定、等待与单次重试。
 
-**必要的上游接入**：三个 `create-*` service 的发送位置；启动和 token 更新位置保留会话预热、失效处理。上游 [upstream-http.ts](../src/services/upstream-http.ts) 的实现保持不变。
+**必要的上游接入**：三个 `create-*` service 的发送位置；启动和 token 更新位置保留会话预热、失效处理。[upstream-http.ts](../src/services/upstream-http.ts) 在原 RequestLifecycle 中转发客户端取消，保留公开签名、调用方 init.signal 和既有超时及清理路径；同步上游时保留该传播行为。
 
 **验证入口**：
 
 - [copilot-request.test.ts](../tests/copilot-request.test.ts)：本地真实 HTTP 请求、headers、原始错误和预取消行为。
-- [responses-local-http.test.ts](../tests/responses-local-http.test.ts)：默认 handler 与 service 使用本地真实 HTTP 验证 JSON/SSE、413、发送前取消，以及发送后取消信号时的完整读取和用量记录。
+- [responses-local-http.test.ts](../tests/responses-local-http.test.ts)：默认 handler 与 service 使用本地真实 HTTP 验证 JSON/SSE、413、发送前取消，以及发送后取消的上游终止、失败终态与用量处理。
+- [upstream-http-lifecycle.test.ts](../tests/upstream-http-lifecycle.test.ts)：覆盖等待 headers 和读取响应体时的客户端与 init 取消、原取消原因传播、监听器与计时器清理、独立生命周期，以及既有超时和周期输出；通过真实本地 Bun.serve 上游观察取消。
 - Responses 本地 HTTP 验证通过 `traceIdMiddleware` 建立请求上下文，检查根 Session 在上游请求头、413 重试和用量记录中的一致性；会话优先级测试使用具备 Responses 能力的模型。
 - 用量页面的模型与 Session 明细同时保留 `Copilot AIU Cost` 和通用 `Total Cost`；只有 AIU 的历史记录继续显示 AIU 费用，名称与费用提示内容经过 HTML 转义。
 - [auto-session-chains.test.ts](../tests/auto-session-chains.test.ts)：三个公开 service 的折扣会话注入链路。

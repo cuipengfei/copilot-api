@@ -766,12 +766,12 @@ describe("取消信号", () => {
     expect(upstreamRequests).toHaveLength(0)
   })
 
-  test("发送后取消客户端信号仍完整读取上游并记录用量", async () => {
+  test("发送后取消终止上游且不伪造完成事件或最终用量", async () => {
     registerDiscount("fusion")
     const started =
       Promise.withResolvers<ReadableStreamDefaultController<Uint8Array>>()
+    const cancelled = Promise.withResolvers<void>()
     let upstreamCancelled = false
-    let upstreamClosed = false
     const upstreamBody = new ReadableStream<Uint8Array>({
       start(controller) {
         controller.enqueue(
@@ -787,6 +787,7 @@ describe("取消信号", () => {
       },
       cancel() {
         upstreamCancelled = true
+        cancelled.resolve()
       },
     })
     const upstreamController = await started.promise
@@ -798,37 +799,27 @@ describe("取消信号", () => {
         },
       })
     const abort = new AbortController()
+    const deadline = Promise.withResolvers<never>()
+    const timer = setTimeout(() => {
+      deadline.reject(new Error("Local response cancellation timed out"))
+    }, 2000)
     try {
-      const response = await postResponses(textPayload({ stream: true }), {
-        signal: abort.signal,
-      })
+      const response = await Promise.race([
+        postResponses(textPayload({ stream: true }), { signal: abort.signal }),
+        deadline.promise,
+      ])
       expect(response.status).toBe(200)
       const stream = sseEvents(response)
-      expect((await stream.next()).value?.event).toBe("response.created")
+      const firstEvent = await Promise.race([stream.next(), deadline.promise])
+      expect(firstEvent.value?.event).toBe("response.created")
 
       abort.abort()
-      upstreamController.enqueue(
-        new TextEncoder().encode(
-          sseEvent("response.completed", {
-            type: "response.completed",
-            sequence_number: 1,
-            response: createResult({
-              usage: {
-                input_tokens: 4,
-                output_tokens: 2,
-                total_tokens: 6,
-              },
-            }),
-          }),
-        ),
-      )
-      upstreamController.close()
-      upstreamClosed = true
-
-      const trailingEvents: Array<string | undefined> = []
-      for await (const event of stream) trailingEvents.push(event.event)
-      expect(trailingEvents).toEqual(["response.completed"])
-      expect(upstreamCancelled).toBe(false)
+      const failure = await Promise.race([stream.next(), deadline.promise])
+      expect(failure.value?.event).toBe("response.failed")
+      const end = await Promise.race([stream.next(), deadline.promise])
+      expect(end.done).toBe(true)
+      await Promise.race([cancelled.promise, deadline.promise])
+      expect(upstreamCancelled).toBe(true)
       expect(responsesCount()).toBe(1)
       expect(responsesRequests()[0].headers["copilot-session-token"]).toBe(
         "local-fusion-session",
@@ -840,18 +831,12 @@ describe("取消信号", () => {
         pageSize: 10,
         period: "today",
       })
-      expect(page.total).toBe(1)
-      expect(page.items[0]).toMatchObject({
-        endpoint: "responses",
-        model: MODEL,
-        session_id: SESSION_ID,
-        input_tokens: 4,
-        output_tokens: 2,
-        total_tokens: 6,
-      })
+      expect(page.total).toBe(0)
+      expect(page.items).toHaveLength(0)
     } finally {
+      clearTimeout(timer)
       abort.abort()
-      if (!upstreamClosed && !upstreamCancelled) upstreamController.close()
+      if (!upstreamCancelled) upstreamController.close()
     }
   })
 })

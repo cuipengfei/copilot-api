@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test"
 import { state } from "~/lib/state"
+import { createMessages } from "~/services/copilot/create-messages"
 const originalFetch = globalThis.fetch
 const originalCopilotToken = state.copilotToken
 const originalCodexToken = state.codexAccessToken
@@ -78,18 +79,11 @@ describe("websocket pre-dispatch cancellation", () => {
     expect(fetchMock).not.toHaveBeenCalled()
   })
 })
-describe("copilot messages drain", () => {
-  test("non-streaming messages completes after disconnect", async () => {
-    const unit = await import("~/services/copilot/create-messages")
-    let resolveFetch: (value: Response) => void = () => {}
-    let notifyDispatched: () => void = () => {}
+describe("copilot messages cancellation", () => {
+  test("non-streaming messages request aborts upstream with the disconnect reason", async () => {
+    const { promise: dispatched, resolve: notifyDispatched } =
+      Promise.withResolvers<void>()
     let upstreamSignal: AbortSignal | undefined
-    const gate = new Promise<Response>((resolve) => {
-      resolveFetch = resolve
-    })
-    const dispatched = new Promise<void>((resolve) => {
-      notifyDispatched = resolve
-    })
     const scope = globalThis as unknown as { fetch: typeof fetch }
     scope.fetch = mock((input: string | URL | Request, init?: RequestInit) => {
       const url =
@@ -97,17 +91,22 @@ describe("copilot messages drain", () => {
         : input instanceof URL ? input.href
         : input.url
       if (!url.includes("/v1/messages")) {
-        // Telemetry and other fire-and-forget fetches must not share the
-        // gated Response: sharing one Response object lets res.text() lock
-        // the body before the main flow calls getReader() (flaky race).
+        // Keep unrelated responses independent of the pending messages request.
         return Promise.resolve(new Response(null, { status: 200 }))
       }
-      upstreamSignal = init?.signal as AbortSignal
+      const signal = init?.signal as AbortSignal
+      upstreamSignal = signal
+      const { promise, reject } = Promise.withResolvers<Response>()
+      signal.addEventListener("abort", () => reject(signal.reason), {
+        once: true,
+      })
       notifyDispatched()
-      return gate
+      return promise
     }) as unknown as typeof fetch
     const client = new AbortController()
-    const pending = unit.createMessages(
+    const unrelated = new AbortController()
+    const reason = new Error("client disconnected")
+    const pending = createMessages(
       {
         max_tokens: 8,
         messages: [{ content: "hi", role: "user" }],
@@ -116,21 +115,25 @@ describe("copilot messages drain", () => {
       undefined,
       { clientSignal: client.signal, requestId: "request-1" },
     )
+    const rejected = getRejectedError(pending)
     await dispatched
-    client.abort(new Error("client disconnected"))
-    resolveFetch(
-      new Response(
-        JSON.stringify({
-          content: [{ text: "done", type: "text" }],
-          model: "claude-test",
-          role: "assistant",
-        }),
-        { headers: { contentType: "application/json" } },
-      ),
+    const telemetryResponse = await fetch(
+      "https://telemetry.example.test/events",
+      {
+        signal: unrelated.signal,
+      },
     )
-    const result = (await pending) as unknown as { role: string }
-    expect(result.role).toBe("assistant")
-    expect(upstreamSignal?.aborted).toBe(false)
+    client.abort(reason)
+    expect(await rejected).toBe(reason)
+    expect(upstreamSignal?.aborted).toBe(true)
+    expect(upstreamSignal?.reason).toBe(reason)
+    const otherResponse = await fetch("https://example.test/health", {
+      signal: unrelated.signal,
+    })
+    expect(unrelated.signal.aborted).toBe(false)
+    expect(telemetryResponse.status).toBe(200)
+    expect(otherResponse.status).toBe(200)
+    expect(otherResponse).not.toBe(telemetryResponse)
   })
 })
 const getRejectedError = async (promise: Promise<unknown>): Promise<Error> => {
