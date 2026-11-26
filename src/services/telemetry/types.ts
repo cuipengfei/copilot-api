@@ -26,7 +26,7 @@ export const EVENT_AUTH_NEW_TOKEN = "copilot-chat/auth.new_token"
 export const EVENT_EDIT_FEEDBACK = "copilot-chat/panel.edit.feedback"
 export const EVENT_EDIT_HUNK_ACTION = "copilot-chat/edit.hunk.action"
 export const EVENT_PANEL_REQUEST = "panel.request"
-export const EVENT_GHOST_TEXT_SHOWN = "copilot-chat/ghostText.shown"
+export const EVENT_GHOST_TEXT_SHOWN = "copilot/ghostText.shown"
 
 // MSFT OneCollector event name constants
 export const EVENT_MSFT_RESPONSE_CANCELLED = "response.cancelled"

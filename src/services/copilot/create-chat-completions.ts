@@ -155,7 +155,7 @@ export const createChatCompletions = async (
   const timeSinceIssuedMs = Date.now() - start
   trackPanelRequest({
     headerRequestId: requestId,
-    apiType: "chat_completions",
+    apiType: "chatCompletions",
     modelCallId,
   })
   trackGhostTextShown({
@@ -173,6 +173,8 @@ export const createChatCompletions = async (
   if (payload.stream) {
     trackResponseSuccess({
       model: payload.model,
+      apiType: "chatCompletions",
+      timeToFirstToken: timeSinceIssuedMs,
       durationMs: Date.now() - start,
       requestId,
       modelCallId,
@@ -190,6 +192,8 @@ export const createChatCompletions = async (
     result.choices?.length ? result.choices[0].finish_reason : "stop"
   trackResponseSuccess({
     model: payload.model,
+    apiType: "chatCompletions",
+    timeToFirstToken: timeSinceIssuedMs,
     durationMs: Date.now() - start,
     requestId,
     modelCallId,

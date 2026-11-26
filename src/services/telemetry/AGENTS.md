@@ -22,10 +22,11 @@
 
 ## Project-Specific Rules
 
-- `identity.ts` 的 `SESSION_ID` 只在进程生命周期内稳定；持久的是 `getDevDeviceId()` 写入 `~/.cache/Microsoft/DeveloperTools/deviceid`
-- `getMachineId()` 用首个非 internal MAC 做 SHA-256；找不到时 hash 空串，不能抛错中断流程
+- `identity.ts` 的 `SESSION_ID` 只在进程生命周期内稳定；`getMachineId()` 与 `getDevDeviceId()` 分别在 `PATHS.APP_DIR` 下持久化随机生成的 `telemetry-machine-id`（64 位 hex）与 `telemetry-device-id`（UUID），不读取本机真实网卡 MAC 或宿主机 `~/.cache/Microsoft/DeveloperTools/deviceid`；身份文件写完后排他发布，进程内按文件路径缓存 ID；无法持久化时告警一次并保持本进程 ID，不改写无法读取的已有文件
+- `getCommonProperties()` 和 `createMsftEnvelope()` 均不发送系统、架构和内核版本字段
 - telemetry 总开关来自 `getConfig().telemetry === true`；默认关闭，不发送任何事件
 - `trackRequestSent` / `trackResponseSuccess` / `trackResponseError` 支持透传 `modelCallId`，但是否生成 UUID 由上游 service 决定
+- 成功与失败事件的 `apiType` 使用 `chatCompletions`、`messages`、`responses`；调用方传入响应头到达耗时，未提供时估计值不得超过总耗时
 
 ## Anti-Patterns
 

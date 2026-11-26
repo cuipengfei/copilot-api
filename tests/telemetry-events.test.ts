@@ -31,17 +31,68 @@ void mock.module("undici", () => ({
   request: mockUndiciRequest,
 }))
 
+let mockTelemetryEnabled: boolean | undefined = false
+
+const codexToolPrompt = `
+## Tool use
+- You have access to many tools. If a tool exists to perform a specific task, you MUST use that tool instead of running a terminal command to perform that task.
+### Bash tool
+When using the Bash tool, follow these rules:
+- always run_in_background set to false, unless you are running a long-running command (e.g., a server or a watch command).
+### BashOutput tool
+When using the BashOutput tool, follow these rules:
+- Only Bash Tool run_in_background set to true, Use BashOutput to read the output later
+### TodoWrite tool
+When using the TodoWrite tool, follow these rules:
+- Skip using the TodoWrite tool for tasks with three or fewer steps.
+- Do not make single-step todo lists.
+- When you made a todo, update it after having performed one of the sub-tasks that you shared on the todo list.
+## Special user requests
+- If the user makes a simple request (such as asking for the time) which you can fulfill by running a terminal command (such as 'date'), you should do so.
+`
+
+function getMockConfig(): {
+  telemetry: boolean | undefined
+  extraPrompts: Record<string, string>
+  smallModel: string
+  modelReasoningEfforts: Record<string, string>
+  compactUseSmallModel: boolean
+} {
+  return {
+    telemetry: mockTelemetryEnabled,
+    extraPrompts: {
+      "gpt-5-codex": codexToolPrompt,
+      "gpt-5.4": "## Intermediary updates",
+    },
+    smallModel: "gpt-5-mini",
+    modelReasoningEfforts: { "gpt-5-mini": "low" },
+    compactUseSmallModel: true,
+  }
+}
+
+void mock.module("~/lib/config", () => ({
+  getConfig: getMockConfig,
+  getExtraPromptForModel: (model: string): string =>
+    getMockConfig().extraPrompts[model] ?? "",
+  getSmallModel: (): string => getMockConfig().smallModel,
+  getReasoningEffortForModel: (model: string): string =>
+    getMockConfig().modelReasoningEfforts[model] ?? "high",
+  shouldCompactUseSmallModel: (): boolean =>
+    getMockConfig().compactUseSmallModel,
+  mergeConfigWithDefaults: getMockConfig,
+}))
+
 describe("Telemetry Events", () => {
   let originalRandom: typeof Math.random
+  let originalFetch: typeof globalThis.fetch
 
   beforeEach(() => {
     originalRandom = Math.random
+    originalFetch = globalThis.fetch
     mockUndiciRequest.mockClear()
 
     // Reset all mocks
-    void mock.module("~/lib/config", () => ({
-      getConfig: () => ({ telemetry: true }),
-    }))
+    mockTelemetryEnabled = true
 
     // Mock fetch globally
     globalThis.fetch = mock(() =>
@@ -58,6 +109,8 @@ describe("Telemetry Events", () => {
 
   afterEach(() => {
     Math.random = originalRandom
+    mockTelemetryEnabled = false
+    globalThis.fetch = originalFetch
     mock.restore()
   })
 
@@ -202,9 +255,7 @@ describe("Telemetry Events", () => {
     })
 
     it("should respect telemetry disabled config", () => {
-      void mock.module("~/lib/config", () => ({
-        getConfig: () => ({ telemetry: false }),
-      }))
+      mockTelemetryEnabled = false
       initTelemetry("token", "individual")
       trackEvent("test.event", {})
       // Should not call fetch when telemetry is disabled

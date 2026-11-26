@@ -92,6 +92,7 @@ export const createMessages = async (
     if (error instanceof HTTPError) {
       trackResponseError({
         model: payload.model,
+        apiType: "messages",
         durationMs: Date.now() - start,
         statusCode: error.response.status,
         requestId,
@@ -101,11 +102,11 @@ export const createMessages = async (
     throw error
   }
 
+  const timeSinceIssuedMs = Date.now() - start
   logCopilotRateLimits(result.headers)
 
   scheduleFeedbackEvents(requestId)
   schedulePostResponseEvents(requestId, payload.model)
-  const timeSinceIssuedMs = Date.now() - start
   trackPanelRequest({
     headerRequestId: requestId,
     apiType: "messages",
@@ -117,20 +118,30 @@ export const createMessages = async (
     timeSinceIssuedMs,
     timeSinceDisplayedMs: 0,
   })
-  trackResponseSuccess({
-    model: payload.model,
-    durationMs: timeSinceIssuedMs,
-    requestId,
-    modelCallId,
-  })
-
   const premium = getPremiumInfoFromHeaders(result.headers)
   if (payload.stream) {
+    trackResponseSuccess({
+      model: payload.model,
+      apiType: "messages",
+      durationMs: Date.now() - start,
+      timeToFirstToken: timeSinceIssuedMs,
+      requestId,
+      modelCallId,
+      finishReason: "stream",
+    })
     return attachResponseHeaders(
       attachPremiumInfo(events(result), premium),
       result.headers,
     )
   }
   const json = (await result.json()) as AnthropicResponse
+  trackResponseSuccess({
+    model: payload.model,
+    apiType: "messages",
+    durationMs: Date.now() - start,
+    timeToFirstToken: timeSinceIssuedMs,
+    requestId,
+    modelCallId,
+  })
   return attachResponseHeaders(attachPremiumInfo(json, premium), result.headers)
 }

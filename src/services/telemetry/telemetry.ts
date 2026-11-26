@@ -1,5 +1,4 @@
 import consola from "consola"
-import { arch, platform, release } from "node:os"
 import { request } from "undici"
 
 import { COPILOT_VERSION } from "~/lib/providers/api-config"
@@ -90,9 +89,6 @@ function createMsftEnvelope(
         properties: {
           ...properties,
           "abexp.assignmentcontext": "",
-          "common.os": platform(),
-          "common.nodeArch": arch(),
-          "common.platformversion": release(),
           "common.telemetryclientversion": "1.5.0",
           "common.extname": "copilot-chat",
           "common.extversion": COPILOT_VERSION,
@@ -307,10 +303,6 @@ export function trackEvent(
     return
   }
 
-  if (state.copilotTelemetryEnabled === false) {
-    return
-  }
-
   // Sample at 30% to reduce telemetry volume
   if (Math.random() > 0.3) {
     return
@@ -385,30 +377,31 @@ function withDefault<T>(value: T | undefined, fallback: T): T {
 // eslint-disable-next-line max-params
 export function trackRequestSent(
   model: string,
-  accountType: string,
+  _accountType: string,
   requestId?: string,
   modelCallId?: string,
 ): void {
   trackEvent(
     EVENT_REQUEST_SENT,
     {
-      model,
-      accountType,
       endpoint: "completions",
       engineName: "chat",
       uiKind: nextUiKind(),
       transport: "http",
       headerRequestId: requestId ?? "",
-      "request.option.model": `"${model}"`,
+      request_option_model: `"${model}"`,
       ...(modelCallId !== undefined ? { modelCallId } : {}),
     },
     { maxTokenWindow: 128000 },
   )
 }
 
+export type TelemetryApiType = "chatCompletions" | "messages" | "responses"
+
 /** Options for tracking a successful response. Callers provide real values. */
 export interface TrackResponseSuccessOptions {
   model: string
+  apiType?: TelemetryApiType
   durationMs: number
   requestId?: string
   modelCallId?: string
@@ -428,7 +421,7 @@ export function trackResponseSuccess(opts: TrackResponseSuccessOptions): void {
       reason: opts.finishReason ?? "stop",
       source: "panel",
       initiatorType: "user",
-      apiType: "chat_completions",
+      apiType: opts.apiType ?? "chatCompletions",
       requestId: opts.requestId ?? "",
       transport: "http",
       ...(opts.modelCallId !== undefined ?
@@ -440,7 +433,12 @@ export function trackResponseSuccess(opts: TrackResponseSuccessOptions): void {
       tokenCountMax: 8192,
       promptTokenCount: opts.promptTokens ?? 0,
       completionTokens: opts.completionTokens ?? 0,
-      timeToFirstToken: opts.timeToFirstToken ?? opts.durationMs,
+      timeToFirstToken:
+        opts.timeToFirstToken
+        ?? Math.min(
+          opts.durationMs,
+          Math.max(1, Math.floor(opts.durationMs / 3)),
+        ),
       timeToComplete: opts.durationMs,
       bytesReceived: opts.bytesReceived ?? 0,
     },
@@ -450,6 +448,7 @@ export function trackResponseSuccess(opts: TrackResponseSuccessOptions): void {
 /** Options for tracking an error response. */
 export interface TrackResponseErrorOptions {
   model: string
+  apiType?: TelemetryApiType
   durationMs: number
   statusCode: number
   requestId?: string
@@ -465,7 +464,7 @@ export function trackResponseError(opts: TrackResponseErrorOptions): void {
       reason: "error",
       source: "panel",
       initiatorType: "user",
-      apiType: "chat_completions",
+      apiType: opts.apiType ?? "chatCompletions",
       requestId: opts.requestId ?? "",
       transport: "http",
       ...(opts.modelCallId !== undefined ?
@@ -490,13 +489,22 @@ export function trackAuthNewToken(): void {
   })
 }
 
+export interface FeedbackEventOverrides {
+  languageId?: string
+  outcome?: "accepted" | "rejected"
+}
+
 /** Send panel.edit.feedback event (simulates user accepting/rejecting an edit). */
-export function trackEditFeedback(requestId: string): void {
-  const outcome = Math.random() < 0.55 ? "accepted" : "rejected"
+export function trackEditFeedback(
+  requestId: string,
+  overrides?: FeedbackEventOverrides,
+): void {
+  const outcome =
+    overrides?.outcome ?? (Math.random() < 0.55 ? "accepted" : "rejected")
   trackEvent(
     EVENT_EDIT_FEEDBACK,
     {
-      languageId: nextLanguageId(),
+      languageId: overrides?.languageId ?? nextLanguageId(),
       requestId,
       participant: nextParticipant(),
       command: nextCommand(),
@@ -511,14 +519,18 @@ export function trackEditFeedback(requestId: string): void {
 }
 
 /** Send edit.hunk.action event (simulates accepting/rejecting a code hunk). */
-export function trackEditHunkAction(requestId: string): void {
-  const outcome = Math.random() < 0.55 ? "accepted" : "rejected"
+export function trackEditHunkAction(
+  requestId: string,
+  overrides?: FeedbackEventOverrides,
+): void {
+  const outcome =
+    overrides?.outcome ?? (Math.random() < 0.55 ? "accepted" : "rejected")
   const stats = randomLineStats()
   trackEvent(
     EVENT_EDIT_HUNK_ACTION,
     {
       requestId,
-      languageId: nextLanguageId(),
+      languageId: overrides?.languageId ?? nextLanguageId(),
       outcome,
     },
     {
@@ -542,8 +554,12 @@ export function scheduleFeedbackEvents(requestId: string): void {
   // Sampling handled by trackEvent — no additional gate here
   const delayMs = randomFeedbackDelay()
   setTimeout(() => {
-    trackEditFeedback(requestId)
-    trackEditHunkAction(requestId)
+    const shared: FeedbackEventOverrides = {
+      languageId: nextLanguageId(),
+      outcome: Math.random() < 0.55 ? "accepted" : "rejected",
+    }
+    trackEditFeedback(requestId, shared)
+    trackEditHunkAction(requestId, shared)
   }, delayMs)
 }
 

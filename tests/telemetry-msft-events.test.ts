@@ -13,7 +13,7 @@ void mock.module("undici", () => ({
   request: requestMock,
 }))
 
-let mockTelemetryEnabled: boolean | undefined = true
+let mockTelemetryEnabled: boolean | undefined = false
 
 const codexToolPrompt = `
 ## Tool use
@@ -114,6 +114,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  mockTelemetryEnabled = false
   Math.random = originalRandom
   globalThis.setTimeout = originalSetTimeout
   mock.restore()
@@ -160,6 +161,17 @@ function getEventNames(): Array<string> {
 }
 
 describe("telemetry: MSFT wrappers - response and inline", () => {
+  it("omits operating-system fingerprint fields from OneCollector events", async () => {
+    trackInlineRequest({ requestId: "req-private", model: "gpt-test" })
+    await flushMicrotasks()
+    const properties = getPayload().data.baseData.properties
+    expect(Object.hasOwn(properties, "common.os")).toBe(false)
+    expect(Object.hasOwn(properties, "common.nodeArch")).toBe(false)
+    expect(Object.hasOwn(properties, "common.platformversion")).toBe(false)
+    expect(properties["common.vscodemachineid"]).toBeString()
+    expect(properties["common.devDeviceId"]).toBeString()
+  })
+
   it("trackResponseCancelled sends response.cancelled properties and measurements", async () => {
     trackResponseCancelled({
       requestId: "req-cancel-1",

@@ -1,80 +1,100 @@
 import consola from "consola"
-import { createHash, randomUUID } from "node:crypto"
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
-import { homedir, networkInterfaces, platform, arch, release } from "node:os"
+import { randomBytes, randomUUID } from "node:crypto"
+import {
+  linkSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs"
 import { join } from "node:path"
 
 import { COPILOT_VERSION } from "~/lib/providers/api-config"
+import { PATHS } from "~/lib/storage/paths"
 
 // Stable session ID for the lifetime of this process
 export const SESSION_ID: string = randomUUID()
 
-/**
- * Get machine ID by hashing the first non-internal MAC address (SHA-256 hex).
- * Algorithm from VS Code src/vs/base/node/id.ts
- */
-export function getMachineId(): string {
-  const interfaces = networkInterfaces()
+const cachedIds = new Map<string, string>()
 
-  // Find first non-loopback, non-internal MAC address
-  for (const iface of Object.values(interfaces)) {
-    if (!iface) continue
+function readOrPersistId(
+  fileName: string,
+  generate: () => string,
+  label: string,
+): string {
+  const filePath = join(PATHS.APP_DIR, fileName)
+  const cached = cachedIds.get(filePath)
+  if (cached !== undefined) return cached
 
-    for (const addr of iface) {
-      // Skip internal interfaces or all-zero MACs
-      if (addr.internal || addr.mac === "00:00:00:00:00:00") {
-        continue
-      }
-
-      // SHA-256 hash of the MAC address
-      return createHash("sha256").update(addr.mac).digest("hex")
-    }
-  }
-
-  // Fallback: hash empty string when no valid MAC found
-  return createHash("sha256").update("").digest("hex")
-}
-
-/**
- * Get persistent device UUID, mimicking @vscode/deviceid behavior.
- * Path: ~/.cache/Microsoft/DeveloperTools/deviceid
- */
-export function getDevDeviceId(): string {
-  const deviceIdPath = join(
-    homedir(),
-    ".cache",
-    "Microsoft",
-    "DeveloperTools",
-    "deviceid",
-  )
-
-  // Try reading existing deviceid
-  if (existsSync(deviceIdPath)) {
-    try {
-      const id = readFileSync(deviceIdPath, "utf8").trim()
-      if (id) {
-        return id
-      }
-    } catch {
-      // Read failed, generate a new one
-    }
-  }
-
-  // Generate new UUID
-  const newId = randomUUID()
-
-  // Persist to disk, warn on failure (non-fatal)
+  let id: string | undefined
   try {
-    const dir = join(homedir(), ".cache", "Microsoft", "DeveloperTools")
-    mkdirSync(dir, { recursive: true })
-    writeFileSync(deviceIdPath, newId)
+    try {
+      const existing = readFileSync(filePath, "utf8").trim()
+      if (!existing) throw new Error(`Empty ${label} file`)
+      id = existing
+    } catch (error) {
+      if (
+        !(error instanceof Error)
+        || !("code" in error)
+        || error.code !== "ENOENT"
+      ) {
+        throw error
+      }
+
+      id = generate()
+      mkdirSync(PATHS.APP_DIR, { recursive: true })
+      const temporaryPath = `${filePath}.${id}.tmp`
+      try {
+        writeFileSync(temporaryPath, id, { flag: "wx", mode: 0o600 })
+        // Publish completed contents without overwriting another process's ID.
+        try {
+          linkSync(temporaryPath, filePath)
+        } catch (error) {
+          if (
+            !(error instanceof Error)
+            || !("code" in error)
+            || error.code !== "EEXIST"
+          ) {
+            throw error
+          }
+          const existing = readFileSync(filePath, "utf8").trim()
+          if (!existing)
+            throw new Error(`Empty ${label} file`, { cause: error })
+          id = existing
+        }
+      } finally {
+        rmSync(temporaryPath, { force: true })
+      }
+    }
   } catch (error) {
     consola.warn(
-      `Failed to persist device ID: ${error instanceof Error ? error.message : String(error)}`,
+      `Failed to persist ${label}: ${error instanceof Error ? error.message : String(error)}`,
     )
   }
 
-  return newId
+  id ??= generate()
+  cachedIds.set(filePath, id)
+  return id
+}
+
+/**
+ * Get persistent 64-char hex machine ID isolated from host network MAC addresses.
+ * Path: $COPILOT_API_HOME/telemetry-machine-id
+ */
+export function getMachineId(): string {
+  return readOrPersistId(
+    "telemetry-machine-id",
+    () => randomBytes(32).toString("hex"),
+    "machine ID",
+  )
+}
+
+/**
+ * Get persistent device UUID isolated from host ~/.cache/Microsoft/DeveloperTools/deviceid.
+ * Path: $COPILOT_API_HOME/telemetry-device-id
+ */
+export function getDevDeviceId(): string {
+  return readOrPersistId("telemetry-device-id", () => randomUUID(), "device ID")
 }
 
 /**
@@ -102,14 +122,10 @@ export function getCommonProperties(opts: {
     client_machineid: machineId,
     client_sessionid: sessionId,
     client_deviceid: getDevDeviceId(),
-    common_os: platform(),
-    common_platformversion: release(),
-    common_arch: arch(),
     common_extname: "copilot-chat",
     common_extversion: COPILOT_VERSION,
     common_vscodeversion: vsCodeVersion,
     common_uikind: "desktop",
-    common_editorsession_id: sessionId,
     editor_version: `vscode/${vsCodeVersion}`,
     editor_plugin_version: `copilot-chat/${COPILOT_VERSION}`,
     copilot_version: `copilot/${COPILOT_VERSION}`,

@@ -225,6 +225,7 @@ const createHttpResponses = async (
   if (!response.ok) {
     consola.error("Failed to create responses", response)
     trackResponseError({
+      apiType: "responses",
       model: payload.model,
       durationMs: Date.now() - start,
       statusCode: response.status,
@@ -254,8 +255,10 @@ const createHttpResponses = async (
 
   if (payload.stream) {
     trackResponseSuccess({
+      apiType: "responses",
       model: payload.model,
       durationMs: Date.now() - start,
+      timeToFirstToken: timeSinceIssuedMs,
       requestId,
       finishReason: "stream",
       modelCallId,
@@ -273,8 +276,10 @@ const createHttpResponses = async (
   const finishReason = result.incomplete_details?.reason ?? "stop"
   const serialized = JSON.stringify(result)
   trackResponseSuccess({
+    apiType: "responses",
     model: payload.model,
     durationMs: Date.now() - start,
+    timeToFirstToken: timeSinceIssuedMs,
     requestId,
     finishReason,
     promptTokens: result.usage?.input_tokens,

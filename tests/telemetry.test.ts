@@ -111,6 +111,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  mockTelemetryEnabled = false
   globalThis.fetch = originalFetch
   Math.random = originalRandom
   mock.restore()
@@ -167,14 +168,6 @@ function findEnvelopeByName(eventName: string): TelemetryEnvelope {
   }
 
   return match
-}
-
-/** Extract event names from all captured fetch calls. */
-function extractEventNames(calls: typeof fetchCalls): Array<string> {
-  return calls.map((c) => {
-    const body = JSON.parse(c.options.body) as Array<TelemetryEnvelope>
-    return body[0].data.baseData.name
-  })
 }
 
 function findTelemetryEnvelope(
@@ -343,14 +336,15 @@ describe("telemetry: request/response wrappers", () => {
     }
     expect(env.data.baseData.name).toBe("copilot-chat/request.sent")
     const props = env.data.baseData.properties
-    expect(props.model).toBe("claude-3.5-sonnet")
-    expect(props.accountType).toBe("individual")
+    expect("model" in props).toBe(false)
+    expect("accountType" in props).toBe(false)
     expect(props.endpoint).toBe("completions")
     expect(props.engineName).toBe("chat")
     expect(typeof props.uiKind).toBe("string")
     expect(props.transport).toBe("http")
     expect(props.headerRequestId).toBe("req-abc-123")
-    expect(props["request.option.model"]).toBe('"claude-3.5-sonnet"')
+    expect(props.request_option_model).toBe('"claude-3.5-sonnet"')
+    expect("request.option.model" in props).toBe(false)
     const m = env.data.baseData.measurements
     expect(m).toBeDefined()
     if (!m) throw new TypeError("measurements missing for request.sent")
@@ -384,7 +378,7 @@ describe("telemetry: request/response wrappers", () => {
     expect(props.reason).toBe("stop")
     expect(props.source).toBe("panel")
     expect(props.initiatorType).toBe("user")
-    expect(props.apiType).toBe("chat_completions")
+    expect(props.apiType).toBe("chatCompletions")
     expect(props.requestId).toBe("req-xyz-789")
     expect(props.transport).toBe("http")
     const m = env.data.baseData.measurements
@@ -413,7 +407,8 @@ describe("telemetry: request/response wrappers", () => {
     expect(m.promptTokenCount).toBe(0)
     expect(m.completionTokens).toBe(0)
     expect(m.bytesReceived).toBe(0)
-    expect(m.timeToFirstToken).toBe(800)
+    expect(m.timeToFirstToken).toBeGreaterThanOrEqual(1)
+    expect(m.timeToFirstToken).toBeLessThan(800)
     expect(env.data.baseData.properties.reason).toBe("stop")
     expect(env.data.baseData.properties.requestId).toBe("")
   })
@@ -441,7 +436,7 @@ describe("telemetry: request/response wrappers", () => {
     expect(props.reason).toBe("error")
     expect(props.source).toBe("panel")
     expect(props.initiatorType).toBe("user")
-    expect(props.apiType).toBe("chat_completions")
+    expect(props.apiType).toBe("chatCompletions")
     expect(props.requestId).toBe("req-err-456")
     expect(props.transport).toBe("http")
     const m = env.data.baseData.measurements
@@ -451,6 +446,54 @@ describe("telemetry: request/response wrappers", () => {
     expect(m.status_code).toBe(429)
     expect(m.timeToComplete).toBe(500)
   })
+
+  for (const apiType of ["chatCompletions", "messages", "responses"] as const) {
+    it(`reports ${apiType} for successful and failed responses`, async () => {
+      mockTelemetryEnabled = true
+      installFetchMock()
+      const requestId = `req-api-${apiType}`
+      trackResponseSuccess({
+        model: "gpt-test",
+        durationMs: 100,
+        apiType,
+        requestId,
+      })
+      trackResponseError({
+        model: "gpt-test",
+        durationMs: 100,
+        statusCode: 503,
+        apiType,
+        requestId,
+      })
+      await flushMicrotasks()
+      expect(
+        findTelemetryEnvelope("copilot-chat/response.success", requestId).data
+          .baseData.properties.apiType,
+      ).toBe(apiType)
+      expect(
+        findTelemetryEnvelope("copilot-chat/response.error", requestId).data
+          .baseData.properties.apiType,
+      ).toBe(apiType)
+    })
+  }
+
+  for (const durationMs of [0, 1, 5, 9, 10]) {
+    it(`keeps an estimated first-token time within a ${durationMs}ms response`, async () => {
+      mockTelemetryEnabled = true
+      installFetchMock()
+      const requestId = `req-short-${durationMs}`
+      trackResponseSuccess({ model: "gpt-test", durationMs, requestId })
+      await flushMicrotasks()
+      const measurements = findTelemetryEnvelope(
+        "copilot-chat/response.success",
+        requestId,
+      ).data.baseData.measurements
+      if (!measurements) throw new Error("Response measurements missing")
+      expect(measurements.timeToFirstToken).toBeGreaterThanOrEqual(0)
+      expect(measurements.timeToFirstToken).toBeLessThanOrEqual(durationMs)
+      expect(measurements.timeToComplete).toBe(durationMs)
+    })
+  }
 
   it("trackAuthNewToken sends correct event", async () => {
     mockTelemetryEnabled = true
@@ -583,48 +626,47 @@ describe("telemetry: feedback wrappers", () => {
     expect(typeof m.linesRemoved).toBe("number")
   })
 
-  it("scheduleFeedbackEvents fires both events after delay", async () => {
+  it("scheduleFeedbackEvents shares feedback choices with varying random values", async () => {
     mockTelemetryEnabled = true
     installFetchMock()
-
-    // Use object container so TS tracks closure mutations on properties
     const captured: { fn: (() => void) | null; delay: number } = {
       fn: null,
       delay: 0,
     }
     const origTimeout = globalThis.setTimeout
-
-    globalThis.setTimeout = ((fn: () => void, ms: number) => {
-      captured.fn = fn
-      captured.delay = ms
-      return 0 as unknown as ReturnType<typeof setTimeout>
-    }) as typeof setTimeout
-
-    // Mock Math.random to pass the 30% gate (< 0.3) and produce "accepted" (< 0.55)
     const origRandom = Math.random
-    Math.random = () => 0.1
-
-    scheduleFeedbackEvents("req-sched-003")
-
-    // Restore mocks immediately so they don't leak
-    globalThis.setTimeout = origTimeout
-    Math.random = origRandom
-
-    // Callback was captured but not yet invoked
-    expect(fetchCalls.length).toBe(0)
-    expect(captured.fn).not.toBeNull()
-    expect(captured.delay).toBeGreaterThanOrEqual(2000)
-    expect(captured.delay).toBeLessThanOrEqual(15000)
-
-    // Invoke the callback synchronously, then flush microtasks
-    if (!captured.fn) throw new Error("setTimeout callback not captured")
-    captured.fn()
+    const randomValues = [0.1, 0.2, 0.8, 0.1, 0.9, 0.1, 0.9, 0.1, 0.9, 0.1]
+    let randomIndex = 0
+    try {
+      globalThis.setTimeout = ((fn: () => void, ms: number) => {
+        captured.fn = fn
+        captured.delay = ms
+        return 0 as unknown as ReturnType<typeof setTimeout>
+      }) as typeof setTimeout
+      Math.random = () => randomValues[randomIndex++] ?? 0.1
+      scheduleFeedbackEvents("req-sched-003")
+      expect(fetchCalls.length).toBe(0)
+      expect(captured.delay).toBeGreaterThanOrEqual(2000)
+      expect(captured.delay).toBeLessThanOrEqual(15000)
+      if (!captured.fn) throw new Error("setTimeout callback not captured")
+      captured.fn()
+    } finally {
+      globalThis.setTimeout = origTimeout
+      Math.random = origRandom
+    }
     await flushMicrotasks()
-
-    // Assert by event name — immune to cross-test fetch contamination
-    const names = extractEventNames(fetchCalls)
-    expect(names).toContain("copilot-chat/panel.edit.feedback")
-    expect(names).toContain("copilot-chat/edit.hunk.action")
+    const feedback = findTelemetryEnvelope(
+      "copilot-chat/panel.edit.feedback",
+      "req-sched-003",
+    ).data.baseData.properties
+    const hunk = findTelemetryEnvelope(
+      "copilot-chat/edit.hunk.action",
+      "req-sched-003",
+    ).data.baseData.properties
+    expect(feedback.languageId).toBe("javascript")
+    expect(feedback.outcome).toBe("rejected")
+    expect(hunk.languageId).toBe(feedback.languageId)
+    expect(hunk.outcome).toBe(feedback.outcome)
   })
 
   it("scheduleFeedbackEvents skips when requestId is empty", async () => {

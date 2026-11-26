@@ -80,6 +80,7 @@ export const ensureChatCompletionOkResponse = async ({
         model: payload.model,
         durationMs: Date.now() - start,
         statusCode: retryResponse.status,
+        apiType: "chatCompletions",
         requestId,
         modelCallId,
       })
@@ -96,6 +97,7 @@ export const ensureChatCompletionOkResponse = async ({
     model: payload.model,
     durationMs: Date.now() - start,
     statusCode: response.status,
+    apiType: "chatCompletions",
     requestId,
     modelCallId,
   })

@@ -1,4 +1,12 @@
-import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test"
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  mock,
+  spyOn,
+} from "bun:test"
 
 const requestMock = mock(() =>
   Promise.resolve({
@@ -65,11 +73,16 @@ void mock.module("~/lib/config", () => ({
   mergeConfigWithDefaults: getMockConfig,
 }))
 
+import { HTTPError } from "~/lib/http/error"
 import { state } from "~/lib/state"
 import type { ChatCompletionsPayload } from "~/lib/types/chat-completions"
 import { createChatCompletions } from "~/services/copilot/create-chat-completions"
+import { createMessages } from "~/services/copilot/create-messages"
+import { createResponses } from "~/services/copilot/create-responses"
+import type { TelemetryEnvelope } from "~/services/telemetry/types"
 import {
   initTelemetry,
+  trackAuthNewToken,
   trackEvent,
   trackGhostTextShown,
   trackPanelRequest,
@@ -205,6 +218,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  mockTelemetryEnabled = false
   globalThis.fetch = originalFetch
   Math.random = originalRandom
   mock.restore()
@@ -296,6 +310,60 @@ describe("telemetry integration config gating", () => {
 
     expect(result).toMatchObject({ id: "chat-ok" })
     expect(telemetryCalls().length).toBe(0)
+  })
+
+  it("still sends standard GH telemetry and records telemetryEnabled=false when server disables telemetry", async () => {
+    mockTelemetryEnabled = true
+    state.copilotTrackingId = "track-biz-1"
+    state.copilotTelemetryEnabled = false
+    const bizEndpoint = "https://telemetry.business.githubcopilot.com"
+    initTelemetry(
+      "tid=biz-user;exp=9999999999;sku=copilot_for_business",
+      bizEndpoint,
+    )
+    installFetchMock((url) => {
+      if (url === `${bizEndpoint}/telemetry`) {
+        return Promise.resolve(
+          jsonResponse({ itemsReceived: 1, itemsAccepted: 1 }),
+        )
+      }
+      if (url.includes("/chat/completions")) {
+        return Promise.resolve(jsonResponse(chatResponse))
+      }
+      return Promise.resolve(new Response(null, { status: 404 }))
+    })
+
+    trackAuthNewToken()
+    await createChatCompletions(buildPayload())
+    await flushMicrotasks()
+
+    const bizCalls = fetchCalls.filter(
+      (call) => call.url === `${bizEndpoint}/telemetry`,
+    )
+    expect(bizCalls.length).toBeGreaterThanOrEqual(2)
+    const envelopes = bizCalls.map((call) => {
+      const parsed = JSON.parse(call.options?.body as string) as Array<
+        Record<string, unknown>
+      >
+      return parsed[0]
+    })
+    const authEnv = envelopes.find(
+      (env) =>
+        (
+          (env.data as Record<string, unknown>).baseData as Record<
+            string,
+            unknown
+          >
+        ).name === "copilot-chat/auth.new_token",
+    )
+    expect(authEnv).toBeDefined()
+    const authProps = (
+      (authEnv?.data as Record<string, unknown>).baseData as Record<
+        string,
+        unknown
+      >
+    ).properties as Record<string, string>
+    expect(authProps.telemetryEnabled).toBe("false")
   })
 })
 
@@ -459,7 +527,7 @@ describe("telemetry integration event-specific routing", () => {
     const envelope = parseFirstTelemetryEnvelope()
     const data = envelope.data as Record<string, unknown>
     const baseData = data.baseData as Record<string, unknown>
-    expect(baseData.name).toBe("copilot-chat/ghostText.shown")
+    expect(baseData.name).toBe("copilot/ghostText.shown")
 
     const properties = baseData.properties as Record<string, string>
     expect(properties.copilot_trackingId).toBe("track-1")
@@ -477,4 +545,156 @@ describe("telemetry integration event-specific routing", () => {
     expect(typeof measurements.timeSinceDisplayedMs).toBe("number")
     expect(typeof measurements.current_time).toBe("number")
   })
+})
+
+const protocolScenarios = [
+  {
+    apiType: "chatCompletions",
+    endpoint: "/chat/completions",
+    call: (stream: boolean) =>
+      createChatCompletions({ ...buildPayload(), stream }),
+    response: {
+      id: "timed-chat",
+      choices: [
+        {
+          index: 0,
+          message: { role: "assistant", content: "ok" },
+          finish_reason: "stop",
+        },
+      ],
+      usage: { prompt_tokens: 10, completion_tokens: 5 },
+    },
+  },
+  {
+    apiType: "messages",
+    endpoint: "/v1/messages",
+    call: (stream: boolean) =>
+      createMessages(
+        {
+          model: "claude-test",
+          max_tokens: 1024,
+          messages: [{ role: "user", content: "hello" }],
+          stream,
+        },
+        undefined,
+      ),
+    response: {
+      id: "timed-messages",
+      type: "message",
+      role: "assistant",
+      model: "claude-test",
+      content: [{ type: "text", text: "ok" }],
+      stop_reason: "end_turn",
+      usage: { input_tokens: 10, output_tokens: 5 },
+    },
+  },
+  {
+    apiType: "responses",
+    endpoint: "/responses",
+    call: (stream: boolean) =>
+      createResponses(
+        {
+          model: "gpt-test",
+          input: [{ role: "user", content: "hello" }],
+          stream,
+        },
+        { vision: false, initiator: "user", transport: "http" },
+      ),
+    response: {
+      id: "timed-responses",
+      output: [],
+      incomplete_details: null,
+      usage: { input_tokens: 10, output_tokens: 5 },
+    },
+  },
+] as const
+
+describe("telemetry integration protocol and timing", () => {
+  for (const scenario of protocolScenarios) {
+    for (const stream of [false, true]) {
+      it(`reports ${scenario.apiType} timing for ${stream ? "streaming" : "JSON"} responses`, async () => {
+        mockTelemetryEnabled = true
+        let now = 1000
+        const clock = spyOn(Date, "now").mockImplementation(() => now)
+        const responsePrototype = Response.prototype as Response
+        const parseJson: (this: Response) => Promise<unknown> =
+          responsePrototype.json
+        const jsonTiming = spyOn(responsePrototype, "json").mockImplementation(
+          function (this: Response) {
+            return parseJson.call(this).then((result) => {
+              now = 1120
+              return result
+            })
+          },
+        )
+        installFetchMock((url) => {
+          if (!url.endsWith(scenario.endpoint)) {
+            return Promise.resolve(
+              jsonResponse({ itemsReceived: 1, itemsAccepted: 1 }),
+            )
+          }
+          now = 1030
+          return Promise.resolve(jsonResponse(scenario.response))
+        })
+        try {
+          const result = await scenario.call(stream)
+          if (!stream)
+            expect(result).toMatchObject({ id: scenario.response.id })
+          await flushMicrotasks()
+          const envelopes = telemetryCalls().flatMap(
+            (call) =>
+              JSON.parse(
+                call.options?.body as string,
+              ) as Array<TelemetryEnvelope>,
+          )
+          const event = envelopes.find(
+            (envelope) =>
+              envelope.data.baseData.name === "copilot-chat/response.success",
+          )
+          if (!event) throw new Error("Successful response telemetry missing")
+          expect(event.data.baseData.properties.apiType).toBe(scenario.apiType)
+          expect(event.data.baseData.measurements?.timeToFirstToken).toBe(30)
+          expect(event.data.baseData.measurements?.timeToComplete).toBe(
+            stream ? 30 : 120,
+          )
+        } finally {
+          jsonTiming.mockRestore()
+          clock.mockRestore()
+        }
+      })
+    }
+
+    it(`reports ${scenario.apiType} for an upstream HTTP error`, async () => {
+      mockTelemetryEnabled = true
+      installFetchMock((url) =>
+        Promise.resolve(
+          url.endsWith(scenario.endpoint) ?
+            jsonResponse(
+              { error: { message: "service unavailable" } },
+              { status: 503 },
+            )
+          : jsonResponse({ itemsReceived: 1, itemsAccepted: 1 }),
+        ),
+      )
+      let upstreamError: unknown
+      try {
+        await scenario.call(false)
+      } catch (error) {
+        upstreamError = error
+      }
+      expect(upstreamError).toBeInstanceOf(HTTPError)
+      await flushMicrotasks()
+      const envelopes = telemetryCalls().flatMap(
+        (call) =>
+          JSON.parse(call.options?.body as string) as Array<TelemetryEnvelope>,
+      )
+      const event = envelopes.find(
+        (envelope) =>
+          envelope.data.baseData.name === "copilot-chat/response.error",
+      )
+      if (!event) throw new Error("Failed response telemetry missing")
+      expect(event.data.baseData.properties.apiType).toBe(scenario.apiType)
+      expect(event.data.baseData.measurements?.status_code).toBe(503)
+    })
+  }
 })
