@@ -4,7 +4,9 @@ import { z } from "zod"
 
 import {
   createProbeCondition,
+  pairingSourceForProbe,
   type ProbeCondition,
+  type ProbeDiscountSource,
 } from "~/lib/auto-probe-prompts"
 import { writeFileAtomically } from "~/lib/storage/atomic-file"
 import { PATHS } from "~/lib/storage/paths"
@@ -32,21 +34,40 @@ export interface ProbeHistoryStore {
   flush(): Promise<void>
 }
 
-const conditionSchema = z.discriminatedUnion("source", [
-  z.object({
-    id: z.string().regex(/^[a-f0-9]{64}$/),
-    source: z.literal("auto"),
-    tier: z.enum(["efficiency", "balance", "intelligence", "fast"]),
-    prompt: z.string(),
-  }),
-  z.object({
-    id: z.string().regex(/^[a-f0-9]{64}$/),
-    source: z.literal("fusion"),
-    planVersion: z.enum(["1", "2"]),
-    fusionMode: z.literal("hydrafusion"),
-    prompt: z.string(),
-  }),
+const ordinaryAutoConditionSchema = z.object({
+  id: z.string().regex(/^[a-f0-9]{64}$/),
+  source: z.literal("auto"),
+  tier: z.enum(["efficiency", "balance", "intelligence", "fast"]),
+  fusion: z.undefined().optional(),
+  expectedDiscount: z.literal(10).default(10),
+  prompt: z.string(),
+})
+const fusionStandardConditionSchema = z.object({
+  id: z.string().regex(/^[a-f0-9]{64}$/),
+  source: z.literal("auto"),
+  tier: z.enum(["balance", "intelligence", "fast"]),
+  fusion: z.literal(true),
+  expectedDiscount: z.union([z.literal(10), z.literal(30)]).default(30),
+  prompt: z.string(),
+})
+const fusionConditionSchema = z.object({
+  id: z.string().regex(/^[a-f0-9]{64}$/),
+  source: z.literal("fusion"),
+  planVersion: z.enum(["1", "2"]),
+  fusionMode: z.enum(["hydrafusion", "hydrafusion-max"]),
+  expectedDiscount: z.union([z.literal(10), z.literal(30)]).default(30),
+  prompt: z.string(),
+})
+const conditionSchema = z.union([
+  ordinaryAutoConditionSchema,
+  fusionStandardConditionSchema,
+  fusionConditionSchema,
 ])
+const supportsProbePlan = (condition: ProbeCondition): boolean =>
+  condition.source !== "fusion"
+  || condition.fusionMode !== "hydrafusion-max"
+  || condition.planVersion === "1"
+
 const modelIdSchema = z.string().refine((value) => value.trim().length > 0)
 const metadataShape = {
   observedAt: z.iso.datetime({ offset: true }),
@@ -67,7 +88,7 @@ const metadataShape = {
     .optional(),
 }
 const observationSchema = z.object({
-  condition: conditionSchema,
+  condition: conditionSchema.refine(supportsProbePlan),
   ...metadataShape,
 })
 const runSchema = z
@@ -85,10 +106,13 @@ const conditionsFileSchema = z
   .object({
     schemaVersion: z.literal(1),
     conditions: z.array(
-      z.discriminatedUnion("source", [
-        conditionSchema.options[0].strict(),
-        conditionSchema.options[1].strict(),
-      ]),
+      z
+        .union([
+          ordinaryAutoConditionSchema.strict(),
+          fusionStandardConditionSchema.strict(),
+          fusionConditionSchema.strict(),
+        ])
+        .refine(supportsProbePlan),
     ),
   })
   .strict()
@@ -170,6 +194,123 @@ const observationKey = (observation: ProbeObservation): string => {
   })
 }
 
+const readWriterConditions = async (
+  filePath: string,
+  secrets: ReadonlyArray<string>,
+) => {
+  const text = await optionalRead(filePath)
+  const conditions = new Map<string, ProbeCondition>()
+  if (text === undefined) return { conditions, text }
+  const file = parseFile(text, conditionsFileSchema, filePath)
+  for (const condition of file.conditions) {
+    validateCondition(condition, secrets)
+    Object.freeze(condition)
+    conditions.set(condition.id, condition)
+  }
+  return { conditions, text }
+}
+
+const readRunFile = async ({
+  runPath,
+  runName,
+  conditions,
+  observations,
+  secrets,
+}: {
+  runPath: string
+  runName: string
+  conditions: ReadonlyMap<string, ProbeCondition>
+  observations: Map<string, ProbeObservation>
+  secrets: ReadonlyArray<string>
+}): Promise<void> => {
+  if (!/^\d{4}-\d{2}-\d{2}\.jsonl$/.test(runName)) {
+    throw new Error(`Invalid probe history file: ${runPath}`)
+  }
+  const lines = await optionalRead(runPath)
+  if (lines === undefined) return
+  for (const line of lines.split("\n")) {
+    if (!line) continue
+    const record = parseFile(line, runSchema, runPath)
+    const { conditionId, ...metadata } = record
+    const condition = conditions.get(conditionId)
+    if (
+      condition === undefined
+      || !record.observedAt.endsWith("Z")
+      || record.observedAt.slice(0, 10) !== runName.slice(0, 10)
+    ) {
+      throw new Error(`Invalid probe history file: ${runPath}`)
+    }
+    assertNoSecrets(JSON.stringify(record), secrets)
+    const observation: ProbeObservation = { condition, ...metadata }
+    observations.set(observationKey(observation), observation)
+  }
+}
+
+const readWriterRuns = async ({
+  directory,
+  conditions,
+  observations,
+  secrets,
+}: {
+  directory: string
+  conditions: ReadonlyMap<string, ProbeCondition>
+  observations: Map<string, ProbeObservation>
+  secrets: ReadonlyArray<string>
+}): Promise<void> => {
+  const runsDirectory = path.join(directory, "runs")
+  const runs = (await optionalEntries(runsDirectory))
+    .filter((run) => run.isFile() && run.name.endsWith(".jsonl"))
+    .sort((left, right) => left.name.localeCompare(right.name))
+  for (const run of runs) {
+    await readRunFile({
+      runPath: path.join(runsDirectory, run.name),
+      runName: run.name,
+      conditions,
+      observations,
+      secrets,
+    })
+  }
+}
+
+const readHistory = async ({
+  instanceDirectory,
+  writer,
+  secrets,
+}: {
+  instanceDirectory: string
+  writer: string
+  secrets: ReadonlyArray<string>
+}) => {
+  const conditions = new Map<string, ProbeCondition>()
+  const observations = new Map<string, ProbeObservation>()
+  let ownedConditions = new Map<string, ProbeCondition>()
+  let ownedFile: string | undefined
+  const writers = (await optionalEntries(instanceDirectory))
+    .filter((entry) => entry.isDirectory() && safeWriter.test(entry.name))
+    .sort((left, right) => left.name.localeCompare(right.name))
+  for (const entry of writers) {
+    const directory = path.join(instanceDirectory, entry.name)
+    const loaded = await readWriterConditions(
+      path.join(directory, "conditions.json"),
+      secrets,
+    )
+    if (entry.name === writer) {
+      ownedFile = loaded.text
+      ownedConditions = loaded.conditions
+    }
+    for (const condition of loaded.conditions.values()) {
+      conditions.set(condition.id, condition)
+    }
+    await readWriterRuns({
+      directory,
+      conditions: loaded.conditions,
+      observations,
+      secrets,
+    })
+  }
+  return { conditions, observations, ownedConditions, ownedFile }
+}
+
 export const openProbeHistory = async ({
   instanceId,
   writer = "runtime",
@@ -189,59 +330,9 @@ export const openProbeHistory = async ({
   const instanceDirectory = path.join(root, instanceId)
   const writerDirectory = path.join(instanceDirectory, writer)
   const conditionsPath = path.join(writerDirectory, "conditions.json")
-  const conditions = new Map<string, ProbeCondition>()
-  const observations = new Map<string, ProbeObservation>()
-  const ownedConditions = new Map<string, ProbeCondition>()
-  let ownedFile: string | undefined
-  const writers = (await optionalEntries(instanceDirectory))
-    .filter((entry) => entry.isDirectory() && safeWriter.test(entry.name))
-    .sort((left, right) => left.name.localeCompare(right.name))
-
-  for (const entry of writers) {
-    const directory = path.join(instanceDirectory, entry.name)
-    const filePath = path.join(directory, "conditions.json")
-    const text = await optionalRead(filePath)
-    const writerConditions = new Map<string, ProbeCondition>()
-    if (text !== undefined) {
-      const file = parseFile(text, conditionsFileSchema, filePath)
-      if (entry.name === writer) ownedFile = text
-      for (const condition of file.conditions) {
-        validateCondition(condition, secrets)
-        Object.freeze(condition)
-        conditions.set(condition.id, condition)
-        writerConditions.set(condition.id, condition)
-        if (entry.name === writer) ownedConditions.set(condition.id, condition)
-      }
-    }
-    const runsDirectory = path.join(directory, "runs")
-    const runs = (await optionalEntries(runsDirectory))
-      .filter((run) => run.isFile() && run.name.endsWith(".jsonl"))
-      .sort((left, right) => left.name.localeCompare(right.name))
-    for (const run of runs) {
-      const runPath = path.join(runsDirectory, run.name)
-      if (!/^\d{4}-\d{2}-\d{2}\.jsonl$/.test(run.name)) {
-        throw new Error(`Invalid probe history file: ${runPath}`)
-      }
-      const lines = await optionalRead(runPath)
-      if (lines === undefined) continue
-      for (const line of lines.split("\n")) {
-        if (!line) continue
-        const record = parseFile(line, runSchema, runPath)
-        const { conditionId, ...metadata } = record
-        const condition = writerConditions.get(conditionId)
-        if (
-          condition === undefined
-          || !record.observedAt.endsWith("Z")
-          || record.observedAt.slice(0, 10) !== run.name.slice(0, 10)
-        ) {
-          throw new Error(`Invalid probe history file: ${runPath}`)
-        }
-        assertNoSecrets(JSON.stringify(record), secrets)
-        const observation: ProbeObservation = { condition, ...metadata }
-        observations.set(observationKey(observation), observation)
-      }
-    }
-  }
+  const history = await readHistory({ instanceDirectory, writer, secrets })
+  const { conditions, observations, ownedConditions } = history
+  let ownedFile = history.ownedFile
 
   let queue: Promise<void> = Promise.resolve()
   const store: ProbeHistoryStore = {
@@ -318,27 +409,22 @@ export const openProbeHistory = async ({
   return store
 }
 
-export const getRankedProbeConditions = ({
+const collectObservedConditions = ({
   source,
-  conditions,
   observations,
-  missingModels,
+  missing,
+  candidates,
 }: {
-  source: ProbeCondition["source"]
-  conditions: ReadonlyArray<ProbeCondition>
+  source: ProbeDiscountSource
   observations: ReadonlyArray<ProbeObservation>
-  missingModels: ReadonlyArray<string>
-}): Array<ProbeCondition> => {
-  const missing = new Set(missingModels)
+  missing: ReadonlySet<string>
+  candidates: Map<string, ProbeCondition>
+}) => {
   const relevant = new Set<string>()
   const observed = new Set<string>()
-  const candidates = new Map<string, ProbeCondition>()
-  for (const condition of conditions) {
-    if (condition.source === source) candidates.set(condition.id, condition)
-  }
   for (const observation of observations) {
     const condition = observation.condition
-    if (condition.source !== source) continue
+    if (pairingSourceForProbe(condition) !== source) continue
     observed.add(condition.id)
     if (!candidates.has(condition.id)) candidates.set(condition.id, condition)
     if (
@@ -348,14 +434,13 @@ export const getRankedProbeConditions = ({
       relevant.add(condition.id)
     }
   }
-  const historical: Array<ProbeCondition> = []
-  const novel: Array<ProbeCondition> = []
-  const previous: Array<ProbeCondition> = []
-  for (const condition of candidates.values()) {
-    if (relevant.has(condition.id)) historical.push(condition)
-    else (observed.has(condition.id) ? previous : novel).push(condition)
-  }
-  const ordinary = [...novel, ...previous]
+  return { relevant, observed }
+}
+
+const interleaveProbeConditions = (
+  historical: ReadonlyArray<ProbeCondition>,
+  ordinary: ReadonlyArray<ProbeCondition>,
+): Array<ProbeCondition> => {
   const ranked: Array<ProbeCondition> = []
   for (
     let index = 0;
@@ -366,4 +451,37 @@ export const getRankedProbeConditions = ({
     if (ordinary[index]) ranked.push(ordinary[index])
   }
   return ranked
+}
+
+export const getRankedProbeConditions = ({
+  source,
+  conditions,
+  observations,
+  missingModels,
+}: {
+  source: ProbeDiscountSource
+  conditions: ReadonlyArray<ProbeCondition>
+  observations: ReadonlyArray<ProbeObservation>
+  missingModels: ReadonlyArray<string>
+}): Array<ProbeCondition> => {
+  const missing = new Set(missingModels)
+  const candidates = new Map<string, ProbeCondition>()
+  for (const condition of conditions) {
+    if (pairingSourceForProbe(condition) === source)
+      candidates.set(condition.id, condition)
+  }
+  const { relevant, observed } = collectObservedConditions({
+    source,
+    observations,
+    missing,
+    candidates,
+  })
+  const historical: Array<ProbeCondition> = []
+  const novel: Array<ProbeCondition> = []
+  const previous: Array<ProbeCondition> = []
+  for (const condition of candidates.values()) {
+    if (relevant.has(condition.id)) historical.push(condition)
+    else (observed.has(condition.id) ? previous : novel).push(condition)
+  }
+  return interleaveProbeConditions(historical, [...novel, ...previous])
 }

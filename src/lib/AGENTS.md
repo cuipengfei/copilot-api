@@ -17,7 +17,7 @@
 | Compact 标记 | `compact.ts` | compact request / auto-continue prompt 常量 |
 | Subagent 标记类型 | `subagent.ts` | `__SUBAGENT_MARKER__` 前缀常量与类型；真正解析在 `src/routes/messages/subagent-marker.ts` |
 | Auto-session 管理 | `auto-session.ts` | 自动会话初始化与续期逻辑 |
-| Auto-probe 条件与历史 | `auto-probe-prompts.ts`、`auto-probe-history.ts` | Auto 四档与 Fusion 双版本共用完整题面标识；按实例与写入者保存条件及 UTC 观察记录 |
+| Auto-probe 条件与历史 | `auto-probe-prompts.ts`、`auto-probe-history.ts` | 普通 Auto 四档、Fusion Standard 三档、High 双版本与 Max v1 共用完整题面标识；按实例与写入者保存条件及 UTC 观察记录 |
 | Device ID / opencode 识别 | `deviceid.ts`, `opencode.ts` | 设备指纹生成、opencode 运行模式检测 |
 | Request auth / context | `request-auth.ts`, `request-context.ts` | 请求级认证与上下文提取 |
 | Trace | `trace.ts` | 请求级 trace ID 注入 |
@@ -34,7 +34,8 @@
 - `paths.ts` 支持 `COPILOT_API_HOME` 覆盖默认目录；改路径逻辑时要兼顾 Windows/WSL 使用方式
 - `token.ts` 的刷新循环和 telemetry 初始化耦合，改认证链路时别漏 `trackAuthNewToken()` / `initTelemetry()`
 - `auto-session.ts` 保存 Auto 与 Fusion 的当前配对，按上游实际模型 ID 供请求选择，保持客户端 model。Fusion 按计划中的不同模型分别登记，仅用于模型目录支持的 HTTP `/responses`；有效 Fusion 优先于 Auto，两个来源都无有效配对时不附 session token。
-- `auto-session.ts` 的目标读取统一使用 `getWantedModels()`；Auto 与 Fusion 分别补采缺失来源，额外有效模型保留配对供同模型请求使用。单飞标识包含当前身份与完整条件 ID；每轮 Auto 各档最多 10 次、Fusion 最多 10 次，条件去重并继续轮换，90 秒冷却结束后自主恢复。启动重放完整历史条件以取得当前 token，历史观察不计入当前覆盖。等待者最多等待 2 秒并持有进入时的凭据快照；凭据轮换和 stop 唤醒等待者，旧身份迟到响应不登记或学习。生产启动传入监听实例 ID，退出时等待当前工作与历史保存。
+- `auto-session.ts` 的目标读取统一使用 `getWantedModels()`；Auto 与 Fusion 分别补采缺失来源，额外有效模型保留配对供同模型请求使用。单飞标识包含当前身份与完整条件 ID；每轮普通 Auto 各档最多 10 次、合计最多 40 次；Fusion 按当轮去重候选总数补采，目标齐备立即结束，后续轮次继续轮换起始条件，90 秒冷却结束后自主恢复。启动重放完整历史条件以取得当前 token，历史观察不计入当前覆盖。等待者最多等待 2 秒并持有进入时的凭据快照；凭据轮换和 stop 唤醒等待者，旧身份迟到响应不登记或学习。生产启动传入监听实例 ID，退出时等待当前工作与历史保存。
+- 探测条件以 expectedDiscount 区分 10% 与 30% 配对来源，source 仅表示实际选模接口；Standard 只使用 balance、intelligence、fast，Max 只使用 plan_version=1。403 仅暂停当前凭据的选模通路；动态连续 100 行源码和四道跨文件源码题供 Auto、Fusion 共用。
 - `Copilot-Session-Token` 可能与生成它时的 Copilot auth/account context 绑定；改 `token.ts`、认证刷新或账户切换逻辑时，要检查 auto-session cache 是否需要失效，避免旧 session token 搭配新 auth token。
 - `smart-agent.ts` 只缓存 `forceAgent=true` 之决断；“尚在预算之内”不作缓存之项
 - `api-config.ts` 组装请求头后被三个 `create-*` service 共享调用，不要在 service 内重复构造 header

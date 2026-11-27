@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto"
 
 import type { AutoSelectionTier } from "~/services/copilot/get-auto-selection"
+import type { FusionMode } from "~/services/copilot/get-fusion-selection"
 
 import { getConfig } from "~/lib/config/config-store"
 
@@ -37,48 +38,129 @@ const SEED_PROMPTS = [
 ]
 
 export type FusionPlanVersion = "1" | "2"
+export type ExpectedDiscount = 10 | 30
+export type ProbeDiscountSource = "fusion" | "auto"
 
+export const pairingSourceForProbe = (probe: {
+  expectedDiscount: ExpectedDiscount
+}): ProbeDiscountSource => (probe.expectedDiscount === 30 ? "fusion" : "auto")
+
+export type FusionStandardTier = Exclude<AutoSelectionTier, "efficiency">
+
+export type AutoProbeConditionInput = {
+  source: "auto"
+  tier: AutoSelectionTier
+  prompt: string
+  fusion?: undefined
+  expectedDiscount?: 10
+}
+export type FusionStandardProbeConditionInput = {
+  source: "auto"
+  tier: FusionStandardTier
+  prompt: string
+  fusion: true
+  expectedDiscount?: ExpectedDiscount
+}
+export type FusionProbeConditionInput = {
+  source: "fusion"
+  planVersion: FusionPlanVersion
+  fusionMode: FusionMode
+  prompt: string
+  expectedDiscount?: ExpectedDiscount
+}
 export type ProbeConditionInput =
-  | { source: "auto"; tier: AutoSelectionTier; prompt: string }
-  | {
-      source: "fusion"
-      planVersion: FusionPlanVersion
-      fusionMode: "hydrafusion"
-      prompt: string
-    }
+  | AutoProbeConditionInput
+  | FusionStandardProbeConditionInput
+  | FusionProbeConditionInput
 
-export type ProbeCondition = ProbeConditionInput & { id: string }
+export type ProbeCondition = ProbeConditionInput & {
+  id: string
+  expectedDiscount: ExpectedDiscount
+}
+
+function completeProbeCondition<
+  T extends ProbeConditionInput & { expectedDiscount: ExpectedDiscount },
+>(parameters: T, tuple: Array<string | number | boolean>): T & { id: string } {
+  const id = createHash("sha256").update(JSON.stringify(tuple)).digest("hex")
+  return { ...parameters, id }
+}
 
 export function createProbeCondition(
-  input: Extract<ProbeConditionInput, { source: "auto" }>,
-): Extract<ProbeCondition, { source: "auto" }>
+  input: AutoProbeConditionInput,
+): AutoProbeConditionInput & { id: string; expectedDiscount: 10 }
 export function createProbeCondition(
-  input: Extract<ProbeConditionInput, { source: "fusion" }>,
-): Extract<ProbeCondition, { source: "fusion" }>
+  input: FusionStandardProbeConditionInput,
+): FusionStandardProbeConditionInput & {
+  id: string
+  expectedDiscount: ExpectedDiscount
+}
+export function createProbeCondition(
+  input: FusionProbeConditionInput,
+): FusionProbeConditionInput & {
+  id: string
+  expectedDiscount: ExpectedDiscount
+}
 export function createProbeCondition(input: ProbeConditionInput): ProbeCondition
 export function createProbeCondition(
   input: ProbeConditionInput,
 ): ProbeCondition {
-  const parameters: ProbeConditionInput =
-    input.source === "auto" ?
-      { source: "auto", tier: input.tier, prompt: input.prompt }
-    : {
-        source: "fusion",
-        fusionMode: input.fusionMode,
-        planVersion: input.planVersion,
+  if (input.source === "auto") {
+    if (!input.fusion) {
+      const parameters = {
+        source: input.source,
+        tier: input.tier,
         prompt: input.prompt,
+        expectedDiscount: 10 as const,
       }
-  const tuple =
-    parameters.source === "auto" ?
-      [parameters.source, parameters.tier, parameters.prompt]
-    : [
-        parameters.source,
-        parameters.fusionMode,
-        parameters.planVersion,
-        parameters.prompt,
-      ]
-  const id = createHash("sha256").update(JSON.stringify(tuple)).digest("hex")
-  return { ...parameters, id }
+      return completeProbeCondition(parameters, [
+        "auto",
+        input.tier,
+        input.prompt,
+      ])
+    }
+    if ((input.tier as AutoSelectionTier) === "efficiency") {
+      throw new TypeError(
+        "Fusion Standard does not support the efficiency tier",
+      )
+    }
+    const expectedDiscount = input.expectedDiscount ?? 30
+    const parameters = {
+      source: input.source,
+      tier: input.tier,
+      prompt: input.prompt,
+      fusion: true as const,
+      expectedDiscount,
+    }
+    return completeProbeCondition(parameters, [
+      "auto",
+      input.tier,
+      input.prompt,
+      true,
+      expectedDiscount,
+    ])
+  }
+
+  if (input.fusionMode === "hydrafusion-max" && input.planVersion !== "1") {
+    throw new TypeError("Max Fusion only supports plan version 1")
+  }
+  const expectedDiscount = input.expectedDiscount ?? 30
+  const parameters = {
+    source: input.source,
+    fusionMode: input.fusionMode,
+    planVersion: input.planVersion,
+    prompt: input.prompt,
+    expectedDiscount,
+  }
+  const tuple: Array<string | number | boolean> = [
+    "fusion",
+    input.fusionMode,
+    input.planVersion,
+    input.prompt,
+  ]
+  if (input.fusionMode !== "hydrafusion" || expectedDiscount !== 30) {
+    tuple.push(expectedDiscount)
+  }
+  return completeProbeCondition(parameters, tuple)
 }
 
 const VARIETY_PROMPTS = [
@@ -92,10 +174,23 @@ const VARIETY_PROMPTS = [
 const SHARED_PROMPTS = [
   ...new Set([...SEED_PROMPTS, ...INTELLIGENCE_PROMPTS, ...VARIETY_PROMPTS]),
 ]
-const CONDITIONS = SHARED_PROMPTS.flatMap((prompt): Array<ProbeCondition> => [
-  ...(["efficiency", "balance", "intelligence", "fast"] as const).map((tier) =>
+export const createProbeConditionsForPrompt = (
+  prompt: string,
+  tiers: ReadonlyArray<AutoSelectionTier> = [
+    "efficiency",
+    "balance",
+    "intelligence",
+    "fast",
+  ],
+): Array<ProbeCondition> => [
+  ...tiers.map((tier) =>
     createProbeCondition({ source: "auto", tier, prompt }),
   ),
+  ...tiers
+    .filter((tier): tier is FusionStandardTier => tier !== "efficiency")
+    .map((tier) =>
+      createProbeCondition({ source: "auto", tier, fusion: true, prompt }),
+    ),
   ...(["1", "2"] as const).map((planVersion) =>
     createProbeCondition({
       source: "fusion",
@@ -104,7 +199,17 @@ const CONDITIONS = SHARED_PROMPTS.flatMap((prompt): Array<ProbeCondition> => [
       prompt,
     }),
   ),
-])
+  createProbeCondition({
+    source: "fusion",
+    planVersion: "1",
+    fusionMode: "hydrafusion-max",
+    prompt,
+  }),
+]
+
+const CONDITIONS = SHARED_PROMPTS.flatMap((prompt) =>
+  createProbeConditionsForPrompt(prompt),
+)
 
 export const getProbeConditions = (): Array<ProbeCondition> =>
   CONDITIONS.map((condition) => ({ ...condition }))
