@@ -111,7 +111,7 @@ const createErrorFetchMock = (status: number) =>
       status,
       json: () => Promise.resolve({ error: "upstream error" }),
       text: () => Promise.resolve('{"itemsReceived":0,"itemsAccepted":0}'),
-      headers: {},
+      headers: new Headers(),
       clone: function () {
         return this
       },
@@ -146,18 +146,10 @@ beforeEach(() => {
   ;(globalThis as unknown as { fetch: typeof fetch }).fetch = fetchMock
 
   // Capture modelCallId using spyOn (can be restored by mock.restore())
-  spyOn(telemetryModule, "trackRequestSent").mockImplementation(
-    (
-      _model: string,
-      _accountType: string,
-      requestId?: string,
-      modelCallId?: string,
-      // eslint-disable-next-line max-params
-    ) => {
-      capturedTrackRequestSentRequestId = requestId
-      capturedModelCallId = modelCallId
-    },
-  )
+  spyOn(telemetryModule, "trackRequestSent").mockImplementation((options) => {
+    capturedTrackRequestSentRequestId = options.context.requestId
+    capturedModelCallId = options.modelCallId
+  })
   spyOn(telemetryModule, "trackResponseSuccess").mockImplementation(() => {})
   spyOn(telemetryModule, "trackResponseError").mockImplementation(() => {})
   spyOn(telemetryModule, "trackPanelRequest").mockImplementation(() => {})

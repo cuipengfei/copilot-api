@@ -72,6 +72,12 @@ export interface TelemetryRequestContext {
   linesRemoved: number
   editCount: number
   editLineCount: number
+  conversationId: string
+  sampled: boolean
+  issuedAt: number
+  gitHubRequestId?: string
+  copilotServiceRequestId?: string
+  gitHubCopilotRequestTe?: string
 }
 
 // Allowed property keys (non-sensitive data only)

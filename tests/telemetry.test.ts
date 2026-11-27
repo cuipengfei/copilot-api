@@ -1,4 +1,13 @@
-import { describe, it, expect, beforeEach, afterEach, mock } from "bun:test"
+import {
+  describe,
+  it,
+  expect,
+  beforeEach,
+  afterEach,
+  mock,
+  spyOn,
+} from "bun:test"
+import consola from "consola"
 import { mkdtempSync, readdirSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -76,6 +85,7 @@ import {
   TELEMETRY_ENVELOPE_NAME,
   TELEMETRY_SDK_VERSION,
 } from "../src/services/telemetry/types"
+import { createMockRequestContext } from "../src/services/telemetry/mock-values"
 
 // Track fetch calls
 let fetchCalls: Array<{
@@ -295,7 +305,11 @@ describe("telemetry: trackEvent", () => {
       "model",
       "sku",
       "status_code",
+      "unique_id",
     ])
+    expect(props.unique_id).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+    )
     expect(props.model).toBe("gpt-4")
     expect(props.status_code).toBe("200")
     expect(props.common_extname).toBe("copilot-chat")
@@ -319,7 +333,6 @@ describe("telemetry: trackEvent", () => {
       "common_os",
       "common_platformversion",
       "common_arch",
-      "unique_id",
       "organizations_list",
       "enterprise_list",
     ]) {
@@ -327,7 +340,35 @@ describe("telemetry: trackEvent", () => {
       expect(key in props).toBe(false)
     }
     expect(readdirSync(appDir)).toEqual([])
-    expect(env.data.baseData.measurements).toEqual({ response_time: 1500 })
+    expect(env.data.baseData.measurements).toEqual({
+      response_time: 1500,
+      timeSinceIssuedMs: 0,
+    })
+  })
+
+  it("logs accepted telemetry on first success and every 10th success per event", async () => {
+    mockTelemetryEnabled = true
+    initTelemetry("tid=log-test;exp=1;sku=pro")
+    installFetchMock()
+    const infoSpy = spyOn(consola, "info").mockImplementation(
+      Object.assign(() => {}, { raw: () => {} }),
+    )
+
+    for (let i = 0; i < 21; i++) {
+      trackEvent("copilot-chat/panel_request", {})
+    }
+    for (let i = 0; i < 2; i++) {
+      trackEvent("copilot-chat/response.success", {})
+    }
+    await flushMicrotasks()
+
+    expect(infoSpy.mock.calls).toEqual([
+      ["[telemetry] accepted:", "copilot-chat/panel_request", "count=1"],
+      ["[telemetry] accepted:", "copilot-chat/panel_request", "count=10"],
+      ["[telemetry] accepted:", "copilot-chat/panel_request", "count=20"],
+      ["[telemetry] accepted:", "copilot-chat/response.success", "count=1"],
+    ])
+    expect(infoSpy).toHaveBeenCalledTimes(4)
   })
 })
 
@@ -335,12 +376,28 @@ describe("telemetry: trackEvent", () => {
 // request / response wrappers
 // ---------------------------------------------------------------------------
 
+const sampledResponse = {
+  sampled: true,
+  conversationId: "conversation-response",
+} as const
+
 describe("telemetry: request/response wrappers", () => {
   it("trackRequestSent sends correct event with enhanced properties", async () => {
     mockTelemetryEnabled = true
     installFetchMock()
 
-    trackRequestSent("claude-3.5-sonnet", "individual", "req-abc-123")
+    const context = {
+      ...createMockRequestContext("req-abc-123", "claude-3.5-sonnet"),
+      sampled: true,
+      conversationId: "conversation-req-abc",
+      issuedAt: 1000,
+      gitHubRequestId: "gh-request",
+      copilotServiceRequestId: "service-request",
+      gitHubCopilotRequestTe: "te-value",
+    }
+    spyOn(Date, "now").mockReturnValue(1025)
+    Math.random = () => 0.99
+    trackRequestSent({ context, modelCallId: "model-call-abc" })
     await flushMicrotasks()
 
     const env = getTelemetryEnvelopes().find(
@@ -360,19 +417,27 @@ describe("telemetry: request/response wrappers", () => {
     expect(typeof props.uiKind).toBe("string")
     expect(props.transport).toBe("http")
     expect(props.headerRequestId).toBe("req-abc-123")
+    expect(props.conversationId).toBe("conversation-req-abc")
+    expect(props.modelCallId).toBe("model-call-abc")
+    expect(props.gitHubRequestId).toBe("gh-request")
+    expect(props.copilotServiceRequestId).toBe("service-request")
+    expect(props.gitHubCopilotRequestTe).toBe("te-value")
     expect(props.request_option_model).toBe('"claude-3.5-sonnet"')
     expect("request.option.model" in props).toBe(false)
     const m = env.data.baseData.measurements
     expect(m).toBeDefined()
     if (!m) throw new TypeError("measurements missing for request.sent")
     expect(m.maxTokenWindow).toBe(128000)
+    expect(m).toEqual({ maxTokenWindow: 128000, timeSinceIssuedMs: 25 })
   })
 
   it("trackResponseSuccess sends correct event with full measurements", async () => {
     mockTelemetryEnabled = true
     installFetchMock()
 
+    Math.random = () => 0.99
     trackResponseSuccess({
+      ...sampledResponse,
       model: "gpt-4",
       durationMs: 1234,
       requestId: "req-xyz-789",
@@ -414,7 +479,11 @@ describe("telemetry: request/response wrappers", () => {
     mockTelemetryEnabled = true
     installFetchMock()
 
-    trackResponseSuccess({ model: "gpt-4", durationMs: 800 })
+    trackResponseSuccess({
+      ...sampledResponse,
+      model: "gpt-4",
+      durationMs: 800,
+    })
     await flushMicrotasks()
 
     const env = findEnvelopeByName("copilot-chat/response.success")
@@ -434,7 +503,9 @@ describe("telemetry: request/response wrappers", () => {
     mockTelemetryEnabled = true
     installFetchMock()
 
+    Math.random = () => 0.99
     trackResponseError({
+      ...sampledResponse,
       model: "gpt-4",
       durationMs: 500,
       statusCode: 429,
@@ -470,12 +541,14 @@ describe("telemetry: request/response wrappers", () => {
       installFetchMock()
       const requestId = `req-api-${apiType}`
       trackResponseSuccess({
+        ...sampledResponse,
         model: "gpt-test",
         durationMs: 100,
         apiType,
         requestId,
       })
       trackResponseError({
+        ...sampledResponse,
         model: "gpt-test",
         durationMs: 100,
         statusCode: 503,
@@ -499,7 +572,12 @@ describe("telemetry: request/response wrappers", () => {
       mockTelemetryEnabled = true
       installFetchMock()
       const requestId = `req-short-${durationMs}`
-      trackResponseSuccess({ model: "gpt-test", durationMs, requestId })
+      trackResponseSuccess({
+        ...sampledResponse,
+        model: "gpt-test",
+        durationMs,
+        requestId,
+      })
       await flushMicrotasks()
       const measurements = findTelemetryEnvelope(
         "copilot-chat/response.success",
@@ -523,5 +601,28 @@ describe("telemetry: request/response wrappers", () => {
     expect(env.data.baseData.name).toBe("copilot-chat/auth.new_token")
     expect(env.data.baseData.properties.trackingId).toBeUndefined()
     expect(typeof env.data.baseData.properties.telemetryEnabled).toBe("string")
+  })
+
+  it("does not send unsampled responses even when random sampling would pass", async () => {
+    mockTelemetryEnabled = true
+    installFetchMock()
+    Math.random = () => 0.01
+
+    trackResponseSuccess({
+      ...sampledResponse,
+      sampled: false,
+      model: "gpt-test",
+      durationMs: 10,
+    })
+    trackResponseError({
+      ...sampledResponse,
+      sampled: false,
+      model: "gpt-test",
+      durationMs: 10,
+      statusCode: 503,
+    })
+    await flushMicrotasks()
+
+    expect(getTelemetryEnvelopes().length).toBe(0)
   })
 })

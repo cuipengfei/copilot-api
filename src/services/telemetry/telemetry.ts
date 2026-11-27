@@ -3,7 +3,11 @@ import { getConfig } from "~/lib/config"
 import { state } from "~/lib/state"
 
 import { getCommonProperties } from "./identity"
-import { nextUiKind, randomFeedbackDelay } from "./mock-values"
+import {
+  nextUiKind,
+  randomFeedbackDelay,
+  type UpstreamTelemetryHeaders,
+} from "./mock-values"
 import {
   DEFAULT_TELEMETRY_ENDPOINT,
   EVENT_AUTH_NEW_TOKEN,
@@ -35,6 +39,7 @@ import {
 let _tid: string | null = null
 let _endpoint: string = DEFAULT_TELEMETRY_ENDPOINT
 let _sku: string = ""
+const acceptedCounts = new Map<string, number>()
 
 const buildTelemetryHeaders = (): Record<string, string> => ({
   "Content-Type": "application/json",
@@ -65,9 +70,10 @@ function createEnvelope(
             vsCodeVersion: state.vsCodeVersion ?? "",
             sku: _sku,
           }),
+          unique_id: crypto.randomUUID(),
           ...properties,
         },
-        measurements,
+        measurements: { timeSinceIssuedMs: 0, ...measurements },
       },
     },
   }
@@ -104,6 +110,12 @@ function sendTelemetryEnvelope(
         )
       } else if (accepted <= 0) {
         consola.warn("[telemetry] rejected:", eventName, `accepted=${accepted}`)
+      } else {
+        const count = (acceptedCounts.get(eventName) ?? 0) + 1
+        acceptedCounts.set(eventName, count)
+        if (count === 1 || count % 10 === 0) {
+          consola.info("[telemetry] accepted:", eventName, `count=${count}`)
+        }
       }
     })
     .catch((err: unknown) => {
@@ -145,6 +157,22 @@ export function initTelemetry(copilotToken: string, endpoint?: string): void {
   const normalizedEndpoint =
     base.endsWith("/telemetry") ? base : `${base}/telemetry`
   _endpoint = normalizedEndpoint
+  acceptedCounts.clear()
+}
+
+function trackEventWithOptions(options: {
+  eventName: string
+  properties: Record<string, string>
+  measurements?: Record<string, number>
+  sampled: boolean
+}): void {
+  if (getConfig().telemetry !== true || !options.sampled) return
+
+  sendTelemetryEnvelope(
+    { endpoint: _endpoint, headers: buildTelemetryHeaders() },
+    options.eventName,
+    createEnvelope(options.eventName, options.properties, options.measurements),
+  )
 }
 
 /**
@@ -156,44 +184,72 @@ export function trackEvent(
   properties: Record<string, string>,
   measurements?: Record<string, number>,
 ): void {
-  if (getConfig().telemetry !== true) {
-    return
-  }
+  if (getConfig().telemetry !== true) return
 
-  // Sample at 30% to reduce telemetry volume
-  if (Math.random() > 0.3) {
-    return
-  }
-
-  sendTelemetryEnvelope(
-    {
-      endpoint: _endpoint,
-      headers: buildTelemetryHeaders(),
-    },
+  trackEventWithOptions({
     eventName,
-    createEnvelope(eventName, properties, measurements),
-  )
+    properties,
+    measurements,
+    sampled: Math.random() <= 0.3,
+  })
+}
+
+function upstreamTelemetryProperties(
+  headers: UpstreamTelemetryHeaders,
+): Record<string, string> {
+  return {
+    ...(headers.gitHubRequestId !== undefined ?
+      { gitHubRequestId: headers.gitHubRequestId }
+    : {}),
+    ...(headers.copilotServiceRequestId !== undefined ?
+      { copilotServiceRequestId: headers.copilotServiceRequestId }
+    : {}),
+    ...(headers.gitHubCopilotRequestTe !== undefined ?
+      { gitHubCopilotRequestTe: headers.gitHubCopilotRequestTe }
+    : {}),
+  }
+}
+
+function trackContextEvent(
+  context: TelemetryRequestContext,
+  eventName: string,
+  properties: Record<string, string>,
+  measurements?: Record<string, number>,
+): void {
+  trackEventWithOptions({
+    eventName,
+    properties: {
+      conversationId: context.conversationId,
+      ...upstreamTelemetryProperties(context),
+      ...properties,
+    },
+    measurements: {
+      ...measurements,
+      timeSinceIssuedMs: Date.now() - context.issuedAt,
+    },
+    sampled: context.sampled,
+  })
 }
 
 // --- Convenience wrappers ---
 
-// eslint-disable-next-line max-params
-export function trackRequestSent(
-  model: string,
-  _accountType: string,
-  requestId?: string,
-  modelCallId?: string,
-): void {
-  trackEvent(
+export function trackRequestSent(options: {
+  context: TelemetryRequestContext
+  modelCallId?: string
+}): void {
+  trackContextEvent(
+    options.context,
     EVENT_REQUEST_SENT,
     {
       endpoint: "completions",
       engineName: "chat",
       uiKind: nextUiKind(),
       transport: "http",
-      headerRequestId: requestId ?? "",
-      request_option_model: `"${model}"`,
-      ...(modelCallId !== undefined ? { modelCallId } : {}),
+      headerRequestId: options.context.requestId,
+      request_option_model: `"${options.context.model}"`,
+      ...(options.modelCallId !== undefined ?
+        { modelCallId: options.modelCallId }
+      : {}),
     },
     { maxTokenWindow: 128000 },
   )
@@ -208,6 +264,11 @@ export interface TrackResponseSuccessOptions {
   durationMs: number
   requestId?: string
   modelCallId?: string
+  sampled: boolean
+  conversationId: string
+  gitHubRequestId?: string
+  copilotServiceRequestId?: string
+  gitHubCopilotRequestTe?: string
   finishReason?: string
   promptTokens?: number
   completionTokens?: number
@@ -216,9 +277,9 @@ export interface TrackResponseSuccessOptions {
 }
 
 export function trackResponseSuccess(opts: TrackResponseSuccessOptions): void {
-  trackEvent(
-    EVENT_RESPONSE_SUCCESS,
-    {
+  trackEventWithOptions({
+    eventName: EVENT_RESPONSE_SUCCESS,
+    properties: {
       model: opts.model,
       modelInvoked: opts.model,
       reason: opts.finishReason ?? "stop",
@@ -230,8 +291,10 @@ export function trackResponseSuccess(opts: TrackResponseSuccessOptions): void {
       ...(opts.modelCallId !== undefined ?
         { modelCallId: opts.modelCallId }
       : {}),
+      conversationId: opts.conversationId,
+      ...upstreamTelemetryProperties(opts),
     },
-    {
+    measurements: {
       totalTokenMax: 128000,
       tokenCountMax: 8192,
       promptTokenCount: opts.promptTokens ?? 0,
@@ -244,8 +307,10 @@ export function trackResponseSuccess(opts: TrackResponseSuccessOptions): void {
         ),
       timeToComplete: opts.durationMs,
       bytesReceived: opts.bytesReceived ?? 0,
+      timeSinceIssuedMs: opts.durationMs,
     },
-  )
+    sampled: opts.sampled,
+  })
 }
 
 /** Options for tracking an error response. */
@@ -256,12 +321,17 @@ export interface TrackResponseErrorOptions {
   statusCode: number
   requestId?: string
   modelCallId?: string
+  sampled: boolean
+  conversationId: string
+  gitHubRequestId?: string
+  copilotServiceRequestId?: string
+  gitHubCopilotRequestTe?: string
 }
 
 export function trackResponseError(opts: TrackResponseErrorOptions): void {
-  trackEvent(
-    EVENT_RESPONSE_ERROR,
-    {
+  trackEventWithOptions({
+    eventName: EVENT_RESPONSE_ERROR,
+    properties: {
       model: opts.model,
       modelInvoked: opts.model,
       reason: "error",
@@ -273,13 +343,17 @@ export function trackResponseError(opts: TrackResponseErrorOptions): void {
       ...(opts.modelCallId !== undefined ?
         { modelCallId: opts.modelCallId }
       : {}),
+      conversationId: opts.conversationId,
+      ...upstreamTelemetryProperties(opts),
     },
-    {
+    measurements: {
       duration_ms: opts.durationMs,
       status_code: opts.statusCode,
       timeToComplete: opts.durationMs,
+      timeSinceIssuedMs: opts.durationMs,
     },
-  )
+    sampled: opts.sampled,
+  })
 }
 
 export function trackAuthNewToken(): void {
@@ -297,7 +371,8 @@ export function trackEditFeedback(
 ): void {
   const resolvedOutcome =
     outcome ?? (Math.random() < 0.55 ? "accepted" : "rejected")
-  trackEvent(
+  trackContextEvent(
+    context,
     EVENT_EDIT_FEEDBACK,
     {
       languageId: context.languageId,
@@ -323,7 +398,8 @@ export function trackEditHunkAction(
 ): void {
   const resolvedOutcome =
     outcome ?? (Math.random() < 0.55 ? "accepted" : "rejected")
-  trackEvent(
+  trackContextEvent(
+    context,
     EVENT_EDIT_HUNK_ACTION,
     {
       requestId: context.requestId,
@@ -345,7 +421,12 @@ export function trackEditHunkAction(
 }
 
 export function scheduleFeedbackEvents(context: TelemetryRequestContext): void {
-  if (!context.requestId || getConfig().telemetry !== true) return
+  if (
+    !context.requestId
+    || getConfig().telemetry !== true
+    || context.sampled === false
+  )
+    return
 
   setTimeout(() => {
     const outcome = Math.random() < 0.55 ? "accepted" : "rejected"
@@ -355,7 +436,8 @@ export function scheduleFeedbackEvents(context: TelemetryRequestContext): void {
 }
 
 export function trackPanelRequest(context: TelemetryRequestContext): void {
-  trackEvent(
+  trackContextEvent(
+    context,
     EVENT_PANEL_REQUEST,
     {
       requestId: context.requestId,
@@ -372,18 +454,45 @@ export function trackPanelRequest(context: TelemetryRequestContext): void {
     },
     { isAgent: context.isAgent },
   )
+  trackUserConversationMessage(context)
   trackConversationMessage(context)
+}
+
+export function trackUserConversationMessage(
+  context: TelemetryRequestContext,
+): void {
+  trackContextEvent(
+    context,
+    context.mode === "edit" ?
+      EVENT_EDITING_SESSION_MESSAGE
+    : EVENT_CONVERSATION_MESSAGE,
+    {
+      source: "user",
+      turnIndex: "0",
+      headerRequestId: context.requestId,
+      uiKind: context.mode === "edit" ? "editingSession" : "panel",
+      mode: context.mode,
+      languageId: context.languageId,
+      offTopic: "false",
+    },
+    {
+      promptTokenLen: Math.max(1, Math.floor(context.totalCharacters / 4)),
+      messageCharLen: context.totalCharacters,
+    },
+  )
 }
 
 export function trackConversationMessage(
   context: TelemetryRequestContext,
 ): void {
-  trackEvent(
+  trackContextEvent(
+    context,
     context.mode === "edit" ?
       EVENT_EDITING_SESSION_MESSAGE
     : EVENT_CONVERSATION_MESSAGE,
     {
       source: "model",
+      turnIndex: "1",
       headerRequestId: context.requestId,
       mode: context.mode,
       languageId: context.languageId,
@@ -404,7 +513,8 @@ export function trackConversationMessage(
 export function trackInlineConversationMessage(
   context: TelemetryRequestContext,
 ): void {
-  trackEvent(
+  trackContextEvent(
+    context,
     EVENT_INLINE_CONVERSATION_MESSAGE,
     {
       source: "model",
@@ -428,7 +538,8 @@ export function trackInlineConversationMessage(
 export function trackInlineConversationAccept(
   context: TelemetryRequestContext,
 ): void {
-  trackEvent(
+  trackContextEvent(
+    context,
     EVENT_INLINE_CONVERSATION_ACCEPT,
     {
       messageId: context.messageId,
@@ -454,7 +565,8 @@ export function trackInlineConversationAccept(
 export function trackConversationAcceptedCopy(
   context: TelemetryRequestContext,
 ): void {
-  trackEvent(
+  trackContextEvent(
+    context,
     EVENT_CONVERSATION_ACCEPTED_COPY,
     {
       codeBlockIndex: "0",
@@ -479,7 +591,8 @@ export function trackConversationAcceptedCopy(
 export function trackConversationAcceptedInsert(
   context: TelemetryRequestContext,
 ): void {
-  trackEvent(
+  trackContextEvent(
+    context,
     EVENT_CONVERSATION_ACCEPTED_INSERT,
     {
       codeBlockIndex: "0",
@@ -502,7 +615,8 @@ export function trackConversationAcceptedInsert(
 export function trackConversationAppliedCodeblock(
   context: TelemetryRequestContext,
 ): void {
-  trackEvent(
+  trackContextEvent(
+    context,
     EVENT_CONVERSATION_APPLIED_CODEBLOCK,
     {
       codeBlockIndex: "0",
@@ -521,7 +635,8 @@ export function trackConversationAppliedCodeblock(
 }
 
 export function trackGhostTextShown(context: TelemetryRequestContext): void {
-  trackEvent(
+  trackContextEvent(
+    context,
     EVENT_GHOST_TEXT_SHOWN,
     {
       headerRequestId: context.requestId,
@@ -536,7 +651,8 @@ export function trackGhostTextShown(context: TelemetryRequestContext): void {
 }
 
 export function trackGhostTextAccepted(context: TelemetryRequestContext): void {
-  trackEvent(
+  trackContextEvent(
+    context,
     EVENT_GHOST_TEXT_ACCEPTED,
     {
       headerRequestId: context.requestId,
@@ -553,7 +669,12 @@ export function trackGhostTextAccepted(context: TelemetryRequestContext): void {
 export function schedulePostResponseEvents(
   context: TelemetryRequestContext,
 ): void {
-  if (!context.requestId || getConfig().telemetry !== true) return
+  if (
+    !context.requestId
+    || getConfig().telemetry !== true
+    || context.sampled === false
+  )
+    return
 
   const actionRoll = Math.random()
   const actionType =

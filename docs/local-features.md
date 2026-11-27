@@ -189,9 +189,9 @@
 
 ## 8. 请求 Telemetry
 
-**使用场景**：通过 GitHub /telemetry 记录请求、响应、认证与合成交互事件，使用现有 telemetry 开关与 30% 采样。语言、模式、代码块与建议及采纳行数来自 mock-values.ts；对应账户统计按合成数据理解。
+**使用场景**：通过 GitHub /telemetry 记录请求、响应、认证与合成交互事件，使用现有 telemetry 开关与 30% 采样。语言、模式、字符、token、代码块与建议及采纳行数只使用合成统计，不读取真实提示或回复；对应账户统计按合成数据理解。
 
-**必须保留的行为**：`modelCallId` 在单次调用中保持一致；`requestId` 使用已构造的 headers；三个 Copilot service 为每次响应生成一份共享的合成上下文，使面板、消息、补全与后续采纳事件使用相同的语言、模型和代码块统计。所有事件发送到 GitHub 通道，标签仅含 `ai.user.id` 与 `ai.internal.sdkVersion`，公共属性仅含插件、编辑器版本与 sku。inlineConversation.accept 使用 headerRequestId 关联请求。
+**必须保留的行为**：请求 ID 确定后创建一次含 `sampled`、`conversationId`、`issuedAt` 的共享 context；请求、响应、panel、user/model 消息、ghost、feedback 和采纳事件共用采样决定与关联 ID，独立 auth 事件保持 30% 采样。`modelCallId` 在单次调用中保持一致，`requestId` 使用已构造的 headers，inlineConversation.accept 使用 headerRequestId 关联请求。三个 Copilot service 在上游返回后将三个真实上游响应头合入 context；缺失的头及空的 `Te` 省略。context 事件按 `issuedAt` 实际计算经过时间，响应使用 `durationMs`，envelope 缺省为 0；`sampled=false` 不安排 feedback 或后置 timer。共享合成上下文使面板、消息、补全与后续采纳事件使用相同的语言、模型和代码块统计。所有事件发送到 GitHub 通道，envelope 仅含 2 个 tags（`ai.user.id` 与 `ai.internal.sdkVersion`）和 6 个 common properties，其中 `unique_id` 每事件随机生成。`tid`、`conversationId` 与上游关联头用于同请求、账户及服务端关联。
 
 **本地实现**：[services/telemetry/](../src/services/telemetry/) 的事件、identity 与发送模块。
 

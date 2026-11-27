@@ -2,6 +2,28 @@
 
 import type { TelemetryMode, TelemetryRequestContext } from "./types"
 
+export interface UpstreamTelemetryHeaders {
+  gitHubRequestId?: string
+  copilotServiceRequestId?: string
+  gitHubCopilotRequestTe?: string
+}
+
+export function extractUpstreamTelemetryHeaders(
+  headers: Headers,
+): UpstreamTelemetryHeaders {
+  const gitHubRequestId = headers.get("x-github-request-id") ?? undefined
+  const copilotServiceRequestId =
+    headers.get("x-copilot-service-request-id") ?? undefined
+  const rawTe = headers.get("x-github-copilot-request-te")
+  const gitHubCopilotRequestTe = rawTe && rawTe.length > 0 ? rawTe : undefined
+
+  return {
+    ...(gitHubRequestId !== undefined && { gitHubRequestId }),
+    ...(copilotServiceRequestId !== undefined && { copilotServiceRequestId }),
+    ...(gitHubCopilotRequestTe !== undefined && { gitHubCopilotRequestTe }),
+  }
+}
+
 const LANGUAGE_IDS = [
   "typescript",
   "python",
@@ -79,6 +101,9 @@ export function createMockRequestContext(
   requestId: string,
   model: string,
 ): TelemetryRequestContext {
+  const sampled = Math.random() <= 0.3
+  const conversationId = randomMessageId()
+  const issuedAt = Date.now()
   const mode = nextMode()
   const languageId = nextLanguageId()
   const { characterCount, lineCount: totalLines } = randomCodeBlockStats()
@@ -88,6 +113,9 @@ export function createMockRequestContext(
 
   return {
     requestId,
+    conversationId,
+    sampled,
+    issuedAt,
     model,
     mode,
     languageId,

@@ -1,4 +1,12 @@
-import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test"
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  mock,
+  spyOn,
+} from "bun:test"
 
 let mockTelemetryEnabled: boolean | undefined = false
 
@@ -74,6 +82,12 @@ let originalSetTimeout: typeof globalThis.setTimeout
 const context: TelemetryRequestContext = {
   requestId: "req-post",
   model: "gpt-5.4",
+  sampled: true,
+  conversationId: "conversation-post",
+  issuedAt: 1000,
+  gitHubRequestId: "gh-post",
+  copilotServiceRequestId: "service-post",
+  gitHubCopilotRequestTe: "te-post",
   languageId: "typescript",
   mode: "ask",
   participant: "default",
@@ -116,6 +130,7 @@ beforeEach(() => {
   }) as unknown as typeof setTimeout
 
   initTelemetry("tid=test-user;exp=9999999999;sku=pro")
+  spyOn(Date, "now").mockReturnValue(1025)
 })
 
 afterEach(() => {
@@ -159,6 +174,7 @@ function runPostResponseEvents(actionRoll: number): Array<string> {
 function expectSharedBaseEvents(): void {
   const message = event("copilot-chat/inlineConversation.message")
   expect(message.data.baseData.properties).toMatchObject({
+    conversationId: context.conversationId,
     headerRequestId: context.requestId,
     languageId: context.languageId,
     mode: "inline",
@@ -171,10 +187,12 @@ function expectSharedBaseEvents(): void {
   expect(message.data.baseData.measurements).toEqual({
     messageCharLen: context.totalCharacters,
     numCodeBlocks: 1,
+    timeSinceIssuedMs: 25,
   })
 
   const accepted = event("copilot-chat/inlineConversation.accept")
   expect(accepted.data.baseData.properties).toMatchObject({
+    conversationId: context.conversationId,
     headerRequestId: context.requestId,
     messageId: context.messageId,
     model: context.model,
@@ -192,10 +210,12 @@ function expectSharedBaseEvents(): void {
     editCount: context.editCount,
     editLineCount: context.editLineCount,
     documentLength: context.totalCharacters,
+    timeSinceIssuedMs: 25,
   })
 
   const ghost = event("copilot/ghostText.accepted")
   expect(ghost.data.baseData.properties).toMatchObject({
+    conversationId: context.conversationId,
     headerRequestId: context.requestId,
     languageId: context.languageId,
     compType: "full",
@@ -203,6 +223,7 @@ function expectSharedBaseEvents(): void {
   expect(ghost.data.baseData.measurements).toEqual({
     compCharLen: context.totalCharacters,
     numLines: context.totalLines,
+    timeSinceIssuedMs: 25,
   })
 }
 
@@ -234,6 +255,7 @@ describe("schedulePostResponseEvents", () => {
 
     const adoption = event(eventName)
     expect(adoption.data.baseData.properties).toMatchObject({
+      conversationId: context.conversationId,
       codeBlockIndex: "0",
       messageId: context.messageId,
       headerRequestId: context.requestId,
@@ -246,12 +268,14 @@ describe("schedulePostResponseEvents", () => {
       expect(adoption.data.baseData.measurements).toEqual({
         isAgent: context.isAgent,
         totalLines: context.totalLines,
+        timeSinceIssuedMs: 25,
       })
     } else {
       expect(adoption.data.baseData.measurements).toMatchObject({
         totalCharacters: context.totalCharacters,
         totalLines: context.totalLines,
         isAgent: context.isAgent,
+        timeSinceIssuedMs: 25,
       })
     }
     if (eventName.endsWith("acceptedCopy")) {
@@ -260,12 +284,29 @@ describe("schedulePostResponseEvents", () => {
         copiedLines: context.totalLines,
       })
     }
+
+    for (const envelope of envelopes()) {
+      expect(envelope.data.baseData.properties).toMatchObject({
+        conversationId: context.conversationId,
+        gitHubRequestId: context.gitHubRequestId,
+        copilotServiceRequestId: context.copilotServiceRequestId,
+        gitHubCopilotRequestTe: context.gitHubCopilotRequestTe,
+      })
+    }
   })
 
   it("does not schedule for an empty request id or disabled telemetry", () => {
     schedulePostResponseEvents({ ...context, requestId: "" })
     mockTelemetryEnabled = false
     schedulePostResponseEvents(context)
+
+    expect(timers).toHaveLength(0)
+    expect(fetchCalls).toHaveLength(0)
+  })
+
+  it("does not schedule for an unsampled request", () => {
+    Math.random = () => 0.01
+    schedulePostResponseEvents({ ...context, sampled: false })
 
     expect(timers).toHaveLength(0)
     expect(fetchCalls).toHaveLength(0)

@@ -50,20 +50,15 @@ const createFetchMock = (usageResponse?: {
     // Usage API call
     if (url.includes("copilot_internal/user")) {
       if (usageResponse?.ok) {
-        return Promise.resolve({
-          ok: true,
-          json: () => Promise.resolve(usageResponse.data),
-        })
+        return Promise.resolve(Response.json(usageResponse.data))
       }
-      return Promise.resolve({ ok: false, status: 500 })
+      return Promise.resolve(new Response(null, { status: 500 }))
     }
 
     // Chat completions call
-    return Promise.resolve({
-      ok: true,
-      json: () =>
-        Promise.resolve({ id: "123", object: "chat.completion", choices: [] }),
-    })
+    return Promise.resolve(
+      Response.json({ id: "123", object: "chat.completion", choices: [] }),
+    )
   })
 }
 
@@ -166,15 +161,12 @@ describe("Interaction headers", () => {
     globalThis.fetch = mock(
       (url: string, opts: { headers: Record<string, string> }) => {
         fetchCalls.push({ url, headers: opts.headers })
-        return Promise.resolve({
-          ok: false,
-          status: 500,
-          json: () =>
-            Promise.resolve({ error: { message: "upstream failed" } }),
-          clone() {
-            return this
-          },
-        })
+        return Promise.resolve(
+          Response.json(
+            { error: { message: "upstream failed" } },
+            { status: 500 },
+          ),
+        )
       },
     )
 
@@ -256,11 +248,9 @@ describe("modelCallId telemetry alignment", () => {
       source: "auto",
       expectedDiscount: 10,
     })
-    spyOn(telemetryModule, "trackRequestSent").mockImplementation(
-      (...args: Parameters<typeof telemetryModule.trackRequestSent>) => {
-        capturedModelCallIdFromRequestSent = args[3]
-      },
-    )
+    spyOn(telemetryModule, "trackRequestSent").mockImplementation((options) => {
+      capturedModelCallIdFromRequestSent = options.modelCallId
+    })
     spyOn(telemetryModule, "trackResponseSuccess").mockImplementation(
       (opts) => {
         capturedSuccessOpts = opts
@@ -373,14 +363,9 @@ describe("modelCallId telemetry alignment", () => {
             ),
           )
         }
-        return Promise.resolve({
-          ok: false,
-          status: 500,
-          json: () => Promise.resolve({ error: "retry also failed" }),
-          clone() {
-            return this
-          },
-        })
+        return Promise.resolve(
+          Response.json({ error: "retry also failed" }, { status: 500 }),
+        )
       },
     )
 
@@ -410,14 +395,9 @@ describe("modelCallId telemetry alignment", () => {
         if (url.includes("copilot_internal")) {
           return Promise.resolve({ ok: false, status: 500 })
         }
-        return Promise.resolve({
-          ok: false,
-          status: 503,
-          json: () => Promise.resolve({ error: "service unavailable" }),
-          clone() {
-            return this
-          },
-        })
+        return Promise.resolve(
+          Response.json({ error: "service unavailable" }, { status: 503 }),
+        )
       },
     )
 

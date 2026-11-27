@@ -1,7 +1,15 @@
 /**
  * Fixed-context GitHub telemetry event payloads.
  */
-import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test"
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  mock,
+  spyOn,
+} from "bun:test"
 
 let mockTelemetryEnabled: boolean | undefined = false
 
@@ -61,11 +69,13 @@ import type {
 } from "../src/services/telemetry/types"
 import {
   createMockRequestContext,
+  extractUpstreamTelemetryHeaders,
   nextMode,
 } from "../src/services/telemetry/mock-values"
 import {
   initTelemetry,
   scheduleFeedbackEvents,
+  schedulePostResponseEvents,
   trackConversationAcceptedCopy,
   trackConversationAcceptedInsert,
   trackConversationAppliedCodeblock,
@@ -122,6 +132,7 @@ beforeEach(() => {
   }) as unknown as typeof setTimeout
 
   initTelemetry("tid=test-user;exp=9999999999;sku=pro")
+  spyOn(Date, "now").mockReturnValue(1025)
 })
 
 afterEach(() => {
@@ -141,6 +152,9 @@ function contextFor(mode: TelemetryMode): TelemetryRequestContext {
   return {
     requestId: `req-${mode}`,
     model: "gpt-5.4",
+    sampled: true,
+    conversationId: `conversation-${mode}`,
+    issuedAt: 1000,
     languageId: "typescript",
     mode,
     participant,
@@ -163,9 +177,12 @@ function envelopes(): Array<TelemetryEnvelope> {
   })
 }
 
-function event(name: string): TelemetryEnvelope {
+function event(name: string, source?: string): TelemetryEnvelope {
   const match = envelopes().find(
-    (envelope) => envelope.data.baseData.name === name,
+    (envelope) =>
+      envelope.data.baseData.name === name
+      && (source === undefined
+        || envelope.data.baseData.properties.source === source),
   )
   if (!match) throw new TypeError(`${name} envelope missing`)
   return match
@@ -197,6 +214,8 @@ describe("mock telemetry context", () => {
     expect(context).toMatchObject({
       requestId: "req-context",
       model: "gpt-test",
+      sampled: true,
+      issuedAt: 1025,
       mode: "agent",
       participant: "editsAgent",
       isAgent: 1,
@@ -212,6 +231,42 @@ describe("mock telemetry context", () => {
     expect(context.messageId).toMatch(
       /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
     )
+    expect(context.conversationId).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+    )
+    expect(context.conversationId).not.toBe(context.messageId)
+  })
+
+  it("creates a fresh conversation id for every request context", () => {
+    const first = createMockRequestContext("req-context", "gpt-test")
+    const second = createMockRequestContext("req-context", "gpt-test")
+    expect(first.conversationId).not.toBe(second.conversationId)
+  })
+})
+
+describe("upstream telemetry headers", () => {
+  it("extracts upstream telemetry headers", () => {
+    const headers = new Headers({
+      "X-GitHub-Request-Id": "gh-request",
+      "X-Copilot-Service-Request-Id": "service-request",
+      "X-GitHub-Copilot-Request-Te": "te-value",
+    })
+    expect(extractUpstreamTelemetryHeaders(headers)).toEqual({
+      gitHubRequestId: "gh-request",
+      copilotServiceRequestId: "service-request",
+      gitHubCopilotRequestTe: "te-value",
+    })
+  })
+
+  it("omits missing and empty upstream telemetry headers", () => {
+    const headers = new Headers({
+      "X-GitHub-Request-Id": "gh-only",
+      "X-GitHub-Copilot-Request-Te": "",
+    })
+    const extracted = extractUpstreamTelemetryHeaders(headers)
+    expect(extracted).toEqual({ gitHubRequestId: "gh-only" })
+    expect(extracted).not.toHaveProperty("copilotServiceRequestId")
+    expect(extracted).not.toHaveProperty("gitHubCopilotRequestTe")
   })
 })
 
@@ -229,6 +284,7 @@ describe("panel and conversation events", () => {
         languageId: context.languageId,
         model: context.model,
         mode: context.mode,
+        conversationId: context.conversationId,
       })
       expect(
         JSON.parse(panel.data.baseData.properties.codeBlocks ?? "null"),
@@ -237,32 +293,99 @@ describe("panel and conversation events", () => {
       ])
       expect(panel.data.baseData.measurements).toEqual({
         isAgent: context.isAgent,
+        timeSinceIssuedMs: 25,
       })
 
       const messageName =
         mode === "edit" ?
           "copilot-chat/editingSession.message"
         : "copilot-chat/conversation.message"
-      const message = event(messageName)
-      expect(message.data.baseData.properties).toMatchObject({
+      const userMessage = event(messageName, "user")
+      expect(userMessage.data.baseData.properties).toMatchObject({
+        source: "user",
+        turnIndex: "0",
+        headerRequestId: context.requestId,
+        uiKind: mode === "edit" ? "editingSession" : "panel",
+        mode: context.mode,
+        languageId: context.languageId,
+        conversationId: context.conversationId,
+      })
+      expect(userMessage.data.baseData.measurements).toEqual({
+        promptTokenLen: 60,
+        messageCharLen: context.totalCharacters,
+        timeSinceIssuedMs: 25,
+      })
+
+      const modelMessage = event(messageName, "model")
+      expect(modelMessage.data.baseData.properties).toMatchObject({
         source: "model",
         headerRequestId: context.requestId,
         mode: context.mode,
         languageId: context.languageId,
+        conversationId: context.conversationId,
       })
       expect(
         JSON.parse(
-          message.data.baseData.properties.codeBlockLanguages ?? "null",
+          modelMessage.data.baseData.properties.codeBlockLanguages ?? "null",
         ),
       ).toEqual({
         0: { languageId: context.languageId, totalLines: context.totalLines },
       })
-      expect(message.data.baseData.measurements).toEqual({
+      expect(modelMessage.data.baseData.measurements).toEqual({
         messageCharLen: context.totalCharacters,
         numCodeBlocks: 1,
+        timeSinceIssuedMs: 25,
       })
     },
   )
+})
+
+describe("context sampling", () => {
+  it("sampled context events ignore later random rolls", () => {
+    const context = {
+      ...contextFor("ask"),
+      gitHubRequestId: "gh-request",
+      copilotServiceRequestId: "service-request",
+      gitHubCopilotRequestTe: "te-value",
+    }
+    Math.random = () => 0.99
+    trackPanelRequest(context)
+    trackGhostTextShown(context)
+    trackEditFeedback(context, "accepted")
+    trackEditHunkAction(context, "accepted")
+
+    expect(eventNames()).toEqual([
+      "copilot-chat/panel_request",
+      "copilot-chat/conversation.message",
+      "copilot-chat/conversation.message",
+      "copilot/ghostText.shown",
+      "copilot-chat/panel.edit.feedback",
+      "copilot-chat/edit.hunk.action",
+    ])
+    expect(event("copilot-chat/conversation.message", "user")).toBeDefined()
+    expect(event("copilot-chat/conversation.message", "model")).toBeDefined()
+    for (const envelope of envelopes()) {
+      expect(envelope.data.baseData.properties).toMatchObject({
+        conversationId: context.conversationId,
+        gitHubRequestId: context.gitHubRequestId,
+        copilotServiceRequestId: context.copilotServiceRequestId,
+        gitHubCopilotRequestTe: context.gitHubCopilotRequestTe,
+      })
+    }
+  })
+
+  it("unsampled context events send nothing and schedule no timers", () => {
+    const context = { ...contextFor("ask"), sampled: false }
+    Math.random = () => 0.01
+    trackPanelRequest(context)
+    trackGhostTextShown(context)
+    trackEditFeedback(context, "accepted")
+    scheduleFeedbackEvents(context)
+    schedulePostResponseEvents(context)
+
+    expect(fetchCalls).toHaveLength(0)
+    expect(scheduledTimers).toHaveLength(0)
+  })
 })
 
 describe("ghost text events", () => {
@@ -275,24 +398,28 @@ describe("ghost text events", () => {
     expect(shown.data.baseData.properties).toMatchObject({
       headerRequestId: context.requestId,
       languageId: context.languageId,
+      conversationId: context.conversationId,
       reason: "network",
       sku: "pro",
     })
     expect(shown.data.baseData.measurements).toEqual({
       compCharLen: context.totalCharacters,
       numLines: context.totalLines,
+      timeSinceIssuedMs: 25,
     })
 
     const accepted = event("copilot/ghostText.accepted")
     expect(accepted.data.baseData.properties).toMatchObject({
       headerRequestId: context.requestId,
       languageId: context.languageId,
+      conversationId: context.conversationId,
       compType: "full",
       sku: "pro",
     })
     expect(accepted.data.baseData.measurements).toEqual({
       compCharLen: context.totalCharacters,
       numLines: context.totalLines,
+      timeSinceIssuedMs: 25,
     })
   })
 })
@@ -308,6 +435,7 @@ describe("conversation adoption events", () => {
         copiedCharacters: context.totalCharacters,
         copiedLines: context.totalLines,
         isAgent: context.isAgent,
+        timeSinceIssuedMs: 25,
       }),
       compType: true,
     },
@@ -318,6 +446,7 @@ describe("conversation adoption events", () => {
         totalCharacters: context.totalCharacters,
         totalLines: context.totalLines,
         isAgent: context.isAgent,
+        timeSinceIssuedMs: 25,
       }),
       compType: true,
     },
@@ -327,6 +456,7 @@ describe("conversation adoption events", () => {
       measurements: (context: TelemetryRequestContext) => ({
         isAgent: context.isAgent,
         totalLines: context.totalLines,
+        timeSinceIssuedMs: 25,
       }),
       compType: false,
     },
@@ -346,6 +476,7 @@ describe("conversation adoption events", () => {
         languageId: context.languageId,
         modelId: context.model,
         mode: context.mode,
+        conversationId: context.conversationId,
       })
       if (action.compType) {
         expect(payload.data.baseData.properties.comp_type).toBe("full")
@@ -371,6 +502,7 @@ describe("inline conversation events", () => {
       headerRequestId: context.requestId,
       mode: "inline",
       languageId: context.languageId,
+      conversationId: context.conversationId,
     })
     expect(
       JSON.parse(message.data.baseData.properties.codeBlockLanguages ?? "null"),
@@ -380,6 +512,7 @@ describe("inline conversation events", () => {
     expect(message.data.baseData.measurements).toEqual({
       messageCharLen: context.totalCharacters,
       numCodeBlocks: 1,
+      timeSinceIssuedMs: 25,
     })
 
     const accepted = event("copilot-chat/inlineConversation.accept")
@@ -392,6 +525,7 @@ describe("inline conversation events", () => {
       languageId: context.languageId,
       mode: "inline",
       model: context.model,
+      conversationId: context.conversationId,
     })
     expect(accepted.data.baseData.properties).not.toHaveProperty("requestId")
     expect(accepted.data.baseData.measurements).toEqual({
@@ -401,6 +535,7 @@ describe("inline conversation events", () => {
       editCount: context.editCount,
       editLineCount: context.editLineCount,
       documentLength: context.totalCharacters,
+      timeSinceIssuedMs: 25,
     })
   })
 })
@@ -423,11 +558,13 @@ describe("feedback events", () => {
         hasRemainingEdits: "false",
         modelId: context.model,
         mode: context.mode,
+        conversationId: context.conversationId,
       })
       expect(feedback.data.baseData.measurements).toEqual({
         isNotebook: 0,
         isNotebookCell: 0,
         isAgent: context.isAgent,
+        timeSinceIssuedMs: 25,
       })
 
       const hunk = event("copilot-chat/edit.hunk.action")
@@ -437,6 +574,7 @@ describe("feedback events", () => {
         outcome,
         modelId: context.model,
         mode: context.mode,
+        conversationId: context.conversationId,
       })
       expect(hunk.data.baseData.measurements).toEqual({
         hasRemainingEdits: 0,
@@ -446,6 +584,7 @@ describe("feedback events", () => {
         linesAdded: context.linesAdded,
         linesRemoved: context.linesRemoved,
         isAgent: context.isAgent,
+        timeSinceIssuedMs: 25,
       })
     },
   )

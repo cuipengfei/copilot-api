@@ -27,7 +27,10 @@ import { setPluginRequestActualModel } from "~/lib/http/request-context"
 import { attachResponseHeaders } from "~/lib/response-headers"
 import { resolveInitiatorWithSmartAgent } from "~/lib/smart-agent"
 import { state } from "~/lib/state"
-import { createMockRequestContext } from "~/services/telemetry/mock-values"
+import {
+  createMockRequestContext,
+  extractUpstreamTelemetryHeaders,
+} from "~/services/telemetry/mock-values"
 import {
   scheduleFeedbackEvents,
   schedulePostResponseEvents,
@@ -114,7 +117,8 @@ export const createChatCompletions = async (
   prepareForCompact(headers, options?.compactType)
   await attachAutoSessionToken(headers, payload.model, "/chat/completions")
   const start = Date.now()
-  trackRequestSent(payload.model, state.accountType, requestId, modelCallId)
+  const telemetryContext = createMockRequestContext(requestId, payload.model)
+  trackRequestSent({ context: telemetryContext, modelCallId })
 
   consola.debug(`<-- model: ${payload.model}`)
   const url = `${copilotBaseUrl(state)}/chat/completions`
@@ -150,11 +154,15 @@ export const createChatCompletions = async (
     start,
     requestId,
     modelCallId,
+    telemetryContext,
     clientSignal: options?.clientSignal,
   })
 
   const timeSinceIssuedMs = Date.now() - start
-  const telemetryContext = createMockRequestContext(requestId, payload.model)
+  Object.assign(
+    telemetryContext,
+    extractUpstreamTelemetryHeaders(okResponse.headers),
+  )
   trackPanelRequest(telemetryContext)
   trackGhostTextShown(telemetryContext)
   scheduleFeedbackEvents(telemetryContext)
@@ -170,6 +178,11 @@ export const createChatCompletions = async (
       requestId,
       modelCallId,
       finishReason: "stream",
+      sampled: telemetryContext.sampled,
+      conversationId: telemetryContext.conversationId,
+      gitHubRequestId: telemetryContext.gitHubRequestId,
+      copilotServiceRequestId: telemetryContext.copilotServiceRequestId,
+      gitHubCopilotRequestTe: telemetryContext.gitHubCopilotRequestTe,
     })
     return attachResponseHeaders(
       attachPremiumInfo(events(okResponse), premium),
@@ -189,6 +202,11 @@ export const createChatCompletions = async (
     requestId,
     modelCallId,
     finishReason,
+    sampled: telemetryContext.sampled,
+    conversationId: telemetryContext.conversationId,
+    gitHubRequestId: telemetryContext.gitHubRequestId,
+    copilotServiceRequestId: telemetryContext.copilotServiceRequestId,
+    gitHubCopilotRequestTe: telemetryContext.gitHubCopilotRequestTe,
     promptTokens: result.usage?.prompt_tokens,
     completionTokens: result.usage?.completion_tokens,
     bytesReceived: JSON.stringify(result).length,

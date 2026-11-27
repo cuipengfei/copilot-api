@@ -101,12 +101,9 @@ const chatResponse = {
 }
 
 function jsonResponse(payload: unknown, init?: ResponseInit): Response {
-  return new Response(JSON.stringify(payload), {
-    status: init?.status ?? 200,
-    headers: {
-      "content-type": "application/json",
-    },
-  })
+  const response = new Response(JSON.stringify(payload), init)
+  response.headers.set("content-type", "application/json")
+  return response
 }
 
 function toUrl(input: string | URL | Request): string {
@@ -157,7 +154,11 @@ function telemetryEnvelopes(): Array<TelemetryEnvelope> {
   )
 }
 
-function telemetryEvent(name: string, requestId?: string): TelemetryEnvelope {
+function telemetryEvent(
+  name: string,
+  requestId?: string,
+  source?: string,
+): TelemetryEnvelope {
   const event = telemetryEnvelopes().find((envelope) => {
     const { name: eventName, properties } = envelope.data.baseData
     return (
@@ -165,6 +166,7 @@ function telemetryEvent(name: string, requestId?: string): TelemetryEnvelope {
       && (requestId === undefined
         || properties.requestId === requestId
         || properties.headerRequestId === requestId)
+      && (source === undefined || properties.source === source)
     )
   })
   if (!event) throw new Error(`Telemetry event missing: ${name}`)
@@ -174,6 +176,9 @@ function telemetryEvent(name: string, requestId?: string): TelemetryEnvelope {
 function contextFor(requestId: string, model: string): TelemetryRequestContext {
   return {
     requestId,
+    sampled: true,
+    conversationId: `conversation-${requestId}`,
+    issuedAt: Date.now(),
     model,
     languageId: "typescript",
     mode: "ask",
@@ -488,6 +493,7 @@ describe("telemetry integration event-specific routing", () => {
     ).toEqual([
       "copilot-chat/panel_request",
       "copilot-chat/conversation.message",
+      "copilot-chat/conversation.message",
     ])
     const panel = telemetryEvent(
       "copilot-chat/panel_request",
@@ -495,6 +501,7 @@ describe("telemetry integration event-specific routing", () => {
     )
     expect(panel.data.baseData.properties).toMatchObject({
       requestId: context.requestId,
+      conversationId: context.conversationId,
       languageId: context.languageId,
       model: context.model,
       mode: context.mode,
@@ -502,23 +509,42 @@ describe("telemetry integration event-specific routing", () => {
     expect(JSON.parse(panel.data.baseData.properties.codeBlocks)).toEqual([
       { languageId: context.languageId, totalLines: context.totalLines },
     ])
-    expect(panel.data.baseData.measurements).toEqual({
+    expect(panel.data.baseData.measurements).toMatchObject({
       isAgent: context.isAgent,
     })
 
     const message = telemetryEvent(
       "copilot-chat/conversation.message",
       context.requestId,
+      "model",
     )
     expect(message.data.baseData.properties).toMatchObject({
+      source: "model",
+      conversationId: context.conversationId,
       headerRequestId: context.requestId,
       languageId: context.languageId,
       mode: context.mode,
     })
-    expect(message.data.baseData.measurements).toEqual({
+    expect(message.data.baseData.measurements).toMatchObject({
       messageCharLen: context.totalCharacters,
       numCodeBlocks: 1,
     })
+
+    const userMessage = telemetryEvent(
+      "copilot-chat/conversation.message",
+      context.requestId,
+      "user",
+    )
+    expect(userMessage.data.baseData.properties).toMatchObject({
+      source: "user",
+      turnIndex: "0",
+      conversationId: context.conversationId,
+      headerRequestId: context.requestId,
+      languageId: context.languageId,
+    })
+    expect(userMessage.data.baseData.measurements?.messageCharLen).toBe(
+      context.totalCharacters,
+    )
   })
 
   it("sends ghostText.shown with synthetic line statistics and minimal identity", async () => {
@@ -536,10 +562,11 @@ describe("telemetry integration event-specific routing", () => {
     const { properties, measurements } = event.data.baseData
     expect(properties).toMatchObject({
       headerRequestId: context.requestId,
+      conversationId: context.conversationId,
       languageId: context.languageId,
       reason: "network",
     })
-    expect(measurements).toEqual({
+    expect(measurements).toMatchObject({
       compCharLen: context.totalCharacters,
       numLines: context.totalLines,
     })
@@ -553,13 +580,20 @@ describe("telemetry integration event-specific routing", () => {
       "client_sessionid",
       "client_machineid",
       "client_deviceid",
-      "unique_id",
-      "conversationId",
     ]) {
       expect(properties).not.toHaveProperty(key)
     }
+    expect(properties.unique_id).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+    )
   })
 })
+
+const upstreamTelemetryHeaders = {
+  "X-GitHub-Request-Id": "gh-protocol",
+  "X-Copilot-Service-Request-Id": "service-protocol",
+  "X-GitHub-Copilot-Request-Te": "te-protocol",
+}
 
 const protocolScenarios = [
   {
@@ -648,7 +682,11 @@ describe("telemetry integration protocol and timing", () => {
             )
           }
           now = 1030
-          return Promise.resolve(jsonResponse(scenario.response))
+          return Promise.resolve(
+            jsonResponse(scenario.response, {
+              headers: upstreamTelemetryHeaders,
+            }),
+          )
         })
         try {
           const result = await scenario.call(stream)
@@ -681,6 +719,33 @@ describe("telemetry integration protocol and timing", () => {
           }
           const panel = telemetryEvent("copilot-chat/panel_request", requestId)
           const panelProperties = panel.data.baseData.properties
+          const request = telemetryEvent("copilot-chat/request.sent", requestId)
+          expect(request.data.baseData.properties.conversationId).toBe(
+            panelProperties.conversationId,
+          )
+          expect(request.data.baseData.properties).not.toHaveProperty(
+            "copilotServiceRequestId",
+          )
+          for (const envelope of envelopes) {
+            if (envelope.data.baseData.name === "copilot-chat/request.sent")
+              continue
+            expect(envelope.data.baseData.properties).toMatchObject({
+              conversationId: panelProperties.conversationId,
+              gitHubRequestId: "gh-protocol",
+              copilotServiceRequestId: "service-protocol",
+              gitHubCopilotRequestTe: "te-protocol",
+            })
+          }
+          for (const source of ["user", "model"]) {
+            const message = telemetryEvent(
+              "copilot-chat/conversation.message",
+              requestId,
+              source,
+            )
+            expect(message.data.baseData.properties.conversationId).toBe(
+              panelProperties.conversationId,
+            )
+          }
           expect(panelProperties.model).toBe(body.model)
           expect(panelProperties.requestId).toBe(requestId)
           const codeBlocks = JSON.parse(panelProperties.codeBlocks) as Array<{
@@ -718,6 +783,9 @@ describe("telemetry integration protocol and timing", () => {
           expect(event.data.baseData.measurements?.timeToComplete).toBe(
             stream ? 30 : 120,
           )
+          expect(event.data.baseData.measurements?.timeSinceIssuedMs).toBe(
+            stream ? 30 : 120,
+          )
         } finally {
           jsonTiming.mockRestore()
           clock.mockRestore()
@@ -732,7 +800,7 @@ describe("telemetry integration protocol and timing", () => {
           url.endsWith(scenario.endpoint) ?
             jsonResponse(
               { error: { message: "service unavailable" } },
-              { status: 503 },
+              { status: 503, headers: upstreamTelemetryHeaders },
             )
           : jsonResponse({ itemsReceived: 1, itemsAccepted: 1 }),
         ),
@@ -769,6 +837,100 @@ describe("telemetry integration protocol and timing", () => {
       if (!event) throw new Error("Failed response telemetry missing")
       expect(event.data.baseData.properties.apiType).toBe(scenario.apiType)
       expect(event.data.baseData.measurements?.status_code).toBe(503)
+      expect(event.data.baseData.properties).toMatchObject({
+        gitHubRequestId: "gh-protocol",
+        copilotServiceRequestId: "service-protocol",
+        gitHubCopilotRequestTe: "te-protocol",
+        conversationId: telemetryEvent("copilot-chat/request.sent").data
+          .baseData.properties.conversationId,
+      })
     })
+  }
+})
+
+describe("telemetry integration per-request sampling", () => {
+  for (const scenario of protocolScenarios) {
+    it.each([true, false])(
+      `${scenario.apiType} keeps sampling decision=%s through the response and timers`,
+      async (selected) => {
+        mockTelemetryEnabled = true
+        let first = true
+        Math.random = () => {
+          if (first) {
+            first = false
+            return selected ? 0.1 : 0.9
+          }
+          return selected ? 0.99 : 0.01
+        }
+        installFetchMock((url) =>
+          Promise.resolve(
+            url.endsWith(scenario.endpoint) ?
+              jsonResponse(scenario.response, {
+                headers: upstreamTelemetryHeaders,
+              })
+            : jsonResponse({ itemsReceived: 1, itemsAccepted: 1 }),
+          ),
+        )
+        const result = await scenario.call(false)
+        expect(result).toMatchObject({ id: scenario.response.id })
+        for (const timer of scheduledTimers) timer.fn()
+        await flushMicrotasks()
+        if (!selected) {
+          expect(telemetryCalls()).toHaveLength(0)
+          return
+        }
+        const request = telemetryEvent("copilot-chat/request.sent")
+        const requestId = request.data.baseData.properties.headerRequestId
+        const conversationId = request.data.baseData.properties.conversationId
+        const panel = telemetryEvent("copilot-chat/panel_request", requestId)
+        const response = telemetryEvent(
+          "copilot-chat/response.success",
+          requestId,
+        )
+        expect(panel.data.baseData.properties.conversationId).toBe(
+          conversationId,
+        )
+        expect(response.data.baseData.properties.conversationId).toBe(
+          conversationId,
+        )
+        for (const source of ["user", "model"]) {
+          const message = telemetryEvent(
+            "copilot-chat/conversation.message",
+            requestId,
+            source,
+          )
+          expect(message.data.baseData.properties.conversationId).toBe(
+            conversationId,
+          )
+        }
+        for (const name of [
+          "copilot-chat/inlineConversation.message",
+          "copilot-chat/inlineConversation.accept",
+          "copilot/ghostText.accepted",
+        ]) {
+          expect(
+            telemetryEvent(name, requestId).data.baseData.properties,
+          ).toMatchObject({
+            conversationId,
+            gitHubRequestId: "gh-protocol",
+            copilotServiceRequestId: "service-protocol",
+            gitHubCopilotRequestTe: "te-protocol",
+          })
+        }
+        const adoptionNames = [
+          "copilot-chat/conversation.acceptedCopy",
+          "copilot-chat/conversation.acceptedInsert",
+          "copilot-chat/conversation.appliedCodeblock",
+        ]
+        const adoption = telemetryEnvelopes().find((envelope) =>
+          adoptionNames.includes(envelope.data.baseData.name),
+        )
+        if (!adoption)
+          throw new Error("Sampled request lost its adoption telemetry")
+        expect(adoption.data.baseData.properties.conversationId).toBe(
+          conversationId,
+        )
+      },
+    )
   }
 })

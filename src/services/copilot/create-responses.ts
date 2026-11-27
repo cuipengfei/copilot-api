@@ -12,6 +12,7 @@ import type {
   ResponseStreamEvent,
 } from "~/lib/types/responses"
 import type { PooledWebSocketRequest } from "~/services/responses-websocket"
+import type { TelemetryRequestContext } from "~/services/telemetry/types"
 
 import {
   copilotBaseUrl,
@@ -34,7 +35,10 @@ import { setPluginRequestActualModel } from "~/lib/http/request-context"
 import { attachResponseHeaders } from "~/lib/response-headers"
 import { resolveInitiatorWithSmartAgent } from "~/lib/smart-agent"
 import { state } from "~/lib/state"
-import { createMockRequestContext } from "~/services/telemetry/mock-values"
+import {
+  createMockRequestContext,
+  extractUpstreamTelemetryHeaders,
+} from "~/services/telemetry/mock-values"
 import { createWebSocketUrl } from "~/services/responses-websocket"
 import { createContinuableResponsesWebSocketStream } from "~/services/responses-websocket-continuation"
 import {
@@ -114,7 +118,8 @@ export const createResponses = async (
   prepareForCompact(headers, compactType)
 
   const start = Date.now()
-  trackRequestSent(payload.model, state.accountType, requestId, modelCallId)
+  const telemetryContext = createMockRequestContext(requestId, payload.model)
+  trackRequestSent({ context: telemetryContext, modelCallId })
 
   // service_tier is not supported by github copilot
   payload.service_tier = undefined
@@ -165,6 +170,7 @@ export const createResponses = async (
     requestId,
     modelCallId,
     start,
+    telemetryContext,
     clientSignal,
     reasoningReplayIdentity,
   })
@@ -196,6 +202,7 @@ interface ResponsesHttpContext {
   requestId: string
   modelCallId: string
   start: number
+  telemetryContext: TelemetryRequestContext
   clientSignal?: AbortSignal
   reasoningReplayIdentity?: string
 }
@@ -207,6 +214,7 @@ const createHttpResponses = async (
     requestId,
     modelCallId,
     start,
+    telemetryContext,
     clientSignal,
     reasoningReplayIdentity,
   }: ResponsesHttpContext,
@@ -222,6 +230,10 @@ const createHttpResponses = async (
     transportConfig,
     reasoningReplayIdentity,
   })
+  Object.assign(
+    telemetryContext,
+    extractUpstreamTelemetryHeaders(response.headers),
+  )
 
   if (!response.ok) {
     consola.error("Failed to create responses", response)
@@ -232,12 +244,16 @@ const createHttpResponses = async (
       statusCode: response.status,
       requestId,
       modelCallId,
+      sampled: telemetryContext.sampled,
+      conversationId: telemetryContext.conversationId,
+      gitHubRequestId: telemetryContext.gitHubRequestId,
+      copilotServiceRequestId: telemetryContext.copilotServiceRequestId,
+      gitHubCopilotRequestTe: telemetryContext.gitHubCopilotRequestTe,
     })
     throw new HTTPError("Failed to create responses", response)
   }
 
   const timeSinceIssuedMs = Date.now() - start
-  const telemetryContext = createMockRequestContext(requestId, payload.model)
   trackPanelRequest(telemetryContext)
   trackGhostTextShown(telemetryContext)
   scheduleFeedbackEvents(telemetryContext)
@@ -252,6 +268,11 @@ const createHttpResponses = async (
       requestId,
       finishReason: "stream",
       modelCallId,
+      sampled: telemetryContext.sampled,
+      conversationId: telemetryContext.conversationId,
+      gitHubRequestId: telemetryContext.gitHubRequestId,
+      copilotServiceRequestId: telemetryContext.copilotServiceRequestId,
+      gitHubCopilotRequestTe: telemetryContext.gitHubCopilotRequestTe,
     })
     return attachResponseHeaders(
       attachPremiumInfo(
@@ -276,6 +297,11 @@ const createHttpResponses = async (
     completionTokens: result.usage?.output_tokens,
     bytesReceived: serialized.length,
     modelCallId,
+    sampled: telemetryContext.sampled,
+    conversationId: telemetryContext.conversationId,
+    gitHubRequestId: telemetryContext.gitHubRequestId,
+    copilotServiceRequestId: telemetryContext.copilotServiceRequestId,
+    gitHubCopilotRequestTe: telemetryContext.gitHubCopilotRequestTe,
   })
   return attachResponseHeaders(
     attachPremiumInfo(result, getPremiumInfoFromHeaders(response.headers)),

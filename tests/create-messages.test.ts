@@ -75,17 +75,9 @@ beforeEach(() => {
   ;(globalThis as unknown as { fetch: typeof fetch }).fetch = fetchMock
 
   // Capture modelCallId using spyOn (can be restored by mock.restore())
-  spyOn(telemetryModule, "trackRequestSent").mockImplementation(
-    (
-      _model: string,
-      _accountType: string,
-      _requestId?: string,
-      modelCallId?: string,
-      // eslint-disable-next-line max-params
-    ) => {
-      capturedModelCallId = modelCallId
-    },
-  )
+  spyOn(telemetryModule, "trackRequestSent").mockImplementation((options) => {
+    capturedModelCallId = options.modelCallId
+  })
   spyOn(telemetryModule, "trackResponseSuccess").mockImplementation(() => {})
   spyOn(telemetryModule, "trackResponseError").mockImplementation(() => {})
 })
@@ -473,12 +465,10 @@ test("throws error when copilot token is missing", async () => {
 
 test("throws HTTPError when response is not ok", async () => {
   // Override fetch mock to return error response
-  const mockResponse = {
-    ok: false,
-    status: 500,
-    json: () => Promise.resolve({ error: "Internal Server Error" }),
-    clone: () => mockResponse,
-  }
+  const mockResponse = Response.json(
+    { error: "Internal Server Error" },
+    { status: 500 },
+  )
   const errorFetchMock = mock(() => mockResponse)
   // @ts-expect-error - Mock fetch doesn't implement all fetch properties
   ;(globalThis as unknown as { fetch: typeof fetch }).fetch = errorFetchMock

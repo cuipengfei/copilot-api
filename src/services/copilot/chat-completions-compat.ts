@@ -1,10 +1,12 @@
 import consola from "consola"
 
 import type { ChatCompletionsPayload } from "~/lib/types/chat-completions"
+import type { TelemetryRequestContext } from "~/services/telemetry/types"
 
 import { getUpstreamTransportConfig } from "~/lib/config"
 import { HTTPError } from "~/lib/http/error"
 import { sendCopilotHttpRequest } from "~/services/copilot/request"
+import { extractUpstreamTelemetryHeaders } from "~/services/telemetry/mock-values"
 import { trackResponseError } from "~/services/telemetry/telemetry"
 
 /** 错误重试策略入参：首个响应由入口传入，其余为请求上下文。 */
@@ -16,6 +18,7 @@ export interface EnsureChatCompletionOkResponseOptions {
   start: number
   requestId?: string
   modelCallId: string
+  telemetryContext: TelemetryRequestContext
   clientSignal?: AbortSignal
 }
 
@@ -55,6 +58,7 @@ export const ensureChatCompletionOkResponse = async ({
   start,
   requestId,
   modelCallId,
+  telemetryContext,
   clientSignal,
 }: EnsureChatCompletionOkResponseOptions): Promise<Response> => {
   if (response.ok) return response
@@ -80,9 +84,12 @@ export const ensureChatCompletionOkResponse = async ({
         model: payload.model,
         durationMs: Date.now() - start,
         statusCode: retryResponse.status,
+        ...extractUpstreamTelemetryHeaders(retryResponse.headers),
         apiType: "chatCompletions",
         requestId,
         modelCallId,
+        sampled: telemetryContext.sampled,
+        conversationId: telemetryContext.conversationId,
       })
       throw new HTTPError(
         "Failed to create chat completions (after retry)",
@@ -97,9 +104,12 @@ export const ensureChatCompletionOkResponse = async ({
     model: payload.model,
     durationMs: Date.now() - start,
     statusCode: response.status,
+    ...extractUpstreamTelemetryHeaders(response.headers),
     apiType: "chatCompletions",
     requestId,
     modelCallId,
+    sampled: telemetryContext.sampled,
+    conversationId: telemetryContext.conversationId,
   })
   throw new HTTPError("Failed to create chat completions", response)
 }

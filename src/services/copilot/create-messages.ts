@@ -31,7 +31,10 @@ import { attachPremiumInfo, getPremiumInfoFromHeaders } from "~/lib/logger"
 import { setPluginRequestActualModel } from "~/lib/http/request-context"
 import { attachResponseHeaders } from "~/lib/response-headers"
 import { state } from "~/lib/state"
-import { createMockRequestContext } from "~/services/telemetry/mock-values"
+import {
+  createMockRequestContext,
+  extractUpstreamTelemetryHeaders,
+} from "~/services/telemetry/mock-values"
 
 export type MessagesStream = ReturnType<typeof events>
 export type CreateMessagesReturn = AnthropicResponse | MessagesStream
@@ -58,7 +61,8 @@ export const createMessages = async (
   const requestId = headers["X-Request-Id"] ?? headers["x-request-id"]
 
   const start = Date.now()
-  trackRequestSent(payload.model, state.accountType, requestId, modelCallId)
+  const telemetryContext = createMockRequestContext(requestId, payload.model)
+  trackRequestSent({ context: telemetryContext, modelCallId })
 
   const { enhancedPayload, adaptiveThinkingEnabled, betaHeader } =
     prepareMessagesRequest(payload, anthropicBetaHeader)
@@ -98,6 +102,9 @@ export const createMessages = async (
         statusCode: error.response.status,
         requestId,
         modelCallId,
+        sampled: telemetryContext.sampled,
+        conversationId: telemetryContext.conversationId,
+        ...extractUpstreamTelemetryHeaders(error.response.headers),
       })
     }
     throw error
@@ -106,7 +113,10 @@ export const createMessages = async (
   const timeSinceIssuedMs = Date.now() - start
   logCopilotRateLimits(result.headers)
 
-  const telemetryContext = createMockRequestContext(requestId, payload.model)
+  Object.assign(
+    telemetryContext,
+    extractUpstreamTelemetryHeaders(result.headers),
+  )
   trackPanelRequest(telemetryContext)
   trackGhostTextShown(telemetryContext)
   scheduleFeedbackEvents(telemetryContext)
@@ -120,6 +130,11 @@ export const createMessages = async (
       timeToFirstToken: timeSinceIssuedMs,
       requestId,
       modelCallId,
+      sampled: telemetryContext.sampled,
+      conversationId: telemetryContext.conversationId,
+      gitHubRequestId: telemetryContext.gitHubRequestId,
+      copilotServiceRequestId: telemetryContext.copilotServiceRequestId,
+      gitHubCopilotRequestTe: telemetryContext.gitHubCopilotRequestTe,
       finishReason: "stream",
     })
     return attachResponseHeaders(
@@ -135,6 +150,11 @@ export const createMessages = async (
     timeToFirstToken: timeSinceIssuedMs,
     requestId,
     modelCallId,
+    sampled: telemetryContext.sampled,
+    conversationId: telemetryContext.conversationId,
+    gitHubRequestId: telemetryContext.gitHubRequestId,
+    copilotServiceRequestId: telemetryContext.copilotServiceRequestId,
+    gitHubCopilotRequestTe: telemetryContext.gitHubCopilotRequestTe,
   })
   return attachResponseHeaders(attachPremiumInfo(json, premium), result.headers)
 }

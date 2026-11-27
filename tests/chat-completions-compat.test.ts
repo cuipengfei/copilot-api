@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test"
 import type { Server } from "bun"
 
+import type { TelemetryRequestContext } from "~/services/telemetry/types"
+
 import type { ChatCompletionsPayload } from "../src/lib/types/chat-completions"
 
 import { HTTPError } from "../src/lib/http/error"
@@ -102,12 +104,36 @@ describe("ensureChatCompletionOkResponse against local HTTP server", () => {
 
   const makeOptions = (
     payload: ChatCompletionsPayload,
-  ): Omit<EnsureChatCompletionOkResponseOptions, "url" | "response"> => ({
-    payload,
-    headers: {},
-    start: Date.now(),
-    modelCallId: "test-call",
-  })
+  ): Omit<EnsureChatCompletionOkResponseOptions, "url" | "response"> => {
+    const start = Date.now()
+    const telemetryContext: TelemetryRequestContext = {
+      requestId: "compat-request",
+      model: payload.model,
+      sampled: true,
+      conversationId: "compat-conversation",
+      issuedAt: start,
+      languageId: "typescript",
+      mode: "ask",
+      participant: "default",
+      isAgent: 0,
+      messageId: "compat-message",
+      totalCharacters: 8,
+      totalLines: 1,
+      lineCount: 1,
+      linesAdded: 0,
+      linesRemoved: 0,
+      editCount: 0,
+      editLineCount: 0,
+    }
+
+    return {
+      payload,
+      headers: {},
+      start,
+      modelCallId: "test-call",
+      telemetryContext,
+    }
+  }
 
   test("passes through ok responses without sending requests", async () => {
     await runWithServer(
