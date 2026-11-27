@@ -1,35 +1,7 @@
 /**
- * Comprehensive test suite for telemetry event functions.
- * Tests envelope structure, properties, measurements, and fire-and-forget behavior.
+ * Fixed-context GitHub telemetry event payloads.
  */
 import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test"
-
-import {
-  initTelemetry,
-  trackEvent,
-  trackRequestSent,
-  trackResponseSuccess,
-  trackResponseError,
-  trackAuthNewToken,
-  trackEditFeedback,
-  trackEditHunkAction,
-  trackPanelRequest,
-  scheduleFeedbackEvents,
-} from "../src/services/telemetry/telemetry"
-
-// Mock undici so trackPanelRequest (MSFT path via sendMsftTelemetryEnvelope) can be asserted.
-// sendMsftTelemetryEnvelope is async; its first statement is `await request(...)`, so
-// request() is called synchronously when the async function is first entered.
-const mockUndiciRequest = mock(() =>
-  Promise.resolve({
-    statusCode: 200,
-    body: { text: () => Promise.resolve('{"acc":1}') },
-  }),
-)
-
-void mock.module("undici", () => ({
-  request: mockUndiciRequest,
-}))
 
 let mockTelemetryEnabled: boolean | undefined = false
 
@@ -82,212 +54,463 @@ void mock.module("~/lib/config", () => ({
   mergeConfigWithDefaults: getMockConfig,
 }))
 
-describe("Telemetry Events", () => {
-  let originalRandom: typeof Math.random
-  let originalFetch: typeof globalThis.fetch
+import type {
+  TelemetryEnvelope,
+  TelemetryMode,
+  TelemetryRequestContext,
+} from "../src/services/telemetry/types"
+import {
+  createMockRequestContext,
+  nextMode,
+} from "../src/services/telemetry/mock-values"
+import {
+  initTelemetry,
+  scheduleFeedbackEvents,
+  trackConversationAcceptedCopy,
+  trackConversationAcceptedInsert,
+  trackConversationAppliedCodeblock,
+  trackEditFeedback,
+  trackEditHunkAction,
+  trackEvent,
+  trackGhostTextAccepted,
+  trackGhostTextShown,
+  trackInlineConversationAccept,
+  trackInlineConversationMessage,
+  trackPanelRequest,
+} from "../src/services/telemetry/telemetry"
 
-  beforeEach(() => {
-    originalRandom = Math.random
-    originalFetch = globalThis.fetch
-    mockUndiciRequest.mockClear()
+type FetchCall = {
+  url: string
+  options: {
+    method: string
+    headers: Record<string, string>
+    body: string
+  }
+}
 
-    // Reset all mocks
-    mockTelemetryEnabled = true
+let fetchCalls: Array<FetchCall> = []
+let scheduledTimers: Array<{ fn: () => void; delay: number }> = []
+let originalFetch: typeof globalThis.fetch
+let originalRandom: typeof Math.random
+let originalSetTimeout: typeof globalThis.setTimeout
 
-    // Mock fetch globally
-    globalThis.fetch = mock(() =>
-      Promise.resolve({
-        ok: true,
-        status: 200,
-        text: () => Promise.resolve('{"itemsAccepted":1}'),
-      } as Response),
-    ) as unknown as typeof fetch
+beforeEach(() => {
+  mockTelemetryEnabled = true
+  fetchCalls = []
+  scheduledTimers = []
+  originalFetch = globalThis.fetch
+  originalRandom = Math.random
+  originalSetTimeout = globalThis.setTimeout
+  Math.random = () => 0.1
 
-    // Reset Math.random for sampling tests
-    Math.random = () => 0.1
+  globalThis.fetch = mock((url: string, options: FetchCall["options"]) => {
+    fetchCalls.push({ url, options })
+    return Promise.resolve({
+      ok: true,
+      text: () => Promise.resolve('{"itemsReceived":1,"itemsAccepted":1}'),
+    } as Response)
+  }) as unknown as typeof fetch
+  globalThis.setTimeout = ((
+    fn: Parameters<typeof setTimeout>[0],
+    delay?: number,
+  ) => {
+    if (typeof fn !== "function") {
+      throw new TypeError("expected function timer callback")
+    }
+    scheduledTimers.push({ fn, delay: delay ?? 0 })
+    return 0 as never
+  }) as unknown as typeof setTimeout
+
+  initTelemetry("tid=test-user;exp=9999999999;sku=pro")
+})
+
+afterEach(() => {
+  mockTelemetryEnabled = false
+  globalThis.fetch = originalFetch
+  globalThis.setTimeout = originalSetTimeout
+  Math.random = originalRandom
+  scheduledTimers = []
+  mock.restore()
+})
+
+function contextFor(mode: TelemetryMode): TelemetryRequestContext {
+  const participant =
+    mode === "agent" ? "editsAgent"
+    : mode === "edit" ? "editingSession"
+    : "default"
+  return {
+    requestId: `req-${mode}`,
+    model: "gpt-5.4",
+    languageId: "typescript",
+    mode,
+    participant,
+    isAgent: mode === "agent" ? 1 : 0,
+    messageId: `message-${mode}`,
+    totalCharacters: 240,
+    totalLines: 12,
+    lineCount: 20,
+    linesAdded: 7,
+    linesRemoved: 3,
+    editCount: 2,
+    editLineCount: 4,
+  }
+}
+
+function envelopes(): Array<TelemetryEnvelope> {
+  return fetchCalls.flatMap((call) => {
+    const parsed: unknown = JSON.parse(call.options.body)
+    return Array.isArray(parsed) ? (parsed as Array<TelemetryEnvelope>) : []
+  })
+}
+
+function event(name: string): TelemetryEnvelope {
+  const match = envelopes().find(
+    (envelope) => envelope.data.baseData.name === name,
+  )
+  if (!match) throw new TypeError(`${name} envelope missing`)
+  return match
+}
+
+function eventNames(): Array<string> {
+  return envelopes().map((envelope) => envelope.data.baseData.name)
+}
+
+async function flushMicrotasks(): Promise<void> {
+  const { promise, resolve } = Promise.withResolvers<void>()
+  originalSetTimeout(resolve, 20)
+  return promise
+}
+
+describe("mock telemetry context", () => {
+  it.each([
+    { roll: 0, mode: "agent" },
+    { roll: 0.5, mode: "edit" },
+    { roll: 0.999, mode: "ask" },
+  ] as const)("maps random roll $roll to mode $mode", ({ roll, mode }) => {
+    Math.random = () => roll
+    expect(nextMode()).toBe(mode)
   })
 
-  afterEach(() => {
-    Math.random = originalRandom
-    mockTelemetryEnabled = false
-    globalThis.fetch = originalFetch
-    mock.restore()
-  })
-
-  describe("trackRequestSent", () => {
-    it("should send request sent event", async () => {
-      initTelemetry("token", "individual")
-      trackRequestSent("gpt-5.4", "individual", "req-123", "model-call-456")
-
-      await new Promise((resolve) => setTimeout(resolve, 50))
-      expect(globalThis.fetch).toHaveBeenCalled()
+  it("creates one coherent context without resampling related fields", () => {
+    Math.random = () => 0
+    const context = createMockRequestContext("req-context", "gpt-test")
+    expect(context).toMatchObject({
+      requestId: "req-context",
+      model: "gpt-test",
+      mode: "agent",
+      participant: "editsAgent",
+      isAgent: 1,
+      languageId: "typescript",
+      totalCharacters: 50,
+      totalLines: 1,
+      lineCount: 5,
+      linesAdded: 0,
+      linesRemoved: 0,
+      editCount: 1,
+      editLineCount: 0,
     })
-
-    it("should handle optional requestId and modelCallId", () => {
-      initTelemetry("token", "individual")
-      trackRequestSent("gpt-5.4", "individual")
-      expect(globalThis.fetch).toHaveBeenCalled()
-    })
+    expect(context.messageId).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+    )
   })
+})
 
-  describe("trackResponseSuccess", () => {
-    it("should send response success event", async () => {
-      initTelemetry("token", "individual")
-      trackResponseSuccess({
-        model: "gpt-5.4",
-        durationMs: 1500,
-        requestId: "req-789",
-        modelCallId: "model-call-789",
+describe("panel and conversation events", () => {
+  it.each(["agent", "edit", "ask"] as const)(
+    "keeps %s panel and conversation payloads on one context",
+    (mode) => {
+      const context = contextFor(mode)
+      trackPanelRequest(context)
+
+      const panel = event("copilot-chat/panel_request")
+      expect(panel.data.baseData.properties).toMatchObject({
+        requestId: context.requestId,
+        responseType: "success",
+        languageId: context.languageId,
+        model: context.model,
+        mode: context.mode,
+      })
+      expect(
+        JSON.parse(panel.data.baseData.properties.codeBlocks ?? "null"),
+      ).toEqual([
+        { languageId: context.languageId, totalLines: context.totalLines },
+      ])
+      expect(panel.data.baseData.measurements).toEqual({
+        isAgent: context.isAgent,
       })
 
-      await new Promise((resolve) => setTimeout(resolve, 50))
-      expect(globalThis.fetch).toHaveBeenCalled()
-    })
-
-    it("should handle response without optional fields", () => {
-      initTelemetry("token", "individual")
-      trackResponseSuccess({
-        model: "gpt-5.4",
-        durationMs: 1000,
+      const messageName =
+        mode === "edit" ?
+          "copilot-chat/editingSession.message"
+        : "copilot-chat/conversation.message"
+      const message = event(messageName)
+      expect(message.data.baseData.properties).toMatchObject({
+        source: "model",
+        headerRequestId: context.requestId,
+        mode: context.mode,
+        languageId: context.languageId,
       })
-      expect(globalThis.fetch).toHaveBeenCalled()
-    })
-  })
-
-  describe("trackResponseError", () => {
-    it("should send response error event", async () => {
-      initTelemetry("token", "individual")
-      trackResponseError({
-        model: "gpt-5.4",
-        durationMs: 500,
-        statusCode: 429,
-        requestId: "req-error-1",
-        modelCallId: "model-call-error-1",
+      expect(
+        JSON.parse(
+          message.data.baseData.properties.codeBlockLanguages ?? "null",
+        ),
+      ).toEqual({
+        0: { languageId: context.languageId, totalLines: context.totalLines },
       })
-
-      await new Promise((resolve) => setTimeout(resolve, 50))
-      expect(globalThis.fetch).toHaveBeenCalled()
-    })
-
-    it("should handle error without optional fields", () => {
-      initTelemetry("token", "individual")
-      trackResponseError({
-        model: "gpt-5.4",
-        durationMs: 400,
-        statusCode: 500,
+      expect(message.data.baseData.measurements).toEqual({
+        messageCharLen: context.totalCharacters,
+        numCodeBlocks: 1,
       })
-      expect(globalThis.fetch).toHaveBeenCalled()
+    },
+  )
+})
+
+describe("ghost text events", () => {
+  it("uses shared context for shown and accepted payloads", () => {
+    const context = contextFor("ask")
+    trackGhostTextShown(context)
+    trackGhostTextAccepted(context)
+
+    const shown = event("copilot/ghostText.shown")
+    expect(shown.data.baseData.properties).toMatchObject({
+      headerRequestId: context.requestId,
+      languageId: context.languageId,
+      reason: "network",
+      sku: "pro",
+    })
+    expect(shown.data.baseData.measurements).toEqual({
+      compCharLen: context.totalCharacters,
+      numLines: context.totalLines,
+    })
+
+    const accepted = event("copilot/ghostText.accepted")
+    expect(accepted.data.baseData.properties).toMatchObject({
+      headerRequestId: context.requestId,
+      languageId: context.languageId,
+      compType: "full",
+      sku: "pro",
+    })
+    expect(accepted.data.baseData.measurements).toEqual({
+      compCharLen: context.totalCharacters,
+      numLines: context.totalLines,
     })
   })
+})
 
-  describe("trackAuthNewToken", () => {
-    it("should send auth new token event", () => {
-      initTelemetry("token", "individual")
-      trackAuthNewToken()
-      expect(globalThis.fetch).toHaveBeenCalled()
-    })
-  })
+describe("conversation adoption events", () => {
+  const actions = [
+    {
+      name: "copilot-chat/conversation.acceptedCopy",
+      track: trackConversationAcceptedCopy,
+      measurements: (context: TelemetryRequestContext) => ({
+        totalCharacters: context.totalCharacters,
+        totalLines: context.totalLines,
+        copiedCharacters: context.totalCharacters,
+        copiedLines: context.totalLines,
+        isAgent: context.isAgent,
+      }),
+      compType: true,
+    },
+    {
+      name: "copilot-chat/conversation.acceptedInsert",
+      track: trackConversationAcceptedInsert,
+      measurements: (context: TelemetryRequestContext) => ({
+        totalCharacters: context.totalCharacters,
+        totalLines: context.totalLines,
+        isAgent: context.isAgent,
+      }),
+      compType: true,
+    },
+    {
+      name: "copilot-chat/conversation.appliedCodeblock",
+      track: trackConversationAppliedCodeblock,
+      measurements: (context: TelemetryRequestContext) => ({
+        isAgent: context.isAgent,
+        totalLines: context.totalLines,
+      }),
+      compType: false,
+    },
+  ]
 
-  describe("trackEditFeedback", () => {
-    it("should send edit feedback event", async () => {
-      initTelemetry("token", "individual")
-      trackEditFeedback("positive")
+  for (const action of actions) {
+    it(`sends ${action.name} with shared context`, () => {
+      const context = contextFor("edit")
+      action.track(context)
 
-      await new Promise((resolve) => setTimeout(resolve, 50))
-      expect(globalThis.fetch).toHaveBeenCalled()
-    })
-
-    it("should handle different feedback types", () => {
-      initTelemetry("token", "individual")
-      trackEditFeedback("negative")
-      expect(globalThis.fetch).toHaveBeenCalled()
-    })
-  })
-
-  describe("trackEditHunkAction", () => {
-    it("should send edit hunk action event", () => {
-      initTelemetry("token", "individual")
-      trackEditHunkAction("accept")
-      expect(globalThis.fetch).toHaveBeenCalled()
-    })
-
-    it("should handle different hunk actions", () => {
-      initTelemetry("token", "individual")
-      trackEditHunkAction("reject")
-      expect(globalThis.fetch).toHaveBeenCalled()
-    })
-  })
-
-  describe("trackPanelRequest", () => {
-    it("should send panel request event via MSFT endpoint", () => {
-      initTelemetry("token", "individual")
-      trackPanelRequest({ command: "panel.request" })
-      // trackPanelRequest uses undici.request (MSFT path), not globalThis.fetch.
-      // sendMsftTelemetryEnvelope runs synchronously until its first `await request(...)`,
-      // so mockUndiciRequest is called synchronously when trackPanelRequest returns.
-      expect(mockUndiciRequest).toHaveBeenCalled()
-    })
-  })
-
-  describe("scheduleFeedbackEvents", () => {
-    it("should schedule feedback events after delay", async () => {
-      const originalSetTimeout = globalThis.setTimeout
-      globalThis.setTimeout = mock((callback: () => void) => {
-        callback()
-        return 0 as unknown as ReturnType<typeof setTimeout>
-      }) as unknown as typeof setTimeout
-      try {
-        initTelemetry("token", "individual")
-        scheduleFeedbackEvents("session-123")
-        await Promise.resolve()
-        expect(globalThis.fetch).toHaveBeenCalled()
-      } finally {
-        globalThis.setTimeout = originalSetTimeout
+      const payload = event(action.name)
+      expect(payload.data.baseData.properties).toMatchObject({
+        codeBlockIndex: "0",
+        messageId: context.messageId,
+        headerRequestId: context.requestId,
+        participant: context.participant,
+        languageId: context.languageId,
+        modelId: context.model,
+        mode: context.mode,
+      })
+      if (action.compType) {
+        expect(payload.data.baseData.properties.comp_type).toBe("full")
+      } else {
+        expect(payload.data.baseData.properties).not.toHaveProperty("comp_type")
       }
+      expect(payload.data.baseData.measurements).toEqual(
+        action.measurements(context),
+      )
+    })
+  }
+})
+
+describe("inline conversation events", () => {
+  it("keeps official accept fields and shared context fields", () => {
+    const context = contextFor("ask")
+    trackInlineConversationMessage(context)
+    trackInlineConversationAccept(context)
+
+    const message = event("copilot-chat/inlineConversation.message")
+    expect(message.data.baseData.properties).toMatchObject({
+      source: "model",
+      headerRequestId: context.requestId,
+      mode: "inline",
+      languageId: context.languageId,
+    })
+    expect(
+      JSON.parse(message.data.baseData.properties.codeBlockLanguages ?? "null"),
+    ).toEqual({
+      0: { languageId: context.languageId, totalLines: context.totalLines },
+    })
+    expect(message.data.baseData.measurements).toEqual({
+      messageCharLen: context.totalCharacters,
+      numCodeBlocks: 1,
+    })
+
+    const accepted = event("copilot-chat/inlineConversation.accept")
+    expect(accepted.data.baseData.properties).toMatchObject({
+      messageId: context.messageId,
+      action: "accept",
+      headerRequestId: context.requestId,
+      command: "inline",
+      participant: "editor",
+      languageId: context.languageId,
+      mode: "inline",
+      model: context.model,
+    })
+    expect(accepted.data.baseData.properties).not.toHaveProperty("requestId")
+    expect(accepted.data.baseData.measurements).toEqual({
+      accepted: 1,
+      lineCount: context.lineCount,
+      totalLines: context.totalLines,
+      editCount: context.editCount,
+      editLineCount: context.editLineCount,
+      documentLength: context.totalCharacters,
+    })
+  })
+})
+
+describe("feedback events", () => {
+  it.each(["accepted", "rejected"] as const)(
+    "sends feedback and hunk actions for %s",
+    (outcome) => {
+      const context = contextFor("edit")
+      trackEditFeedback(context, outcome)
+      trackEditHunkAction(context, outcome)
+
+      const feedback = event("copilot-chat/panel.edit.feedback")
+      expect(feedback.data.baseData.properties).toMatchObject({
+        languageId: context.languageId,
+        requestId: context.requestId,
+        participant: context.participant,
+        command: context.mode,
+        outcome,
+        hasRemainingEdits: "false",
+        modelId: context.model,
+        mode: context.mode,
+      })
+      expect(feedback.data.baseData.measurements).toEqual({
+        isNotebook: 0,
+        isNotebookCell: 0,
+        isAgent: context.isAgent,
+      })
+
+      const hunk = event("copilot-chat/edit.hunk.action")
+      expect(hunk.data.baseData.properties).toMatchObject({
+        requestId: context.requestId,
+        languageId: context.languageId,
+        outcome,
+        modelId: context.model,
+        mode: context.mode,
+      })
+      expect(hunk.data.baseData.measurements).toEqual({
+        hasRemainingEdits: 0,
+        isNotebook: 0,
+        isNotebookCell: 0,
+        lineCount: context.lineCount,
+        linesAdded: context.linesAdded,
+        linesRemoved: context.linesRemoved,
+        isAgent: context.isAgent,
+      })
+    },
+  )
+
+  it("keeps the default 55% random outcome", () => {
+    const rolls = [0.9, 0.1]
+    Math.random = () => rolls.shift() ?? 0.1
+    trackEditFeedback(contextFor("ask"))
+    expect(
+      event("copilot-chat/panel.edit.feedback").data.baseData.properties
+        .outcome,
+    ).toBe("rejected")
+  })
+
+  it("schedules feedback and hunk with one shared delayed outcome", async () => {
+    const rolls = [0.2, 0.8, 0.1, 0.1]
+    Math.random = () => rolls.shift() ?? 0.1
+    const context = contextFor("agent")
+
+    scheduleFeedbackEvents(context)
+
+    expect(fetchCalls).toHaveLength(0)
+    expect(scheduledTimers).toHaveLength(1)
+    expect(scheduledTimers[0].delay).toBeGreaterThanOrEqual(2000)
+    expect(scheduledTimers[0].delay).toBeLessThanOrEqual(15000)
+    scheduledTimers[0].fn()
+    await flushMicrotasks()
+
+    const feedback = event("copilot-chat/panel.edit.feedback")
+    const hunk = event("copilot-chat/edit.hunk.action")
+    expect(feedback.data.baseData.properties).toMatchObject({
+      requestId: context.requestId,
+      languageId: context.languageId,
+      outcome: "rejected",
+    })
+    expect(hunk.data.baseData.properties).toMatchObject({
+      requestId: context.requestId,
+      languageId: context.languageId,
+      outcome: "rejected",
     })
   })
 
-  describe("trackEvent", () => {
-    it("should send custom event", () => {
-      initTelemetry("token", "individual")
-      trackEvent("custom.event", { property: "value" }, { measurement: 42 })
-      expect(globalThis.fetch).toHaveBeenCalled()
-    })
+  it("does not schedule for an empty request id or disabled telemetry", () => {
+    scheduleFeedbackEvents({ ...contextFor("ask"), requestId: "" })
+    mockTelemetryEnabled = false
+    scheduleFeedbackEvents(contextFor("ask"))
 
-    it("should respect telemetry disabled config", () => {
-      mockTelemetryEnabled = false
-      initTelemetry("token", "individual")
-      trackEvent("test.event", {})
-      // Should not call fetch when telemetry is disabled
-      expect(globalThis.fetch).not.toHaveBeenCalled()
-    })
+    expect(scheduledTimers).toHaveLength(0)
+    expect(fetchCalls).toHaveLength(0)
+  })
+})
+
+describe("trackEvent sampling and gating", () => {
+  it("sends only events that pass the 30% sampling gate", () => {
+    trackEvent("sampled.event", { value: "sent" })
+    Math.random = () => 0.95
+    trackEvent("skipped.event", { value: "skipped" })
+
+    expect(eventNames()).toEqual(["sampled.event"])
   })
 
-  describe("Envelope Structure", () => {
-    it("should create valid Application Insights envelope", () => {
-      initTelemetry("token", "individual")
-      trackRequestSent("gpt-5.4", "individual")
+  it("sends nothing when telemetry is disabled", () => {
+    mockTelemetryEnabled = false
+    trackEvent("disabled.event", {})
 
-      // Verify envelope contains required fields
-      // Note: Cannot directly check envelope without accessing mock internals
-      expect(globalThis.fetch).toHaveBeenCalled()
-    })
-  })
-
-  describe("Sampling Behavior", () => {
-    it("should respect 30% sampling rate when Math.random returns low value", () => {
-      Math.random = () => 0.1
-      initTelemetry("token", "individual")
-      trackEvent("sampled.event", {})
-      expect(globalThis.fetch).toHaveBeenCalled()
-    })
-
-    it("should skip event when Math.random exceeds threshold", () => {
-      Math.random = () => 0.95
-      initTelemetry("token", "individual")
-      trackEvent("not.sampled.event", {})
-      // When random is > 0.3, event is not sent
-      expect(globalThis.fetch).not.toHaveBeenCalled()
-    })
+    expect(fetchCalls).toHaveLength(0)
   })
 })

@@ -14,6 +14,7 @@ import os from "node:os"
 import path from "node:path"
 
 import type { ResponsesPayload } from "~/lib/types/responses"
+import type { TelemetryRequestContext } from "~/services/telemetry/types"
 
 import { getAttachedPremiumInfo } from "../src/lib/logger"
 import { getAttachedResponseHeaders } from "../src/lib/response-headers"
@@ -162,13 +163,13 @@ beforeEach(() => {
   spyOn(telemetryModule, "trackPanelRequest").mockImplementation(() => {})
   spyOn(telemetryModule, "trackGhostTextShown").mockImplementation(() => {})
   spyOn(telemetryModule, "scheduleFeedbackEvents").mockImplementation(
-    (requestId: string) => {
-      capturedScheduleFeedbackRequestId = requestId
+    (context: TelemetryRequestContext) => {
+      capturedScheduleFeedbackRequestId = context.requestId
     },
   )
   spyOn(telemetryModule, "schedulePostResponseEvents").mockImplementation(
-    (requestId: string) => {
-      capturedSchedulePostResponseRequestId = requestId
+    (context: TelemetryRequestContext) => {
+      capturedSchedulePostResponseRequestId = context.requestId
     },
   )
 })

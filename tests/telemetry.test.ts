@@ -1,17 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach, mock } from "bun:test"
-
-const requestMock = mock(() =>
-  Promise.resolve({
-    statusCode: 200,
-    body: {
-      text: () => Promise.resolve('{"acc":1}'),
-    },
-  }),
-)
-
-void mock.module("undici", () => ({
-  request: requestMock,
-}))
+import { mkdtempSync, readdirSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import { PATHS } from "~/lib/storage/paths"
 
 // --- Mocks must be set up before importing the module under test ---
 
@@ -72,7 +63,6 @@ void mock.module("~/lib/config", () => ({
 
 import type { TelemetryEnvelope } from "../src/services/telemetry/types"
 
-import { SESSION_ID, getMachineId } from "../src/services/telemetry/identity"
 import {
   initTelemetry,
   trackEvent,
@@ -80,16 +70,10 @@ import {
   trackResponseSuccess,
   trackResponseError,
   trackAuthNewToken,
-  trackEditFeedback,
-  trackEditHunkAction,
-  trackPanelRequest,
-  scheduleFeedbackEvents,
 } from "../src/services/telemetry/telemetry"
 import {
   TELEMETRY_IKEY,
   TELEMETRY_ENVELOPE_NAME,
-  MSFT_TELEMETRY_API_KEY,
-  MSFT_TELEMETRY_ENDPOINT,
   TELEMETRY_SDK_VERSION,
 } from "../src/services/telemetry/types"
 
@@ -100,17 +84,22 @@ let fetchCalls: Array<{
 }> = []
 let originalFetch: typeof globalThis.fetch
 let originalRandom: typeof Math.random
+const originalAppDir = PATHS.APP_DIR
+let appDir: string
 
 beforeEach(() => {
+  appDir = mkdtempSync(join(tmpdir(), "telemetry-core-"))
+  PATHS.APP_DIR = appDir
   fetchCalls = []
   originalFetch = globalThis.fetch
   originalRandom = Math.random
   Math.random = () => 0.1 // Always pass the 30% sampling gate in trackEvent
   mockTelemetryEnabled = false
-  requestMock.mockClear()
 })
 
 afterEach(() => {
+  PATHS.APP_DIR = originalAppDir
+  rmSync(appDir, { recursive: true, force: true })
   mockTelemetryEnabled = false
   globalThis.fetch = originalFetch
   Math.random = originalRandom
@@ -188,15 +177,6 @@ function findTelemetryEnvelope(
   throw new TypeError(`${eventName} envelope not found for ${requestId}`)
 }
 
-function hasTelemetryEnvelope(
-  eventName: string,
-  predicate: (env: TelemetryEnvelope) => boolean = () => true,
-): boolean {
-  return getTelemetryEnvelopes().some(
-    (env) => env.data.baseData.name === eventName && predicate(env),
-  )
-}
-
 /** Wait for fire-and-forget microtasks to settle */
 async function flushMicrotasks(): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, 20))
@@ -255,7 +235,7 @@ describe("telemetry: trackEvent", () => {
 
     trackEvent("test.event", { model: "gpt-4" })
 
-    expect(hasTelemetryEnvelope("test.event")).toBe(false)
+    expect(fetchCalls).toHaveLength(0)
   })
 
   it("does NOT send fetch when telemetry field is undefined (default disabled)", () => {
@@ -264,7 +244,7 @@ describe("telemetry: trackEvent", () => {
 
     trackEvent("test.event", { model: "gpt-4" })
 
-    expect(hasTelemetryEnvelope("test.event")).toBe(false)
+    expect(fetchCalls).toHaveLength(0)
   })
 
   it("does NOT throw when fetch fails (fire-and-forget)", async () => {
@@ -297,19 +277,56 @@ describe("telemetry: trackEvent", () => {
     expect(env.sampleRate).toBe(100)
     expect(typeof env.time).toBe("string")
 
-    expect(env.tags["ai.user.id"]).toBe("envelope-test")
-    expect(env.tags["ai.session.id"]).toBe(SESSION_ID)
-    expect(env.tags["ai.cloud.roleInstance"]).toBe("REDACTED")
-    expect(env.tags["ai.internal.sdkVersion"]).toBe(TELEMETRY_SDK_VERSION)
+    expect(env.tags).toEqual({
+      "ai.user.id": "envelope-test",
+      "ai.internal.sdkVersion": TELEMETRY_SDK_VERSION,
+    })
 
     expect(env.data.baseType).toBe("EventData")
     expect(env.data.baseData.ver).toBe(2)
     expect(env.data.baseData.name).toBe("copilot-chat/response.success")
-    expect(env.data.baseData.properties.model).toBe("gpt-4")
-    expect(env.data.baseData.properties.status_code).toBe("200")
-    expect(env.data.baseData.properties.common_vscodemachineid).toBe(
-      getMachineId(),
+    const props = env.data.baseData.properties
+    expect(Object.keys(props).sort()).toEqual([
+      "common_extname",
+      "common_extversion",
+      "common_vscodeversion",
+      "editor_plugin_version",
+      "editor_version",
+      "model",
+      "sku",
+      "status_code",
+    ])
+    expect(props.model).toBe("gpt-4")
+    expect(props.status_code).toBe("200")
+    expect(props.common_extname).toBe("copilot-chat")
+    expect(typeof props.common_extversion).toBe("string")
+    expect(typeof props.common_vscodeversion).toBe("string")
+    expect(typeof props.editor_version).toBe("string")
+    expect(typeof props.editor_plugin_version).toBe("string")
+    expect(props.editor_version).toBe(`vscode/${props.common_vscodeversion}`)
+    expect(props.editor_plugin_version).toBe(
+      `copilot-chat/${props.common_extversion}`,
     )
+    expect(props.sku).toBe("pro")
+    for (const key of [
+      "ai.session.id",
+      "ai.cloud.roleInstance",
+      "common_vscodemachineid",
+      "common_vscodesessionid",
+      "client_machineid",
+      "client_sessionid",
+      "client_deviceid",
+      "common_os",
+      "common_platformversion",
+      "common_arch",
+      "unique_id",
+      "organizations_list",
+      "enterprise_list",
+    ]) {
+      expect(key in env.tags).toBe(false)
+      expect(key in props).toBe(false)
+    }
+    expect(readdirSync(appDir)).toEqual([])
     expect(env.data.baseData.measurements).toEqual({ response_time: 1500 })
   })
 })
@@ -504,188 +521,7 @@ describe("telemetry: request/response wrappers", () => {
 
     const env = findEnvelopeByName("copilot-chat/auth.new_token")
     expect(env.data.baseData.name).toBe("copilot-chat/auth.new_token")
-  })
-
-  it("trackPanelRequest sends OneCollector payload with aria api key", async () => {
-    mockTelemetryEnabled = true
-
-    trackPanelRequest({ headerRequestId: "req-panel-001" })
-    await flushMicrotasks()
-
-    const requestCalls = requestMock.mock.calls as Array<Array<unknown>>
-    const call = requestCalls.find((candidate) => {
-      const options = candidate[1]
-      if (typeof options !== "object" || options === null) {
-        return false
-      }
-
-      const body = (options as { body?: unknown }).body
-      if (typeof body !== "string") {
-        return false
-      }
-
-      return body.includes('"headerRequestId":"req-panel-001"')
-    })
-    if (!call) {
-      throw new TypeError("request call missing")
-    }
-    const url = call[0]
-    const options = call[1]
-    if (typeof url !== "string") {
-      throw new TypeError("request url missing")
-    }
-    if (typeof options !== "object" || options === null) {
-      throw new TypeError("request options missing")
-    }
-    expect(url).toBe(MSFT_TELEMETRY_ENDPOINT)
-    expect(
-      (options as { headers: Record<string, string> }).headers.apikey,
-    ).toBe(MSFT_TELEMETRY_API_KEY)
-
-    const payload = JSON.parse((options as { body: string }).body) as {
-      name: string
-      iKey: string
-      data: { baseData: { name: string; properties: Record<string, string> } }
-    }
-    expect(payload.name).toBe("panel.request")
-    expect(payload.iKey.startsWith("o:")).toBe(true)
-    expect(payload.data.baseData.name).toBe("panel.request")
-    expect(payload.data.baseData.properties.headerRequestId).toBe(
-      "req-panel-001",
-    )
-  })
-})
-
-// ---------------------------------------------------------------------------
-// feedback wrappers (edit feedback / hunk action / scheduler)
-// ---------------------------------------------------------------------------
-
-describe("telemetry: feedback wrappers", () => {
-  it("trackEditFeedback sends correct event with properties and measurements", async () => {
-    mockTelemetryEnabled = true
-    installFetchMock()
-
-    // Mock Math.random to deterministically produce "accepted" (< 0.55)
-    const origRandom = Math.random
-    Math.random = () => 0.1
-
-    trackEditFeedback("req-feedback-001")
-
-    Math.random = origRandom
-    await flushMicrotasks()
-
-    const env = findTelemetryEnvelope(
-      "copilot-chat/panel.edit.feedback",
-      "req-feedback-001",
-    )
-    expect(env.data.baseData.name).toBe("copilot-chat/panel.edit.feedback")
-    const props = env.data.baseData.properties
-    expect(props.requestId).toBe("req-feedback-001")
-    expect(props.outcome).toBe("accepted")
-    expect(props.hasRemainingEdits).toBe("false")
-    expect(typeof props.languageId).toBe("string")
-    expect(typeof props.participant).toBe("string")
-    expect(typeof props.command).toBe("string")
-    const m = env.data.baseData.measurements
-    expect(m).toBeDefined()
-    if (!m) throw new TypeError("measurements missing")
-    expect(m.isNotebook).toBe(0)
-    expect(m.isNotebookCell).toBe(0)
-  })
-
-  it("trackEditHunkAction sends correct event with line stats", async () => {
-    mockTelemetryEnabled = true
-    installFetchMock()
-
-    // Mock Math.random to deterministically produce "accepted" (< 0.55)
-    const origRandom = Math.random
-    Math.random = () => 0.1
-
-    trackEditHunkAction("req-hunk-002")
-
-    Math.random = origRandom
-    await flushMicrotasks()
-
-    const env = findTelemetryEnvelope(
-      "copilot-chat/edit.hunk.action",
-      "req-hunk-002",
-    )
-    expect(env.data.baseData.name).toBe("copilot-chat/edit.hunk.action")
-    const props = env.data.baseData.properties
-    expect(props.requestId).toBe("req-hunk-002")
-    expect(props.outcome).toBe("accepted")
-    expect(typeof props.languageId).toBe("string")
-    const m = env.data.baseData.measurements
-    expect(m).toBeDefined()
-    if (!m) throw new TypeError("measurements missing")
-    expect(m.hasRemainingEdits).toBe(0)
-    expect(m.isNotebook).toBe(0)
-    expect(m.isNotebookCell).toBe(0)
-    expect(typeof m.lineCount).toBe("number")
-    expect(typeof m.linesAdded).toBe("number")
-    expect(typeof m.linesRemoved).toBe("number")
-  })
-
-  it("scheduleFeedbackEvents shares feedback choices with varying random values", async () => {
-    mockTelemetryEnabled = true
-    installFetchMock()
-    const captured: { fn: (() => void) | null; delay: number } = {
-      fn: null,
-      delay: 0,
-    }
-    const origTimeout = globalThis.setTimeout
-    const origRandom = Math.random
-    const randomValues = [0.1, 0.2, 0.8, 0.1, 0.9, 0.1, 0.9, 0.1, 0.9, 0.1]
-    let randomIndex = 0
-    try {
-      globalThis.setTimeout = ((fn: () => void, ms: number) => {
-        captured.fn = fn
-        captured.delay = ms
-        return 0 as unknown as ReturnType<typeof setTimeout>
-      }) as typeof setTimeout
-      Math.random = () => randomValues[randomIndex++] ?? 0.1
-      scheduleFeedbackEvents("req-sched-003")
-      expect(fetchCalls.length).toBe(0)
-      expect(captured.delay).toBeGreaterThanOrEqual(2000)
-      expect(captured.delay).toBeLessThanOrEqual(15000)
-      if (!captured.fn) throw new Error("setTimeout callback not captured")
-      captured.fn()
-    } finally {
-      globalThis.setTimeout = origTimeout
-      Math.random = origRandom
-    }
-    await flushMicrotasks()
-    const feedback = findTelemetryEnvelope(
-      "copilot-chat/panel.edit.feedback",
-      "req-sched-003",
-    ).data.baseData.properties
-    const hunk = findTelemetryEnvelope(
-      "copilot-chat/edit.hunk.action",
-      "req-sched-003",
-    ).data.baseData.properties
-    expect(feedback.languageId).toBe("javascript")
-    expect(feedback.outcome).toBe("rejected")
-    expect(hunk.languageId).toBe(feedback.languageId)
-    expect(hunk.outcome).toBe(feedback.outcome)
-  })
-
-  it("scheduleFeedbackEvents skips when requestId is empty", async () => {
-    mockTelemetryEnabled = true
-    installFetchMock()
-
-    scheduleFeedbackEvents("")
-    await flushMicrotasks()
-    expect(
-      hasTelemetryEnvelope(
-        "copilot-chat/panel.edit.feedback",
-        (env) => env.data.baseData.properties.requestId === "",
-      ),
-    ).toBe(false)
-    expect(
-      hasTelemetryEnvelope(
-        "copilot-chat/edit.hunk.action",
-        (env) => env.data.baseData.properties.requestId === "",
-      ),
-    ).toBe(false)
+    expect(env.data.baseData.properties.trackingId).toBeUndefined()
+    expect(typeof env.data.baseData.properties.telemetryEnabled).toBe("string")
   })
 })

@@ -12,7 +12,7 @@
 - `native-messages-handler.test.ts`, `messages-*.test.ts`, `anthropic-*.test.ts`, `responses-*.test.ts` - Anthropic / Responses / messages 路径
 - `router/` - 多实例调遣之器单元测试（lib.test.ts, state.test.ts, proxy.test.ts, integration.test.ts）；注入 `fetchImpl`/`now` 参数 mock
 - `router/` 有独立测试约定；详见 `tests/router/AGENTS.md`
-- `telemetry*.test.ts` - telemetry、identity 与 msft/integration 事件
+- `telemetry*.test.ts` - telemetry、identity、GitHub 事件、后置调度与 integration
 - `chat-completions-handler.test.ts`, `messages-handler.test.ts` - route handler 行为
 - `responses-handler.test.ts`, `responses-translation.test.ts`, `responses-stream-translation.test.ts` - Responses handler / translation 行为（公开端点测试）
 - `tests/responses/` - Responses 子目录，含双向翻译、stream 翻译与 replay 专项测试：

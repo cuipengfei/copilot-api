@@ -34,6 +34,7 @@ import { setPluginRequestActualModel } from "~/lib/http/request-context"
 import { attachResponseHeaders } from "~/lib/response-headers"
 import { resolveInitiatorWithSmartAgent } from "~/lib/smart-agent"
 import { state } from "~/lib/state"
+import { createMockRequestContext } from "~/services/telemetry/mock-values"
 import { createWebSocketUrl } from "~/services/responses-websocket"
 import { createContinuableResponsesWebSocketStream } from "~/services/responses-websocket-continuation"
 import {
@@ -236,22 +237,11 @@ const createHttpResponses = async (
   }
 
   const timeSinceIssuedMs = Date.now() - start
-  trackPanelRequest({
-    headerRequestId: requestId,
-    apiType: "responses",
-    modelCallId,
-  })
-  trackGhostTextShown({
-    headerRequestId: requestId,
-    ...(state.sku !== undefined ? { sku: state.sku } : {}),
-    timeSinceIssuedMs,
-    timeSinceDisplayedMs: 0,
-  })
-
-  if (requestId) {
-    scheduleFeedbackEvents(requestId)
-    schedulePostResponseEvents(requestId, payload.model)
-  }
+  const telemetryContext = createMockRequestContext(requestId, payload.model)
+  trackPanelRequest(telemetryContext)
+  trackGhostTextShown(telemetryContext)
+  scheduleFeedbackEvents(telemetryContext)
+  schedulePostResponseEvents(telemetryContext)
 
   if (payload.stream) {
     trackResponseSuccess({

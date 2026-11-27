@@ -189,9 +189,9 @@
 
 ## 8. 请求 Telemetry
 
-**使用场景**：沿现有开关和采样规则记录请求、响应、认证与交互事件。
+**使用场景**：通过 GitHub /telemetry 记录请求、响应、认证与合成交互事件，使用现有 telemetry 开关与 30% 采样。语言、模式、代码块与建议及采纳行数来自 mock-values.ts；对应账户统计按合成数据理解。
 
-**必须保留的行为**：`modelCallId` 在单次调用中保持一致；`requestId` 使用已构造的 headers；发送、成功、错误与后续事件的顺序、参数和条件保持一致。
+**必须保留的行为**：`modelCallId` 在单次调用中保持一致；`requestId` 使用已构造的 headers；三个 Copilot service 为每次响应生成一份共享的合成上下文，使面板、消息、补全与后续采纳事件使用相同的语言、模型和代码块统计。所有事件发送到 GitHub 通道，标签仅含 `ai.user.id` 与 `ai.internal.sdkVersion`，公共属性仅含插件、编辑器版本与 sku。inlineConversation.accept 使用 headerRequestId 关联请求。
 
 **本地实现**：[services/telemetry/](../src/services/telemetry/) 的事件、identity 与发送模块。
 
@@ -200,7 +200,8 @@
 **验证入口**：
 
 - [telemetry.test.ts](../tests/telemetry.test.ts)、[telemetry-events.test.ts](../tests/telemetry-events.test.ts)。
-- [telemetry-identity.test.ts](../tests/telemetry-identity.test.ts)、[telemetry-integration.test.ts](../tests/telemetry-integration.test.ts)、[telemetry-msft-events.test.ts](../tests/telemetry-msft-events.test.ts)。
+- [telemetry-identity.test.ts](../tests/telemetry-identity.test.ts)、[telemetry-integration.test.ts](../tests/telemetry-integration.test.ts)、[telemetry-post-response-events.test.ts](../tests/telemetry-post-response-events.test.ts)。
+真实 HTTP 验收由人工明确执行，使用选定实例的账户，逐项发送事件包装函数产生的完整载荷，核对 HTTP 200、itemsReceived: 1、itemsAccepted: 1、errors: []。HEET 日报中的指标在报表刷新后核对。
 
 ## 9. compact 请求的小模型选择
 

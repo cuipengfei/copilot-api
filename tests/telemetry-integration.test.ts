@@ -8,19 +8,6 @@ import {
   spyOn,
 } from "bun:test"
 
-const requestMock = mock(() =>
-  Promise.resolve({
-    statusCode: 200,
-    body: {
-      text: () => Promise.resolve('{"acc":1}'),
-    },
-  }),
-)
-
-void mock.module("undici", () => ({
-  request: requestMock,
-}))
-
 let mockTelemetryEnabled: boolean | undefined = false
 
 // Complete config shape to prevent cross-test contamination (see telemetry.test.ts)
@@ -79,7 +66,10 @@ import type { ChatCompletionsPayload } from "~/lib/types/chat-completions"
 import { createChatCompletions } from "~/services/copilot/create-chat-completions"
 import { createMessages } from "~/services/copilot/create-messages"
 import { createResponses } from "~/services/copilot/create-responses"
-import type { TelemetryEnvelope } from "~/services/telemetry/types"
+import type {
+  TelemetryEnvelope,
+  TelemetryRequestContext,
+} from "~/services/telemetry/types"
 import {
   initTelemetry,
   trackAuthNewToken,
@@ -87,11 +77,7 @@ import {
   trackGhostTextShown,
   trackPanelRequest,
 } from "~/services/telemetry/telemetry"
-import {
-  DEFAULT_TELEMETRY_ENDPOINT,
-  MSFT_TELEMETRY_API_KEY,
-  MSFT_TELEMETRY_ENDPOINT,
-} from "~/services/telemetry/types"
+import { DEFAULT_TELEMETRY_ENDPOINT } from "~/services/telemetry/types"
 
 const DIRECT_TELEMETRY_ENDPOINT = DEFAULT_TELEMETRY_ENDPOINT
 
@@ -103,6 +89,8 @@ type FetchCall = {
 let fetchCalls: Array<FetchCall> = []
 let originalFetch: typeof globalThis.fetch
 let originalRandom: typeof Math.random
+let scheduledTimers: Array<{ fn: () => void; delay: number }> = []
+let originalSetTimeout: typeof globalThis.setTimeout
 
 const chatResponse = {
   id: "chat-ok",
@@ -144,16 +132,6 @@ function telemetryCalls(): Array<FetchCall> {
   return fetchCalls.filter((x) => x.url === DIRECT_TELEMETRY_ENDPOINT)
 }
 
-function msftTrackCalls(): Array<FetchCall> {
-  return requestMock.mock.calls.reduce<Array<FetchCall>>((acc, call) => {
-    const [url, options] = call as Array<unknown>
-    if (typeof url === "string") {
-      acc.push({ url, options: options as RequestInit })
-    }
-    return acc
-  }, [])
-}
-
 function parseFirstTelemetryEnvelope(): Record<string, unknown> {
   const call = telemetryCalls().at(0)
   expect(call).toBeDefined()
@@ -172,20 +150,50 @@ function parseFirstTelemetryEnvelope(): Record<string, unknown> {
   return firstEnvelope
 }
 
-async function flushMicrotasks(): Promise<void> {
-  await new Promise((resolve) => setTimeout(resolve, 20))
+function telemetryEnvelopes(): Array<TelemetryEnvelope> {
+  return telemetryCalls().flatMap(
+    (call) =>
+      JSON.parse(call.options?.body as string) as Array<TelemetryEnvelope>,
+  )
 }
 
-function parseFirstBody(url: string): unknown {
-  const call =
-    url === MSFT_TELEMETRY_ENDPOINT ?
-      msftTrackCalls().at(0)
-    : fetchCalls.find((x) => x.url === url)
-  expect(call).toBeDefined()
+function telemetryEvent(name: string, requestId?: string): TelemetryEnvelope {
+  const event = telemetryEnvelopes().find((envelope) => {
+    const { name: eventName, properties } = envelope.data.baseData
+    return (
+      eventName === name
+      && (requestId === undefined
+        || properties.requestId === requestId
+        || properties.headerRequestId === requestId)
+    )
+  })
+  if (!event) throw new Error(`Telemetry event missing: ${name}`)
+  return event
+}
 
-  const body = call?.options?.body
-  expect(typeof body).toBe("string")
-  return JSON.parse((body ?? "null") as string)
+function contextFor(requestId: string, model: string): TelemetryRequestContext {
+  return {
+    requestId,
+    model,
+    languageId: "typescript",
+    mode: "ask",
+    participant: "default",
+    isAgent: 0,
+    messageId: `message-${requestId}`,
+    totalCharacters: 240,
+    totalLines: 12,
+    lineCount: 20,
+    linesAdded: 7,
+    linesRemoved: 3,
+    editCount: 2,
+    editLineCount: 4,
+  }
+}
+
+async function flushMicrotasks(): Promise<void> {
+  const { promise, resolve } = Promise.withResolvers<void>()
+  originalSetTimeout(resolve, 20)
+  await promise
 }
 
 function buildPayload(): ChatCompletionsPayload {
@@ -199,9 +207,16 @@ beforeEach(() => {
   fetchCalls = []
   originalFetch = globalThis.fetch
   originalRandom = Math.random
+  originalSetTimeout = globalThis.setTimeout
+  scheduledTimers = []
+  globalThis.setTimeout = ((fn: () => void, delay?: number) => {
+    if (typeof fn !== "function")
+      throw new TypeError("Timer callback must be a function")
+    scheduledTimers.push({ fn, delay: delay ?? 0 })
+    return 0 as never
+  }) as unknown as typeof globalThis.setTimeout
   Math.random = () => 0.1 // Always pass the 30% sampling gate in trackEvent
   mockTelemetryEnabled = false
-  requestMock.mockClear()
 
   state.copilotToken = "test-copilot-token"
   state.copilotApiUrl = undefined
@@ -221,6 +236,8 @@ afterEach(() => {
   mockTelemetryEnabled = false
   globalThis.fetch = originalFetch
   Math.random = originalRandom
+  globalThis.setTimeout = originalSetTimeout
+  scheduledTimers = []
   mock.restore()
 })
 
@@ -454,96 +471,93 @@ describe("telemetry integration token-derived tags", () => {
 })
 
 describe("telemetry integration event-specific routing", () => {
-  it("routes panel.request to the MSFT telemetry channel", async () => {
+  it("sends panel and conversation events to GH with shared context", async () => {
     mockTelemetryEnabled = true
-    installFetchMock((url) => {
-      if (url.includes("/chat/completions")) {
-        return Promise.resolve(jsonResponse(chatResponse))
-      }
-      if (url === DIRECT_TELEMETRY_ENDPOINT) {
-        return Promise.resolve(
-          jsonResponse({ itemsReceived: 1, itemsAccepted: 1 }),
-        )
-      }
-      return Promise.resolve(new Response(null, { status: 404 }))
-    })
-
-    initTelemetry("tid=user123;exp=9999999999;sku=copilot_for_business")
-    trackPanelRequest({ headerRequestId: "req-panel-1" })
+    installFetchMock(() =>
+      Promise.resolve(jsonResponse({ itemsReceived: 1, itemsAccepted: 1 })),
+    )
+    const context = contextFor("req-panel-1", "gpt-test")
+    trackPanelRequest(context)
     await flushMicrotasks()
 
-    expect(msftTrackCalls().length).toBe(1)
-    expect(telemetryCalls().length).toBe(0)
-
-    const payload = parseFirstBody(MSFT_TELEMETRY_ENDPOINT)
-    const first = payload as Record<string, unknown>
-    expect(first.name).toBeDefined()
-    const data = first.data as Record<string, unknown>
-    const baseData = data.baseData as Record<string, unknown>
-    expect(baseData.name).toBe("panel.request")
-    const call = requestMock.mock.calls[0] as Array<unknown> | undefined
-    if (!call) {
-      throw new TypeError("request call missing")
-    }
-    const requestUrl = call[0]
-    const options = call[1]
-    if (typeof requestUrl !== "string") {
-      throw new TypeError("request url missing")
-    }
-    if (typeof options !== "object" || options === null) {
-      throw new TypeError("request options missing")
-    }
-    expect(requestUrl).toBe(MSFT_TELEMETRY_ENDPOINT)
     expect(
-      (options as { headers: Record<string, string> }).headers.apikey,
-    ).toBe(MSFT_TELEMETRY_API_KEY)
+      fetchCalls.every((call) => call.url === DIRECT_TELEMETRY_ENDPOINT),
+    ).toBe(true)
+    expect(
+      telemetryEnvelopes().map((event) => event.data.baseData.name),
+    ).toEqual([
+      "copilot-chat/panel_request",
+      "copilot-chat/conversation.message",
+    ])
+    const panel = telemetryEvent(
+      "copilot-chat/panel_request",
+      context.requestId,
+    )
+    expect(panel.data.baseData.properties).toMatchObject({
+      requestId: context.requestId,
+      languageId: context.languageId,
+      model: context.model,
+      mode: context.mode,
+    })
+    expect(JSON.parse(panel.data.baseData.properties.codeBlocks)).toEqual([
+      { languageId: context.languageId, totalLines: context.totalLines },
+    ])
+    expect(panel.data.baseData.measurements).toEqual({
+      isAgent: context.isAgent,
+    })
+
+    const message = telemetryEvent(
+      "copilot-chat/conversation.message",
+      context.requestId,
+    )
+    expect(message.data.baseData.properties).toMatchObject({
+      headerRequestId: context.requestId,
+      languageId: context.languageId,
+      mode: context.mode,
+    })
+    expect(message.data.baseData.measurements).toEqual({
+      messageCharLen: context.totalCharacters,
+      numCodeBlocks: 1,
+    })
   })
 
-  it("sends ghostText.shown to GH telemetry with vendor-required fields", async () => {
+  it("sends ghostText.shown with synthetic line statistics and minimal identity", async () => {
     mockTelemetryEnabled = true
-    state.organizationList = ["org-a", "org-b"]
+    state.organizationList = ["org-a"]
     state.enterpriseList = [999001]
-    installFetchMock((url) => {
-      if (url === DIRECT_TELEMETRY_ENDPOINT) {
-        return Promise.resolve(
-          jsonResponse({ itemsReceived: 1, itemsAccepted: 1 }),
-        )
-      }
-      return Promise.resolve(new Response(null, { status: 404 }))
-    })
-
-    initTelemetry("tid=user123;exp=9999999999;sku=copilot_for_business")
-    trackGhostTextShown({
-      headerRequestId: "req-ghost-1",
-      copilot_trackingId: "track-1",
-      clientCompletionId: "completion-1",
-      reason: "network",
-      choiceIndex: 0,
-      sku: "copilot_for_business",
-    })
+    installFetchMock(() =>
+      Promise.resolve(jsonResponse({ itemsReceived: 1, itemsAccepted: 1 })),
+    )
+    const context = contextFor("req-ghost-1", "gpt-test")
+    trackGhostTextShown(context)
     await flushMicrotasks()
 
-    expect(telemetryCalls().length).toBe(1)
-    const envelope = parseFirstTelemetryEnvelope()
-    const data = envelope.data as Record<string, unknown>
-    const baseData = data.baseData as Record<string, unknown>
-    expect(baseData.name).toBe("copilot/ghostText.shown")
-
-    const properties = baseData.properties as Record<string, string>
-    expect(properties.copilot_trackingId).toBe("track-1")
-    expect(properties.clientCompletionId).toBe("completion-1")
-    expect(properties.organizations_list).toBe("org-a,org-b")
-    expect(properties.enterprise_list).toBe("999001")
-    expect(properties.client_sessionid).toBeDefined()
-    expect(properties.editor_version).toBeDefined()
-    expect(properties.editor_plugin_version).toBeDefined()
-    expect(properties.copilot_version).toBeDefined()
-    expect(properties.unique_id).toBeDefined()
-
-    const measurements = baseData.measurements as Record<string, number>
-    expect(typeof measurements.timeSinceIssuedMs).toBe("number")
-    expect(typeof measurements.timeSinceDisplayedMs).toBe("number")
-    expect(typeof measurements.current_time).toBe("number")
+    const event = telemetryEvent("copilot/ghostText.shown", context.requestId)
+    const { properties, measurements } = event.data.baseData
+    expect(properties).toMatchObject({
+      headerRequestId: context.requestId,
+      languageId: context.languageId,
+      reason: "network",
+    })
+    expect(measurements).toEqual({
+      compCharLen: context.totalCharacters,
+      numLines: context.totalLines,
+    })
+    expect(Object.keys(event.tags).sort()).toEqual([
+      "ai.internal.sdkVersion",
+      "ai.user.id",
+    ])
+    for (const key of [
+      "organizations_list",
+      "enterprise_list",
+      "client_sessionid",
+      "client_machineid",
+      "client_deviceid",
+      "unique_id",
+      "conversationId",
+    ]) {
+      expect(properties).not.toHaveProperty(key)
+    }
   })
 })
 
@@ -640,6 +654,7 @@ describe("telemetry integration protocol and timing", () => {
           const result = await scenario.call(stream)
           if (!stream)
             expect(result).toMatchObject({ id: scenario.response.id })
+          for (const timer of scheduledTimers) timer.fn()
           await flushMicrotasks()
           const envelopes = telemetryCalls().flatMap(
             (call) =>
@@ -653,6 +668,52 @@ describe("telemetry integration protocol and timing", () => {
           )
           if (!event) throw new Error("Successful response telemetry missing")
           expect(event.data.baseData.properties.apiType).toBe(scenario.apiType)
+          const upstream = fetchCalls.find((call) =>
+            call.url.endsWith(scenario.endpoint),
+          )
+          if (!upstream) throw new Error("Upstream request missing")
+          const requestId = new Headers(upstream.options?.headers).get(
+            "x-request-id",
+          )
+          if (!requestId) throw new Error("Upstream request ID missing")
+          const body = JSON.parse(upstream.options?.body as string) as {
+            model: string
+          }
+          const panel = telemetryEvent("copilot-chat/panel_request", requestId)
+          const panelProperties = panel.data.baseData.properties
+          expect(panelProperties.model).toBe(body.model)
+          expect(panelProperties.requestId).toBe(requestId)
+          const codeBlocks = JSON.parse(panelProperties.codeBlocks) as Array<{
+            languageId: string
+            totalLines: number
+          }>
+          expect(codeBlocks[0].languageId).toBe(panelProperties.languageId)
+          expect(codeBlocks[0].totalLines).toBeGreaterThan(0)
+          const ghost = telemetryEvent("copilot/ghostText.shown", requestId)
+          expect(ghost.data.baseData.properties.languageId).toBe(
+            panelProperties.languageId,
+          )
+          expect(ghost.data.baseData.measurements?.numLines).toBe(
+            codeBlocks[0].totalLines,
+          )
+          for (const name of [
+            "copilot-chat/panel.edit.feedback",
+            "copilot-chat/edit.hunk.action",
+            "copilot-chat/conversation.acceptedCopy",
+          ]) {
+            const properties = telemetryEvent(name, requestId).data.baseData
+              .properties
+            expect(properties.languageId).toBe(panelProperties.languageId)
+            expect(properties.modelId).toBe(body.model)
+            expect(properties.mode).toBe(panelProperties.mode)
+          }
+          const copy = telemetryEvent(
+            "copilot-chat/conversation.acceptedCopy",
+            requestId,
+          )
+          expect(copy.data.baseData.measurements?.totalLines).toBe(
+            codeBlocks[0].totalLines,
+          )
           expect(event.data.baseData.measurements?.timeToFirstToken).toBe(30)
           expect(event.data.baseData.measurements?.timeToComplete).toBe(
             stream ? 30 : 120,
@@ -683,11 +744,24 @@ describe("telemetry integration protocol and timing", () => {
         upstreamError = error
       }
       expect(upstreamError).toBeInstanceOf(HTTPError)
+      for (const timer of scheduledTimers) timer.fn()
       await flushMicrotasks()
       const envelopes = telemetryCalls().flatMap(
         (call) =>
           JSON.parse(call.options?.body as string) as Array<TelemetryEnvelope>,
       )
+      for (const name of [
+        "copilot-chat/panel_request",
+        "copilot/ghostText.shown",
+        "copilot/ghostText.accepted",
+        "copilot-chat/conversation.acceptedCopy",
+        "copilot-chat/conversation.acceptedInsert",
+        "copilot-chat/conversation.appliedCodeblock",
+      ]) {
+        expect(
+          envelopes.some((envelope) => envelope.data.baseData.name === name),
+        ).toBe(false)
+      }
       const event = envelopes.find(
         (envelope) =>
           envelope.data.baseData.name === "copilot-chat/response.error",

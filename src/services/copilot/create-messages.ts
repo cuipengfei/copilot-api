@@ -31,6 +31,7 @@ import { attachPremiumInfo, getPremiumInfoFromHeaders } from "~/lib/logger"
 import { setPluginRequestActualModel } from "~/lib/http/request-context"
 import { attachResponseHeaders } from "~/lib/response-headers"
 import { state } from "~/lib/state"
+import { createMockRequestContext } from "~/services/telemetry/mock-values"
 
 export type MessagesStream = ReturnType<typeof events>
 export type CreateMessagesReturn = AnthropicResponse | MessagesStream
@@ -105,19 +106,11 @@ export const createMessages = async (
   const timeSinceIssuedMs = Date.now() - start
   logCopilotRateLimits(result.headers)
 
-  scheduleFeedbackEvents(requestId)
-  schedulePostResponseEvents(requestId, payload.model)
-  trackPanelRequest({
-    headerRequestId: requestId,
-    apiType: "messages",
-    modelCallId,
-  })
-  trackGhostTextShown({
-    headerRequestId: requestId,
-    ...(state.sku !== undefined ? { sku: state.sku } : {}),
-    timeSinceIssuedMs,
-    timeSinceDisplayedMs: 0,
-  })
+  const telemetryContext = createMockRequestContext(requestId, payload.model)
+  trackPanelRequest(telemetryContext)
+  trackGhostTextShown(telemetryContext)
+  scheduleFeedbackEvents(telemetryContext)
+  schedulePostResponseEvents(telemetryContext)
   const premium = getPremiumInfoFromHeaders(result.headers)
   if (payload.stream) {
     trackResponseSuccess({
