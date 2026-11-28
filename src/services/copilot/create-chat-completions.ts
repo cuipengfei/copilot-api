@@ -170,6 +170,7 @@ export const createChatCompletions = async (
     completionTokens?: number
     bytesReceived?: number
   }) => {
+    telemetryContext.modelInvoked = options.modelInvoked
     trackPanelRequest(telemetryContext)
     trackGhostTextShown(telemetryContext)
     scheduleFeedbackEvents(telemetryContext)

@@ -640,6 +640,12 @@ export function trackInlineConversationAccept(
   )
 }
 
+function resolveAdoptionModel(context: TelemetryRequestContext): string {
+  return context.model === "copilot/auto" ?
+      context.modelInvoked || context.model
+    : context.model
+}
+
 export function trackConversationAcceptedCopy(
   context: TelemetryRequestContext,
 ): void {
@@ -652,7 +658,7 @@ export function trackConversationAcceptedCopy(
       headerRequestId: context.requestId,
       participant: context.participant,
       languageId: context.languageId,
-      modelId: context.model,
+      modelId: resolveAdoptionModel(context),
       comp_type: "full",
       mode: context.mode,
     },
@@ -678,7 +684,7 @@ export function trackConversationAcceptedInsert(
       headerRequestId: context.requestId,
       participant: context.participant,
       languageId: context.languageId,
-      modelId: context.model,
+      modelId: resolveAdoptionModel(context),
       comp_type: "full",
       mode: context.mode,
     },
@@ -702,7 +708,7 @@ export function trackConversationAppliedCodeblock(
       headerRequestId: context.requestId,
       participant: context.participant,
       languageId: context.languageId,
-      modelId: context.model,
+      modelId: resolveAdoptionModel(context),
       mode: context.mode,
     },
     {

@@ -263,6 +263,7 @@ const createHttpResponses = async (
     bytesReceived?: number
     modelInvoked?: string
   }) => {
+    telemetryContext.modelInvoked = options.modelInvoked
     trackPanelRequest(telemetryContext)
     trackGhostTextShown(telemetryContext)
     scheduleFeedbackEvents(telemetryContext)

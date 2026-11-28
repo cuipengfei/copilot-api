@@ -125,6 +125,7 @@ export const createMessages = async (
   const emitMessagesSuccessTelemetry = (
     options: { finishReason?: string; modelInvoked?: string } = {},
   ) => {
+    telemetryContext.modelInvoked = options.modelInvoked
     trackPanelRequest(telemetryContext)
     trackGhostTextShown(telemetryContext)
     scheduleFeedbackEvents(telemetryContext)

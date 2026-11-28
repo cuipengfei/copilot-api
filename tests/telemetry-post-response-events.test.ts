@@ -320,6 +320,37 @@ describe("schedulePostResponseEvents", () => {
     }
   })
 
+  it.each([
+    {
+      name: "copy",
+      roll: 0.1,
+      eventName: "copilot-chat/conversation.acceptedCopy",
+    },
+    {
+      name: "insert",
+      roll: 0.5,
+      eventName: "copilot-chat/conversation.acceptedInsert",
+    },
+    {
+      name: "applied",
+      roll: 0.95,
+      eventName: "copilot-chat/conversation.appliedCodeblock",
+    },
+  ])(
+    "uses the resolved Auto model when the delayed $name event runs",
+    ({ roll, eventName }) => {
+      const requestContext = { ...context, model: "copilot/auto" }
+      Math.random = () => roll
+      schedulePostResponseEvents(requestContext)
+      requestContext.modelInvoked = "resolved-after-scheduling"
+      timers[0].fn()
+
+      expect(event(eventName).data.baseData.properties.modelId).toBe(
+        "resolved-after-scheduling",
+      )
+    },
+  )
+
   it("does not schedule for an empty request id or disabled telemetry", () => {
     schedulePostResponseEvents({ ...context, requestId: "" })
     mockTelemetryEnabled = false

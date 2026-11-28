@@ -711,6 +711,34 @@ describe("conversation adoption events", () => {
         action.measurements(context),
       )
     })
+
+    it.each([
+      {
+        model: "copilot/auto",
+        modelInvoked: "actual-model",
+        expected: "actual-model",
+      },
+      {
+        model: "copilot/auto",
+        modelInvoked: undefined,
+        expected: "copilot/auto",
+      },
+      { model: "copilot/auto", modelInvoked: "", expected: "copilot/auto" },
+      {
+        model: "gpt-test",
+        modelInvoked: "different-model",
+        expected: "gpt-test",
+      },
+    ])(
+      `sends ${action.name} modelId for model $model and modelInvoked $modelInvoked`,
+      ({ model, modelInvoked, expected }) => {
+        const context = { ...contextFor("ask"), model, modelInvoked }
+        action.track(context)
+        expect(event(action.name).data.baseData.properties.modelId).toBe(
+          expected,
+        )
+      },
+    )
   }
 })
 

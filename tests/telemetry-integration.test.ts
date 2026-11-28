@@ -613,8 +613,16 @@ const protocolScenarios = [
   {
     apiType: "chatCompletions",
     endpoint: "/chat/completions",
-    call: (stream: boolean, sessionId?: string) =>
-      createChatCompletions({ ...buildPayload(), stream }, { sessionId }),
+    call: (
+      stream: boolean,
+      options: { sessionId?: string; model?: string } = {},
+    ) => {
+      const payload = buildPayload()
+      return createChatCompletions(
+        { ...payload, model: options.model ?? payload.model, stream },
+        { sessionId: options.sessionId },
+      )
+    },
     response: {
       id: "timed-chat",
       model: "actual-chat",
@@ -631,16 +639,19 @@ const protocolScenarios = [
   {
     apiType: "messages",
     endpoint: "/v1/messages",
-    call: (stream: boolean, sessionId?: string) =>
+    call: (
+      stream: boolean,
+      options: { sessionId?: string; model?: string } = {},
+    ) =>
       createMessages(
         {
-          model: "claude-test",
+          model: options.model ?? "claude-test",
           max_tokens: 1024,
           messages: [{ role: "user", content: "hello" }],
           stream,
         },
         undefined,
-        { sessionId },
+        { sessionId: options.sessionId },
       ),
     response: {
       id: "timed-messages",
@@ -655,14 +666,22 @@ const protocolScenarios = [
   {
     apiType: "responses",
     endpoint: "/responses",
-    call: (stream: boolean, sessionId?: string) =>
+    call: (
+      stream: boolean,
+      options: { sessionId?: string; model?: string } = {},
+    ) =>
       createResponses(
         {
-          model: "gpt-test",
+          model: options.model ?? "gpt-test",
           input: [{ role: "user", content: "hello" }],
           stream,
         },
-        { vision: false, initiator: "user", transport: "http", sessionId },
+        {
+          vision: false,
+          initiator: "user",
+          transport: "http",
+          sessionId: options.sessionId,
+        },
       ),
     response: {
       id: "timed-responses",
@@ -882,6 +901,69 @@ describe("telemetry integration protocol and timing", () => {
       })
     }
 
+    it.each([
+      { stream: false, resolvedModel: "resolved-auto" },
+      { stream: false, resolvedModel: undefined },
+      { stream: false, resolvedModel: "" },
+      { stream: true, resolvedModel: "resolved-auto" },
+      { stream: true, resolvedModel: undefined },
+      { stream: true, resolvedModel: "" },
+    ])(
+      `attributes ${scenario.apiType} Auto adoption to $resolvedModel, stream=$stream`,
+      async ({ stream, resolvedModel }) => {
+        mockTelemetryEnabled = true
+        const body = { ...scenario.response, model: resolvedModel }
+        installFetchMock((url) =>
+          Promise.resolve(
+            url.endsWith(scenario.endpoint) ?
+              stream ?
+                protocolStreamResponse({ apiType: scenario.apiType, body })
+              : jsonResponse(body)
+            : jsonResponse({ itemsReceived: 1, itemsAccepted: 1 }),
+          ),
+        )
+        const result = await scenario.call(stream, { model: "copilot/auto" })
+        if (stream) {
+          for await (const chunk of result as AsyncIterable<ServerSentEventMessage>)
+            void chunk
+        }
+        for (const timer of scheduledTimers) timer.fn()
+        await flushMicrotasks()
+
+        const request = telemetryEvent("copilot-chat/request.sent")
+        expect(request.data.baseData.properties["request.option.model"]).toBe(
+          JSON.stringify("copilot/auto"),
+        )
+        const requestId = request.data.baseData.properties.headerRequestId
+        const response = telemetryEvent(
+          "copilot-chat/response.success",
+          requestId,
+        )
+        expect(response.data.baseData.properties.model).toBe("copilot/auto")
+        const copy = telemetryEvent(
+          "copilot-chat/conversation.acceptedCopy",
+          requestId,
+        )
+        const message = telemetryEvent(
+          "copilot-chat/conversation.message",
+          requestId,
+          "model",
+        )
+        expect(copy.data.baseData.properties.modelId).toBe(
+          resolvedModel || "copilot/auto",
+        )
+        expect(copy.data.baseData.properties.messageId).toBe(
+          message.data.baseData.properties.messageId,
+        )
+        expect(copy.data.baseData.properties.conversationId).toBe(
+          message.data.baseData.properties.conversationId,
+        )
+        expect(copy.data.baseData.properties.conversationId).toBe(
+          request.data.baseData.properties.conversationId,
+        )
+      },
+    )
+
     it(`preserves ${scenario.apiType} session correlation across token refresh`, async () => {
       mockTelemetryEnabled = true
       installFetchMock((url) =>
@@ -892,10 +974,12 @@ describe("telemetry integration protocol and timing", () => {
         ),
       )
       const session = `private-session-${scenario.apiType}`
-      await scenario.call(false, session)
+      await scenario.call(false, { sessionId: session })
       initTelemetry("tid=test-user;exp=9999999999;sku=test_sku")
-      await scenario.call(false, session)
-      await scenario.call(false, `other-session-${scenario.apiType}`)
+      await scenario.call(false, { sessionId: session })
+      await scenario.call(false, {
+        sessionId: `other-session-${scenario.apiType}`,
+      })
       for (const timer of scheduledTimers) timer.fn()
       await flushMicrotasks()
       const messages = () =>
@@ -929,7 +1013,7 @@ describe("telemetry integration protocol and timing", () => {
         "other-session",
       )
       initTelemetry("tid=another-user;exp=9999999999;sku=test_sku")
-      await scenario.call(false, session)
+      await scenario.call(false, { sessionId: session })
       for (const timer of scheduledTimers) timer.fn()
       await flushMicrotasks()
       const afterSwitch = messages()

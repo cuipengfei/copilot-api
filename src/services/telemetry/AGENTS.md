@@ -20,7 +20,7 @@
 - `_endpoint` 需要规范化到单个 `/telemetry` 结尾；不能重复拼接，也不能把原始 endpoint 原封不动写进去
 - 独立事件各自按 30% 采样；每请求 context 开始时只采样一次并生成 `issuedAt`，该请求的所有 context 与响应事件共享 `sampled` / `conversationId`，不重复采样
 - 含 `sessionId` 的请求跨轮复用 `conversationId`，每轮分配递增的 user/model `turnIndex`；不含 `sessionId` 的请求使用独立 `conversationId`。原始客户端 `sessionId` 不写入遥测载荷；token 刷新切换账户 `tid` 时清空会话映射
-- 上游返回实际响应模型时写入 `modelInvoked`，缺失时回退请求模型
+- 上游返回实际响应模型时写入 `modelInvoked`，缺失时回退请求模型。三种 HTTP 协议把实际模型留在请求 context 中；仅 copilot/auto 的复制、插入和应用代码块事件读取该值，缺失或空值回退请求模型，普通指定模型保持原值。
 - 两个 schedule 函数在 `requestId` 为空、遥测关闭或 `sampled=false` 时不创建 timer；反馈事件共享同一个 outcome，post-response 使用单个 timer，在 `inlineConversation.accept` 前发送 `inline.done`，使用同 context 的 `editCount` / `editLineCount` 和 `accepted=1`；copy/insert/applied action 在安排 timer 时仅随机选择一次，回调复用该选择，三个分支均可到达
 - 公共发送路径补充三个上游对账头和实际 `timeSinceIssuedMs`；响应事件使用 `durationMs`。extract 只读取真实 `Headers`，缺失的键及空 `Te` 省略；响应的非空 `x-request-id` 更新 `context.requestId`，缺失或空值保留客户端 ID；请求开始保留原 ID，响应及后置事件使用最终 ID
 
