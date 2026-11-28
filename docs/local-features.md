@@ -205,7 +205,7 @@
 
 - [telemetry.test.ts](../tests/telemetry.test.ts)、[telemetry-events.test.ts](../tests/telemetry-events.test.ts)。
 - [telemetry-identity.test.ts](../tests/telemetry-identity.test.ts)、[telemetry-integration.test.ts](../tests/telemetry-integration.test.ts)、[telemetry-post-response-events.test.ts](../tests/telemetry-post-response-events.test.ts)。
-真实 HTTP 验收由人工明确执行，使用选定实例的账户，逐项发送事件包装函数产生的完整载荷，核对 HTTP 200、itemsReceived: 1、itemsAccepted: 1、errors: []。HEET 日报中的指标在报表刷新后核对。
+真实 HTTP 验收由人工明确执行，使用选定实例的账户，逐项发送事件包装函数产生的完整载荷，核对 HTTP 200、itemsReceived: 1、itemsAccepted: 1、errors: []。日报中的指标在报表刷新后核对。
 
 ## 9. compact 请求的小模型选择
 

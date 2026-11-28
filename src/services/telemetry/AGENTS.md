@@ -43,4 +43,4 @@
 
 ## 真实 HTTP 验证
 
-真实 HTTP 验收由人工明确执行，使用选定运行实例的账户凭据，从实际 token exchange 读取 endpoints.telemetry，逐项调用本模块的事件包装函数并核对完整载荷回执。验收需覆盖全部事件、mode、反馈结果、响应协议与后置采纳路径。每次发送要求 HTTP 200、itemsReceived=1、itemsAccepted=1、errors=[]；HEET 日报中的指标在报表刷新后核对。
+真实 HTTP 验收由人工明确执行，使用选定运行实例的账户凭据，从实际 token exchange 读取 endpoints.telemetry，逐项调用本模块的事件包装函数并核对完整载荷回执。验收需覆盖全部事件、mode、反馈结果、响应协议与后置采纳路径。每次发送要求 HTTP 200、itemsReceived=1、itemsAccepted=1、errors=[]；日报中的指标在报表刷新后核对。
