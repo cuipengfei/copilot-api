@@ -28,6 +28,7 @@ export const EVENT_INLINE_CONVERSATION_MESSAGE =
   "copilot-chat/inlineConversation.message"
 export const EVENT_INLINE_CONVERSATION_ACCEPT =
   "copilot-chat/inlineConversation.accept"
+export const EVENT_INLINE_DONE = "copilot-chat/inline.done"
 export const EVENT_CONVERSATION_ACCEPTED_COPY =
   "copilot-chat/conversation.acceptedCopy"
 export const EVENT_CONVERSATION_ACCEPTED_INSERT =
@@ -55,16 +56,18 @@ export interface TelemetryEnvelope {
   }
 }
 
-export type TelemetryMode = "agent" | "edit" | "ask"
+export type TelemetryMode = "agent" | "edit" | "ask" | "plan"
 
 export interface TelemetryRequestContext {
   requestId: string
   model: string
+  modelInvoked?: string
   languageId: string
   mode: TelemetryMode
   participant: string
   isAgent: 0 | 1
   messageId: string
+  clientCompletionId: string
   totalCharacters: number
   totalLines: number
   lineCount: number
@@ -73,6 +76,7 @@ export interface TelemetryRequestContext {
   editCount: number
   editLineCount: number
   conversationId: string
+  turnIndex: number
   sampled: boolean
   issuedAt: number
   gitHubRequestId?: string

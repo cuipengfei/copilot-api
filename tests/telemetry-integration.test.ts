@@ -7,6 +7,8 @@ import {
   mock,
   spyOn,
 } from "bun:test"
+import { consola } from "consola"
+import type { ServerSentEventMessage } from "fetch-event-stream"
 
 let mockTelemetryEnabled: boolean | undefined = false
 
@@ -66,6 +68,7 @@ import type { ChatCompletionsPayload } from "~/lib/types/chat-completions"
 import { createChatCompletions } from "~/services/copilot/create-chat-completions"
 import { createMessages } from "~/services/copilot/create-messages"
 import { createResponses } from "~/services/copilot/create-responses"
+import { clearTelemetryConversations } from "~/services/telemetry/mock-values"
 import type {
   TelemetryEnvelope,
   TelemetryRequestContext,
@@ -178,11 +181,13 @@ function contextFor(requestId: string, model: string): TelemetryRequestContext {
     requestId,
     sampled: true,
     conversationId: `conversation-${requestId}`,
+    turnIndex: 0,
     issuedAt: Date.now(),
     model,
     languageId: "typescript",
     mode: "ask",
-    participant: "default",
+    participant: "github.copilot.default",
+    clientCompletionId: `completion-${requestId}`,
     isAgent: 0,
     messageId: `message-${requestId}`,
     totalCharacters: 240,
@@ -229,6 +234,8 @@ beforeEach(() => {
   state.copilotTelemetryEnabled = undefined
   state.githubToken = "test-github-token"
   state.vsCodeVersion = "1.0.0"
+  state.vsCodeSessionId = "editor-integration"
+  clearTelemetryConversations()
   state.accountType = "individual"
   state.organizationList = undefined
   state.enterpriseList = undefined
@@ -565,6 +572,9 @@ describe("telemetry integration event-specific routing", () => {
       conversationId: context.conversationId,
       languageId: context.languageId,
       reason: "network",
+      clientCompletionId: context.clientCompletionId,
+      completionId: context.clientCompletionId,
+      choiceIndex: "0",
     })
     expect(measurements).toMatchObject({
       compCharLen: context.totalCharacters,
@@ -572,8 +582,11 @@ describe("telemetry integration event-specific routing", () => {
     })
     expect(Object.keys(event.tags).sort()).toEqual([
       "ai.internal.sdkVersion",
+      "ai.session.id",
       "ai.user.id",
     ])
+    expect(event.tags["ai.session.id"]).toBe("editor-integration")
+    expect(properties.common_vscodesessionid).toBe("editor-integration")
     for (const key of [
       "organizations_list",
       "enterprise_list",
@@ -590,6 +603,7 @@ describe("telemetry integration event-specific routing", () => {
 })
 
 const upstreamTelemetryHeaders = {
+  "X-Request-Id": "server-protocol",
   "X-GitHub-Request-Id": "gh-protocol",
   "X-Copilot-Service-Request-Id": "service-protocol",
   "X-GitHub-Copilot-Request-Te": "te-protocol",
@@ -599,10 +613,11 @@ const protocolScenarios = [
   {
     apiType: "chatCompletions",
     endpoint: "/chat/completions",
-    call: (stream: boolean) =>
-      createChatCompletions({ ...buildPayload(), stream }),
+    call: (stream: boolean, sessionId?: string) =>
+      createChatCompletions({ ...buildPayload(), stream }, { sessionId }),
     response: {
       id: "timed-chat",
+      model: "actual-chat",
       choices: [
         {
           index: 0,
@@ -616,7 +631,7 @@ const protocolScenarios = [
   {
     apiType: "messages",
     endpoint: "/v1/messages",
-    call: (stream: boolean) =>
+    call: (stream: boolean, sessionId?: string) =>
       createMessages(
         {
           model: "claude-test",
@@ -625,12 +640,13 @@ const protocolScenarios = [
           stream,
         },
         undefined,
+        { sessionId },
       ),
     response: {
       id: "timed-messages",
       type: "message",
       role: "assistant",
-      model: "claude-test",
+      model: "actual-messages",
       content: [{ type: "text", text: "ok" }],
       stop_reason: "end_turn",
       usage: { input_tokens: 10, output_tokens: 5 },
@@ -639,23 +655,61 @@ const protocolScenarios = [
   {
     apiType: "responses",
     endpoint: "/responses",
-    call: (stream: boolean) =>
+    call: (stream: boolean, sessionId?: string) =>
       createResponses(
         {
           model: "gpt-test",
           input: [{ role: "user", content: "hello" }],
           stream,
         },
-        { vision: false, initiator: "user", transport: "http" },
+        { vision: false, initiator: "user", transport: "http", sessionId },
       ),
     response: {
       id: "timed-responses",
+      model: "actual-responses",
       output: [],
       incomplete_details: null,
       usage: { input_tokens: 10, output_tokens: 5 },
     },
   },
 ] as const
+
+function protocolStreamResponse(options: {
+  apiType: "chatCompletions" | "messages" | "responses"
+  body: Record<string, unknown>
+  init?: ResponseInit
+}): Response {
+  const events =
+    options.apiType === "chatCompletions" ?
+      [
+        options.body.model === undefined ?
+          { choices: [] }
+        : { model: "initial-model", choices: [] },
+        options.body,
+      ]
+    : options.apiType === "messages" ?
+      [
+        { type: "message_start", message: options.body },
+        { type: "message_stop" },
+      ]
+    : [
+        {
+          type: "response.created",
+          response:
+            options.body.model === undefined ?
+              options.body
+            : { ...options.body, model: "initial-model" },
+        },
+        { type: "response.completed", response: options.body },
+      ]
+  const response = new Response(
+    events.map((data) => `data: ${JSON.stringify(data)}\n\n`).join("")
+      + `data: [DONE]\n\n`,
+    options.init,
+  )
+  response.headers.set("content-type", "text/event-stream")
+  return response
+}
 
 describe("telemetry integration protocol and timing", () => {
   for (const scenario of protocolScenarios) {
@@ -683,15 +737,33 @@ describe("telemetry integration protocol and timing", () => {
           }
           now = 1030
           return Promise.resolve(
-            jsonResponse(scenario.response, {
-              headers: upstreamTelemetryHeaders,
-            }),
+            stream ?
+              protocolStreamResponse({
+                apiType: scenario.apiType,
+                body: scenario.response,
+                init: { headers: upstreamTelemetryHeaders },
+              })
+            : jsonResponse(scenario.response, {
+                headers: upstreamTelemetryHeaders,
+              }),
           )
         })
         try {
           const result = await scenario.call(stream)
-          if (!stream)
+          if (stream) {
+            now = 1120
+            const chunks: Array<ServerSentEventMessage> = []
+            for await (const chunk of result as AsyncIterable<ServerSentEventMessage>) {
+              chunks.push(chunk)
+            }
+            expect(
+              chunks.some((chunk) =>
+                chunk.data?.includes(scenario.response.model),
+              ),
+            ).toBe(true)
+          } else {
             expect(result).toMatchObject({ id: scenario.response.id })
+          }
           for (const timer of scheduledTimers) timer.fn()
           await flushMicrotasks()
           const envelopes = telemetryCalls().flatMap(
@@ -710,16 +782,33 @@ describe("telemetry integration protocol and timing", () => {
             call.url.endsWith(scenario.endpoint),
           )
           if (!upstream) throw new Error("Upstream request missing")
-          const requestId = new Headers(upstream.options?.headers).get(
+          const clientRequestId = new Headers(upstream.options?.headers).get(
             "x-request-id",
           )
-          if (!requestId) throw new Error("Upstream request ID missing")
+          if (!clientRequestId) throw new Error("Upstream request ID missing")
+          const requestId = upstreamTelemetryHeaders["X-Request-Id"]
+          expect(event.data.baseData.properties.requestId).toBe(
+            "server-protocol",
+          )
           const body = JSON.parse(upstream.options?.body as string) as {
             model: string
           }
+          expect(event.data.baseData.properties.modelInvoked).toBe(
+            scenario.response.model,
+          )
+          expect(event.data.baseData.properties.model).toBe(body.model)
           const panel = telemetryEvent("copilot-chat/panel_request", requestId)
           const panelProperties = panel.data.baseData.properties
-          const request = telemetryEvent("copilot-chat/request.sent", requestId)
+          const request = telemetryEvent(
+            "copilot-chat/request.sent",
+            clientRequestId,
+          )
+          expect(request.data.baseData.properties.headerRequestId).toBe(
+            clientRequestId,
+          )
+          expect(request.data.baseData.properties.headerRequestId).not.toBe(
+            requestId,
+          )
           expect(request.data.baseData.properties.conversationId).toBe(
             panelProperties.conversationId,
           )
@@ -736,6 +825,10 @@ describe("telemetry integration protocol and timing", () => {
               gitHubCopilotRequestTe: "te-protocol",
             })
           }
+          const copy = telemetryEvent(
+            "copilot-chat/conversation.acceptedCopy",
+            requestId,
+          )
           for (const source of ["user", "model"]) {
             const message = telemetryEvent(
               "copilot-chat/conversation.message",
@@ -745,6 +838,10 @@ describe("telemetry integration protocol and timing", () => {
             expect(message.data.baseData.properties.conversationId).toBe(
               panelProperties.conversationId,
             )
+            if (source === "model")
+              expect(message.data.baseData.properties.messageId).toBe(
+                copy.data.baseData.properties.messageId,
+              )
           }
           expect(panelProperties.model).toBe(body.model)
           expect(panelProperties.requestId).toBe(requestId)
@@ -772,20 +869,12 @@ describe("telemetry integration protocol and timing", () => {
             expect(properties.modelId).toBe(body.model)
             expect(properties.mode).toBe(panelProperties.mode)
           }
-          const copy = telemetryEvent(
-            "copilot-chat/conversation.acceptedCopy",
-            requestId,
-          )
           expect(copy.data.baseData.measurements?.totalLines).toBe(
             codeBlocks[0].totalLines,
           )
           expect(event.data.baseData.measurements?.timeToFirstToken).toBe(30)
-          expect(event.data.baseData.measurements?.timeToComplete).toBe(
-            stream ? 30 : 120,
-          )
-          expect(event.data.baseData.measurements?.timeSinceIssuedMs).toBe(
-            stream ? 30 : 120,
-          )
+          expect(event.data.baseData.measurements?.timeToComplete).toBe(120)
+          expect(event.data.baseData.measurements?.timeSinceIssuedMs).toBe(120)
         } finally {
           jsonTiming.mockRestore()
           clock.mockRestore()
@@ -793,58 +882,255 @@ describe("telemetry integration protocol and timing", () => {
       })
     }
 
-    it(`reports ${scenario.apiType} for an upstream HTTP error`, async () => {
+    it(`preserves ${scenario.apiType} session correlation across token refresh`, async () => {
       mockTelemetryEnabled = true
       installFetchMock((url) =>
         Promise.resolve(
           url.endsWith(scenario.endpoint) ?
-            jsonResponse(
-              { error: { message: "service unavailable" } },
-              { status: 503, headers: upstreamTelemetryHeaders },
-            )
+            jsonResponse(scenario.response)
           : jsonResponse({ itemsReceived: 1, itemsAccepted: 1 }),
         ),
       )
-      let upstreamError: unknown
-      try {
-        await scenario.call(false)
-      } catch (error) {
-        upstreamError = error
-      }
-      expect(upstreamError).toBeInstanceOf(HTTPError)
+      const session = `private-session-${scenario.apiType}`
+      await scenario.call(false, session)
+      initTelemetry("tid=test-user;exp=9999999999;sku=test_sku")
+      await scenario.call(false, session)
+      await scenario.call(false, `other-session-${scenario.apiType}`)
       for (const timer of scheduledTimers) timer.fn()
       await flushMicrotasks()
-      const envelopes = telemetryCalls().flatMap(
-        (call) =>
-          JSON.parse(call.options?.body as string) as Array<TelemetryEnvelope>,
+      const messages = () =>
+        telemetryEnvelopes()
+          .filter((envelope) =>
+            [
+              "copilot-chat/conversation.message",
+              "copilot-chat/editingSession.message",
+            ].includes(envelope.data.baseData.name),
+          )
+          .map((envelope) => envelope.data.baseData.properties)
+      const properties = messages()
+      expect(
+        properties.map(({ source, turnIndex }) => [source, turnIndex]),
+      ).toEqual([
+        ["user", "0"],
+        ["model", "1"],
+        ["user", "2"],
+        ["model", "3"],
+        ["user", "0"],
+        ["model", "1"],
+      ])
+      expect(properties[0].conversationId).toBe(properties[2].conversationId)
+      expect(properties[0].conversationId).not.toBe(
+        properties[4].conversationId,
       )
-      for (const name of [
-        "copilot-chat/panel_request",
-        "copilot/ghostText.shown",
-        "copilot/ghostText.accepted",
-        "copilot-chat/conversation.acceptedCopy",
-        "copilot-chat/conversation.acceptedInsert",
-        "copilot-chat/conversation.appliedCodeblock",
-      ]) {
-        expect(
-          envelopes.some((envelope) => envelope.data.baseData.name === name),
-        ).toBe(false)
-      }
-      const event = envelopes.find(
-        (envelope) =>
-          envelope.data.baseData.name === "copilot-chat/response.error",
+      expect(JSON.stringify(telemetryEnvelopes())).not.toContain(
+        "private-session",
       )
-      if (!event) throw new Error("Failed response telemetry missing")
-      expect(event.data.baseData.properties.apiType).toBe(scenario.apiType)
-      expect(event.data.baseData.measurements?.status_code).toBe(503)
-      expect(event.data.baseData.properties).toMatchObject({
-        gitHubRequestId: "gh-protocol",
-        copilotServiceRequestId: "service-protocol",
-        gitHubCopilotRequestTe: "te-protocol",
-        conversationId: telemetryEvent("copilot-chat/request.sent").data
-          .baseData.properties.conversationId,
-      })
+      expect(JSON.stringify(telemetryEnvelopes())).not.toContain(
+        "other-session",
+      )
+      initTelemetry("tid=another-user;exp=9999999999;sku=test_sku")
+      await scenario.call(false, session)
+      for (const timer of scheduledTimers) timer.fn()
+      await flushMicrotasks()
+      const afterSwitch = messages()
+      expect(afterSwitch[6].source).toBe("user")
+      expect(afterSwitch[6].turnIndex).toBe("0")
+      expect(afterSwitch[6].conversationId).not.toBe(
+        properties[0].conversationId,
+      )
     })
+
+    it.each([false, true])(
+      `falls back to requested ${scenario.apiType} model when response model is missing, stream=%s`,
+      async (stream) => {
+        mockTelemetryEnabled = true
+        const { model: _model, ...body } = scenario.response
+        installFetchMock((url) =>
+          Promise.resolve(
+            url.endsWith(scenario.endpoint) ?
+              stream ?
+                protocolStreamResponse({ apiType: scenario.apiType, body })
+              : jsonResponse(body)
+            : jsonResponse({ itemsReceived: 1, itemsAccepted: 1 }),
+          ),
+        )
+        const result = await scenario.call(stream)
+        if (stream) {
+          for await (const chunk of result as AsyncIterable<ServerSentEventMessage>)
+            void chunk
+        }
+        for (const timer of scheduledTimers) timer.fn()
+        await flushMicrotasks()
+        const upstream = fetchCalls.find((call) =>
+          call.url.endsWith(scenario.endpoint),
+        )
+        if (!upstream) throw new Error("Upstream request missing")
+        const requested = JSON.parse(upstream.options?.body as string) as {
+          model: string
+        }
+        expect(
+          telemetryEvent("copilot-chat/response.success").data.baseData
+            .properties.modelInvoked,
+        ).toBe(requested.model)
+      },
+    )
+
+    it(`preserves malformed ${scenario.apiType} SSE data for the client`, async () => {
+      mockTelemetryEnabled = true
+      const warn = spyOn(consola, "warn").mockImplementation(
+        Object.assign(() => {}, { raw: () => {} }),
+      )
+      installFetchMock((url) =>
+        Promise.resolve(
+          url.endsWith(scenario.endpoint) ?
+            new Response("data: {invalid\n\ndata: [DONE]\n\n", {
+              headers: { "content-type": "text/event-stream" },
+            })
+          : jsonResponse({ itemsReceived: 1, itemsAccepted: 1 }),
+        ),
+      )
+      try {
+        const result = await scenario.call(true)
+        const chunks: Array<ServerSentEventMessage> = []
+        for await (const chunk of result as AsyncIterable<ServerSentEventMessage>)
+          chunks.push(chunk)
+        expect(chunks[0].data).toBe("{invalid")
+        for (const timer of scheduledTimers) timer.fn()
+        await flushMicrotasks()
+        const upstream = fetchCalls.find((call) =>
+          call.url.endsWith(scenario.endpoint),
+        )
+        if (!upstream) throw new Error("Upstream request missing")
+        const requested = JSON.parse(upstream.options?.body as string) as {
+          model: string
+        }
+        expect(
+          telemetryEvent("copilot-chat/response.success").data.baseData
+            .properties.modelInvoked,
+        ).toBe(requested.model)
+      } finally {
+        warn.mockRestore()
+      }
+    })
+
+    it.each([undefined, ""])(
+      `${scenario.apiType} falls back to the client request ID for upstream header %s`,
+      async (serverRequestId) => {
+        mockTelemetryEnabled = true
+        installFetchMock((url) =>
+          Promise.resolve(
+            url.endsWith(scenario.endpoint) ?
+              jsonResponse(scenario.response, {
+                headers:
+                  serverRequestId === undefined ? {} : { "X-Request-Id": "" },
+              })
+            : jsonResponse({ itemsReceived: 1, itemsAccepted: 1 }),
+          ),
+        )
+        await scenario.call(false)
+        for (const timer of scheduledTimers) timer.fn()
+        await flushMicrotasks()
+        const clientRequestId = telemetryEvent("copilot-chat/request.sent").data
+          .baseData.properties.headerRequestId
+        expect(clientRequestId).toBeTruthy()
+        for (const envelope of telemetryEnvelopes()) {
+          if (envelope.data.baseData.name === "copilot-chat/request.sent")
+            continue
+          const properties = envelope.data.baseData.properties
+          if ("requestId" in properties)
+            expect(properties.requestId).toBe(clientRequestId)
+          if ("headerRequestId" in properties)
+            expect(properties.headerRequestId).toBe(clientRequestId)
+        }
+        for (const name of [
+          "copilot-chat/response.success",
+          "copilot-chat/panel_request",
+          "copilot-chat/inline.done",
+        ]) {
+          expect(
+            telemetryEvent(name, clientRequestId).data.baseData.properties
+              .requestId,
+          ).toBe(clientRequestId)
+        }
+      },
+    )
+
+    it.each(["server-protocol", undefined, ""])(
+      `reports ${scenario.apiType} for an upstream HTTP error with request ID %s`,
+      async (serverRequestId) => {
+        mockTelemetryEnabled = true
+        installFetchMock((url) =>
+          Promise.resolve(
+            url.endsWith(scenario.endpoint) ?
+              jsonResponse(
+                { error: { message: "service unavailable" } },
+                {
+                  status: 503,
+                  headers:
+                    serverRequestId === undefined ?
+                      Object.fromEntries(
+                        Object.entries(upstreamTelemetryHeaders).filter(
+                          ([key]) => key !== "X-Request-Id",
+                        ),
+                      )
+                    : {
+                        ...upstreamTelemetryHeaders,
+                        "X-Request-Id": serverRequestId ?? "",
+                      },
+                },
+              )
+            : jsonResponse({ itemsReceived: 1, itemsAccepted: 1 }),
+          ),
+        )
+        let upstreamError: unknown
+        try {
+          await scenario.call(false)
+        } catch (error) {
+          upstreamError = error
+        }
+        expect(upstreamError).toBeInstanceOf(HTTPError)
+        for (const timer of scheduledTimers) timer.fn()
+        await flushMicrotasks()
+        const envelopes = telemetryCalls().flatMap(
+          (call) =>
+            JSON.parse(
+              call.options?.body as string,
+            ) as Array<TelemetryEnvelope>,
+        )
+        for (const name of [
+          "copilot-chat/panel_request",
+          "copilot-chat/inline.done",
+          "copilot/ghostText.shown",
+          "copilot/ghostText.accepted",
+          "copilot-chat/conversation.acceptedCopy",
+          "copilot-chat/conversation.acceptedInsert",
+          "copilot-chat/conversation.appliedCodeblock",
+        ]) {
+          expect(
+            envelopes.some((envelope) => envelope.data.baseData.name === name),
+          ).toBe(false)
+        }
+        const event = envelopes.find(
+          (envelope) =>
+            envelope.data.baseData.name === "copilot-chat/response.error",
+        )
+        if (!event) throw new Error("Failed response telemetry missing")
+        expect(event.data.baseData.properties.apiType).toBe(scenario.apiType)
+        expect(event.data.baseData.measurements?.status_code).toBe(503)
+        const requestProperties = telemetryEvent("copilot-chat/request.sent")
+          .data.baseData.properties
+        const clientRequestId = requestProperties.headerRequestId
+        expect(clientRequestId).toBeTruthy()
+        if (serverRequestId) expect(clientRequestId).not.toBe(serverRequestId)
+        expect(event.data.baseData.properties).toMatchObject({
+          requestId: serverRequestId || clientRequestId,
+          gitHubRequestId: "gh-protocol",
+          copilotServiceRequestId: "service-protocol",
+          gitHubCopilotRequestTe: "te-protocol",
+          conversationId: requestProperties.conversationId,
+        })
+      },
+    )
   }
 })
 
@@ -880,7 +1166,7 @@ describe("telemetry integration per-request sampling", () => {
           return
         }
         const request = telemetryEvent("copilot-chat/request.sent")
-        const requestId = request.data.baseData.properties.headerRequestId
+        const requestId = upstreamTelemetryHeaders["X-Request-Id"]
         const conversationId = request.data.baseData.properties.conversationId
         const panel = telemetryEvent("copilot-chat/panel_request", requestId)
         const response = telemetryEvent(
@@ -904,6 +1190,7 @@ describe("telemetry integration per-request sampling", () => {
           )
         }
         for (const name of [
+          "copilot-chat/inline.done",
           "copilot-chat/inlineConversation.message",
           "copilot-chat/inlineConversation.accept",
           "copilot/ghostText.accepted",

@@ -334,7 +334,10 @@ describe("modelCallId telemetry alignment", () => {
       model: "gpt-test",
       stream: true,
     }
-    await createChatCompletions(payload)
+    const stream = await createChatCompletions(payload)
+    for await (const _chunk of stream as AsyncIterable<unknown>) {
+      void _chunk
+    }
 
     expect(capturedModelCallIdFromRequestSent).toBeDefined()
     expect(capturedSuccessOpts).toBeDefined()
@@ -359,12 +362,15 @@ describe("modelCallId telemetry alignment", () => {
               JSON.stringify({
                 error: { message: "signature cannot be modified" },
               }),
-              { status: 400 },
+              { status: 400, headers: { "X-Request-Id": "first-attempt-id" } },
             ),
           )
         }
         return Promise.resolve(
-          Response.json({ error: "retry also failed" }, { status: 500 }),
+          Response.json(
+            { error: "retry also failed" },
+            { status: 500, headers: { "X-Request-Id": "final-attempt-id" } },
+          ),
         )
       },
     )
@@ -385,6 +391,7 @@ describe("modelCallId telemetry alignment", () => {
     expect(capturedErrorOpts!.modelCallId).toBe(
       capturedModelCallIdFromRequestSent,
     )
+    expect(capturedErrorOpts!.requestId).toBe("final-attempt-id")
   })
 
   test("normal error passes modelCallId to trackResponseError", async () => {

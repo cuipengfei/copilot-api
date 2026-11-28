@@ -62,12 +62,15 @@ void mock.module("~/lib/config", () => ({
   mergeConfigWithDefaults: getMockConfig,
 }))
 
+import { state } from "~/lib/state"
+
 import type {
   TelemetryEnvelope,
   TelemetryMode,
   TelemetryRequestContext,
 } from "../src/services/telemetry/types"
 import {
+  clearTelemetryConversations,
   createMockRequestContext,
   extractUpstreamTelemetryHeaders,
   nextMode,
@@ -106,6 +109,8 @@ let originalSetTimeout: typeof globalThis.setTimeout
 
 beforeEach(() => {
   mockTelemetryEnabled = true
+  clearTelemetryConversations()
+  state.vsCodeSessionId = "editor-events"
   fetchCalls = []
   scheduledTimers = []
   originalFetch = globalThis.fetch
@@ -146,20 +151,22 @@ afterEach(() => {
 
 function contextFor(mode: TelemetryMode): TelemetryRequestContext {
   const participant =
-    mode === "agent" ? "editsAgent"
-    : mode === "edit" ? "editingSession"
-    : "default"
+    mode === "agent" ? "github.copilot.editsAgent"
+    : mode === "edit" ? "github.copilot.editingSession"
+    : "github.copilot.default"
   return {
     requestId: `req-${mode}`,
     model: "gpt-5.4",
     sampled: true,
     conversationId: `conversation-${mode}`,
+    turnIndex: 0,
     issuedAt: 1000,
     languageId: "typescript",
     mode,
     participant,
     isAgent: mode === "agent" ? 1 : 0,
     messageId: `message-${mode}`,
+    clientCompletionId: `completion-${mode}`,
     totalCharacters: 240,
     totalLines: 12,
     lineCount: 20,
@@ -201,8 +208,9 @@ async function flushMicrotasks(): Promise<void> {
 describe("mock telemetry context", () => {
   it.each([
     { roll: 0, mode: "agent" },
-    { roll: 0.5, mode: "edit" },
-    { roll: 0.999, mode: "ask" },
+    { roll: 0.3, mode: "edit" },
+    { roll: 0.6, mode: "ask" },
+    { roll: 0.999, mode: "plan" },
   ] as const)("maps random roll $roll to mode $mode", ({ roll, mode }) => {
     Math.random = () => roll
     expect(nextMode()).toBe(mode)
@@ -210,14 +218,17 @@ describe("mock telemetry context", () => {
 
   it("creates one coherent context without resampling related fields", () => {
     Math.random = () => 0
-    const context = createMockRequestContext("req-context", "gpt-test")
+    const context = createMockRequestContext({
+      requestId: "req-context",
+      model: "gpt-test",
+    })
     expect(context).toMatchObject({
       requestId: "req-context",
       model: "gpt-test",
       sampled: true,
       issuedAt: 1025,
       mode: "agent",
-      participant: "editsAgent",
+      participant: "github.copilot.editsAgent",
       isAgent: 1,
       languageId: "typescript",
       totalCharacters: 50,
@@ -226,9 +237,13 @@ describe("mock telemetry context", () => {
       linesAdded: 0,
       linesRemoved: 0,
       editCount: 1,
-      editLineCount: 0,
+      editLineCount: 1,
+      turnIndex: 0,
     })
     expect(context.messageId).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+    )
+    expect(context.clientCompletionId).toMatch(
       /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
     )
     expect(context.conversationId).toMatch(
@@ -237,9 +252,200 @@ describe("mock telemetry context", () => {
     expect(context.conversationId).not.toBe(context.messageId)
   })
 
-  it("creates a fresh conversation id for every request context", () => {
-    const first = createMockRequestContext("req-context", "gpt-test")
-    const second = createMockRequestContext("req-context", "gpt-test")
+  it("shares conversation and advances turns within a session without exposing session ids", () => {
+    const first = {
+      ...createMockRequestContext({
+        requestId: "first",
+        model: "gpt-test",
+        sessionId: "raw-session-one",
+      }),
+      sampled: true,
+    }
+    const second = {
+      ...createMockRequestContext({
+        requestId: "second",
+        model: "gpt-test",
+        sessionId: "raw-session-one",
+      }),
+      sampled: true,
+    }
+    const separate = {
+      ...createMockRequestContext({
+        requestId: "separate",
+        model: "gpt-test",
+        sessionId: "raw-session-two",
+      }),
+      sampled: true,
+    }
+    trackPanelRequest(first)
+    trackPanelRequest(second)
+    trackPanelRequest(separate)
+
+    const messages = envelopes().filter(
+      (envelope) =>
+        envelope.data.baseData.name === "copilot-chat/conversation.message"
+        || envelope.data.baseData.name
+          === "copilot-chat/editingSession.message",
+    )
+    expect(messages).toHaveLength(6)
+    const properties = messages.map(
+      (message) => message.data.baseData.properties,
+    )
+    expect(
+      properties.map(({ source, turnIndex }) => ({ source, turnIndex })),
+    ).toEqual([
+      { source: "user", turnIndex: "0" },
+      { source: "model", turnIndex: "1" },
+      { source: "user", turnIndex: "2" },
+      { source: "model", turnIndex: "3" },
+      { source: "user", turnIndex: "0" },
+      { source: "model", turnIndex: "1" },
+    ])
+    expect(properties[0].conversationId).toBe(properties[1].conversationId)
+    expect(properties[0].conversationId).toBe(properties[2].conversationId)
+    expect(properties[0].conversationId).toBe(properties[3].conversationId)
+    expect(properties[4].conversationId).toBe(properties[5].conversationId)
+    expect(properties[4].conversationId).not.toBe(properties[0].conversationId)
+    const payload = JSON.stringify(fetchCalls)
+    expect(payload).not.toContain("raw-session-one")
+    expect(payload).not.toContain("raw-session-two")
+  })
+
+  it("reserves session turns for concurrently created contexts", () => {
+    const first = {
+      ...createMockRequestContext({
+        requestId: "first",
+        model: "gpt-test",
+        sessionId: "concurrent-session",
+      }),
+      sampled: true,
+    }
+    const second = {
+      ...createMockRequestContext({
+        requestId: "second",
+        model: "gpt-test",
+        sessionId: "concurrent-session",
+      }),
+      sampled: true,
+    }
+    const third = {
+      ...createMockRequestContext({
+        requestId: "third",
+        model: "gpt-test",
+        sessionId: "concurrent-session",
+      }),
+      sampled: true,
+    }
+
+    expect(fetchCalls).toHaveLength(0)
+    expect([first.turnIndex, second.turnIndex, third.turnIndex]).toEqual([
+      0, 2, 4,
+    ])
+    expect(second.conversationId).toBe(first.conversationId)
+    expect(third.conversationId).toBe(first.conversationId)
+
+    trackPanelRequest(third)
+    trackPanelRequest(first)
+    trackPanelRequest(second)
+
+    const messages = envelopes().filter(
+      (envelope) =>
+        envelope.data.baseData.name === "copilot-chat/conversation.message"
+        || envelope.data.baseData.name
+          === "copilot-chat/editingSession.message",
+    )
+    expect(messages).toHaveLength(6)
+    expect(
+      messages.map(({ data }) => {
+        const { headerRequestId, source, turnIndex, conversationId } =
+          data.baseData.properties
+        return { headerRequestId, source, turnIndex, conversationId }
+      }),
+    ).toEqual([
+      {
+        headerRequestId: "third",
+        source: "user",
+        turnIndex: "4",
+        conversationId: third.conversationId,
+      },
+      {
+        headerRequestId: "third",
+        source: "model",
+        turnIndex: "5",
+        conversationId: third.conversationId,
+      },
+      {
+        headerRequestId: "first",
+        source: "user",
+        turnIndex: "0",
+        conversationId: first.conversationId,
+      },
+      {
+        headerRequestId: "first",
+        source: "model",
+        turnIndex: "1",
+        conversationId: first.conversationId,
+      },
+      {
+        headerRequestId: "second",
+        source: "user",
+        turnIndex: "2",
+        conversationId: second.conversationId,
+      },
+      {
+        headerRequestId: "second",
+        source: "model",
+        turnIndex: "3",
+        conversationId: second.conversationId,
+      },
+    ])
+  })
+
+  it.each([
+    { roll: 0, editCount: 1, editLineCount: 1 },
+    { roll: 0.999, editCount: 5, editLineCount: 100 },
+  ])(
+    "keeps inline statistics coherent at random boundary $roll",
+    ({ roll, editCount, editLineCount }) => {
+      Math.random = () => roll
+      const context = {
+        ...createMockRequestContext({
+          requestId: "boundary",
+          model: "gpt-test",
+        }),
+        sampled: true,
+      }
+      expect(context.editCount).toBe(editCount)
+      expect(context.editLineCount).toBe(editLineCount)
+      trackInlineConversationMessage(context)
+      trackInlineConversationAccept(context)
+      const message = event("copilot-chat/inlineConversation.message")
+      expect(
+        JSON.parse(
+          message.data.baseData.properties.codeBlockLanguages ?? "null",
+        ),
+      ).toEqual({
+        0: { languageId: context.languageId, totalLines: context.totalLines },
+      })
+      const accepted = event("copilot-chat/inlineConversation.accept")
+      expect(accepted.data.baseData.measurements).toMatchObject({
+        lineCount: context.lineCount,
+        totalLines: context.totalLines,
+        editCount: context.editCount,
+        editLineCount: context.editLineCount,
+      })
+    },
+  )
+
+  it("creates independent conversations when session id is omitted", () => {
+    const first = createMockRequestContext({
+      requestId: "req-context",
+      model: "gpt-test",
+    })
+    const second = createMockRequestContext({
+      requestId: "req-context",
+      model: "gpt-test",
+    })
     expect(first.conversationId).not.toBe(second.conversationId)
   })
 })
@@ -248,11 +454,13 @@ describe("upstream telemetry headers", () => {
   it("extracts upstream telemetry headers", () => {
     const headers = new Headers({
       "X-GitHub-Request-Id": "gh-request",
+      "X-Request-Id": "server-request",
       "X-Copilot-Service-Request-Id": "service-request",
       "X-GitHub-Copilot-Request-Te": "te-value",
     })
     expect(extractUpstreamTelemetryHeaders(headers)).toEqual({
       gitHubRequestId: "gh-request",
+      requestId: "server-request",
       copilotServiceRequestId: "service-request",
       gitHubCopilotRequestTe: "te-value",
     })
@@ -261,17 +469,19 @@ describe("upstream telemetry headers", () => {
   it("omits missing and empty upstream telemetry headers", () => {
     const headers = new Headers({
       "X-GitHub-Request-Id": "gh-only",
+      "X-Request-Id": "",
       "X-GitHub-Copilot-Request-Te": "",
     })
     const extracted = extractUpstreamTelemetryHeaders(headers)
     expect(extracted).toEqual({ gitHubRequestId: "gh-only" })
     expect(extracted).not.toHaveProperty("copilotServiceRequestId")
     expect(extracted).not.toHaveProperty("gitHubCopilotRequestTe")
+    expect(extractUpstreamTelemetryHeaders(new Headers())).toEqual({})
   })
 })
 
 describe("panel and conversation events", () => {
-  it.each(["agent", "edit", "ask"] as const)(
+  it.each(["agent", "edit", "ask", "plan"] as const)(
     "keeps %s panel and conversation payloads on one context",
     (mode) => {
       const context = contextFor(mode)
@@ -305,11 +515,17 @@ describe("panel and conversation events", () => {
         source: "user",
         turnIndex: "0",
         headerRequestId: context.requestId,
-        uiKind: mode === "edit" ? "editingSession" : "panel",
+        uiKind: mode === "edit" ? "editingSession" : "conversationPanel",
         mode: context.mode,
         languageId: context.languageId,
         conversationId: context.conversationId,
       })
+      expect(userMessage.data.baseData.properties.messageId).toMatch(
+        /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+      )
+      expect(userMessage.data.baseData.properties.messageId).not.toBe(
+        context.messageId,
+      )
       expect(userMessage.data.baseData.measurements).toEqual({
         promptTokenLen: 60,
         messageCharLen: context.totalCharacters,
@@ -319,6 +535,8 @@ describe("panel and conversation events", () => {
       const modelMessage = event(messageName, "model")
       expect(modelMessage.data.baseData.properties).toMatchObject({
         source: "model",
+        messageId: context.messageId,
+        uiKind: mode === "edit" ? "editingSession" : "conversationPanel",
         headerRequestId: context.requestId,
         mode: context.mode,
         languageId: context.languageId,
@@ -399,6 +617,9 @@ describe("ghost text events", () => {
       headerRequestId: context.requestId,
       languageId: context.languageId,
       conversationId: context.conversationId,
+      clientCompletionId: context.clientCompletionId,
+      completionId: context.clientCompletionId,
+      choiceIndex: "0",
       reason: "network",
       sku: "pro",
     })
@@ -413,6 +634,9 @@ describe("ghost text events", () => {
       headerRequestId: context.requestId,
       languageId: context.languageId,
       conversationId: context.conversationId,
+      clientCompletionId: context.clientCompletionId,
+      completionId: context.clientCompletionId,
+      choiceIndex: "0",
       compType: "full",
       sku: "pro",
     })
@@ -499,6 +723,10 @@ describe("inline conversation events", () => {
     const message = event("copilot-chat/inlineConversation.message")
     expect(message.data.baseData.properties).toMatchObject({
       source: "model",
+      messageId: context.messageId,
+      uiKind: "conversationInline",
+      replyType: "inlineEdit",
+      turnIndex: "1",
       headerRequestId: context.requestId,
       mode: "inline",
       languageId: context.languageId,
@@ -521,7 +749,7 @@ describe("inline conversation events", () => {
       action: "accept",
       headerRequestId: context.requestId,
       command: "inline",
-      participant: "editor",
+      participant: "github.copilot.editor",
       languageId: context.languageId,
       mode: "inline",
       model: context.model,

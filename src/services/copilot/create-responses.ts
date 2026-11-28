@@ -42,6 +42,7 @@ import {
 import { createWebSocketUrl } from "~/services/responses-websocket"
 import { createContinuableResponsesWebSocketStream } from "~/services/responses-websocket-continuation"
 import {
+  captureStreamResponseModel,
   scheduleFeedbackEvents,
   schedulePostResponseEvents,
   trackRequestSent,
@@ -118,7 +119,11 @@ export const createResponses = async (
   prepareForCompact(headers, compactType)
 
   const start = Date.now()
-  const telemetryContext = createMockRequestContext(requestId, payload.model)
+  const telemetryContext = createMockRequestContext({
+    requestId,
+    model: payload.model,
+    sessionId,
+  })
   trackRequestSent({ context: telemetryContext, modelCallId })
 
   // service_tier is not supported by github copilot
@@ -167,7 +172,6 @@ export const createResponses = async (
   }
 
   return await createHttpResponses(upstreamPayload, headers, {
-    requestId,
     modelCallId,
     start,
     telemetryContext,
@@ -199,7 +203,6 @@ const omitUnsupportedCopilotInclude = (
 }
 
 interface ResponsesHttpContext {
-  requestId: string
   modelCallId: string
   start: number
   telemetryContext: TelemetryRequestContext
@@ -211,7 +214,6 @@ const createHttpResponses = async (
   payload: ResponsesPayload,
   headers: Record<string, string>,
   {
-    requestId,
     modelCallId,
     start,
     telemetryContext,
@@ -242,7 +244,7 @@ const createHttpResponses = async (
       model: payload.model,
       durationMs: Date.now() - start,
       statusCode: response.status,
-      requestId,
+      requestId: telemetryContext.requestId,
       modelCallId,
       sampled: telemetryContext.sampled,
       conversationId: telemetryContext.conversationId,
@@ -254,19 +256,28 @@ const createHttpResponses = async (
   }
 
   const timeSinceIssuedMs = Date.now() - start
-  trackPanelRequest(telemetryContext)
-  trackGhostTextShown(telemetryContext)
-  scheduleFeedbackEvents(telemetryContext)
-  schedulePostResponseEvents(telemetryContext)
-
-  if (payload.stream) {
+  const emitResponsesSuccessTelemetry = (options: {
+    finishReason: string
+    promptTokens?: number
+    completionTokens?: number
+    bytesReceived?: number
+    modelInvoked?: string
+  }) => {
+    trackPanelRequest(telemetryContext)
+    trackGhostTextShown(telemetryContext)
+    scheduleFeedbackEvents(telemetryContext)
+    schedulePostResponseEvents(telemetryContext)
     trackResponseSuccess({
       apiType: "responses",
       model: payload.model,
       durationMs: Date.now() - start,
       timeToFirstToken: timeSinceIssuedMs,
-      requestId,
-      finishReason: "stream",
+      requestId: telemetryContext.requestId,
+      finishReason: options.finishReason,
+      promptTokens: options.promptTokens,
+      completionTokens: options.completionTokens,
+      bytesReceived: options.bytesReceived,
+      modelInvoked: options.modelInvoked,
       modelCallId,
       sampled: telemetryContext.sampled,
       conversationId: telemetryContext.conversationId,
@@ -274,11 +285,30 @@ const createHttpResponses = async (
       copilotServiceRequestId: telemetryContext.copilotServiceRequestId,
       gitHubCopilotRequestTe: telemetryContext.gitHubCopilotRequestTe,
     })
+  }
+
+  if (payload.stream) {
+    const stream = async function* () {
+      try {
+        for await (const chunk of createResponsesSafeStream(
+          createResponsesHttpEventStream(response),
+        )) {
+          captureStreamResponseModel({
+            context: telemetryContext,
+            chunk,
+            apiType: "responses",
+          })
+          yield chunk
+        }
+      } finally {
+        emitResponsesSuccessTelemetry({
+          finishReason: "stream",
+          modelInvoked: telemetryContext.modelInvoked,
+        })
+      }
+    }
     return attachResponseHeaders(
-      attachPremiumInfo(
-        createResponsesSafeStream(createResponsesHttpEventStream(response)),
-        getPremiumInfoFromHeaders(response.headers),
-      ),
+      attachPremiumInfo(stream(), getPremiumInfoFromHeaders(response.headers)),
       response.headers,
     )
   }
@@ -286,22 +316,12 @@ const createHttpResponses = async (
   const result = (await response.json()) as ResponsesResult
   const finishReason = result.incomplete_details?.reason ?? "stop"
   const serialized = JSON.stringify(result)
-  trackResponseSuccess({
-    apiType: "responses",
-    model: payload.model,
-    durationMs: Date.now() - start,
-    timeToFirstToken: timeSinceIssuedMs,
-    requestId,
+  emitResponsesSuccessTelemetry({
     finishReason,
     promptTokens: result.usage?.input_tokens,
     completionTokens: result.usage?.output_tokens,
     bytesReceived: serialized.length,
-    modelCallId,
-    sampled: telemetryContext.sampled,
-    conversationId: telemetryContext.conversationId,
-    gitHubRequestId: telemetryContext.gitHubRequestId,
-    copilotServiceRequestId: telemetryContext.copilotServiceRequestId,
-    gitHubCopilotRequestTe: telemetryContext.gitHubCopilotRequestTe,
+    modelInvoked: result.model,
   })
   return attachResponseHeaders(
     attachPremiumInfo(result, getPremiumInfoFromHeaders(response.headers)),

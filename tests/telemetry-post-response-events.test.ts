@@ -84,13 +84,15 @@ const context: TelemetryRequestContext = {
   model: "gpt-5.4",
   sampled: true,
   conversationId: "conversation-post",
+  turnIndex: 0,
   issuedAt: 1000,
   gitHubRequestId: "gh-post",
   copilotServiceRequestId: "service-post",
   gitHubCopilotRequestTe: "te-post",
   languageId: "typescript",
   mode: "ask",
-  participant: "default",
+  participant: "github.copilot.default",
+  clientCompletionId: "completion-post",
   isAgent: 0,
   messageId: "message-post",
   totalCharacters: 240,
@@ -176,8 +178,12 @@ function expectSharedBaseEvents(): void {
   expect(message.data.baseData.properties).toMatchObject({
     conversationId: context.conversationId,
     headerRequestId: context.requestId,
+    messageId: context.messageId,
     languageId: context.languageId,
     mode: "inline",
+    uiKind: "conversationInline",
+    replyType: "inlineEdit",
+    turnIndex: "1",
   })
   expect(
     JSON.parse(message.data.baseData.properties.codeBlockLanguages ?? "null"),
@@ -190,6 +196,21 @@ function expectSharedBaseEvents(): void {
     timeSinceIssuedMs: 25,
   })
 
+  const done = event("copilot-chat/inline.done")
+  expect(done.data.baseData.properties).toMatchObject({
+    requestId: context.requestId,
+    conversationId: context.conversationId,
+    languageId: context.languageId,
+    replyType: "inlineEdit",
+    command: "inline",
+  })
+  expect(done.data.baseData.measurements).toEqual({
+    accepted: 1,
+    editCount: context.editCount,
+    editLineCount: context.editLineCount,
+    timeSinceIssuedMs: 25,
+  })
+
   const accepted = event("copilot-chat/inlineConversation.accept")
   expect(accepted.data.baseData.properties).toMatchObject({
     conversationId: context.conversationId,
@@ -199,7 +220,7 @@ function expectSharedBaseEvents(): void {
     languageId: context.languageId,
     mode: "inline",
     command: "inline",
-    participant: "editor",
+    participant: "github.copilot.editor",
     action: "accept",
   })
   expect(accepted.data.baseData.properties).not.toHaveProperty("requestId")
@@ -218,6 +239,9 @@ function expectSharedBaseEvents(): void {
     conversationId: context.conversationId,
     headerRequestId: context.requestId,
     languageId: context.languageId,
+    clientCompletionId: context.clientCompletionId,
+    completionId: context.clientCompletionId,
+    choiceIndex: "0",
     compType: "full",
   })
   expect(ghost.data.baseData.measurements).toEqual({
@@ -247,6 +271,7 @@ describe("schedulePostResponseEvents", () => {
   ])("sends base events and the $name adoption path", ({ roll, eventName }) => {
     expect(runPostResponseEvents(roll)).toEqual([
       "copilot-chat/inlineConversation.message",
+      "copilot-chat/inline.done",
       "copilot-chat/inlineConversation.accept",
       "copilot/ghostText.accepted",
       eventName,

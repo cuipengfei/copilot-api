@@ -78,6 +78,7 @@ import {
   trackRequestSent,
   trackResponseSuccess,
   trackResponseError,
+  captureStreamResponseModel,
   trackAuthNewToken,
 } from "../src/services/telemetry/telemetry"
 import {
@@ -86,6 +87,7 @@ import {
   TELEMETRY_SDK_VERSION,
 } from "../src/services/telemetry/types"
 import { createMockRequestContext } from "../src/services/telemetry/mock-values"
+import { state } from "~/lib/state"
 
 // Track fetch calls
 let fetchCalls: Array<{
@@ -105,6 +107,7 @@ beforeEach(() => {
   originalRandom = Math.random
   Math.random = () => 0.1 // Always pass the 30% sampling gate in trackEvent
   mockTelemetryEnabled = false
+  state.vsCodeSessionId = "editor-core"
 })
 
 afterEach(() => {
@@ -289,6 +292,7 @@ describe("telemetry: trackEvent", () => {
 
     expect(env.tags).toEqual({
       "ai.user.id": "envelope-test",
+      "ai.session.id": "editor-core",
       "ai.internal.sdkVersion": TELEMETRY_SDK_VERSION,
     })
 
@@ -299,7 +303,9 @@ describe("telemetry: trackEvent", () => {
     expect(Object.keys(props).sort()).toEqual([
       "common_extname",
       "common_extversion",
+      "common_vscodesessionid",
       "common_vscodeversion",
+      "copilot_trackingId",
       "editor_plugin_version",
       "editor_version",
       "model",
@@ -310,6 +316,7 @@ describe("telemetry: trackEvent", () => {
     expect(props.unique_id).toMatch(
       /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
     )
+    expect(props.copilot_trackingId).toBe("envelope-test")
     expect(props.model).toBe("gpt-4")
     expect(props.status_code).toBe("200")
     expect(props.common_extname).toBe("copilot-chat")
@@ -322,11 +329,10 @@ describe("telemetry: trackEvent", () => {
       `copilot-chat/${props.common_extversion}`,
     )
     expect(props.sku).toBe("pro")
+    expect(props.common_vscodesessionid).toBe("editor-core")
     for (const key of [
-      "ai.session.id",
       "ai.cloud.roleInstance",
       "common_vscodemachineid",
-      "common_vscodesessionid",
       "client_machineid",
       "client_sessionid",
       "client_deviceid",
@@ -382,12 +388,39 @@ const sampledResponse = {
 } as const
 
 describe("telemetry: request/response wrappers", () => {
+  it("does not decode unsampled or disabled stream data", () => {
+    const context = {
+      ...createMockRequestContext({
+        requestId: "gating-request",
+        model: "requested-model",
+      }),
+      sampled: false,
+    }
+    const chunk = {
+      get data(): string {
+        throw new Error("should not decode")
+      },
+    }
+
+    mockTelemetryEnabled = true
+    captureStreamResponseModel({ context, chunk, apiType: "chatCompletions" })
+    expect(context.modelInvoked).toBeUndefined()
+
+    context.sampled = true
+    mockTelemetryEnabled = false
+    captureStreamResponseModel({ context, chunk, apiType: "chatCompletions" })
+    expect(context.modelInvoked).toBeUndefined()
+  })
+
   it("trackRequestSent sends correct event with enhanced properties", async () => {
     mockTelemetryEnabled = true
     installFetchMock()
 
     const context = {
-      ...createMockRequestContext("req-abc-123", "claude-3.5-sonnet"),
+      ...createMockRequestContext({
+        requestId: "req-abc-123",
+        model: "claude-3.5-sonnet",
+      }),
       sampled: true,
       conversationId: "conversation-req-abc",
       issuedAt: 1000,
@@ -422,8 +455,7 @@ describe("telemetry: request/response wrappers", () => {
     expect(props.gitHubRequestId).toBe("gh-request")
     expect(props.copilotServiceRequestId).toBe("service-request")
     expect(props.gitHubCopilotRequestTe).toBe("te-value")
-    expect(props.request_option_model).toBe('"claude-3.5-sonnet"')
-    expect("request.option.model" in props).toBe(false)
+    expect(props["request.option.model"]).toBe('"claude-3.5-sonnet"')
     const m = env.data.baseData.measurements
     expect(m).toBeDefined()
     if (!m) throw new TypeError("measurements missing for request.sent")
@@ -439,6 +471,7 @@ describe("telemetry: request/response wrappers", () => {
     trackResponseSuccess({
       ...sampledResponse,
       model: "gpt-4",
+      modelInvoked: "actual-model",
       durationMs: 1234,
       requestId: "req-xyz-789",
       finishReason: "stop",
@@ -456,7 +489,7 @@ describe("telemetry: request/response wrappers", () => {
     expect(env.data.baseData.name).toBe("copilot-chat/response.success")
     const props = env.data.baseData.properties
     expect(props.model).toBe("gpt-4")
-    expect(props.modelInvoked).toBe("gpt-4")
+    expect(props.modelInvoked).toBe("actual-model")
     expect(props.reason).toBe("stop")
     expect(props.source).toBe("panel")
     expect(props.initiatorType).toBe("user")
@@ -495,6 +528,7 @@ describe("telemetry: request/response wrappers", () => {
     expect(m.bytesReceived).toBe(0)
     expect(m.timeToFirstToken).toBeGreaterThanOrEqual(1)
     expect(m.timeToFirstToken).toBeLessThan(800)
+    expect(env.data.baseData.properties.modelInvoked).toBe("gpt-4")
     expect(env.data.baseData.properties.reason).toBe("stop")
     expect(env.data.baseData.properties.requestId).toBe("")
   })

@@ -3,6 +3,7 @@
 import type { TelemetryMode, TelemetryRequestContext } from "./types"
 
 export interface UpstreamTelemetryHeaders {
+  requestId?: string
   gitHubRequestId?: string
   copilotServiceRequestId?: string
   gitHubCopilotRequestTe?: string
@@ -11,6 +12,7 @@ export interface UpstreamTelemetryHeaders {
 export function extractUpstreamTelemetryHeaders(
   headers: Headers,
 ): UpstreamTelemetryHeaders {
+  const requestId = headers.get("x-request-id")
   const gitHubRequestId = headers.get("x-github-request-id") ?? undefined
   const copilotServiceRequestId =
     headers.get("x-copilot-service-request-id") ?? undefined
@@ -18,6 +20,7 @@ export function extractUpstreamTelemetryHeaders(
   const gitHubCopilotRequestTe = rawTe && rawTe.length > 0 ? rawTe : undefined
 
   return {
+    ...(requestId && { requestId }),
     ...(gitHubRequestId !== undefined && { gitHubRequestId }),
     ...(copilotServiceRequestId !== undefined && { copilotServiceRequestId }),
     ...(gitHubCopilotRequestTe !== undefined && { gitHubCopilotRequestTe }),
@@ -36,8 +39,13 @@ const LANGUAGE_IDS = [
   "json",
   "yaml",
 ]
-const UI_KINDS = ["panel", "inline", "terminal", "notebook"]
-const MODES = ["agent", "edit", "ask"] as const
+const UI_KINDS = [
+  "conversationPanel",
+  "conversationInline",
+  "editingSession",
+  "editingSessionAgent",
+]
+const MODES = ["agent", "edit", "ask", "plan"] as const
 
 export function nextLanguageId(): string {
   return LANGUAGE_IDS[Math.floor(Math.random() * LANGUAGE_IDS.length)]
@@ -71,6 +79,15 @@ export function randomMessageId(): string {
   return crypto.randomUUID()
 }
 
+const telemetryConversations = new Map<
+  string,
+  { conversationId: string; nextTurnIndex: number }
+>()
+
+export function clearTelemetryConversations(): void {
+  telemetryConversations.clear()
+}
+
 /** Synthetic code block stats.
  *  characterCount: 50-500
  *  lineCount: 1-30
@@ -85,52 +102,71 @@ export function randomCodeBlockStats(): {
 }
 
 /** Synthetic edit stats.
- *  lineCountDiff: 0-20
  *  editCount: 1-5
+ *  lines per edit: 1-20
  */
 export function randomInlineStats(): {
-  lineCountDiff: number
+  editLineCount: number
   editCount: number
 } {
   const editCount = Math.floor(Math.random() * 5) + 1 // 1-5
-  const lineCountDiff = Math.floor(Math.random() * 21) // 0-20
-  return { lineCountDiff, editCount }
+  let editLineCount = 0
+  for (let i = 0; i < editCount; i++) {
+    editLineCount += Math.floor(Math.random() * 20) + 1
+  }
+  return { editLineCount, editCount }
 }
 
-export function createMockRequestContext(
-  requestId: string,
-  model: string,
-): TelemetryRequestContext {
+export function createMockRequestContext({
+  requestId,
+  model,
+  sessionId,
+}: {
+  requestId: string
+  model: string
+  sessionId?: string
+}): TelemetryRequestContext {
   const sampled = Math.random() <= 0.3
-  const conversationId = randomMessageId()
+  let conversation =
+    sessionId ? telemetryConversations.get(sessionId) : undefined
+  if (!conversation) {
+    conversation = { conversationId: randomMessageId(), nextTurnIndex: 0 }
+    if (sessionId) telemetryConversations.set(sessionId, conversation)
+  }
+  const turnIndex = conversation.nextTurnIndex
+  conversation.nextTurnIndex += 2
+  const conversationId = conversation.conversationId
   const issuedAt = Date.now()
   const mode = nextMode()
   const languageId = nextLanguageId()
   const { characterCount, lineCount: totalLines } = randomCodeBlockStats()
   const { lineCount, linesAdded, linesRemoved } = randomLineStats()
-  const { editCount, lineCountDiff } = randomInlineStats()
+  const { editCount, editLineCount } = randomInlineStats()
   const messageId = randomMessageId()
+  const clientCompletionId = randomMessageId()
 
   return {
     requestId,
     conversationId,
+    turnIndex,
     sampled,
     issuedAt,
     model,
     mode,
     languageId,
     participant:
-      mode === "agent" ? "editsAgent"
-      : mode === "edit" ? "editingSession"
-      : "default",
+      mode === "agent" ? "github.copilot.editsAgent"
+      : mode === "edit" ? "github.copilot.editingSession"
+      : "github.copilot.default",
     isAgent: mode === "agent" ? 1 : 0,
     messageId,
+    clientCompletionId,
     totalCharacters: characterCount,
     totalLines,
     lineCount,
     linesAdded,
     linesRemoved,
     editCount,
-    editLineCount: lineCountDiff,
+    editLineCount,
   }
 }

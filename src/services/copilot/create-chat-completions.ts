@@ -32,6 +32,7 @@ import {
   extractUpstreamTelemetryHeaders,
 } from "~/services/telemetry/mock-values"
 import {
+  captureStreamResponseModel,
   scheduleFeedbackEvents,
   schedulePostResponseEvents,
   trackRequestSent,
@@ -117,7 +118,11 @@ export const createChatCompletions = async (
   prepareForCompact(headers, options?.compactType)
   await attachAutoSessionToken(headers, payload.model, "/chat/completions")
   const start = Date.now()
-  const telemetryContext = createMockRequestContext(requestId, payload.model)
+  const telemetryContext = createMockRequestContext({
+    requestId,
+    model: payload.model,
+    sessionId: options?.sessionId,
+  })
   trackRequestSent({ context: telemetryContext, modelCallId })
 
   consola.debug(`<-- model: ${payload.model}`)
@@ -163,29 +168,58 @@ export const createChatCompletions = async (
     telemetryContext,
     extractUpstreamTelemetryHeaders(okResponse.headers),
   )
-  trackPanelRequest(telemetryContext)
-  trackGhostTextShown(telemetryContext)
-  scheduleFeedbackEvents(telemetryContext)
-  schedulePostResponseEvents(telemetryContext)
-
-  const premium = getPremiumInfoFromHeaders(okResponse.headers)
-  if (payload.stream) {
+  const emitCompletionSuccessTelemetry = (options: {
+    finishReason: string
+    modelInvoked?: string
+    promptTokens?: number
+    completionTokens?: number
+    bytesReceived?: number
+  }) => {
+    trackPanelRequest(telemetryContext)
+    trackGhostTextShown(telemetryContext)
+    scheduleFeedbackEvents(telemetryContext)
+    schedulePostResponseEvents(telemetryContext)
     trackResponseSuccess({
       model: payload.model,
+      modelInvoked: options.modelInvoked,
       apiType: "chatCompletions",
       timeToFirstToken: timeSinceIssuedMs,
       durationMs: Date.now() - start,
-      requestId,
+      requestId: telemetryContext.requestId,
       modelCallId,
-      finishReason: "stream",
+      finishReason: options.finishReason,
       sampled: telemetryContext.sampled,
       conversationId: telemetryContext.conversationId,
       gitHubRequestId: telemetryContext.gitHubRequestId,
       copilotServiceRequestId: telemetryContext.copilotServiceRequestId,
       gitHubCopilotRequestTe: telemetryContext.gitHubCopilotRequestTe,
+      promptTokens: options.promptTokens,
+      completionTokens: options.completionTokens,
+      bytesReceived: options.bytesReceived,
     })
+  }
+
+  const premium = getPremiumInfoFromHeaders(okResponse.headers)
+  if (payload.stream) {
+    const stream = (async function* () {
+      try {
+        for await (const chunk of events(okResponse)) {
+          captureStreamResponseModel({
+            context: telemetryContext,
+            chunk,
+            apiType: "chatCompletions",
+          })
+          yield chunk
+        }
+      } finally {
+        emitCompletionSuccessTelemetry({
+          finishReason: "stream",
+          modelInvoked: telemetryContext.modelInvoked,
+        })
+      }
+    })()
     return attachResponseHeaders(
-      attachPremiumInfo(events(okResponse), premium),
+      attachPremiumInfo(stream, premium),
       okResponse.headers,
     )
   }
@@ -194,19 +228,9 @@ export const createChatCompletions = async (
     ChatCompletionResponse | ChatCompletionErrorResponse
   const finishReason =
     result.choices?.length ? result.choices[0].finish_reason : "stop"
-  trackResponseSuccess({
-    model: payload.model,
-    apiType: "chatCompletions",
-    timeToFirstToken: timeSinceIssuedMs,
-    durationMs: Date.now() - start,
-    requestId,
-    modelCallId,
+  emitCompletionSuccessTelemetry({
     finishReason,
-    sampled: telemetryContext.sampled,
-    conversationId: telemetryContext.conversationId,
-    gitHubRequestId: telemetryContext.gitHubRequestId,
-    copilotServiceRequestId: telemetryContext.copilotServiceRequestId,
-    gitHubCopilotRequestTe: telemetryContext.gitHubCopilotRequestTe,
+    modelInvoked: result.model,
     promptTokens: result.usage?.prompt_tokens,
     completionTokens: result.usage?.completion_tokens,
     bytesReceived: JSON.stringify(result).length,

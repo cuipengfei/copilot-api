@@ -1,11 +1,15 @@
 import consola from "consola"
+import { type ServerSentEventMessage } from "fetch-event-stream"
 import { getConfig } from "~/lib/config"
+import { readResponsesStreamEvent } from "~/lib/http/responses-stream-event"
 import { state } from "~/lib/state"
 
 import { getCommonProperties } from "./identity"
 import {
+  clearTelemetryConversations,
   nextUiKind,
   randomFeedbackDelay,
+  randomMessageId,
   type UpstreamTelemetryHeaders,
 } from "./mock-values"
 import {
@@ -22,6 +26,7 @@ import {
   EVENT_GHOST_TEXT_SHOWN,
   EVENT_INLINE_CONVERSATION_ACCEPT,
   EVENT_INLINE_CONVERSATION_MESSAGE,
+  EVENT_INLINE_DONE,
   EVENT_PANEL_REQUEST,
   EVENT_REQUEST_SENT,
   EVENT_RESPONSE_ERROR,
@@ -58,6 +63,7 @@ function createEnvelope(
     sampleRate: 100,
     tags: {
       "ai.user.id": _tid ?? "",
+      "ai.session.id": state.vsCodeSessionId ?? "",
       "ai.internal.sdkVersion": TELEMETRY_SDK_VERSION,
     },
     data: {
@@ -68,7 +74,9 @@ function createEnvelope(
         properties: {
           ...getCommonProperties({
             vsCodeVersion: state.vsCodeVersion ?? "",
+            vsCodeSessionId: state.vsCodeSessionId,
             sku: _sku,
+            copilotTrackingId: _tid ?? "",
           }),
           unique_id: crypto.randomUUID(),
           ...properties,
@@ -88,7 +96,7 @@ function sendTelemetryEnvelope(
     method: "POST",
     headers: request.headers,
     body: JSON.stringify([envelope]),
-    signal: AbortSignal.timeout(5000),
+    signal: AbortSignal.timeout(15000),
   })
     .then(async (res) => {
       const text = await res.text().catch(() => null)
@@ -151,7 +159,9 @@ function parseItemsAccepted(text: string | null): number | null {
  * Called from token.ts after token refresh.
  */
 export function initTelemetry(copilotToken: string, endpoint?: string): void {
-  _tid = parseTid(copilotToken)
+  const tid = parseTid(copilotToken)
+  if (tid !== _tid) clearTelemetryConversations()
+  _tid = tid
   _sku = parseSku(copilotToken)
   const base = endpoint ?? DEFAULT_TELEMETRY_ENDPOINT
   const normalizedEndpoint =
@@ -246,7 +256,7 @@ export function trackRequestSent(options: {
       uiKind: nextUiKind(),
       transport: "http",
       headerRequestId: options.context.requestId,
-      request_option_model: `"${options.context.model}"`,
+      "request.option.model": JSON.stringify(options.context.model),
       ...(options.modelCallId !== undefined ?
         { modelCallId: options.modelCallId }
       : {}),
@@ -257,9 +267,65 @@ export function trackRequestSent(options: {
 
 export type TelemetryApiType = "chatCompletions" | "messages" | "responses"
 
+export function captureStreamResponseModel(options: {
+  context: TelemetryRequestContext
+  chunk: ServerSentEventMessage
+  apiType: TelemetryApiType
+}): void {
+  if (
+    getConfig().telemetry !== true
+    || options.context.sampled === false
+    || !options.chunk.data
+    || options.chunk.data === "[DONE]"
+  )
+    return
+
+  let data: unknown
+  try {
+    data =
+      options.apiType === "responses" ?
+        readResponsesStreamEvent(options.chunk)
+      : JSON.parse(options.chunk.data)
+  } catch (error) {
+    if (error instanceof SyntaxError) {
+      consola.warn("[telemetry] malformed JSON event")
+      return
+    }
+    throw error
+  }
+
+  if (typeof data !== "object" || data === null) return
+
+  let carrier: unknown
+  if (options.apiType === "chatCompletions") {
+    carrier = data
+  } else if (options.apiType === "messages") {
+    if (
+      !("type" in data)
+      || data.type !== "message_start"
+      || !("message" in data)
+    )
+      return
+    carrier = data.message
+  } else {
+    if (!("response" in data)) return
+    carrier = data.response
+  }
+
+  if (
+    typeof carrier === "object"
+    && carrier !== null
+    && "model" in carrier
+    && typeof carrier.model === "string"
+  ) {
+    options.context.modelInvoked = carrier.model
+  }
+}
+
 /** Options for tracking a successful response. Callers provide real values. */
 export interface TrackResponseSuccessOptions {
   model: string
+  modelInvoked?: string
   apiType?: TelemetryApiType
   durationMs: number
   requestId?: string
@@ -281,7 +347,7 @@ export function trackResponseSuccess(opts: TrackResponseSuccessOptions): void {
     eventName: EVENT_RESPONSE_SUCCESS,
     properties: {
       model: opts.model,
-      modelInvoked: opts.model,
+      modelInvoked: opts.modelInvoked ?? opts.model,
       reason: opts.finishReason ?? "stop",
       source: "panel",
       initiatorType: "user",
@@ -458,6 +524,11 @@ export function trackPanelRequest(context: TelemetryRequestContext): void {
   trackConversationMessage(context)
 }
 
+function messageUiKindForMode(mode: TelemetryRequestContext["mode"]): string {
+  if (mode === "edit") return "editingSession"
+  return "conversationPanel"
+}
+
 export function trackUserConversationMessage(
   context: TelemetryRequestContext,
 ): void {
@@ -468,9 +539,10 @@ export function trackUserConversationMessage(
     : EVENT_CONVERSATION_MESSAGE,
     {
       source: "user",
-      turnIndex: "0",
+      messageId: randomMessageId(),
+      turnIndex: String(context.turnIndex),
       headerRequestId: context.requestId,
-      uiKind: context.mode === "edit" ? "editingSession" : "panel",
+      uiKind: messageUiKindForMode(context.mode),
       mode: context.mode,
       languageId: context.languageId,
       offTopic: "false",
@@ -492,8 +564,10 @@ export function trackConversationMessage(
     : EVENT_CONVERSATION_MESSAGE,
     {
       source: "model",
-      turnIndex: "1",
+      messageId: context.messageId,
+      turnIndex: String(context.turnIndex + 1),
       headerRequestId: context.requestId,
+      uiKind: messageUiKindForMode(context.mode),
       mode: context.mode,
       languageId: context.languageId,
       codeBlockLanguages: JSON.stringify({
@@ -518,7 +592,11 @@ export function trackInlineConversationMessage(
     EVENT_INLINE_CONVERSATION_MESSAGE,
     {
       source: "model",
+      messageId: context.messageId,
       headerRequestId: context.requestId,
+      uiKind: "conversationInline",
+      replyType: "inlineEdit",
+      turnIndex: String(context.turnIndex + 1),
       mode: "inline",
       languageId: context.languageId,
       codeBlockLanguages: JSON.stringify({
@@ -546,7 +624,7 @@ export function trackInlineConversationAccept(
       action: "accept",
       headerRequestId: context.requestId,
       command: "inline",
-      participant: "editor",
+      participant: "github.copilot.editor",
       languageId: context.languageId,
       mode: "inline",
       model: context.model,
@@ -640,6 +718,9 @@ export function trackGhostTextShown(context: TelemetryRequestContext): void {
     EVENT_GHOST_TEXT_SHOWN,
     {
       headerRequestId: context.requestId,
+      clientCompletionId: context.clientCompletionId,
+      completionId: context.clientCompletionId,
+      choiceIndex: "0",
       languageId: context.languageId,
       reason: "network",
     },
@@ -656,6 +737,9 @@ export function trackGhostTextAccepted(context: TelemetryRequestContext): void {
     EVENT_GHOST_TEXT_ACCEPTED,
     {
       headerRequestId: context.requestId,
+      clientCompletionId: context.clientCompletionId,
+      completionId: context.clientCompletionId,
+      choiceIndex: "0",
       languageId: context.languageId,
       compType: "full",
     },
@@ -684,6 +768,21 @@ export function schedulePostResponseEvents(
 
   setTimeout(() => {
     trackInlineConversationMessage(context)
+    trackContextEvent(
+      context,
+      EVENT_INLINE_DONE,
+      {
+        requestId: context.requestId,
+        languageId: context.languageId,
+        replyType: "inlineEdit",
+        command: "inline",
+      },
+      {
+        accepted: 1,
+        editCount: context.editCount,
+        editLineCount: context.editLineCount,
+      },
+    )
     trackInlineConversationAccept(context)
     trackGhostTextAccepted(context)
 

@@ -108,15 +108,17 @@ describe("ensureChatCompletionOkResponse against local HTTP server", () => {
     const start = Date.now()
     const telemetryContext: TelemetryRequestContext = {
       requestId: "compat-request",
+      turnIndex: 0,
       model: payload.model,
       sampled: true,
       conversationId: "compat-conversation",
       issuedAt: start,
       languageId: "typescript",
       mode: "ask",
-      participant: "default",
+      participant: "github.copilot.default",
       isAgent: 0,
       messageId: "compat-message",
+      clientCompletionId: "compat-completion",
       totalCharacters: 8,
       totalLines: 1,
       lineCount: 1,

@@ -15,6 +15,7 @@ import {
   schedulePostResponseEvents,
   trackPanelRequest,
   trackGhostTextShown,
+  captureStreamResponseModel,
 } from "~/services/telemetry/telemetry"
 import {
   buildMessagesHeaders,
@@ -61,7 +62,11 @@ export const createMessages = async (
   const requestId = headers["X-Request-Id"] ?? headers["x-request-id"]
 
   const start = Date.now()
-  const telemetryContext = createMockRequestContext(requestId, payload.model)
+  const telemetryContext = createMockRequestContext({
+    requestId,
+    model: payload.model,
+    sessionId: options.sessionId,
+  })
   trackRequestSent({ context: telemetryContext, modelCallId })
 
   const { enhancedPayload, adaptiveThinkingEnabled, betaHeader } =
@@ -101,10 +106,10 @@ export const createMessages = async (
         durationMs: Date.now() - start,
         statusCode: error.response.status,
         requestId,
+        ...extractUpstreamTelemetryHeaders(error.response.headers),
         modelCallId,
         sampled: telemetryContext.sampled,
         conversationId: telemetryContext.conversationId,
-        ...extractUpstreamTelemetryHeaders(error.response.headers),
       })
     }
     throw error
@@ -117,44 +122,56 @@ export const createMessages = async (
     telemetryContext,
     extractUpstreamTelemetryHeaders(result.headers),
   )
-  trackPanelRequest(telemetryContext)
-  trackGhostTextShown(telemetryContext)
-  scheduleFeedbackEvents(telemetryContext)
-  schedulePostResponseEvents(telemetryContext)
-  const premium = getPremiumInfoFromHeaders(result.headers)
-  if (payload.stream) {
+  const emitMessagesSuccessTelemetry = (
+    options: { finishReason?: string; modelInvoked?: string } = {},
+  ) => {
+    trackPanelRequest(telemetryContext)
+    trackGhostTextShown(telemetryContext)
+    scheduleFeedbackEvents(telemetryContext)
+    schedulePostResponseEvents(telemetryContext)
     trackResponseSuccess({
       model: payload.model,
       apiType: "messages",
       durationMs: Date.now() - start,
       timeToFirstToken: timeSinceIssuedMs,
-      requestId,
+      requestId: telemetryContext.requestId,
       modelCallId,
       sampled: telemetryContext.sampled,
       conversationId: telemetryContext.conversationId,
       gitHubRequestId: telemetryContext.gitHubRequestId,
       copilotServiceRequestId: telemetryContext.copilotServiceRequestId,
       gitHubCopilotRequestTe: telemetryContext.gitHubCopilotRequestTe,
-      finishReason: "stream",
+      modelInvoked: options.modelInvoked,
+      ...(options.finishReason !== undefined ?
+        { finishReason: options.finishReason }
+      : {}),
     })
+  }
+  const premium = getPremiumInfoFromHeaders(result.headers)
+  if (payload.stream) {
+    const stream = (async function* () {
+      try {
+        for await (const chunk of events(result)) {
+          captureStreamResponseModel({
+            context: telemetryContext,
+            chunk,
+            apiType: "messages",
+          })
+          yield chunk
+        }
+      } finally {
+        emitMessagesSuccessTelemetry({
+          finishReason: "stream",
+          modelInvoked: telemetryContext.modelInvoked,
+        })
+      }
+    })()
     return attachResponseHeaders(
-      attachPremiumInfo(events(result), premium),
+      attachPremiumInfo(stream, premium),
       result.headers,
     )
   }
   const json = (await result.json()) as AnthropicResponse
-  trackResponseSuccess({
-    model: payload.model,
-    apiType: "messages",
-    durationMs: Date.now() - start,
-    timeToFirstToken: timeSinceIssuedMs,
-    requestId,
-    modelCallId,
-    sampled: telemetryContext.sampled,
-    conversationId: telemetryContext.conversationId,
-    gitHubRequestId: telemetryContext.gitHubRequestId,
-    copilotServiceRequestId: telemetryContext.copilotServiceRequestId,
-    gitHubCopilotRequestTe: telemetryContext.gitHubCopilotRequestTe,
-  })
+  emitMessagesSuccessTelemetry({ modelInvoked: json.model })
   return attachResponseHeaders(attachPremiumInfo(json, premium), result.headers)
 }
