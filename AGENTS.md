@@ -30,10 +30,13 @@ bun run --cwd desktop test  # 桌面端测试
 bun run --cwd desktop build # 桌面端 Electron 构建
 ```
 
-## 代码改动最终检查（MUST）
+## 代码检查：WIP 与正式提交（MUST）
+
+开发、调试和中间 WIP 提交期间，运行直接受影响功能及其调用方的相关测试，并根据改动运行相应的类型检查或 lint。此阶段无需运行全量测试套件。
+
+准备正式提交或合并包含代码的改动时，在最后一次代码修改后按以下顺序运行并通过完整检查。
 
 pre-commit hook 只跑 `lint-staged`（仅暂存文件的 lint），不保证项目级完整性。
-**每次代码改动完成后，报告“完成”、请求提交或实际提交前，必须运行并通过以下全量检查：**
 
 1. `bun run lint:all --fix` — 先修复格式或 lint；若改动文件，继续后续所有检查
 2. `bun run build`
