@@ -78,7 +78,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
-    "@opencode-ai/models": "0.0.137",
+    "@opencode-ai/models": "0.0.138",
     "@typescript/native": "npm:typescript@^7.0.2",
     "@types/bun": "^1.4.4",
     "@types/proxy-from-env": "^1.0.4",
