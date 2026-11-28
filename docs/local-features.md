@@ -294,15 +294,17 @@ Responses 的 Chat fallback 持续发送内容与工具调用事件，整体 `re
 
 ## 19. Copilot Gemini 的 Chat 上游缓存标记
 
-**行为**：Gemini 模型经 `createChatCompletions` 发往 Copilot `/chat/completions` 时自动添加消息缓存标记，覆盖 Chat Completions 入口、Messages 的 Chat fallback 和 Responses 的 Chat fallback。service 按 `payload.model` 在 `state.models` 中精确查找模型，仅在模型 metadata 的 `capabilities.family` 匹配 `/^gemini(?:-|$)/iu` 时调用共享 helper。metadata 缺失时，service 不添加标记。
+**行为**：Copilot Gemini 经 Chat Completions、Messages 的 Chat fallback 或 Responses 的 Chat fallback 发送请求时，使用 VS Code 官方 Chat 的四标记选择规则。共享 `isCopilotGeminiModel` 按解析后的 `payload.model` 在 `state.models` 中精确查找模型，并检查 `capabilities.family` 是否匹配 `/^gemini(?:-|$)/iu`。模型名称或别名包含 Gemini 不作为启用依据。
 
-共享 helper 选择前两条 content 非空的 system 消息和最后一条 content 非空的非 system 消息，为选中的消息写入 `copilot_cache_control: { type: "ephemeral" }`。已有 `copilot_cache_control` 保持原值，重复调用不会增加或改变标记。消息 content 和工具定义不变。
+`applyCopilotContextCache` 使用显式的 `gemini` 或 `legacy` 策略。Gemini 从消息末尾向前扫描，选择最新 user 后每个连续 tool 批次的最后一条、最新 user 本身，以及任何位置没有非空 `tool_calls` 的 assistant。候选按扫描遇到的顺序使用预算，所以最新 user 后的无工具 assistant 先于该 user 选取。剩余预算用于开头连续的 system/user 消息，遇到首个其他 role 后停止补位。没有 user 时，仍选择 tool 批次末端和无工具 assistant。新增标记只作用于非空字符串或非空 content 数组。
 
-Messages 的 Chat fallback 仍在 route 层无条件调用共享 helper，非 Gemini 模型保持该入口的现有标记行为。这套 Gemini metadata 判定只作用于 Copilot Chat 上游，不影响其他 provider。标记不保证缓存命中、配额降低或费用节省。
+总预算为 4 个消息级 `copilot_cache_control: { type: "ephemeral" }`。所有已有标记都占用预算并保留原值、位置和对象引用，包括内容为空的消息。已有 4 个或更多时立即停止新增；超过 4 个的输入全部保留。同一对象重复处理、JSON 往返重放和 route/service 多次处理都不增加标记。消息顺序、content、工具调用、reasoning 和工具定义保持原样。
 
-**源码与接入**：[context-cache.ts](../src/services/copilot/context-cache.ts) 的 `applyCopilotContextCache` 负责选择与写入；[create-chat-completions.ts](../src/services/copilot/create-chat-completions.ts) 在发送前按模型 metadata 调用；[Messages api-flows.ts](../src/routes/messages/api-flows.ts) 保留 route 层调用。三个入口分别经过 [Chat handler](../src/routes/chat-completions/handler.ts)、Messages api-flows.ts 和 [Responses chat-handler.ts](../src/routes/responses/chat-handler.ts)。
+Messages 的 Chat fallback 在第一次添加标记前使用相同的 metadata 判定选择策略。Gemini 从首次处理起使用四标记规则；非 Gemini 或 metadata 缺失时，Messages 使用 legacy 的前两条非空 system 和最后一条非空非 system 规则。直接 Chat 的 service 仅对匹配 Gemini family 的模型添加标记。原生 Claude Messages、GPT Responses 和其他 provider 使用各自现有请求流程。缓存标记不保证命中率、配额降低或费用节省。
 
-**验证入口**：[copilot-context-cache.test.ts](../tests/copilot-context-cache.test.ts) 覆盖消息选择与已有标记保留；[copilot-context-cache-local-http.test.ts](../tests/copilot-context-cache-local-http.test.ts) 覆盖三个实际 handler 到本地 HTTP 的标记行为。
+**源码与接入**：[context-cache.ts](../src/services/copilot/context-cache.ts) 负责模型判定与标记选择；[create-chat-completions.ts](../src/services/copilot/create-chat-completions.ts) 和 [Messages api-flows.ts](../src/routes/messages/api-flows.ts) 显式选择策略。三个入口分别经过 [Chat handler](../src/routes/chat-completions/handler.ts)、Messages api-flows.ts 和 [Responses chat-handler.ts](../src/routes/responses/chat-handler.ts)。规则来源为 [VS Code cacheBreakpoints.ts](https://github.com/microsoft/vscode/blob/2627b28b85b730e82b0121f013aca1e3f78d8d38/extensions/copilot/src/extension/intents/node/cacheBreakpoints.ts) 的 Chat 分支。
+
+**验证入口**：[copilot-context-cache.test.ts](../tests/copilot-context-cache.test.ts) 覆盖候选顺序、预算、内容保持和重放；[copilot-context-cache-local-http.test.ts](../tests/copilot-context-cache-local-http.test.ts) 捕获三个实际 handler 发往本地 HTTP 上游的请求；[create-chat-completions.test.ts](../tests/create-chat-completions.test.ts) 覆盖 family metadata 判定与发送 body。
 
 ## 20. Copilot 请求兼容与后台用量存储
 

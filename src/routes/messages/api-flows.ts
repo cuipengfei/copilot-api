@@ -68,7 +68,10 @@ import type {
   ResponsesResult,
   ResponseStreamEvent,
 } from "~/lib/types/responses"
-import { applyCopilotContextCache } from "~/services/copilot/context-cache"
+import {
+  applyCopilotContextCache,
+  isCopilotGeminiModel,
+} from "~/services/copilot/context-cache"
 import { createChatCompletions as createCopilotChatCompletions } from "~/services/copilot/create-chat-completions"
 import { createMessages as createCopilotMessages } from "~/services/copilot/create-messages"
 import { createResponses as createCopilotResponses } from "~/services/copilot/create-responses"
@@ -169,7 +172,10 @@ export const handleWithChatCompletions = async (
     reasoningEffortSupport:
       selectedModel?.capabilities?.supports?.reasoning_effort,
   })
-  applyCopilotContextCache(openAIPayload)
+  applyCopilotContextCache(
+    openAIPayload,
+    isCopilotGeminiModel(openAIPayload.model) ? "gemini" : "legacy",
+  )
   const recordUsage = createCopilotUsageRecorder({
     endpoint: options.usageEndpoint ?? "chat_completions",
     fallbackSessionId: sessionId,

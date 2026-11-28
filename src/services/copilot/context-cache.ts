@@ -1,47 +1,83 @@
 import type {
   ChatCompletionsPayload,
-  CopilotCacheControl,
   Message,
 } from "~/lib/types/chat-completions"
+import { state } from "~/lib/state"
 
-const COPILOT_CONTEXT_CACHE_SYSTEM_MARKER_LIMIT = 2
-const COPILOT_CONTEXT_CACHE_NON_SYSTEM_MARKER_LIMIT = 1
-const COPILOT_CONTEXT_CACHE_CONTROL: CopilotCacheControl = {
-  type: "ephemeral",
+const GEMINI_MODEL_FAMILY = /^gemini(?:-|$)/iu
+const GEMINI_CACHE_MARKER_LIMIT = 4
+
+type CopilotContextCacheStrategy = "gemini" | "legacy"
+
+export const isCopilotGeminiModel = (modelId: string): boolean => {
+  const model = state.models?.data.find((model) => model.id === modelId)
+  return (
+    model !== undefined && GEMINI_MODEL_FAMILY.test(model.capabilities.family)
+  )
 }
 
 export const applyCopilotContextCache = (
   payload: ChatCompletionsPayload,
+  strategy: CopilotContextCacheStrategy,
 ): void => {
-  const messageIndexes = selectCopilotContextCacheMessageIndexes(
-    payload.messages,
-  )
-  for (const messageIndex of messageIndexes) {
-    const message = payload.messages[messageIndex]
-    message.copilot_cache_control ??= { ...COPILOT_CONTEXT_CACHE_CONTROL }
+  const { messages } = payload
+  if (strategy === "legacy") {
+    let systemMarkers = 0
+    let lastNonSystem: Message | undefined
+    for (const message of messages) {
+      if (!isCopilotContextCacheEligible(message)) continue
+      if (message.role !== "system") {
+        lastNonSystem = message
+      } else if (systemMarkers < 2) {
+        message.copilot_cache_control ??= { type: "ephemeral" }
+        systemMarkers++
+      }
+    }
+    if (lastNonSystem) {
+      lastNonSystem.copilot_cache_control ??= { type: "ephemeral" }
+    }
+    return
   }
-}
 
-const selectCopilotContextCacheMessageIndexes = (
-  messages: Array<Message>,
-): Array<number> => {
-  const systemIndexes = messages
-    .flatMap((message, index) =>
-      message.role === "system" && isCopilotContextCacheEligible(message) ?
-        [index]
-      : [],
-    )
-    .slice(0, COPILOT_CONTEXT_CACHE_SYSTEM_MARKER_LIMIT)
-  const reverseNonSystemIndexes = messages
-    .flatMap((message, index) =>
-      message.role !== "system" && isCopilotContextCacheEligible(message) ?
-        [index]
-      : [],
-    )
-    .reverse()
-    .slice(0, COPILOT_CONTEXT_CACHE_NON_SYSTEM_MARKER_LIMIT)
+  let remaining = GEMINI_CACHE_MARKER_LIMIT
+  for (const message of messages) {
+    if (message.copilot_cache_control !== undefined) remaining--
+  }
+  if (remaining <= 0) return
 
-  return [...systemIndexes, ...reverseNonSystemIndexes].sort((a, b) => a - b)
+  let isBelowCurrentUser = true
+  for (let index = messages.length - 1; index >= 0; index--) {
+    const message = messages[index]
+    const isCurrentUser = isBelowCurrentUser && message.role === "user"
+    const isLastToolResult =
+      isBelowCurrentUser
+      && message.role === "tool"
+      && messages[index + 1]?.role !== "tool"
+    if (message.role === "user") isBelowCurrentUser = false
+    const isAssistantWithoutTools =
+      message.role === "assistant" && !message.tool_calls?.length
+    if (
+      (isCurrentUser || isLastToolResult || isAssistantWithoutTools)
+      && message.copilot_cache_control === undefined
+      && isCopilotContextCacheEligible(message)
+    ) {
+      message.copilot_cache_control = { type: "ephemeral" }
+      remaining--
+      if (remaining === 0) return
+    }
+  }
+
+  for (const message of messages) {
+    if (message.role !== "system" && message.role !== "user") break
+    if (
+      message.copilot_cache_control !== undefined
+      || !isCopilotContextCacheEligible(message)
+    )
+      continue
+    message.copilot_cache_control = { type: "ephemeral" }
+    remaining--
+    if (remaining === 0) return
+  }
 }
 
 const isCopilotContextCacheEligible = (message: Message): boolean => {

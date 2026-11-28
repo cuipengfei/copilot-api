@@ -24,6 +24,7 @@ import type {
   ChatCompletionsPayload,
 } from "~/lib/types/chat-completions"
 import type { Model } from "~/lib/types/models"
+import * as actualTelemetry from "~/services/telemetry/telemetry"
 
 const mockUndiciRequest = mock(() =>
   Promise.reject(new Error("Unexpected MSFT telemetry request")),
@@ -39,6 +40,7 @@ await mock.module("undici", () => ({
   request: mockUndiciRequest,
 }))
 await mock.module("~/services/telemetry/telemetry", () => ({
+  ...actualTelemetry,
   initTelemetry: () => {},
   scheduleFeedbackEvents,
   schedulePostResponseEvents,
@@ -61,6 +63,39 @@ const SESSION_ID = "local-cache-test-session"
 const DB_PATH_ENV = "COPILOT_API_SQLITE_DB_PATH"
 const LOG_DIR_ENV = "COPILOT_API_LOG_DIR"
 const cacheControl = { type: "ephemeral" } as const
+const geminiConversation: ChatCompletionsPayload["messages"] = [
+  { role: "user", content: "first user" },
+  { role: "assistant", content: "first assistant" },
+  { role: "user", content: "middle user" },
+  { role: "assistant", content: "middle assistant" },
+  { role: "user", content: "latest user" },
+  { role: "assistant", content: "latest assistant" },
+]
+const expectedGeminiConversation: ChatCompletionsPayload["messages"] = [
+  { role: "system", content: "system prompt" },
+  { role: "user", content: "first user" },
+  {
+    role: "assistant",
+    content: "first assistant",
+    copilot_cache_control: cacheControl,
+  },
+  { role: "user", content: "middle user" },
+  {
+    role: "assistant",
+    content: "middle assistant",
+    copilot_cache_control: cacheControl,
+  },
+  {
+    role: "user",
+    content: "latest user",
+    copilot_cache_control: cacheControl,
+  },
+  {
+    role: "assistant",
+    content: "latest assistant",
+    copilot_cache_control: cacheControl,
+  },
+]
 
 interface RecordedUpstreamRequest {
   path: string
@@ -208,10 +243,11 @@ afterEach(async () => {
 
   Object.assign(state, originalState)
   invalidateAutoSession()
+  const requestCount = upstreamRequests.length
   upstreamRequests.length = 0
 
-  expect(scheduleFeedbackEvents).toHaveBeenCalledTimes(1)
-  expect(schedulePostResponseEvents).toHaveBeenCalledTimes(1)
+  expect(scheduleFeedbackEvents).toHaveBeenCalledTimes(requestCount)
+  expect(schedulePostResponseEvents).toHaveBeenCalledTimes(requestCount)
   expect(mockUndiciRequest).toHaveBeenCalledTimes(0)
 })
 
@@ -222,76 +258,217 @@ afterAll(async () => {
 })
 
 describe("Copilot context cache over local HTTP", () => {
-  test("direct Chat Completions sends Gemini markers at the selected messages", async () => {
+  test("direct Chat Completions uses the Gemini four-marker selection", async () => {
     const response = await post("/v1/chat/completions", {
       model: GEMINI_MODEL,
       messages: [
-        { role: "system", content: "system one" },
-        { role: "system", content: "system two" },
-        { role: "system", content: "system three" },
-        { role: "user", content: "older user" },
-        { role: "assistant", content: "latest assistant" },
+        { role: "system", content: "system prompt" },
+        ...geminiConversation,
       ],
     })
 
     expect(response.status).toBe(200)
-    expect(upstreamPayload().messages).toEqual([
-      {
-        role: "system",
-        content: "system one",
-        copilot_cache_control: cacheControl,
-      },
-      {
-        role: "system",
-        content: "system two",
-        copilot_cache_control: cacheControl,
-      },
-      { role: "system", content: "system three" },
-      { role: "user", content: "older user" },
-      {
-        role: "assistant",
-        content: "latest assistant",
-        copilot_cache_control: cacheControl,
-      },
-    ])
+    expect(upstreamPayload().messages).toEqual(expectedGeminiConversation)
   })
 
-  test("Messages sends Gemini markers after translation to Chat Completions", async () => {
+  test("Messages uses Gemini selection on its first cache pass", async () => {
     const response = await post("/v1/messages", {
       model: GEMINI_MODEL,
       max_tokens: 64,
       system: "system prompt",
-      messages: [
-        { role: "user", content: "older user" },
-        { role: "assistant", content: "latest assistant" },
-      ],
+      messages: geminiConversation,
     })
 
     expect(response.status).toBe(200)
-    expect(upstreamPayload().messages).toEqual([
+    expect(upstreamPayload().messages).toEqual(expectedGeminiConversation)
+  })
+
+  test("Responses fallback shares the Gemini four-marker selection", async () => {
+    const response = await post("/v1/responses", {
+      model: GEMINI_MODEL,
+      instructions: "system prompt",
+      input: geminiConversation,
+    })
+
+    expect(response.status).toBe(200)
+    expect(upstreamPayload().messages).toEqual(expectedGeminiConversation)
+  })
+
+  test("direct Chat Completions marks only the end of each consecutive tool batch", async () => {
+    const tools: NonNullable<ChatCompletionsPayload["tools"]> = [
       {
-        role: "system",
-        content: "system prompt",
-        copilot_cache_control: cacheControl,
+        type: "function",
+        function: {
+          name: "lookup",
+          description: "Look up a value",
+          parameters: {
+            type: "object",
+            properties: { query: { type: "string" } },
+            required: ["query"],
+          },
+        },
       },
-      { role: "user", content: "older user" },
+    ]
+    const response = await post("/v1/chat/completions", {
+      model: GEMINI_MODEL,
+      messages: [
+        { role: "system", content: "system prompt" },
+        { role: "user", content: "latest user" },
+        {
+          role: "assistant",
+          content: null,
+          reasoning_text: "first tool plan",
+          reasoning_opaque: "opaque-first",
+          tool_calls: [
+            {
+              id: "call-a-1",
+              type: "function",
+              function: { name: "lookup", arguments: '{"query":"a1"}' },
+            },
+            {
+              id: "call-a-2",
+              type: "function",
+              function: { name: "lookup", arguments: '{"query":"a2"}' },
+            },
+          ],
+        },
+        { role: "tool", tool_call_id: "call-a-1", content: "result a1" },
+        { role: "tool", tool_call_id: "call-a-2", content: "result a2" },
+        { role: "assistant", content: "between tool rounds" },
+        {
+          role: "assistant",
+          content: null,
+          tool_calls: [
+            {
+              id: "call-b-1",
+              type: "function",
+              function: { name: "lookup", arguments: '{"query":"b1"}' },
+            },
+            {
+              id: "call-b-2",
+              type: "function",
+              function: { name: "lookup", arguments: '{"query":"b2"}' },
+            },
+          ],
+        },
+        { role: "tool", tool_call_id: "call-b-1", content: "result b1" },
+        { role: "tool", tool_call_id: "call-b-2", content: "result b2" },
+        {
+          role: "assistant",
+          content: "final answer",
+          reasoning_content: "final reasoning",
+        },
+      ],
+      tools,
+      tool_choice: "auto",
+    })
+
+    expect(response.status).toBe(200)
+    const payload = upstreamPayload()
+    expect(payload.tools).toEqual(tools)
+    expect(payload.tool_choice).toBe("auto")
+    expect(payload.messages).toEqual([
+      { role: "system", content: "system prompt" },
+      { role: "user", content: "latest user" },
       {
         role: "assistant",
-        content: "latest assistant",
+        content: null,
+        reasoning_text: "first tool plan",
+        reasoning_opaque: "opaque-first",
+        tool_calls: [
+          {
+            id: "call-a-1",
+            type: "function",
+            function: { name: "lookup", arguments: '{"query":"a1"}' },
+          },
+          {
+            id: "call-a-2",
+            type: "function",
+            function: { name: "lookup", arguments: '{"query":"a2"}' },
+          },
+        ],
+      },
+      { role: "tool", tool_call_id: "call-a-1", content: "result a1" },
+      {
+        role: "tool",
+        tool_call_id: "call-a-2",
+        content: "result a2",
+        copilot_cache_control: cacheControl,
+      },
+      {
+        role: "assistant",
+        content: "between tool rounds",
+        copilot_cache_control: cacheControl,
+      },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [
+          {
+            id: "call-b-1",
+            type: "function",
+            function: { name: "lookup", arguments: '{"query":"b1"}' },
+          },
+          {
+            id: "call-b-2",
+            type: "function",
+            function: { name: "lookup", arguments: '{"query":"b2"}' },
+          },
+        ],
+      },
+      { role: "tool", tool_call_id: "call-b-1", content: "result b1" },
+      {
+        role: "tool",
+        tool_call_id: "call-b-2",
+        content: "result b2",
+        copilot_cache_control: cacheControl,
+      },
+      {
+        role: "assistant",
+        content: "final answer",
+        reasoning_content: "final reasoning",
         copilot_cache_control: cacheControl,
       },
     ])
   })
 
-  test("Responses sends Gemini markers through the Chat Completions fallback", async () => {
-    const response = await post("/v1/responses", {
+  test("direct Chat Completions preserves four existing markers without additions", async () => {
+    const messages: ChatCompletionsPayload["messages"] = [
+      {
+        role: "system",
+        content: "",
+        copilot_cache_control: cacheControl,
+      },
+      {
+        role: "user",
+        content: null,
+        copilot_cache_control: cacheControl,
+      },
+      {
+        role: "assistant",
+        content: [],
+        copilot_cache_control: cacheControl,
+      },
+      {
+        role: "developer",
+        content: "client marker",
+        copilot_cache_control: cacheControl,
+      },
+      { role: "user", content: "latest user" },
+      { role: "assistant", content: "latest assistant" },
+    ]
+
+    const response = await post("/v1/chat/completions", {
       model: GEMINI_MODEL,
-      instructions: "system prompt",
-      input: "latest user",
+      messages,
     })
 
     expect(response.status).toBe(200)
-    expect(upstreamPayload().messages).toEqual([
+    expect(upstreamPayload().messages).toEqual(messages)
+  })
+
+  test("direct Chat Completions preserves more than four existing markers", async () => {
+    const messages: ChatCompletionsPayload["messages"] = [
       {
         role: "system",
         content: "system prompt",
@@ -299,37 +476,83 @@ describe("Copilot context cache over local HTTP", () => {
       },
       {
         role: "user",
+        content: "older user",
+        copilot_cache_control: cacheControl,
+      },
+      {
+        role: "assistant",
+        content: "older assistant",
+        copilot_cache_control: cacheControl,
+      },
+      {
+        role: "user",
         content: "latest user",
         copilot_cache_control: cacheControl,
       },
-    ])
-  })
+      {
+        role: "assistant",
+        content: "latest assistant",
+        copilot_cache_control: cacheControl,
+      },
+      { role: "assistant", content: "unmarked candidate" },
+    ]
 
-  test("direct Chat Completions does not add markers for non-Gemini metadata", async () => {
     const response = await post("/v1/chat/completions", {
-      model: GPT_MODEL,
-      messages: [
-        { role: "system", content: "system" },
-        { role: "user", content: "latest" },
-      ],
+      model: GEMINI_MODEL,
+      messages: JSON.parse(
+        JSON.stringify(messages),
+      ) as ChatCompletionsPayload["messages"],
     })
 
     expect(response.status).toBe(200)
-    expect(upstreamPayload().messages).toEqual([
-      { role: "system", content: "system" },
-      { role: "user", content: "latest" },
-    ])
+    expect(upstreamPayload().messages).toEqual(messages)
   })
 
-  test("Messages retains its existing markers for non-Gemini metadata", async () => {
+  test("direct Chat Completions does not add markers on a serialized replay", async () => {
+    const request = {
+      model: GEMINI_MODEL,
+      messages: [
+        { role: "system", content: "system prompt" },
+        ...geminiConversation,
+      ],
+    }
+    const firstResponse = await post("/v1/chat/completions", request)
+
+    expect(firstResponse.status).toBe(200)
+    const firstPayload = upstreamPayload()
+    expect(firstPayload.messages).toEqual(expectedGeminiConversation)
+
+    const replay = JSON.parse(
+      JSON.stringify(firstPayload),
+    ) as ChatCompletionsPayload
+    const replayResponse = await post("/v1/chat/completions", replay)
+
+    expect(replayResponse.status).toBe(200)
+    expect(upstreamRequests).toHaveLength(2)
+    expect(upstreamRequests[1].path).toBe("/chat/completions")
+    expect(JSON.parse(upstreamRequests[1].body)).toEqual(firstPayload)
+  })
+
+  test("direct Chat Completions does not add markers for non-Gemini metadata", async () => {
+    const messages: ChatCompletionsPayload["messages"] = [
+      { role: "system", content: "system prompt" },
+      ...geminiConversation,
+    ]
+    const response = await post("/v1/chat/completions", {
+      model: GPT_MODEL,
+      messages,
+    })
+
+    expect(response.status).toBe(200)
+    expect(upstreamPayload().messages).toEqual(messages)
+  })
+
+  test("Messages retains legacy markers for non-Gemini metadata", async () => {
     const response = await post("/v1/messages", {
       model: GPT_MODEL,
       max_tokens: 64,
       system: "system prompt",
-      messages: [
-        { role: "user", content: "older user" },
-        { role: "assistant", content: "latest assistant" },
-      ],
+      messages: geminiConversation,
     })
 
     expect(response.status).toBe(200)
@@ -339,7 +562,11 @@ describe("Copilot context cache over local HTTP", () => {
         content: "system prompt",
         copilot_cache_control: cacheControl,
       },
-      { role: "user", content: "older user" },
+      { role: "user", content: "first user" },
+      { role: "assistant", content: "first assistant" },
+      { role: "user", content: "middle user" },
+      { role: "assistant", content: "middle assistant" },
+      { role: "user", content: "latest user" },
       {
         role: "assistant",
         content: "latest assistant",
@@ -362,5 +589,47 @@ describe("Copilot context cache over local HTTP", () => {
       { role: "system", content: "system" },
       { role: "user", content: "latest" },
     ])
+  })
+
+  test("Messages uses legacy selection when Gemini-like model metadata is missing", async () => {
+    const response = await post("/v1/messages", {
+      model: "gemini-unlisted",
+      max_tokens: 64,
+      system: "system prompt",
+      messages: geminiConversation,
+    })
+
+    expect(response.status).toBe(200)
+    expect(upstreamPayload().messages).toEqual([
+      {
+        role: "system",
+        content: "system prompt",
+        copilot_cache_control: cacheControl,
+      },
+      { role: "user", content: "first user" },
+      { role: "assistant", content: "first assistant" },
+      { role: "user", content: "middle user" },
+      { role: "assistant", content: "middle assistant" },
+      { role: "user", content: "latest user" },
+      {
+        role: "assistant",
+        content: "latest assistant",
+        copilot_cache_control: cacheControl,
+      },
+    ])
+  })
+
+  test("direct Chat Completions does not use a Gemini-like id with non-Gemini family metadata", async () => {
+    const model = "gemini-like-with-gpt-family"
+    state.models?.data.push(createModel(model, "gpt"))
+    const messages: ChatCompletionsPayload["messages"] = [
+      { role: "system", content: "system prompt" },
+      ...geminiConversation,
+    ]
+
+    const response = await post("/v1/chat/completions", { model, messages })
+
+    expect(response.status).toBe(200)
+    expect(upstreamPayload().messages).toEqual(messages)
   })
 })

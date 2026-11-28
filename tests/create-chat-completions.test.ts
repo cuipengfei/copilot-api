@@ -550,6 +550,9 @@ describe("default reasoning effort injection", () => {
         createModel("gpt-test"),
         createModel("no-effort-model", []),
         createModel("metadata-gemini", undefined, "GeMiNi"),
+        createModel("opaque-model", undefined, "GeMiNi"),
+        createModel("versioned-family-model", undefined, "Gemini-3-Pro"),
+        createModel("gemini-3-pro", undefined, "gpt"),
         {
           id: "gpt-minimal-metadata",
           capabilities: { limits: {} },
@@ -775,7 +778,7 @@ describe("default reasoning effort injection", () => {
     expect(retriedMessages[2]).toEqual({ content: "again", role: "user" })
   })
 
-  test("applies cache markers from case-insensitive Gemini family metadata", async () => {
+  test("applies cache markers to an opaque model id from case-insensitive Gemini family metadata", async () => {
     installUpstreamFetch()
 
     await createChatCompletions({
@@ -783,7 +786,7 @@ describe("default reasoning effort injection", () => {
         { role: "system", content: "system" },
         { role: "user", content: "latest" },
       ],
-      model: "metadata-gemini",
+      model: "opaque-model",
     })
 
     expect(upstreamBodies[0].messages).toEqual([
@@ -798,6 +801,303 @@ describe("default reasoning effort injection", () => {
         copilot_cache_control: { type: "ephemeral" },
       },
     ])
+  })
+
+  test("matches versioned Gemini family metadata", async () => {
+    installUpstreamFetch()
+
+    await createChatCompletions({
+      messages: [{ role: "user", content: "hello" }],
+      model: "versioned-family-model",
+    })
+
+    expect(upstreamBodies[0].messages).toEqual([
+      {
+        role: "user",
+        content: "hello",
+        copilot_cache_control: { type: "ephemeral" },
+      },
+    ])
+  })
+
+  test("does not use a Gemini-like id when metadata has a non-Gemini family", async () => {
+    installUpstreamFetch()
+
+    await createChatCompletions({
+      messages: [{ role: "user", content: "hello" }],
+      model: "gemini-3-pro",
+    })
+
+    expect(upstreamBodies[0].messages).toEqual([
+      { role: "user", content: "hello" },
+    ])
+  })
+
+  test("selects four markers in reverse order while preserving message and tool fields", async () => {
+    installUpstreamFetch()
+
+    const payload: ChatCompletionsPayload = {
+      model: "metadata-gemini",
+      messages: [
+        { role: "system", content: "system" },
+        { role: "user", content: "first" },
+        {
+          role: "assistant",
+          content: "first answer",
+          reasoning_text: "thought",
+        },
+        { role: "user", content: "second" },
+        {
+          role: "assistant",
+          content: null,
+          tool_calls: [
+            {
+              id: "call_1",
+              type: "function",
+              function: { name: "lookup", arguments: "{}" },
+            },
+          ],
+        },
+        { role: "tool", content: "result", tool_call_id: "call_1" },
+        { role: "user", content: "third" },
+        { role: "assistant", content: "final", reasoning_opaque: "signature" },
+      ],
+      tools: [
+        {
+          type: "function",
+          function: {
+            name: "lookup",
+            description: "look up",
+            parameters: { type: "object", properties: {} },
+          },
+        },
+      ],
+      reasoning_effort: "low",
+      tool_choice: "auto",
+    }
+    await createChatCompletions(payload)
+
+    expect(upstreamBodies[0].messages).toEqual([
+      {
+        role: "system",
+        content: "system",
+        copilot_cache_control: { type: "ephemeral" },
+      },
+      { role: "user", content: "first" },
+      {
+        role: "assistant",
+        content: "first answer",
+        reasoning_text: "thought",
+        copilot_cache_control: { type: "ephemeral" },
+      },
+      { role: "user", content: "second" },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [
+          {
+            id: "call_1",
+            type: "function",
+            function: { name: "lookup", arguments: "{}" },
+          },
+        ],
+      },
+      { role: "tool", content: "result", tool_call_id: "call_1" },
+      {
+        role: "user",
+        content: "third",
+        copilot_cache_control: { type: "ephemeral" },
+      },
+      {
+        role: "assistant",
+        content: "final",
+        reasoning_opaque: "signature",
+        copilot_cache_control: { type: "ephemeral" },
+      },
+    ])
+    expect(upstreamBodies[0]).toMatchObject({
+      model: "metadata-gemini",
+      reasoning_effort: "low",
+      tool_choice: "auto",
+      tools: [
+        {
+          type: "function",
+          function: {
+            name: "lookup",
+            description: "look up",
+            parameters: { type: "object", properties: {} },
+          },
+        },
+      ],
+    })
+  })
+
+  test("counts an existing marker on a non-candidate toward the budget", async () => {
+    installUpstreamFetch()
+
+    await createChatCompletions({
+      model: "metadata-gemini",
+      messages: [
+        { role: "user", content: "one" },
+        { role: "user", content: "two" },
+        {
+          role: "tool",
+          content: "result",
+          tool_call_id: "call_1",
+          copilot_cache_control: { type: "ephemeral" },
+        },
+        { role: "user", content: "three" },
+        { role: "user", content: "four" },
+      ],
+    })
+
+    expect(upstreamBodies[0].messages).toEqual([
+      {
+        role: "user",
+        content: "one",
+        copilot_cache_control: { type: "ephemeral" },
+      },
+      {
+        role: "user",
+        content: "two",
+        copilot_cache_control: { type: "ephemeral" },
+      },
+      {
+        role: "tool",
+        content: "result",
+        tool_call_id: "call_1",
+        copilot_cache_control: { type: "ephemeral" },
+      },
+      { role: "user", content: "three" },
+      {
+        role: "user",
+        content: "four",
+        copilot_cache_control: { type: "ephemeral" },
+      },
+    ])
+  })
+
+  test("four and five existing markers prevent additions", async () => {
+    installUpstreamFetch()
+
+    const fourMessages: ChatCompletionsPayload["messages"] = [
+      {
+        role: "tool",
+        content: "result 0",
+        tool_call_id: "call_0",
+        copilot_cache_control: { type: "ephemeral" },
+      },
+      {
+        role: "tool",
+        content: "result 1",
+        tool_call_id: "call_1",
+        copilot_cache_control: { type: "ephemeral" },
+      },
+      {
+        role: "tool",
+        content: "result 2",
+        tool_call_id: "call_2",
+        copilot_cache_control: { type: "ephemeral" },
+      },
+      {
+        role: "tool",
+        content: "result 3",
+        tool_call_id: "call_3",
+        copilot_cache_control: { type: "ephemeral" },
+      },
+      { role: "assistant", content: "unmarked" },
+    ]
+    const fiveMessages: ChatCompletionsPayload["messages"] = [
+      {
+        role: "tool",
+        content: "result 0",
+        tool_call_id: "call_0",
+        copilot_cache_control: { type: "ephemeral" },
+      },
+      {
+        role: "tool",
+        content: "result 1",
+        tool_call_id: "call_1",
+        copilot_cache_control: { type: "ephemeral" },
+      },
+      {
+        role: "tool",
+        content: "result 2",
+        tool_call_id: "call_2",
+        copilot_cache_control: { type: "ephemeral" },
+      },
+      {
+        role: "tool",
+        content: "result 3",
+        tool_call_id: "call_3",
+        copilot_cache_control: { type: "ephemeral" },
+      },
+      {
+        role: "tool",
+        content: "result 4",
+        tool_call_id: "call_4",
+        copilot_cache_control: { type: "ephemeral" },
+      },
+      { role: "assistant", content: "unmarked" },
+    ]
+    await createChatCompletions({
+      model: "metadata-gemini",
+      messages: structuredClone(fourMessages),
+    })
+    await createChatCompletions({
+      model: "metadata-gemini",
+      messages: structuredClone(fiveMessages),
+    })
+    expect(upstreamBodies[0].messages).toEqual(fourMessages)
+    expect(upstreamBodies[1].messages).toEqual(fiveMessages)
+  })
+
+  test("reapplying to the same object and replaying JSON are idempotent", async () => {
+    installUpstreamFetch()
+
+    const payload: ChatCompletionsPayload = {
+      model: "metadata-gemini",
+      messages: [
+        { role: "system", content: "system" },
+        { role: "user", content: "one" },
+        { role: "assistant", content: "answer" },
+        { role: "user", content: "two" },
+        { role: "user", content: "three" },
+      ],
+    }
+    await createChatCompletions(payload)
+    await createChatCompletions(payload)
+    await createChatCompletions(
+      JSON.parse(JSON.stringify(upstreamBodies[0])) as ChatCompletionsPayload,
+    )
+
+    const expectedMessages = [
+      {
+        role: "system",
+        content: "system",
+        copilot_cache_control: { type: "ephemeral" },
+      },
+      {
+        role: "user",
+        content: "one",
+        copilot_cache_control: { type: "ephemeral" },
+      },
+      {
+        role: "assistant",
+        content: "answer",
+        copilot_cache_control: { type: "ephemeral" },
+      },
+      { role: "user", content: "two" },
+      {
+        role: "user",
+        content: "three",
+        copilot_cache_control: { type: "ephemeral" },
+      },
+    ]
+    expect(upstreamBodies).toHaveLength(3)
+    expect(upstreamBodies[0].messages).toEqual(expectedMessages)
+    expect(upstreamBodies[1].messages).toEqual(expectedMessages)
+    expect(upstreamBodies[2].messages).toEqual(expectedMessages)
   })
 
   test("does not add cache markers for non-Gemini family metadata", async () => {
