@@ -845,17 +845,20 @@ describe("feedback events", () => {
     },
   )
 
-  it("keeps the default 55% random outcome", () => {
-    const rolls = [0.9, 0.1]
-    Math.random = () => rolls.shift() ?? 0.1
+  it("defaults feedback and hunk actions to accepted regardless of later random rolls", () => {
+    Math.random = () => 0.99
     trackEditFeedback(contextFor("ask"))
+    trackEditHunkAction(contextFor("ask"))
     expect(
       event("copilot-chat/panel.edit.feedback").data.baseData.properties
         .outcome,
-    ).toBe("rejected")
+    ).toBe("accepted")
+    expect(
+      event("copilot-chat/edit.hunk.action").data.baseData.properties.outcome,
+    ).toBe("accepted")
   })
 
-  it("schedules feedback and hunk with one shared delayed outcome", async () => {
+  it("schedules accepted feedback and correlated edit suggestions", async () => {
     const rolls = [0.2, 0.8, 0.1, 0.1]
     Math.random = () => rolls.shift() ?? 0.1
     const context = contextFor("agent")
@@ -874,13 +877,210 @@ describe("feedback events", () => {
     expect(feedback.data.baseData.properties).toMatchObject({
       requestId: context.requestId,
       languageId: context.languageId,
-      outcome: "rejected",
+      outcome: "accepted",
     })
     expect(hunk.data.baseData.properties).toMatchObject({
       requestId: context.requestId,
       languageId: context.languageId,
-      outcome: "rejected",
+      outcome: "accepted",
     })
+
+    const suggested = event("copilot-chat/vscode.editTelemetry.codeSuggested")
+    const accepted = event("copilot-chat/vscode.editTelemetry.codeAccepted")
+    const suggestedProperties = suggested.data.baseData.properties
+    const acceptedProperties = accepted.data.baseData.properties
+    expect(suggestedProperties.suggestionId).toMatch(
+      /^sgt-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+    )
+    expect(acceptedProperties.suggestionId).toBe(
+      suggestedProperties.suggestionId,
+    )
+    const eventIdPattern =
+      /^evt-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+    expect(suggestedProperties.eventId).toMatch(eventIdPattern)
+    expect(acceptedProperties.eventId).toMatch(eventIdPattern)
+    expect(acceptedProperties.eventId).not.toBe(suggestedProperties.eventId)
+    for (const properties of [suggestedProperties, acceptedProperties]) {
+      expect(properties).toMatchObject({
+        presentation: "highlightedEdit",
+        feature: "sideBarChat",
+        sourceExtensionId: "github.copilot-chat",
+        sourceExtensionVersion: properties.common_extversion,
+        sourceRequestId: context.requestId,
+        conversationId: context.conversationId,
+        modelId: context.model,
+        modeId: "agent",
+        languageId: context.languageId,
+      })
+      expect(properties.common_extversion).toBeTruthy()
+    }
+    expect(acceptedProperties).toMatchObject({
+      chatSessionId: context.conversationId,
+      acceptanceMethod: "accept",
+    })
+    const counts = {
+      editLinesInserted: context.linesAdded,
+      editLinesDeleted: context.linesRemoved,
+      editCharsInserted: Math.floor(
+        (context.totalCharacters * context.linesAdded) / context.lineCount,
+      ),
+      editCharsDeleted: Math.floor(
+        (context.totalCharacters * context.linesRemoved) / context.lineCount,
+      ),
+    }
+    for (const key of Object.keys(counts) as Array<keyof typeof counts>) {
+      expect(suggested.data.baseData.measurements?.[key]).toBe(counts[key])
+      expect(
+        suggested.data.baseData.measurements?.[key],
+      ).toBeGreaterThanOrEqual(0)
+      expect(accepted.data.baseData.measurements?.[key]).toBe(
+        suggested.data.baseData.measurements?.[key],
+      )
+    }
+  })
+
+  it.each([
+    {
+      model: "copilot/auto",
+      modelInvoked: "actual-model",
+      expected: "actual-model",
+    },
+    {
+      model: "copilot/auto",
+      modelInvoked: undefined,
+      expected: "copilot/auto",
+    },
+    { model: "copilot/auto", modelInvoked: "", expected: "copilot/auto" },
+    { model: "gpt-test", modelInvoked: "actual-model", expected: "gpt-test" },
+    {
+      model: "copilot/auto",
+      modelInvoked: "provider/model",
+      expected: "provider/model",
+    },
+    {
+      model: "provider/requested",
+      modelInvoked: "different-model",
+      expected: "provider/requested",
+    },
+  ])(
+    "uses $expected for feedback modelId",
+    async ({ model, modelInvoked, expected }) => {
+      const context = { ...contextFor("ask"), model, modelInvoked }
+      trackEditFeedback(context, "accepted")
+      trackEditHunkAction(context, "accepted")
+      expect(
+        event("copilot-chat/panel.edit.feedback").data.baseData.properties
+          .modelId,
+      ).toBe(expected)
+      expect(
+        event("copilot-chat/edit.hunk.action").data.baseData.properties.modelId,
+      ).toBe(expected)
+
+      scheduleFeedbackEvents(context)
+      scheduledTimers[0].fn()
+      await flushMicrotasks()
+      const suggested = event("copilot-chat/vscode.editTelemetry.codeSuggested")
+        .data.baseData.properties
+      const accepted = event("copilot-chat/vscode.editTelemetry.codeAccepted")
+        .data.baseData.properties
+      for (const properties of [suggested, accepted]) {
+        expect(properties.modelId).toBe(expected.replace(/[/\\]/g, "|"))
+        expect(properties.sourceRequestId).toBe(context.requestId)
+      }
+      expect(accepted.suggestionId).toBe(suggested.suggestionId)
+    },
+  )
+
+  it.each(["ask", "edit", "agent", "plan"] as const)(
+    "uses the %s context for scheduled suggestions",
+    async (mode) => {
+      const context = contextFor(mode)
+      scheduleFeedbackEvents(context)
+      expect(scheduledTimers).toHaveLength(1)
+      scheduledTimers[0].fn()
+      await flushMicrotasks()
+      for (const name of [
+        "copilot-chat/vscode.editTelemetry.codeSuggested",
+        "copilot-chat/vscode.editTelemetry.codeAccepted",
+      ]) {
+        expect(event(name).data.baseData.properties).toMatchObject({
+          modeId: mode === "plan" ? "custom" : mode,
+          languageId: context.languageId,
+          sourceRequestId: context.requestId,
+        })
+      }
+    },
+  )
+
+  it("isolates suggestions between requests and gates all edit events", async () => {
+    const first = {
+      ...contextFor("ask"),
+      requestId: "request-one",
+      conversationId: "conversation-one",
+    }
+    const second = {
+      ...contextFor("edit"),
+      requestId: "request-two",
+      conversationId: "conversation-two",
+    }
+    scheduleFeedbackEvents(first)
+    scheduleFeedbackEvents(second)
+    expect(scheduledTimers).toHaveLength(2)
+    for (const timer of scheduledTimers) timer.fn()
+    await flushMicrotasks()
+
+    const all = envelopes()
+    const suggested = all.filter(
+      (item) =>
+        item.data.baseData.name
+        === "copilot-chat/vscode.editTelemetry.codeSuggested",
+    )
+    const accepted = all.filter(
+      (item) =>
+        item.data.baseData.name
+        === "copilot-chat/vscode.editTelemetry.codeAccepted",
+    )
+    expect(suggested).toHaveLength(2)
+    expect(accepted).toHaveLength(2)
+    expect(suggested[0].data.baseData.properties.suggestionId).not.toBe(
+      suggested[1].data.baseData.properties.suggestionId,
+    )
+    for (const context of [first, second]) {
+      const suggestion = suggested.find(
+        (item) =>
+          item.data.baseData.properties.sourceRequestId === context.requestId,
+      )
+      const acceptance = accepted.find(
+        (item) =>
+          item.data.baseData.properties.sourceRequestId === context.requestId,
+      )
+      expect(suggestion).toBeDefined()
+      expect(acceptance).toBeDefined()
+      expect(acceptance?.data.baseData.properties.suggestionId).toBe(
+        suggestion?.data.baseData.properties.suggestionId,
+      )
+    }
+    for (const item of all) {
+      for (const key of [
+        "common_os",
+        "common_platformversion",
+        "common_arch",
+        "common_cpu",
+        "hostname",
+      ]) {
+        expect(item.data.baseData.properties).not.toHaveProperty(key)
+        expect(item.tags).not.toHaveProperty(key)
+      }
+    }
+
+    fetchCalls = []
+    scheduledTimers = []
+    scheduleFeedbackEvents({ ...first, sampled: false })
+    scheduleFeedbackEvents({ ...first, requestId: "" })
+    mockTelemetryEnabled = false
+    scheduleFeedbackEvents(second)
+    expect(scheduledTimers).toHaveLength(0)
+    expect(fetchCalls).toHaveLength(0)
   })
 
   it("does not schedule for an empty request id or disabled telemetry", () => {

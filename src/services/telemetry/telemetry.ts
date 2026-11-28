@@ -2,6 +2,7 @@ import consola from "consola"
 import { type ServerSentEventMessage } from "fetch-event-stream"
 import { getConfig } from "~/lib/config"
 import { readResponsesStreamEvent } from "~/lib/http/responses-stream-event"
+import { COPILOT_VERSION } from "~/lib/providers/api-config"
 import { state } from "~/lib/state"
 
 import { getCommonProperties } from "./identity"
@@ -15,6 +16,8 @@ import {
 import {
   DEFAULT_TELEMETRY_ENDPOINT,
   EVENT_AUTH_NEW_TOKEN,
+  EVENT_CODE_ACCEPTED,
+  EVENT_CODE_SUGGESTED,
   EVENT_CONVERSATION_ACCEPTED_COPY,
   EVENT_CONVERSATION_ACCEPTED_INSERT,
   EVENT_CONVERSATION_APPLIED_CODEBLOCK,
@@ -62,6 +65,7 @@ function createEnvelope(
     iKey: TELEMETRY_IKEY,
     sampleRate: 100,
     tags: {
+      "ai.cloud.roleInstance": "REDACTED",
       "ai.user.id": _tid ?? "",
       "ai.session.id": state.vsCodeSessionId ?? "",
       "ai.internal.sdkVersion": TELEMETRY_SDK_VERSION,
@@ -75,6 +79,8 @@ function createEnvelope(
           ...getCommonProperties({
             vsCodeVersion: state.vsCodeVersion ?? "",
             vsCodeSessionId: state.vsCodeSessionId,
+            macMachineId: state.macMachineId,
+            vsCodeDeviceId: state.vsCodeDeviceId,
             sku: _sku,
             copilotTrackingId: _tid ?? "",
           }),
@@ -433,10 +439,8 @@ export function trackAuthNewToken(): void {
 
 export function trackEditFeedback(
   context: TelemetryRequestContext,
-  outcome?: "accepted" | "rejected",
+  outcome: "accepted" | "rejected" = "accepted",
 ): void {
-  const resolvedOutcome =
-    outcome ?? (Math.random() < 0.55 ? "accepted" : "rejected")
   trackContextEvent(
     context,
     EVENT_EDIT_FEEDBACK,
@@ -445,9 +449,9 @@ export function trackEditFeedback(
       requestId: context.requestId,
       participant: context.participant,
       command: context.mode,
-      outcome: resolvedOutcome,
+      outcome,
       hasRemainingEdits: "false",
-      modelId: context.model,
+      modelId: resolveAdoptionModel(context),
       mode: context.mode,
     },
     {
@@ -460,18 +464,16 @@ export function trackEditFeedback(
 
 export function trackEditHunkAction(
   context: TelemetryRequestContext,
-  outcome?: "accepted" | "rejected",
+  outcome: "accepted" | "rejected" = "accepted",
 ): void {
-  const resolvedOutcome =
-    outcome ?? (Math.random() < 0.55 ? "accepted" : "rejected")
   trackContextEvent(
     context,
     EVENT_EDIT_HUNK_ACTION,
     {
       requestId: context.requestId,
       languageId: context.languageId,
-      outcome: resolvedOutcome,
-      modelId: context.model,
+      outcome,
+      modelId: resolveAdoptionModel(context),
       mode: context.mode,
     },
     {
@@ -486,6 +488,51 @@ export function trackEditHunkAction(
   )
 }
 
+function trackCodeEditEvents(context: TelemetryRequestContext): void {
+  const properties = {
+    suggestionId: `sgt-${crypto.randomUUID()}`,
+    presentation: "highlightedEdit",
+    feature: "sideBarChat",
+    sourceExtensionId: "github.copilot-chat",
+    sourceExtensionVersion: COPILOT_VERSION,
+    languageId: context.languageId,
+    modeId: context.mode === "plan" ? "custom" : context.mode,
+    modelId: resolveAdoptionModel(context).replace(/[/\\]/g, "|"),
+    sourceRequestId: context.requestId,
+  }
+  const measurements = {
+    editCharsInserted: Math.floor(
+      (context.totalCharacters * context.linesAdded) / context.lineCount,
+    ),
+    editCharsDeleted: Math.floor(
+      (context.totalCharacters * context.linesRemoved) / context.lineCount,
+    ),
+    editLinesInserted: context.linesAdded,
+    editLinesDeleted: context.linesRemoved,
+    isAgentHostSession: 0,
+  }
+  trackContextEvent(
+    context,
+    EVENT_CODE_SUGGESTED,
+    {
+      ...properties,
+      eventId: `evt-${crypto.randomUUID()}`,
+    },
+    measurements,
+  )
+  trackContextEvent(
+    context,
+    EVENT_CODE_ACCEPTED,
+    {
+      ...properties,
+      eventId: `evt-${crypto.randomUUID()}`,
+      chatSessionId: context.conversationId,
+      acceptanceMethod: "accept",
+    },
+    measurements,
+  )
+}
+
 export function scheduleFeedbackEvents(context: TelemetryRequestContext): void {
   if (
     !context.requestId
@@ -495,9 +542,9 @@ export function scheduleFeedbackEvents(context: TelemetryRequestContext): void {
     return
 
   setTimeout(() => {
-    const outcome = Math.random() < 0.55 ? "accepted" : "rejected"
-    trackEditFeedback(context, outcome)
-    trackEditHunkAction(context, outcome)
+    trackCodeEditEvents(context)
+    trackEditFeedback(context, "accepted")
+    trackEditHunkAction(context, "accepted")
   }, randomFeedbackDelay())
 }
 

@@ -108,6 +108,8 @@ beforeEach(() => {
   Math.random = () => 0.1 // Always pass the 30% sampling gate in trackEvent
   mockTelemetryEnabled = false
   state.vsCodeSessionId = "editor-core"
+  state.macMachineId = "machine-core"
+  state.vsCodeDeviceId = "device-core"
 })
 
 afterEach(() => {
@@ -291,6 +293,7 @@ describe("telemetry: trackEvent", () => {
     expect(typeof env.time).toBe("string")
 
     expect(env.tags).toEqual({
+      "ai.cloud.roleInstance": "REDACTED",
       "ai.user.id": "envelope-test",
       "ai.session.id": "editor-core",
       "ai.internal.sdkVersion": TELEMETRY_SDK_VERSION,
@@ -301,8 +304,15 @@ describe("telemetry: trackEvent", () => {
     expect(env.data.baseData.name).toBe("copilot-chat/response.success")
     const props = env.data.baseData.properties
     expect(Object.keys(props).sort()).toEqual([
+      "client_deviceid",
+      "client_machineid",
+      "client_sessionid",
       "common_extname",
       "common_extversion",
+      "common_isnewappinstall",
+      "common_remotename",
+      "common_uikind",
+      "common_vscodemachineid",
       "common_vscodesessionid",
       "common_vscodeversion",
       "copilot_trackingId",
@@ -330,12 +340,14 @@ describe("telemetry: trackEvent", () => {
     )
     expect(props.sku).toBe("pro")
     expect(props.common_vscodesessionid).toBe("editor-core")
+    expect(props.common_vscodemachineid).toBe("machine-core")
+    expect(props.client_machineid).toBe("machine-core")
+    expect(props.client_deviceid).toBe("device-core")
+    expect(props.client_sessionid).toBe("editor-core")
+    expect(env.tags["ai.cloud.roleInstance"]).toBe("REDACTED")
     for (const key of [
-      "ai.cloud.roleInstance",
-      "common_vscodemachineid",
-      "client_machineid",
-      "client_sessionid",
-      "client_deviceid",
+      "common_cpu",
+      "hostname",
       "common_os",
       "common_platformversion",
       "common_arch",

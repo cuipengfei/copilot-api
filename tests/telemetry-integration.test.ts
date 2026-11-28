@@ -235,6 +235,8 @@ beforeEach(() => {
   state.githubToken = "test-github-token"
   state.vsCodeVersion = "1.0.0"
   state.vsCodeSessionId = "editor-integration"
+  state.macMachineId = "machine-integration"
+  state.vsCodeDeviceId = "device-integration"
   clearTelemetryConversations()
   state.accountType = "individual"
   state.organizationList = undefined
@@ -581,18 +583,24 @@ describe("telemetry integration event-specific routing", () => {
       numLines: context.totalLines,
     })
     expect(Object.keys(event.tags).sort()).toEqual([
+      "ai.cloud.roleInstance",
       "ai.internal.sdkVersion",
       "ai.session.id",
       "ai.user.id",
     ])
+    expect(event.tags["ai.cloud.roleInstance"]).toBe("REDACTED")
     expect(event.tags["ai.session.id"]).toBe("editor-integration")
     expect(properties.common_vscodesessionid).toBe("editor-integration")
+    expect(properties.client_sessionid).toBe("editor-integration")
+    expect(properties.client_machineid).toBe("machine-integration")
+    expect(properties.client_deviceid).toBe("device-integration")
     for (const key of [
       "organizations_list",
       "enterprise_list",
-      "client_sessionid",
-      "client_machineid",
-      "client_deviceid",
+      "common_os",
+      "common_platformversion",
+      "common_arch",
+      "common_cpu",
     ]) {
       expect(properties).not.toHaveProperty(key)
     }
@@ -891,6 +899,45 @@ describe("telemetry integration protocol and timing", () => {
           expect(copy.data.baseData.measurements?.totalLines).toBe(
             codeBlocks[0].totalLines,
           )
+          const suggested = envelopes.find(
+            (envelope) =>
+              envelope.data.baseData.name
+              === "copilot-chat/vscode.editTelemetry.codeSuggested",
+          )
+          const accepted = envelopes.find(
+            (envelope) =>
+              envelope.data.baseData.name
+              === "copilot-chat/vscode.editTelemetry.codeAccepted",
+          )
+          if (!suggested) throw new Error("codeSuggested telemetry missing")
+          if (!accepted) throw new Error("codeAccepted telemetry missing")
+          const hunk = telemetryEvent(
+            "copilot-chat/edit.hunk.action",
+            requestId,
+          )
+          for (const adoption of [suggested, accepted]) {
+            expect(adoption.data.baseData.properties).toMatchObject({
+              sourceRequestId: requestId,
+              conversationId: panelProperties.conversationId,
+              modelId: body.model.replace(/[/\\]/g, "|"),
+              modeId:
+                panelProperties.mode === "plan" ?
+                  "custom"
+                : panelProperties.mode,
+            })
+            expect(adoption.data.baseData.measurements?.editLinesInserted).toBe(
+              hunk.data.baseData.measurements?.linesAdded,
+            )
+            expect(adoption.data.baseData.measurements?.editLinesDeleted).toBe(
+              hunk.data.baseData.measurements?.linesRemoved,
+            )
+          }
+          expect(suggested.data.baseData.properties.suggestionId).toBe(
+            accepted.data.baseData.properties.suggestionId,
+          )
+          expect(accepted.data.baseData.properties.chatSessionId).toBe(
+            panelProperties.conversationId,
+          )
           expect(event.data.baseData.measurements?.timeToFirstToken).toBe(30)
           expect(event.data.baseData.measurements?.timeToComplete).toBe(120)
           expect(event.data.baseData.measurements?.timeSinceIssuedMs).toBe(120)
@@ -951,6 +998,44 @@ describe("telemetry integration protocol and timing", () => {
         )
         expect(copy.data.baseData.properties.modelId).toBe(
           resolvedModel || "copilot/auto",
+        )
+        for (const name of [
+          "copilot-chat/panel.edit.feedback",
+          "copilot-chat/edit.hunk.action",
+        ]) {
+          const feedback = telemetryEvent(name, requestId)
+          expect(feedback.data.baseData.properties.modelId).toBe(
+            resolvedModel || "copilot/auto",
+          )
+          expect(feedback.data.baseData.properties.outcome).toBe("accepted")
+        }
+        const envelopes = telemetryEnvelopes()
+        const suggested = envelopes.find(
+          (envelope) =>
+            envelope.data.baseData.name
+              === "copilot-chat/vscode.editTelemetry.codeSuggested"
+            && envelope.data.baseData.properties.sourceRequestId === requestId,
+        )
+        const accepted = envelopes.find(
+          (envelope) =>
+            envelope.data.baseData.name
+              === "copilot-chat/vscode.editTelemetry.codeAccepted"
+            && envelope.data.baseData.properties.sourceRequestId === requestId,
+        )
+        if (!suggested)
+          throw new Error("codeSuggested telemetry missing for request")
+        if (!accepted)
+          throw new Error("codeAccepted telemetry missing for request")
+        for (const adoption of [suggested, accepted]) {
+          expect(adoption.data.baseData.properties.modelId).toBe(
+            (resolvedModel || "copilot/auto").replace(/[/\\]/g, "|"),
+          )
+        }
+        expect(accepted.data.baseData.properties.chatSessionId).toBe(
+          request.data.baseData.properties.conversationId,
+        )
+        expect(suggested.data.baseData.properties.suggestionId).toBe(
+          accepted.data.baseData.properties.suggestionId,
         )
         expect(copy.data.baseData.properties.messageId).toBe(
           message.data.baseData.properties.messageId,

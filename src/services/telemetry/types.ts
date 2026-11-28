@@ -18,6 +18,10 @@ export const EVENT_RESPONSE_ERROR = "copilot-chat/response.error"
 export const EVENT_AUTH_NEW_TOKEN = "copilot-chat/auth.new_token"
 export const EVENT_EDIT_FEEDBACK = "copilot-chat/panel.edit.feedback"
 export const EVENT_EDIT_HUNK_ACTION = "copilot-chat/edit.hunk.action"
+export const EVENT_CODE_SUGGESTED =
+  "copilot-chat/vscode.editTelemetry.codeSuggested"
+export const EVENT_CODE_ACCEPTED =
+  "copilot-chat/vscode.editTelemetry.codeAccepted"
 export const EVENT_PANEL_REQUEST = "copilot-chat/panel_request"
 export const EVENT_GHOST_TEXT_SHOWN = "copilot/ghostText.shown"
 export const EVENT_GHOST_TEXT_ACCEPTED = "copilot/ghostText.accepted"
