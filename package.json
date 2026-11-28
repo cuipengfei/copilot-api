@@ -40,7 +40,7 @@
     "prepare": "simple-git-hooks",
     "release": "bumpp && bun publish --access public",
     "start": "NODE_USE_SYSTEM_CA=1 NODE_ENV=production bun run ./src/main.ts",
-    "test": "bun run test:isolated-env test --isolate",
+    "test": "NO_COLOR=1 bun run test:isolated-env test --isolate",
     "test:isolated-env": "isolated_env() ( dir=$(mktemp -d /tmp/copilot-api-isolated.XXXXXX) && trap 'rm -rf -- \"$dir\"' EXIT && mkdir -p \"$dir/home\" \"$dir/cache\" && HOME=\"$dir/home\" XDG_CACHE_HOME=\"$dir/cache\" COPILOT_API_TEST_HOME=\"$dir/home\" COPILOT_API_SQLITE_DB_PATH=:memory: COPILOT_API_HOME=\"$dir/home\" COPILOT_API_LOG_DIR=\"$dir/log\" bun \"$@\" ); isolated_env",
     "typecheck": "tsc",
     "typecheck:all": "bun run typecheck && bun run --cwd desktop typecheck",
