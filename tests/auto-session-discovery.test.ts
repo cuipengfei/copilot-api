@@ -1,5 +1,9 @@
 import { afterEach, beforeEach, expect, mock, spyOn, test } from "bun:test"
-import { createProbeCondition } from "../src/lib/auto-probe-prompts"
+import {
+  createProbeCondition,
+  HARD_QUESTION,
+} from "../src/lib/auto-probe-prompts"
+import { sampleHardSnippet } from "../src/lib/auto-probe-source-prompts"
 import consola from "consola"
 import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises"
 import os from "node:os"
@@ -62,7 +66,7 @@ const installRouter = (
     | Response
     | Promise<AutoSelectionResponse | Response>,
   fusionHandler?: (
-    body: { prompt: string },
+    body: { prompt: string; fusion_mode: "hydrafusion" | "hydrafusion-max" },
     init?: RequestInit,
   ) => Response | Promise<Response>,
 ): { calls: Array<RecordedCall>; fusionCalls: Array<RecordedCall> } => {
@@ -86,20 +90,38 @@ const installRouter = (
           throw new Error("expected string request body")
         fusionCalls.push({ url: u, init })
         return Promise.resolve(
-          fusionHandler?.(JSON.parse(init.body) as { prompt: string }, init)
+          fusionHandler?.(
+            JSON.parse(init.body) as {
+              prompt: string
+              fusion_mode: "hydrafusion" | "hydrafusion-max"
+            },
+            init,
+          )
             ?? new Response(
               JSON.stringify({ error: { code: "model_pool_not_eligible" } }),
               { status: 403 },
             ),
         )
       }
-      calls.push({ url: u, init })
       if (!u.includes("/auto")) {
         // 本地替身必须暴露意外请求：非 /auto 一律视为上游泄漏，立即失败
         return Promise.reject(new Error(`unexpected fetch: ${u}`))
       }
       const raw = typeof init?.body === "string" ? init.body : "{}"
-      const body = JSON.parse(raw) as { prompt: string; tier: string }
+      const body = JSON.parse(raw) as {
+        prompt: string
+        tier: string
+        fusion?: boolean
+      }
+      if (body.fusion === true) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({ error: { code: "model_pool_not_eligible" } }),
+            { status: 403 },
+          ),
+        )
+      }
+      calls.push({ url: u, init })
       const result = handler(body, init)
       if (result instanceof Error) return Promise.reject(result)
       if (result instanceof Response) return Promise.resolve(result)
@@ -184,15 +206,18 @@ afterEach(async () => {
   getConfig().autoDiscovery = originalAutoDiscovery
 })
 
-test("startup probes fixed intelligence input and sampled hard inputs for the other tiers", async () => {
+test("startup sends independently sampled Auto hard inputs to Fusion", async () => {
   const mod = await loadAutoSessionModule()
   const tokens = new Map<string, string>()
-  const { calls } = installRouter((body) => {
-    const model = `${body.prompt === "hello" ? "easy" : "hard"}-${body.tier}`
-    const token = `token-${model}`
-    tokens.set(model, token)
-    return okSelection(model, token)
-  })
+  const { calls, fusionCalls } = installRouter(
+    (body) => {
+      const model = `${body.prompt === "hello" ? "easy" : "hard"}-${body.tier}`
+      const token = `token-${model}`
+      tokens.set(model, token)
+      return okSelection(model, token)
+    },
+    () => new Response(null, { status: 400 }),
+  )
 
   await mod.prewarmAutoSession()
 
@@ -212,16 +237,27 @@ test("startup probes fixed intelligence input and sampled hard inputs for the ot
     expect(perTier.get(tier)).toEqual({ easy: 1, hard: 1 })
   }
 
-  // 难题：恰好 100 行真实源码 + 空行 + 固定问题句
-  const hardCall = calls.find(
-    (call) =>
-      requestBody(call).tier !== "intelligence"
-      && requestBody(call).prompt !== "hello",
-  ) as RecordedCall
-  const lines = requestBody(hardCall).prompt.split("\n")
-  expect(lines).toHaveLength(102)
-  expect(lines[100]).toBe("")
-  expect(await appearsInSourceTree(lines.slice(0, 100).join("\n"))).toBe(true)
+  // Each tier samples independently, and its hard input is shared with Fusion.
+  const hardPrompts = calls
+    .map(requestBody)
+    .filter((body) => body.prompt !== "hello")
+    .map((body) => body.prompt)
+  expect(hardPrompts).toHaveLength(4)
+  for (const prompt of hardPrompts) {
+    const lines = prompt.split("\n")
+    expect(lines).toHaveLength(102)
+    expect(lines[100]).toBe("")
+    expect(lines[101]).toBe(HARD_QUESTION)
+    expect(await appearsInSourceTree(lines.slice(0, 100).join("\n"))).toBe(true)
+  }
+  const fusionPrompts = fusionCalls.map((call) => {
+    const raw = call.init?.body
+    if (typeof raw !== "string") throw new Error("expected string request body")
+    return (JSON.parse(raw) as { prompt: string }).prompt
+  })
+  for (const prompt of hardPrompts) {
+    expect(fusionPrompts).toContain(prompt)
+  }
 
   // 每次成功响应按实际模型 ID 注册，token 与模型精确绑定
   for (const [model, token] of tokens) {
@@ -314,8 +350,7 @@ test("sampleHardSnippet returns 100 consecutive lines from an eligible file only
       ),
     )
 
-    const mod = await loadAutoSessionModule()
-    const snippet = await mod.sampleHardSnippet(dir)
+    const snippet = await sampleHardSnippet(dir)
 
     expect(snippet?.text.split("\n")).toHaveLength(100)
     expect(snippet?.file.endsWith("c.ts")).toBe(false)
@@ -337,9 +372,8 @@ test("sampleHardSnippet returns undefined when source is insufficient", async ()
       path.join(shortDir, "short.ts"),
       Array.from({ length: 99 }, (_, i) => `const s${i} = ${i}`).join("\n"),
     )
-    const mod = await loadAutoSessionModule()
-    expect(await mod.sampleHardSnippet(emptyDir)).toBeUndefined()
-    expect(await mod.sampleHardSnippet(shortDir)).toBeUndefined()
+    expect(await sampleHardSnippet(emptyDir)).toBeUndefined()
+    expect(await sampleHardSnippet(shortDir)).toBeUndefined()
   } finally {
     await rm(emptyDir, { recursive: true, force: true })
     await rm(shortDir, { recursive: true, force: true })
@@ -355,11 +389,10 @@ test("resample excludes the previous snippet and fails closed without alternativ
         "\n",
       ),
     )
-    const mod = await loadAutoSessionModule()
-    const first = await mod.sampleHardSnippet(dir, () => 0)
+    const first = await sampleHardSnippet(dir, () => 0)
     expect(first).toBeDefined()
     // 唯一候选被排除：无替代片段，明确返回 undefined（由调用方记未完成）
-    expect(await mod.sampleHardSnippet(dir, () => 0, first)).toBeUndefined()
+    expect(await sampleHardSnippet(dir, () => 0, first)).toBeUndefined()
 
     // 存在替代片段时：恒定 rng 也保证拿到不同片段，不受随机性影响
     const wideDir = await mkdtemp(path.join(os.tmpdir(), "auto-snippet-wide-"))
@@ -370,8 +403,8 @@ test("resample excludes the previous snippet and fails closed without alternativ
           "\n",
         ),
       )
-      const wide = await mod.sampleHardSnippet(wideDir, () => 0)
-      const resampled = await mod.sampleHardSnippet(wideDir, () => 0, wide)
+      const wide = await sampleHardSnippet(wideDir, () => 0)
+      const resampled = await sampleHardSnippet(wideDir, () => 0, wide)
       expect(resampled).toBeDefined()
       expect(resampled?.text).not.toBe(wide?.text)
       expect(resampled?.startLine).not.toBe(wide?.startLine)
@@ -407,8 +440,7 @@ test("sampleHardSnippet draws file and start independently from correct ranges",
       return Math.floor(script[i++ % script.length] * max)
     }
 
-    const mod = await loadAutoSessionModule()
-    const first = await mod.sampleHardSnippet(dir, rng)
+    const first = await sampleHardSnippet(dir, rng)
     if (!first) throw new Error("expected snippet")
     const windowsOf = (file: string) => (file.endsWith("a.ts") ? 51 : 1)
     // 先抽文件（2 选 1）再抽起点（该文件窗口数），两次抽取范围各自独立正确
@@ -423,7 +455,7 @@ test("sampleHardSnippet draws file and start independently from correct ranges",
       seen.push(max)
       return Math.floor(script2[i++ % script2.length] * max)
     }
-    const second = await mod.sampleHardSnippet(dir, rng2)
+    const second = await sampleHardSnippet(dir, rng2)
     expect(second?.file).not.toBe(first.file)
     expect(seen).toEqual([2, windowsOf(second?.file ?? "")])
     expect(second?.startLine).toBe(
@@ -442,8 +474,7 @@ test("sampleHardSnippet ignores the trailing-newline pseudo-line", async () => {
       path.join(dir, "c.ts"),
       `${Array.from({ length: 99 }, (_, i) => `const c${i} = ${i}`).join("\n")}\n`,
     )
-    const mod = await loadAutoSessionModule()
-    expect(await mod.sampleHardSnippet(dir, () => 0)).toBeUndefined()
+    expect(await sampleHardSnippet(dir, () => 0)).toBeUndefined()
   } finally {
     await rm(dir, { recursive: true, force: true })
   }
@@ -665,6 +696,7 @@ test("startup discovery wait has a hard budget; in-flight probes finish in backg
         ?.sessionToken,
     ).toBe("token-gated-model")
   } finally {
+    mod.stopProbeScheduler()
     gate.resolve()
     await mod.whenProbeSchedulerIdle?.()
     await rm(dir, { recursive: true, force: true })
@@ -707,6 +739,7 @@ test("successful probe points are usable at startup return while a stalled tier 
     gate.resolve()
     await waitFor(() => mod.isModelAutoCovered("balance-model"), 3_000)
   } finally {
+    mod.stopProbeScheduler()
     gate.resolve()
     await mod.whenProbeSchedulerIdle?.()
     await rm(dir, { recursive: true, force: true })
@@ -1124,11 +1157,22 @@ test("budget snapshot reports no acquired models before responses arrive", async
     )
     mod.stopProbeScheduler()
     gate.resolve()
-    await mod.whenProbeSchedulerIdle()
+    await waitFor(
+      () =>
+        infoSpy.mock.calls.some((call) =>
+          String(call[0]).startsWith("[auto-session] discovery result "),
+        )
+        && infoSpy.mock.calls.some((call) =>
+          String(call[0]).startsWith(
+            "[auto-session] target discovery stopped source=auto ",
+          ),
+        ),
+      1_000,
+    )
     expect(discoveryLogLine(infoSpy)).toContain('obtained=["gated-model"]')
     const targetResult = infoSpy.mock.calls
       .map((call) => String(call[0]))
-      .find((line) => line.includes("target discovery stopped"))
+      .find((line) => line.includes("target discovery stopped source=auto "))
     expect(targetResult).toContain('missing=["missing-model"]')
   } finally {
     gate.resolve()
@@ -1640,7 +1684,19 @@ test("configured cold misses share discovery and accept only the selected target
       )?.sessionToken,
     ).toBeUndefined()
     expect(calls).toHaveLength(1)
-    await mod.whenProbeSchedulerIdle()
+    mod.stopProbeScheduler()
+    await waitFor(
+      () =>
+        infoSpy.mock.calls.some((call) => {
+          const line = String(call[0])
+          return (
+            line.includes("source=auto")
+            && (line.includes("target discovery result")
+              || line.includes("target discovery stopped"))
+          )
+        }),
+      1_000,
+    )
     const lines = infoSpy.mock.calls.map((call) => String(call[0]))
     const starts = lines.filter(
       (line) =>
@@ -1651,12 +1707,14 @@ test("configured cold misses share discovery and accept only the selected target
     ])
     const results = lines.filter(
       (line) =>
-        line.includes("target discovery result")
+        (line.includes("target discovery result")
+          || line.includes("target discovery stopped"))
         && line.includes("source=auto"),
     )
-    expect(results).toEqual([
-      '[auto-session] target discovery result source=auto added=["target-model"] missing=[]',
-    ])
+    expect(results).toHaveLength(1)
+    expect(results[0]).toContain(
+      'source=auto added=["target-model"] missing=[]',
+    )
     expect(lines.join("\n")).not.toContain("FUSION_ONLY_PRIVATE")
   } finally {
     mod.stopProbeScheduler()
@@ -1798,10 +1856,12 @@ test("expired configured pairing is replaced before the requesting caller receiv
   const previous = config.autoDiscovery
   const realNow = Date.now
   let clockOffset = 0
+  let advancingClock = false
   let requests = 0
   const renewal = Promise.withResolvers<AutoSelectionResponse>()
   config.autoDiscovery = { models: ["target-model"] }
-  Date.now = () => realNow() + clockOffset
+  Date.now = () =>
+    realNow() + (advancingClock ? (clockOffset += 4_000) : clockOffset)
   const { calls } = installRouter(() => {
     requests++
     return requests === 1 ?
@@ -1818,7 +1878,9 @@ test("expired configured pairing is replaced before the requesting caller receiv
         })
       )?.sessionToken,
     ).toBe("session-1")
+    advancingClock = true
     await mod.whenProbeSchedulerIdle()
+    advancingClock = false
     clockOffset = 3_700_000
     const pending = Array.from({ length: 20 }, () =>
       mod.getAutoSessionForModel({
@@ -1826,7 +1888,7 @@ test("expired configured pairing is replaced before the requesting caller receiv
         endpoint: "/responses",
       }),
     )
-    await nextTurn()
+    await waitFor(() => requests === 2, 1_000)
     expect(requests).toBe(2)
     expect(calls[1].url).toBe(calls[0].url)
     expect(requestBody(calls[1])).toEqual(requestBody(calls[0]))
@@ -1834,6 +1896,7 @@ test("expired configured pairing is replaced before the requesting caller receiv
     expect(
       (await Promise.all(pending)).map((selection) => selection?.sessionToken),
     ).toEqual(Array.from({ length: 20 }, () => "session-2"))
+    mod.stopProbeScheduler()
     await mod.whenProbeSchedulerIdle()
     expect(requests).toBe(2)
   } finally {
@@ -1993,7 +2056,6 @@ test("intelligence changes its hard question when distinct startup models still 
   })
   try {
     await mod.prewarmAutoSession({ sourceRoot: dir })
-    await mod.whenProbeSchedulerIdle()
     expect(hardPrompts).toHaveLength(2)
     expect(hardPrompts[1]).not.toBe(hardPrompts[0])
     expect(
@@ -2001,6 +2063,9 @@ test("intelligence changes its hard question when distinct startup models still 
         ?.sessionToken,
     ).toBe("wanted-session")
     expect(mod.isModelAutoCovered("first-hard-model")).toBe(true)
+    // The startup variant found the target; unrelated Fusion permission sampling must not delay assertions.
+    mod.stopProbeScheduler()
+    await mod.whenProbeSchedulerIdle()
   } finally {
     mod.stopProbeScheduler()
     await mod.whenProbeSchedulerIdle()
@@ -2011,19 +2076,27 @@ test("intelligence changes its hard question when distinct startup models still 
 test("shared target discovery starts with intelligence and changes its question after a miss", async () => {
   const mod = await loadAutoSessionModule()
   let now = Date.now()
-  const clock = spyOn(Date, "now").mockImplementation(() => (now += 4_000))
+  let advancing = true
+  const clock = spyOn(Date, "now").mockImplementation(() => {
+    if (advancing) now += 4_000
+    return now
+  })
   getConfig().autoDiscovery = { models: ["wanted-model"] }
   const intelligencePrompts = new Set<string>()
   const { calls } = installRouter((body) => {
     if (body.tier === "intelligence") intelligencePrompts.add(body.prompt)
-    return intelligencePrompts.size > 1 ?
-        okSelection("wanted-model", "wanted-session")
-      : okSelection("other-model", "other-session")
+    if (intelligencePrompts.size > 1) {
+      advancing = false
+      return okSelection("wanted-model", "wanted-session")
+    }
+    return okSelection("other-model", "other-session")
   })
   try {
     mod.resumeAutoSessionDiscoveryAfterRotation()
-    await mod.getAutoSessionForModel({ model: "wanted-model" })
-    await mod.whenProbeSchedulerIdle()
+    expect(
+      (await mod.getAutoSessionForModel({ model: "wanted-model" }))
+        ?.sessionToken,
+    ).toBe("wanted-session")
     expect(requestBody(calls[0]).tier).toBe("intelligence")
     expect(intelligencePrompts.size).toBe(2)
     expect(
@@ -2034,6 +2107,8 @@ test("shared target discovery starts with intelligence and changes its question 
       (await mod.getAutoSessionForModel({ model: "other-model" }))
         ?.sessionToken,
     ).toBe("other-session")
+    mod.stopProbeScheduler()
+    await mod.whenProbeSchedulerIdle()
   } finally {
     mod.stopProbeScheduler()
     await mod.whenProbeSchedulerIdle()
@@ -2074,8 +2149,9 @@ const fusionSelectionResponse = (model: string, token: string): Response =>
     }),
   )
 
-test("Fusion pool 403 pauses only Fusion while Auto still retries and supplies its 10 percent candidate", async () => {
+test("High and Max permission failures leave ordinary Auto retry and its 10 percent candidate available", async () => {
   const mod = await loadAutoSessionModule()
+  const dir = await mkdtemp(path.join(os.tmpdir(), "fusion-permission-"))
   installDiscountCatalog("wanted-model")
   getConfig().autoDiscovery = { models: ["wanted-model"] }
   let now = Date.parse("2026-12-15T12:00:00Z")
@@ -2092,9 +2168,9 @@ test("Fusion pool 403 pauses only Fusion while Auto still retries and supplies i
     return okSelection("wanted-model", "auto-after-fusion-pool-denied")
   })
   try {
-    await mod.prewarmAutoSession()
+    await mod.prewarmAutoSession({ sourceRoot: dir })
     await mod.whenProbeSchedulerIdle()
-    expect(fusionCalls).toHaveLength(4)
+    expect(fusionCalls).toHaveLength(5)
     expect(efficiencyAttempts).toBe(2)
     expect(calls.every((call) => call.url.endsWith("/auto"))).toBe(true)
     expect(
@@ -2111,15 +2187,19 @@ test("Fusion pool 403 pauses only Fusion while Auto still retries and supplies i
     mod.stopProbeScheduler()
     await mod.whenProbeSchedulerIdle()
     clock.mockRestore()
+    await rm(dir, { recursive: true, force: true })
   }
 })
 
-test("Fusion becoming unavailable releases already parked probes and joins without another request", async () => {
+test("paused High paths join while Max receives its independent permission check", async () => {
   const mod = await loadAutoSessionModule()
+  const dir = await mkdtemp(path.join(os.tmpdir(), "fusion-paused-high-"))
   installDiscountCatalog("wanted-model")
   getConfig().autoDiscovery = { models: ["wanted-model"] }
   const unavailable = Promise.withResolvers<Response>()
   let attempts = 0
+  let now = Date.now()
+  const clock = spyOn(Date, "now").mockImplementation(() => (now += 4_000))
   const { fusionCalls } = installRouter(
     () => okSelection("wanted-model", "kept-auto"),
     () => {
@@ -2130,7 +2210,7 @@ test("Fusion becoming unavailable releases already parked probes and joins witho
           { status: 403 },
         )
       if (attempts === 2) return unavailable.promise
-      return new Response(null, { status: 400 })
+      return new Response(null, { status: 403 })
     },
   )
   const poolDenied = (): Response =>
@@ -2139,11 +2219,11 @@ test("Fusion becoming unavailable releases already parked probes and joins witho
       { status: 403 },
     )
   try {
-    await mod.prewarmAutoSession({ startupBudgetMs: 20 })
+    await mod.prewarmAutoSession({ sourceRoot: dir, startupBudgetMs: 20 })
     expect(fusionCalls).toHaveLength(4)
     unavailable.resolve(poolDenied())
     await mod.whenProbeSchedulerIdle()
-    expect(fusionCalls).toHaveLength(4)
+    expect(fusionCalls).toHaveLength(5)
     expect(
       await mod.getAutoSessionForModel({
         model: "wanted-model",
@@ -2155,16 +2235,19 @@ test("Fusion becoming unavailable releases already parked probes and joins witho
       expectedDiscount: 10,
     })
     await mod.whenProbeSchedulerIdle()
-    expect(fusionCalls).toHaveLength(4)
+    expect(fusionCalls).toHaveLength(5)
   } finally {
     mod.stopProbeScheduler()
     unavailable.resolve(poolDenied())
     await mod.whenProbeSchedulerIdle()
+    clock.mockRestore()
+    await rm(dir, { recursive: true, force: true })
   }
 })
 
-test("Fusion shares four seeds plus ten additional attempts across targets, counts failures, and respects a 90 second cooldown after the promotion date", async () => {
+test("Fusion shares four seeds plus the complete deduplicated candidate round across targets, counts failures, and respects a 90 second cooldown after the promotion date", async () => {
   const mod = await loadAutoSessionModule()
+  const dir = await mkdtemp(path.join(os.tmpdir(), "fusion-static-candidates-"))
   installDiscountCatalog("wanted-a", "wanted-b")
   getConfig().autoDiscovery = { models: ["wanted-a", "wanted-b"] }
   let now = Date.parse("2026-12-15T12:00:00Z")
@@ -2214,9 +2297,10 @@ test("Fusion shares four seeds plus ten additional attempts across targets, coun
     },
   )
   try {
-    await mod.prewarmAutoSession()
+    await mod.prewarmAutoSession({ sourceRoot: dir })
     await mod.whenProbeSchedulerIdle()
-    expect(fusionCalls).toHaveLength(14)
+    // Static conditions comprise 22 High and 11 Max candidates, including seeds.
+    expect(fusionCalls).toHaveLength(33)
     const seedPrompts = fusionCalls.slice(0, 4).map((call) => {
       const body = call.init?.body
       if (typeof body !== "string")
@@ -2235,7 +2319,7 @@ test("Fusion shares four seeds plus ten additional attempts across targets, coun
         })
       )?.sessionToken,
     ).toBe("auto-a")
-    expect(fusionCalls).toHaveLength(14)
+    expect(fusionCalls).toHaveLength(33)
     now = exhaustedAt + 90_000
     recovered = true
     expect(
@@ -2248,7 +2332,7 @@ test("Fusion shares four seeds plus ten additional attempts across targets, coun
     ).toBe("auto")
     advancing = true
     await mod.whenProbeSchedulerIdle()
-    expect(fusionCalls).toHaveLength(16)
+    expect(fusionCalls).toHaveLength(35)
     expect(
       (
         await mod.getAutoSessionForModel({
@@ -2269,6 +2353,7 @@ test("Fusion shares four seeds plus ten additional attempts across targets, coun
     mod.stopProbeScheduler()
     await mod.whenProbeSchedulerIdle()
     clock.mockRestore()
+    await rm(dir, { recursive: true, force: true })
   }
 })
 
@@ -2280,12 +2365,19 @@ test("twenty concurrent configured misses share one in-flight request per source
   const fusion = Promise.withResolvers<Response>()
   const autoStarted = Promise.withResolvers<void>()
   const fusionStarted = Promise.withResolvers<void>()
+  let now = Date.now()
+  let advancing = true
+  const clock = spyOn(Date, "now").mockImplementation(() => {
+    if (advancing) now += 4_000
+    return now
+  })
   const { calls, fusionCalls } = installRouter(
     () => {
       autoStarted.resolve()
       return auto.promise
     },
     () => {
+      advancing = false
       fusionStarted.resolve()
       return fusion.promise
     },
@@ -2298,7 +2390,8 @@ test("twenty concurrent configured misses share one in-flight request per source
     }),
   )
   try {
-    await Promise.all([autoStarted.promise, fusionStarted.promise])
+    await autoStarted.promise
+    await fusionStarted.promise
     expect(calls).toHaveLength(1)
     expect(fusionCalls).toHaveLength(1)
     auto.resolve(okSelection("wanted-model", "immediate-auto"))
@@ -2325,11 +2418,15 @@ test("twenty concurrent configured misses share one in-flight request per source
     fusion.resolve(fusionSelectionResponse("wanted-model", "later-fusion"))
     await mod.whenProbeSchedulerIdle()
     await Promise.all(pending)
+    clock.mockRestore()
   }
 })
 
 test("startup shares the 30 second budget across Auto and Fusion, then stop joins both in-flight sources", async () => {
   const mod = await loadAutoSessionModule()
+  const dir = await mkdtemp(
+    path.join(os.tmpdir(), "fusion-shared-startup-budget-"),
+  )
   expect(mod.STARTUP_PROBE_BUDGET_MS).toBe(30_000)
   installDiscountCatalog("wanted-model")
   const auto = Promise.withResolvers<AutoSelectionResponse>()
@@ -2341,7 +2438,7 @@ test("startup shares the 30 second budget across Auto and Fusion, then stop join
   try {
     // A shortened real budget exercises the same platform-timer race without a 30s test delay.
     const started = Date.now()
-    await mod.prewarmAutoSession({ startupBudgetMs: 80 })
+    await mod.prewarmAutoSession({ sourceRoot: dir, startupBudgetMs: 80 })
     expect(Date.now() - started).toBeLessThan(2_000)
     expect(calls.length).toBeGreaterThan(0)
     expect(fusionCalls).toHaveLength(4)
@@ -2366,10 +2463,11 @@ test("startup shares the 30 second budget across Auto and Fusion, then stop join
       fusionSelectionResponse("wanted-model", "fusion-after-budget"),
     )
     await mod.whenProbeSchedulerIdle()
+    await rm(dir, { recursive: true, force: true })
   }
 })
 
-test("Fusion 的失败种子各发送一次，随后共享十次补采并进入冷却", async () => {
+test("Fusion 的失败种子各发送一次，随后共享候选池规模的补采并进入冷却", async () => {
   const mod = await loadAutoSessionModule()
   const dir = await mkdtemp(path.join(os.tmpdir(), "fusion-failed-seeds-"))
   installDiscountCatalog("wanted-model")
@@ -2405,7 +2503,7 @@ test("Fusion 的失败种子各发送一次，随后共享十次补采并进入�
   try {
     await mod.prewarmAutoSession({ sourceRoot: dir })
     await mod.whenProbeSchedulerIdle()
-    expect(fusionCalls).toHaveLength(14)
+    expect(fusionCalls).toHaveLength(33)
     const conditions = fusionCalls.map((call) => {
       const raw = call.init?.body
       if (typeof raw !== "string")
@@ -2413,9 +2511,8 @@ test("Fusion 的失败种子各发送一次，随后共享十次补采并进入�
       const body = JSON.parse(raw) as {
         prompt: string
         plan_version: "1" | "2"
-        fusion_mode: "hydrafusion"
+        fusion_mode: "hydrafusion" | "hydrafusion-max"
       }
-      expect(body.fusion_mode).toBe("hydrafusion")
       expect(["1", "2"]).toContain(body.plan_version)
       return createProbeCondition({
         source: "fusion",
@@ -2437,15 +2534,21 @@ test("Fusion 的失败种子各发送一次，随后共享十次补采并进入�
         conditions.filter((condition) => condition.id === seed.id),
       ).toHaveLength(1)
     const targets = conditions.slice(4)
-    expect(targets).toHaveLength(10)
-    expect(new Set(targets.map((condition) => condition.id)).size).toBe(10)
-    for (const planVersion of ["1", "2"])
-      expect(
-        targets.filter((condition) => condition.planVersion === planVersion),
-      ).toHaveLength(5)
+    expect(targets).toHaveLength(29)
+    expect(new Set(targets.map((condition) => condition.id)).size).toBe(29)
+    expect(
+      targets.filter((condition) => condition.fusionMode === "hydrafusion"),
+    ).toHaveLength(18)
+    expect(
+      targets.filter((condition) => condition.fusionMode === "hydrafusion-max"),
+    ).toHaveLength(11)
     expect(
       conditions
-        .filter((condition) => condition.prompt === "hello")
+        .filter(
+          (condition) =>
+            condition.prompt === "hello"
+            && condition.fusionMode === "hydrafusion",
+        )
         .map((condition) => condition.planVersion),
     ).toEqual(["1", "2"])
     expect(advancing).toBe(false)
@@ -2459,7 +2562,7 @@ test("Fusion 的失败种子各发送一次，随后共享十次补采并进入�
         })
       )?.sessionToken,
     ).toBe("kept-auto")
-    expect(fusionCalls).toHaveLength(14)
+    expect(fusionCalls).toHaveLength(33)
     now = exhaustedAt + 90_000
     advancing = true
     await mod.getAutoSessionForModel({
@@ -2467,7 +2570,7 @@ test("Fusion 的失败种子各发送一次，随后共享十次补采并进入�
       endpoint: "/responses",
     })
     await mod.whenProbeSchedulerIdle()
-    expect(fusionCalls).toHaveLength(24)
+    expect(fusionCalls).toHaveLength(66)
   } finally {
     mod.stopProbeScheduler()
     await mod.whenProbeSchedulerIdle()
@@ -2582,6 +2685,8 @@ test("Fusion 补采轮次的 finally 不得在新身份元数据就绪前开启 
   const oldAuthorization = `Bearer ${state.copilotToken}`
   const old = Promise.withResolvers<Response>()
   const oldStarted = Promise.withResolvers<void>()
+  let now = Date.now()
+  const clock = spyOn(Date, "now").mockImplementation(() => (now += 4_000))
   const { fusionCalls } = installRouter(
     () => okSelection("wanted-model", "kept-auto"),
     (_body, init) => {
@@ -2619,10 +2724,20 @@ test("Fusion 补采轮次的 finally 不得在新身份元数据就绪前开启 
       )?.sessionToken,
     ).toBe("ready-b")
     expect(fusionCalls).toHaveLength(5)
+    const freshCalls = fusionCalls.filter(
+      (call) =>
+        new Headers(call.init?.headers).get("authorization")
+        === `Bearer ${state.copilotToken}`,
+    )
+    expect(freshCalls).toHaveLength(4)
+    expect(
+      new Set(freshCalls.map((call) => requestBody(call).prompt)).size,
+    ).toBe(4)
   } finally {
     mod.stopProbeScheduler()
     old.resolve(fusionSelectionResponse("old-model", "stale-a"))
     await mod.whenProbeSchedulerIdle()
+    clock.mockRestore()
   }
 })
 
@@ -2725,10 +2840,21 @@ test("Fusion round summaries exclude coverage acquired only by Auto", async () =
   installDiscountCatalog("target-model", "auto-only-model", "later-auto-model")
   getConfig().autoDiscovery = { models: ["target-model"] }
   const gate = Promise.withResolvers<Response>()
+  const highStarted = Promise.withResolvers<void>()
+  let now = Date.now()
+  let advancing = true
+  const clock = spyOn(Date, "now").mockImplementation(() => {
+    if (advancing) now += 4_000
+    return now
+  })
   const infoSpy = spyOn(consola, "info")
   const { fusionCalls } = installRouter(
     () => new Response(null, { status: 400 }),
-    () => gate.promise,
+    (body) => {
+      advancing = false
+      if (body.fusion_mode === "hydrafusion") highStarted.resolve()
+      return gate.promise
+    },
   )
   try {
     mod.resumeAutoSessionDiscoveryAfterRotation()
@@ -2749,7 +2875,7 @@ test("Fusion round summaries exclude coverage acquired only by Auto", async () =
         prompt: "hello",
       }),
     )
-    await waitFor(() => fusionCalls.length === 1, 1_000)
+    await highStarted.promise
     mod.registerAutoSelection(
       okSelection("later-auto-model", "LATER_AUTO_PRIVATE"),
       createProbeCondition({
@@ -2762,7 +2888,15 @@ test("Fusion round summaries exclude coverage acquired only by Auto", async () =
     gate.resolve(
       fusionSelectionResponse("target-model", "FUSION_TARGET_PRIVATE"),
     )
-    await mod.whenProbeSchedulerIdle()
+    await waitFor(
+      () =>
+        infoSpy.mock.calls.some((call) =>
+          String(call[0]).startsWith(
+            "[auto-session] target discovery stopped source=fusion ",
+          ),
+        ),
+      1_000,
+    )
 
     const lines = infoSpy.mock.calls.map((call) => String(call[0]))
     expect(
@@ -2780,5 +2914,6 @@ test("Fusion round summaries exclude coverage acquired only by Auto", async () =
     mod.stopProbeScheduler()
     gate.resolve(new Response(null, { status: 400 }))
     await mod.whenProbeSchedulerIdle()
+    clock.mockRestore()
   }
 })

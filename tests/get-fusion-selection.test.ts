@@ -120,7 +120,7 @@ afterEach(() => {
 describe("getFusionSelection", () => {
   test("uses the Auto base, public headers and timeout with the exact Fusion body", async () => {
     const result = await getFusionSelection(PROMPT)
-    await getAutoSelection(PROMPT, "balance")
+    await getAutoSelection(PROMPT, { tier: "balance" })
 
     expect(result).toEqual({
       planVersion: "2",
@@ -161,6 +161,52 @@ describe("getFusionSelection", () => {
       Object.fromEntries(autoHeaders),
     )
     expect(errorLog).not.toHaveBeenCalled()
+  })
+
+  test("sends Fusion fields only for Fusion-enabled Auto requests", async () => {
+    await getAutoSelection(PROMPT, { tier: "balance", fusion: true })
+    await getAutoSelection(PROMPT, { tier: "efficiency" })
+
+    const [fusionUrl, fusionInit] = fetchMock.mock.calls[0]
+    const [ordinaryUrl, ordinaryInit] = fetchMock.mock.calls[1]
+    expect(fusionUrl).toBe("https://token-endpoint.example.test/auto")
+    expect(ordinaryUrl).toBe("https://token-endpoint.example.test/auto")
+    expect(fusionInit.method).toBe("POST")
+    expect(ordinaryInit.method).toBe("POST")
+    expect(JSON.parse(fusionInit.body as string)).toEqual({
+      prompt: PROMPT,
+      tier: "balance",
+      has_image: false,
+      fusion: true,
+      hydra_rl_multi_turn: {},
+    })
+    expect(JSON.parse(ordinaryInit.body as string)).toEqual({
+      prompt: PROMPT,
+      tier: "efficiency",
+    })
+  })
+
+  test("sends the requested Fusion mode and plan version and parses a solo response", async () => {
+    const result = await getFusionSelection(PROMPT, {
+      planVersion: "1",
+      fusionMode: "hydrafusion-max",
+    })
+
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(url).toBe("https://token-endpoint.example.test/model/fusion")
+    expect(init.method).toBe("POST")
+    expect(JSON.parse(init.body as string)).toEqual({
+      prompt: PROMPT,
+      fusion_mode: "hydrafusion-max",
+      plan_version: "1",
+    })
+    expect(result).toEqual({
+      planVersion: "1",
+      fusionPattern: "solo",
+      steps: [{ modelId: "selected-model", role: "generation" }],
+      sessionToken: SESSION_TOKEN,
+      expiresAt: EXPIRES_AT,
+    })
   })
 
   test.each([

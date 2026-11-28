@@ -786,7 +786,7 @@ export const authTestMarker = "fixture-auth-test-marker-value"
   test("throws when a required cross-file context is missing", async () => {
     const tempDir = autoVarietyTempDir()
     // 片段可采样，但 tests/request-auth.test.ts 缺失
-    const { srcDir, testsDir } = writeContextFixtures(tempDir, {
+    const { srcDir } = writeContextFixtures(tempDir, {
       withTestFile: false,
     })
     writeSnippetSource(srcDir)
@@ -798,9 +798,28 @@ export const authTestMarker = "fixture-auth-test-marker-value"
     if (!(outcome instanceof Error)) {
       throw new Error("expected createVarietyCases to reject with an Error")
     }
-    expect(outcome.message).toBe(
-      `auto-variety: unable to read ${path.join(testsDir, "request-auth.test.ts")}`,
+    expect(outcome.message).toBe(`auto-variety: unable to read ${srcDir}`)
+    expect(outcome.cause).toMatchObject({ code: "ENOENT" })
+  })
+
+  test("preserves the cause when a required source context cannot be read", async () => {
+    const tempDir = autoVarietyTempDir()
+    const { srcDir } = writeContextFixtures(tempDir)
+    writeSnippetSource(srcDir)
+    const serverPath = path.join(srcDir, "server.ts")
+    fs.unlinkSync(serverPath)
+    fs.mkdirSync(serverPath)
+
+    const outcome = await createVarietyCases({ sourceRoot: srcDir }).catch(
+      (cause: unknown) => cause,
     )
+    expect(outcome).toBeInstanceOf(Error)
+    if (!(outcome instanceof Error)) {
+      throw new Error("expected createVarietyCases to reject with an Error")
+    }
+    expect(outcome.message).toBe(`auto-variety: unable to read ${srcDir}`)
+    expect(outcome.cause).toBeInstanceOf(Error)
+    expect(outcome.cause).toMatchObject({ code: "EISDIR" })
   })
 
   test("throws when both the snippet source and context files are missing", async () => {

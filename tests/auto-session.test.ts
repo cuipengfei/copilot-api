@@ -7,9 +7,17 @@ import {
   spyOn,
   test,
 } from "bun:test"
+import { mkdtemp, rm } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import * as timersPromises from "node:timers/promises"
 
-import { createProbeCondition } from "../src/lib/auto-probe-prompts"
+import {
+  createProbeCondition,
+  getProbeConditions,
+  pairingSourceForProbe,
+  type ProbeCondition,
+} from "../src/lib/auto-probe-prompts"
 
 import { state } from "../src/lib/state"
 import type { AutoSelectionResponse } from "../src/services/copilot/get-auto-selection"
@@ -79,6 +87,7 @@ const originalForceAgent = state.forceAgent
 const modules: Array<AutoSessionModule> = []
 
 const installProbeClock = (initialNow: number) => {
+  const wallClockNow = Date.now
   let now = initialNow
   const timers: Array<{
     at: number
@@ -124,14 +133,18 @@ const installProbeClock = (initialNow: number) => {
     const pending = mod.whenProbeSchedulerIdle().then(() => {
       idle = true
     })
-    await nextTurn()
-    for (let fired = 0; !idle; fired++) {
-      if (fired >= 128) throw new Error("probe round did not become idle")
+    const deadline = wallClockNow() + 2_000
+    let fired = 0
+    while (!idle) {
+      if (wallClockNow() > deadline)
+        throw new Error("probe round did not become idle")
       const timer = nextTimer()
       if (timer === undefined || timer.at - now > 3_000) {
-        await pending
-        break
+        await nextTurn()
+        continue
       }
+      if (fired >= 128) throw new Error("probe round did not become idle")
+      fired++
       await advanceBy(Math.max(0, timer.at - now))
     }
     await pending
@@ -1856,35 +1869,48 @@ describe("two-source discount pairings", () => {
 
   test("Fusion expiry after the public promotion date uses Auto immediately while a single background renewal restores 30", async () => {
     const mod = await loadAutoSessionModule()
+    const sourceRoot = await mkdtemp(join(tmpdir(), "auto-fusion-expiry-"))
     let now = Date.parse("2026-11-30T23:59:00Z")
     spyOn(Date, "now").mockImplementation(() => now)
     const renewal = Promise.withResolvers<Response>()
     const renewalStarted = Promise.withResolvers<void>()
     let fusionCalls = 0
-    globalThis.fetch = mock((input: string | URL | Request) => {
-      const url = input instanceof Request ? input.url : String(input)
-      if (url.endsWith("/model/fusion")) {
-        fusionCalls++
-        if (fusionCalls > 4) {
-          renewalStarted.resolve()
-          return renewal.promise
+    globalThis.fetch = mock(
+      (input: string | URL | Request, init?: RequestInit) => {
+        const url = input instanceof Request ? input.url : String(input)
+        if (typeof init?.body !== "string")
+          throw new Error("expected string request body")
+        const body = JSON.parse(init.body) as {
+          fusion?: boolean
+          fusion_mode?: string
         }
+        if (url.endsWith("/auto") && body.fusion === true)
+          return Promise.resolve(new Response(null, { status: 403 }))
+        if (url.endsWith("/model/fusion")) {
+          if (body.fusion_mode === "hydrafusion-max")
+            return Promise.resolve(new Response(null, { status: 403 }))
+          fusionCalls++
+          if (fusionCalls > 4) {
+            renewalStarted.resolve()
+            return renewal.promise
+          }
+          return Promise.resolve(
+            fusionResponse(
+              "discount-model",
+              "fusion-before-date",
+              Math.floor(now / 1000) + 600,
+            ),
+          )
+        }
+        if (!url.endsWith("/auto"))
+          throw new Error("unexpected selection endpoint")
         return Promise.resolve(
-          fusionResponse(
-            "discount-model",
-            "fusion-before-date",
-            Math.floor(now / 1000) + 600,
-          ),
+          createResponse(selection("discount-model", "auto-before-renewal")),
         )
-      }
-      if (!url.endsWith("/auto"))
-        throw new Error("unexpected selection endpoint")
-      return Promise.resolve(
-        createResponse(selection("discount-model", "auto-before-renewal")),
-      )
-    }) as unknown as typeof fetch
+      },
+    ) as unknown as typeof fetch
     try {
-      await mod.prewarmAutoSession()
+      await mod.prewarmAutoSession({ sourceRoot })
       expect(fusionCalls).toBe(4)
       mod.registerAutoSelection(
         selection("discount-model", "auto-during-renewal", {
@@ -1936,9 +1962,13 @@ describe("two-source discount pairings", () => {
         expectedDiscount: 30,
       })
     } finally {
-      mod.stopProbeScheduler()
-      renewal.resolve(fusionResponse("discount-model", "fusion-after-date"))
-      await mod.whenProbeSchedulerIdle()
+      try {
+        mod.stopProbeScheduler()
+        renewal.resolve(fusionResponse("discount-model", "fusion-after-date"))
+        await mod.whenProbeSchedulerIdle()
+      } finally {
+        await rm(sourceRoot, { recursive: true, force: true })
+      }
     }
   })
 
@@ -2047,6 +2077,7 @@ describe("two-source discount pairings", () => {
 
   test("Fusion probe commit order follows requests rather than token expiry", async () => {
     const mod = await loadAutoSessionModule()
+    const sourceRoot = await mkdtemp(join(tmpdir(), "auto-fusion-commit-"))
     const gates = Array.from({ length: 4 }, () =>
       Promise.withResolvers<Response>(),
     )
@@ -2065,17 +2096,31 @@ describe("two-source discount pairings", () => {
         { raw() {} },
       ),
     )
-    globalThis.fetch = mock((input: string | URL | Request) => {
-      const url = input instanceof Request ? input.url : String(input)
-      if (url.endsWith("/model/fusion")) return gates[fusionCalls++].promise
-      if (!url.endsWith("/auto"))
-        throw new Error("unexpected selection endpoint")
-      return Promise.resolve(
-        createResponse(selection("discount-model", "later-auto")),
-      )
-    }) as unknown as typeof fetch
+    globalThis.fetch = mock(
+      (input: string | URL | Request, init?: RequestInit) => {
+        const url = input instanceof Request ? input.url : String(input)
+        if (typeof init?.body !== "string")
+          throw new Error("expected string request body")
+        const body = JSON.parse(init.body) as {
+          fusion?: boolean
+          fusion_mode?: string
+        }
+        if (url.endsWith("/auto") && body.fusion === true)
+          return Promise.resolve(new Response(null, { status: 403 }))
+        if (url.endsWith("/model/fusion")) {
+          if (body.fusion_mode === "hydrafusion-max")
+            return Promise.resolve(new Response(null, { status: 403 }))
+          return gates[fusionCalls++].promise
+        }
+        if (!url.endsWith("/auto"))
+          throw new Error("unexpected selection endpoint")
+        return Promise.resolve(
+          createResponse(selection("discount-model", "later-auto")),
+        )
+      },
+    ) as unknown as typeof fetch
     // The short real budget returns while the externally gated HTTP responses remain in flight.
-    const warm = mod.prewarmAutoSession({ startupBudgetMs: 20 })
+    const warm = mod.prewarmAutoSession({ sourceRoot, startupBudgetMs: 20 })
     try {
       await warm
       expect(fusionCalls).toBe(4)
@@ -2093,32 +2138,49 @@ describe("two-source discount pairings", () => {
           ?.sessionToken,
       ).toBe("newest-fusion")
     } finally {
-      mod.stopProbeScheduler()
-      for (const gate of gates)
-        gate.resolve(fusionResponse("discount-model", "released-fusion"))
-      await warm
-      await mod.whenProbeSchedulerIdle()
+      try {
+        mod.stopProbeScheduler()
+        for (const gate of gates)
+          gate.resolve(fusionResponse("discount-model", "released-fusion"))
+        await warm
+        await mod.whenProbeSchedulerIdle()
+      } finally {
+        await rm(sourceRoot, { recursive: true, force: true })
+      }
     }
   })
 
   test("pre-rejection Fusion responses cannot restore a candidate or remove the valid Auto fallback", async () => {
     const mod = await loadAutoSessionModule()
+    const sourceRoot = await mkdtemp(join(tmpdir(), "auto-fusion-rejection-"))
     const stale = Promise.withResolvers<void>()
     let fusionCalls = 0
-    globalThis.fetch = mock((input: string | URL | Request) => {
-      const url = input instanceof Request ? input.url : String(input)
-      if (url.endsWith("/model/fusion")) {
-        fusionCalls++
-        return stale.promise.then(() =>
-          fusionResponse("discount-model", "late-different-fusion"),
+    globalThis.fetch = mock(
+      (input: string | URL | Request, init?: RequestInit) => {
+        const url = input instanceof Request ? input.url : String(input)
+        if (typeof init?.body !== "string")
+          throw new Error("expected string request body")
+        const body = JSON.parse(init.body) as {
+          fusion?: boolean
+          fusion_mode?: string
+        }
+        if (url.endsWith("/auto") && body.fusion === true)
+          return Promise.resolve(new Response(null, { status: 403 }))
+        if (url.endsWith("/model/fusion")) {
+          if (body.fusion_mode === "hydrafusion-max")
+            return Promise.resolve(new Response(null, { status: 403 }))
+          fusionCalls++
+          return stale.promise.then(() =>
+            fusionResponse("discount-model", "late-different-fusion"),
+          )
+        }
+        if (!url.endsWith("/auto"))
+          throw new Error("unexpected selection endpoint")
+        return Promise.resolve(
+          createResponse(selection("discount-model", "preserved-auto")),
         )
-      }
-      if (!url.endsWith("/auto"))
-        throw new Error("unexpected selection endpoint")
-      return Promise.resolve(
-        createResponse(selection("discount-model", "preserved-auto")),
-      )
-    }) as unknown as typeof fetch
+      },
+    ) as unknown as typeof fetch
     mod.registerFusionSelection(
       {
         planVersion: "2" as const,
@@ -2136,7 +2198,7 @@ describe("two-source discount pairings", () => {
     )
     try {
       // Exercise invalidation while all four seed requests are still in flight.
-      await mod.prewarmAutoSession({ startupBudgetMs: 20 })
+      await mod.prewarmAutoSession({ sourceRoot, startupBudgetMs: 20 })
       expect(fusionCalls).toBe(4)
       expect(
         mod.invalidateAutoSessionPairing("discount-model", "rejected-fusion"),
@@ -2157,9 +2219,13 @@ describe("two-source discount pairings", () => {
         )?.sessionToken,
       ).toBeUndefined()
     } finally {
-      mod.stopProbeScheduler()
-      stale.resolve()
-      await mod.whenProbeSchedulerIdle()
+      try {
+        mod.stopProbeScheduler()
+        stale.resolve()
+        await mod.whenProbeSchedulerIdle()
+      } finally {
+        await rm(sourceRoot, { recursive: true, force: true })
+      }
     }
   })
 
@@ -2280,9 +2346,64 @@ describe("two-source discount pairings", () => {
     }
   })
 
+  const fusionConditionFromRequest = (
+    url: string,
+    requestBody: string,
+  ): ProbeCondition => {
+    const body = JSON.parse(requestBody) as {
+      prompt: string
+      tier?: "efficiency" | "balance" | "intelligence" | "fast"
+      fusion?: boolean
+      plan_version?: "1" | "2"
+      fusion_mode?: "hydrafusion" | "hydrafusion-max"
+    }
+    if (url.endsWith("/auto")) {
+      if (
+        body.fusion !== true
+        || body.tier === undefined
+        || body.tier === "efficiency"
+      ) {
+        throw new Error("invalid Fusion Standard request")
+      }
+      return createProbeCondition({
+        source: "auto",
+        tier: body.tier,
+        fusion: true,
+        prompt: body.prompt,
+      })
+    }
+    if (
+      !url.endsWith("/model/fusion")
+      || body.plan_version === undefined
+      || body.fusion_mode === undefined
+    ) {
+      throw new Error("invalid High/Max Fusion request")
+    }
+    return createProbeCondition({
+      source: "fusion",
+      planVersion: body.plan_version,
+      fusionMode: body.fusion_mode,
+      prompt: body.prompt,
+    })
+  }
+
   test("Fusion 保存题面的续期选到 N 后按真实模型登记，M 继续共享变体补采", async () => {
     const clock = installProbeClock(Date.now())
     const mod = await loadAutoSessionModule()
+    getConfig().autoDiscovery = undefined
+    globalThis.fetch = mock(() =>
+      Promise.resolve(new Response(null, { status: 400 })),
+    ) as unknown as typeof fetch
+    await mod.prewarmAutoSession({
+      sourceRoot: "/tmp/copilot-api-no-source-saved-renewal",
+    })
+    const fusionCandidates = getProbeConditions().filter(
+      (condition) => pairingSourceForProbe(condition) === "fusion",
+    )
+    const fusionConditionCount = fusionCandidates.length
+    const standardConditionCount = fusionCandidates.filter(
+      (condition) => condition.source === "auto" && condition.fusion === true,
+    ).length
     getConfig().autoDiscovery = { models: ["discount-model"] }
     const savedProbe = createProbeCondition({
       source: "fusion",
@@ -2314,31 +2435,20 @@ describe("two-source discount pairings", () => {
     )
     const prompts: Array<string> = []
     const conditionIds: Array<string> = []
+    let standardRejections = 0
     let recoverVariants = false
     globalThis.fetch = mock(
       (input: string | URL | Request, init?: RequestInit) => {
         const url = input instanceof Request ? input.url : String(input)
-        if (!url.endsWith("/model/fusion"))
-          throw new Error("unexpected selection endpoint")
         if (typeof init?.body !== "string")
           throw new Error("expected string request body")
-        const {
-          prompt,
-          plan_version: planVersion,
-          fusion_mode: fusionMode,
-        } = JSON.parse(init.body) as {
-          prompt: string
-          plan_version: "1" | "2"
-          fusion_mode: "hydrafusion"
-        }
-        const condition = createProbeCondition({
-          source: "fusion",
-          planVersion,
-          fusionMode,
-          prompt,
-        })
-        prompts.push(prompt)
+        const condition = fusionConditionFromRequest(url, init.body)
+        prompts.push(condition.prompt)
         conditionIds.push(condition.id)
+        if (condition.source === "auto") {
+          standardRejections++
+          return Promise.resolve(new Response(null, { status: 400 }))
+        }
         const recovered = recoverVariants && condition.id !== savedProbe.id
         return Promise.resolve(
           fusionResponse(
@@ -2361,10 +2471,11 @@ describe("two-source discount pairings", () => {
       true,
     )
     await clock.finishCurrentRound(mod)
-    expect(prompts).toHaveLength(10)
+    expect(prompts).toHaveLength(fusionConditionCount)
+    expect(standardRejections).toBe(standardConditionCount)
     expect(prompts[0]).toBe("hello")
     expect(conditionIds[1]).not.toBe(conditionIds[0])
-    expect(new Set(conditionIds.slice(0, 10)).size).toBe(10)
+    expect(new Set(conditionIds).size).toBe(fusionConditionCount)
     const exhaustedAt = clock.now
     expect(
       (
@@ -2387,7 +2498,7 @@ describe("two-source discount pairings", () => {
       model: "discount-model",
       endpoint: "/responses",
     })
-    expect(prompts).toHaveLength(10)
+    expect(prompts).toHaveLength(fusionConditionCount)
     clock.now = exhaustedAt + 90_000
     recoverVariants = true
     await Promise.all(
@@ -2398,11 +2509,14 @@ describe("two-source discount pairings", () => {
         }),
       ),
     )
+    const secondRoundStart = prompts.length
     await clock.finishCurrentRound(mod)
-    expect(prompts).toHaveLength(12)
-    expect(prompts[10]).toBe("hello")
-    expect(conditionIds[11]).not.toBe(conditionIds[10])
-    expect(new Set(conditionIds.slice(10)).size).toBe(2)
+    expect(prompts.length).toBeGreaterThan(secondRoundStart + 1)
+    expect(prompts[secondRoundStart]).toBe("hello")
+    const secondRoundIds = conditionIds.slice(secondRoundStart)
+    expect(secondRoundIds[1]).not.toBe(secondRoundIds[0])
+    expect(new Set(secondRoundIds).size).toBe(secondRoundIds.length)
+    const completedRequestCount = prompts.length
     expect(
       (
         await mod.getAutoSessionForModel({
@@ -2411,25 +2525,43 @@ describe("two-source discount pairings", () => {
         })
       )?.sessionToken,
     ).toBe("variant-m")
-    expect(prompts).toHaveLength(12)
+    expect(prompts).toHaveLength(completedRequestCount)
   })
 
-  test("Fusion target 的定时续期和过期重获都有界，失败算十次预算且冷却后才能重开", async () => {
+  test("Fusion target 的定时续期和过期重获都有界，失败耗尽完整候选预算且冷却后才能重开", async () => {
     const clock = installProbeClock(Math.floor(Date.now() / 1000) * 1000)
-    const startedAt = clock.now
     const mod = await loadAutoSessionModule()
+    getConfig().autoDiscovery = undefined
+    globalThis.fetch = mock(() =>
+      Promise.resolve(new Response(null, { status: 400 })),
+    ) as unknown as typeof fetch
+    await mod.prewarmAutoSession({
+      sourceRoot: "/tmp/copilot-api-no-source-target-renewal",
+    })
+    const fusionCandidates = getProbeConditions().filter(
+      (condition) => pairingSourceForProbe(condition) === "fusion",
+    )
+    const fusionConditionCount = fusionCandidates.length
+    const standardConditionCount = fusionCandidates.filter(
+      (condition) => condition.source === "auto" && condition.fusion === true,
+    ).length
     const timers = clock.timers
     const prompts: Array<string> = []
+    const conditionIds: Array<string> = []
+    let standardRejections = 0
     let failing = false
     globalThis.fetch = mock(
       (input: string | URL | Request, init?: RequestInit) => {
         const url = input instanceof Request ? input.url : String(input)
-        if (!url.endsWith("/model/fusion"))
-          throw new Error("unexpected selection endpoint")
         if (typeof init?.body !== "string")
           throw new Error("expected string request body")
-        const { prompt } = JSON.parse(init.body) as { prompt: string }
-        prompts.push(prompt)
+        const condition = fusionConditionFromRequest(url, init.body)
+        prompts.push(condition.prompt)
+        conditionIds.push(condition.id)
+        if (condition.source === "auto") {
+          standardRejections++
+          return Promise.resolve(new Response(null, { status: 400 }))
+        }
         if (failing) {
           return Promise.resolve(
             new Response(null, {
@@ -2461,18 +2593,22 @@ describe("two-source discount pairings", () => {
       }),
     )
     await clock.finishCurrentRound(mod)
-    expect(prompts).toHaveLength(1)
-    const savedPrompt = prompts[0]
-    const refresh = timers.find((timer) => timer.ms === 300_000)
+    expect(prompts.length).toBeGreaterThan(0)
+    const initialRequestCount = prompts.length
+    const acquiredAt = clock.now
+    const savedPrompt = prompts[initialRequestCount - 1]
+    const refresh = timers.find(
+      (timer) => !timer.cancelled && timer.ms === 300_000,
+    )
     if (refresh === undefined) throw new Error("missing Fusion refresh timer")
     expect(refresh).toBeDefined()
     failing = true
-    clock.now = startedAt + 300_000
+    clock.now = refresh.at
     refresh.cancelled = true
     refresh.callback()
     await clock.finishCurrentRound(mod)
-    expect(prompts).toHaveLength(2)
-    expect(prompts[1]).toBe(savedPrompt)
+    expect(prompts).toHaveLength(initialRequestCount + 1)
+    expect(prompts[initialRequestCount]).toBe(savedPrompt)
     expect(
       (
         await mod.getAutoSessionForModel({
@@ -2481,8 +2617,8 @@ describe("two-source discount pairings", () => {
         })
       )?.sessionToken,
     ).toBe("fusion-target")
-    expect(prompts).toHaveLength(2)
-    clock.now = startedAt + 601_000
+    expect(prompts).toHaveLength(initialRequestCount + 1)
+    clock.now = acquiredAt + 601_000
     expect(
       (
         await mod.getAutoSessionForModel({
@@ -2491,9 +2627,17 @@ describe("two-source discount pairings", () => {
         })
       )?.sessionToken,
     ).toBe("kept-auto")
+    const failedRoundStart = prompts.length
+    const standardBeforeFailedRound = standardRejections
     await clock.finishCurrentRound(mod)
-    expect(prompts).toHaveLength(12)
-    expect(new Set(prompts.slice(2)).size).toBeGreaterThan(1)
+    expect(prompts).toHaveLength(failedRoundStart + fusionConditionCount)
+    expect(new Set(conditionIds.slice(failedRoundStart)).size).toBe(
+      fusionConditionCount,
+    )
+    expect(standardRejections - standardBeforeFailedRound).toBe(
+      standardConditionCount,
+    )
+    expect(new Set(prompts.slice(failedRoundStart)).size).toBeGreaterThan(1)
     const cooldown = timers.find(
       (timer) => !timer.cancelled && timer.ms === 90_000,
     )
@@ -2508,7 +2652,8 @@ describe("two-source discount pairings", () => {
         }),
       ),
     )
-    expect(prompts).toHaveLength(12)
+    expect(prompts).toHaveLength(failedRoundStart + fusionConditionCount)
+    const recoveryRoundStart = prompts.length
     failing = false
     await clock.advanceBy(1)
     await mod.getAutoSessionForModel({
@@ -2516,7 +2661,10 @@ describe("two-source discount pairings", () => {
       endpoint: "/responses",
     })
     await clock.finishCurrentRound(mod)
-    expect(prompts).toHaveLength(13)
+    expect(prompts.length).toBeGreaterThan(recoveryRoundStart)
+    const recoveryRoundIds = conditionIds.slice(recoveryRoundStart)
+    expect(new Set(recoveryRoundIds).size).toBe(recoveryRoundIds.length)
+    const completedRequestCount = prompts.length
     expect(
       (
         await mod.getAutoSessionForModel({
@@ -2525,6 +2673,6 @@ describe("two-source discount pairings", () => {
         })
       )?.sessionToken,
     ).toBe("fusion-target")
-    expect(prompts).toHaveLength(13)
+    expect(prompts).toHaveLength(completedRequestCount)
   })
 })

@@ -8,6 +8,13 @@ import {
 import { HTTPError } from "~/lib/http/error"
 import { state } from "~/lib/state"
 
+export type FusionMode = "hydrafusion" | "hydrafusion-max"
+
+export interface FusionSelectionOptions {
+  planVersion: "1" | "2"
+  fusionMode?: FusionMode
+}
+
 export interface FusionSelectionResponse {
   planVersion: "1" | "2"
   fusionPattern: string
@@ -67,7 +74,7 @@ export const parseFusionSelection = (
 
 export const getFusionSelection = async (
   prompt: string,
-  options: { planVersion: "1" | "2" } = { planVersion: "2" },
+  options: FusionSelectionOptions = { planVersion: "2" },
 ): Promise<FusionSelectionResponse> => {
   const response = await fetch(`${copilotBaseUrl(state)}/model/fusion`, {
     method: "POST",
@@ -77,7 +84,7 @@ export const getFusionSelection = async (
     },
     body: JSON.stringify({
       prompt,
-      fusion_mode: "hydrafusion",
+      fusion_mode: options.fusionMode ?? "hydrafusion",
       plan_version: options.planVersion,
     }),
     signal: AbortSignal.timeout(15_000),

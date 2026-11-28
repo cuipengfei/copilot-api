@@ -13,7 +13,6 @@ import {
 
 import { getResponseErrorMessage } from "~/services/copilot/auto-session-retry"
 import {
-  sendCopilotHttpRequest,
   sendCopilotRequest,
   type CopilotHttpRequestOptions,
 } from "~/services/copilot/request"
@@ -36,6 +35,66 @@ export const hasStrippableReasoningItem = (
   )
 }
 
+const getReasoningReplayCacheKey = (
+  url: string,
+  { payload, headers }: CopilotHttpRequestOptions,
+  reasoningReplayIdentity: string | undefined,
+): string | undefined =>
+  reasoningReplayIdentity === undefined ? undefined : (
+    JSON.stringify([
+      reasoningReplayIdentity,
+      payload.model,
+      url,
+      createHash("sha256")
+        .update(headers.Authorization ?? headers.authorization ?? "")
+        .digest("hex"),
+      createHash("sha256")
+        .update(
+          headers["Copilot-Session-Token"]
+            ?? headers["copilot-session-token"]
+            ?? "",
+        )
+        .digest("hex"),
+    ])
+  )
+
+const prepareReasoningReplayRetry = async (
+  url: string,
+  response: Response,
+  requestOptions: CopilotHttpRequestOptions,
+  reasoningReplayIdentity: string | undefined,
+): Promise<boolean> => {
+  const { payload } = requestOptions
+  const errorMessage = await getResponseErrorMessage(response)
+  const shouldStripReasoningAndRetry =
+    response.status >= 400
+    && response.status < 500
+    && errorMessage?.toLowerCase().includes("belong") === true
+    && hasStrippableReasoningItem(payload)
+
+  if (!shouldStripReasoningAndRetry) return false
+
+  consola.warn(
+    `drop thinking block, reason: upstream ${response.status} response mentions "belong" (instance-bound item ID); stripping reasoning.encrypted_content and retrying once`,
+  )
+  normalizeResponsesInputForReplay(payload)
+  // 内层 auto-session 重试可能换掉令牌，学习时必须按发送后的当前 headers 重算
+  const learnedKey = getReasoningReplayCacheKey(
+    url,
+    requestOptions,
+    reasoningReplayIdentity,
+  )
+  if (learnedKey !== undefined) {
+    const learned = state.responsesReplayLearned
+    learned.add(learnedKey)
+    if (learned.size > REPLAY_CACHE_LIMIT) {
+      const oldest = learned.values().next().value
+      if (oldest !== undefined) learned.delete(oldest)
+    }
+  }
+  return true
+}
+
 export const sendResponsesRequestWithReasoningReplay = async (
   url: string,
   {
@@ -46,26 +105,17 @@ export const sendResponsesRequestWithReasoningReplay = async (
     reasoningReplayIdentity,
   }: ResponsesHttpSendOptions,
 ): Promise<Response> => {
-  // 内层 auto-session 重试可能换掉令牌，学习时必须按发送后的当前 headers 重算
-  const getReplayCacheKey = (): string | undefined =>
-    reasoningReplayIdentity === undefined ? undefined : (
-      JSON.stringify([
-        reasoningReplayIdentity,
-        payload.model,
-        url,
-        createHash("sha256")
-          .update(headers.Authorization ?? headers.authorization ?? "")
-          .digest("hex"),
-        createHash("sha256")
-          .update(
-            headers["Copilot-Session-Token"]
-              ?? headers["copilot-session-token"]
-              ?? "",
-          )
-          .digest("hex"),
-      ])
-    )
-  const replayCacheKey = getReplayCacheKey()
+  const requestOptions: CopilotHttpRequestOptions = {
+    headers,
+    payload,
+    clientSignal,
+    transportConfig,
+  }
+  const replayCacheKey = getReasoningReplayCacheKey(
+    url,
+    requestOptions,
+    reasoningReplayIdentity,
+  )
   const replayLearned =
     replayCacheKey !== undefined
     && state.responsesReplayLearned.has(replayCacheKey)
@@ -74,45 +124,21 @@ export const sendResponsesRequestWithReasoningReplay = async (
     normalizeResponsesInputForReplay(payload)
   }
 
-  let response = await sendCopilotRequest(url, {
-    headers,
-    payload,
-    clientSignal,
-    transportConfig,
-  })
+  let response = await sendCopilotRequest(url, requestOptions)
 
   logCopilotRateLimits(response.headers)
 
-  if (!response.ok) {
-    const errorMessage = await getResponseErrorMessage(response)
-    const shouldStripReasoningAndRetry =
-      response.status >= 400
-      && response.status < 500
-      && errorMessage?.toLowerCase().includes("belong") === true
-      && hasStrippableReasoningItem(payload)
-
-    if (shouldStripReasoningAndRetry) {
-      consola.warn(
-        `drop thinking block, reason: upstream ${response.status} response mentions "belong" (instance-bound item ID); stripping reasoning.encrypted_content and retrying once`,
-      )
-      normalizeResponsesInputForReplay(payload)
-      const learnedKey = getReplayCacheKey()
-      if (learnedKey !== undefined) {
-        const learned = state.responsesReplayLearned
-        learned.add(learnedKey)
-        if (learned.size > REPLAY_CACHE_LIMIT) {
-          const oldest = learned.values().next().value
-          if (oldest !== undefined) learned.delete(oldest)
-        }
-      }
-      response = await sendCopilotHttpRequest(url, {
-        headers,
-        payload,
-        clientSignal,
-        transportConfig,
-      })
-      logCopilotRateLimits(response.headers)
-    }
+  if (
+    !response.ok
+    && (await prepareReasoningReplayRetry(
+      url,
+      response,
+      requestOptions,
+      reasoningReplayIdentity,
+    ))
+  ) {
+    response = await sendCopilotRequest(url, requestOptions)
+    logCopilotRateLimits(response.headers)
   }
 
   return response

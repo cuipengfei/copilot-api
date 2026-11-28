@@ -1,28 +1,22 @@
 // 固定 intelligence 输入优先；task 保留完整跨文件上下文，hard 仍采样真实 100 行源码。
 
 import { createHash } from "node:crypto"
-import { readFile } from "node:fs/promises"
 import { relative, resolve, sep } from "node:path"
 import {
   createProbeCondition,
   getIntelligenceProbePrompt,
   getProbeConditions,
-  HARD_QUESTION,
   PREWARM_PROMPT,
   TARGET_CODE_PROMPT,
 } from "../../../../src/lib/auto-probe-prompts.ts"
-import { sampleHardSnippet } from "../../../../src/lib/auto-session.ts"
+import {
+  createHardPrompt,
+  createSourceTaskPrompts,
+  sampleHardSnippet,
+} from "../../../../src/lib/auto-probe-source-prompts.ts"
 
 const REPO_ROOT = resolve(import.meta.dirname, "../../../..")
 const DEFAULT_SOURCE_ROOT = resolve(REPO_ROOT, "src")
-
-// 四个 task case 共用的完整跨文件上下文（相对 sourceRoot；tests 在 sourceRoot 的兄弟目录）
-const TASK_CONTEXT_FILES = [
-  { file: "lib/auth/request-auth.ts", inTests: false },
-  { file: "server.ts", inTests: false },
-  { file: "lib/config/index.ts", inTests: false },
-  { file: "request-auth.test.ts", inTests: true },
-]
 
 /**
  * @typedef {Object} VarietySource
@@ -42,28 +36,7 @@ const TASK_CONTEXT_FILES = [
  * @property {import("../../../../src/lib/auto-probe-prompts.ts").ProbeCondition} condition 完整共享探测条件
  */
 
-// 四个任务探测的固定任务措辞，保持稳定便于跨轮比较
-const TASK_BEHAVIOR =
-  "Task: 说明这段程序的主要行为、输入、输出和状态变化。仅依据提供的材料，不要求修改代码。"
-const TASK_CANCELLATION =
-  "Task: 为该模块增加调用方可取消操作的能力，保持现有成功路径、错误传播和资源清理行为。检查已有取消支持；若已满足，指出证据。否则给出完整修改、受影响调用方和验证用例。"
-const TASK_CONCURRENCY =
-  "Task: 检查并发请求、取消、异常和状态变化的交错。只报告有源码依据的问题；给出能够触发问题的事件顺序、最小修复和区分修复前后行为的验证。证据不足时明确说明。"
-const TASK_CORRECTNESS =
-  "Task: 完成端到端正确性分析：建立状态模型，追踪跨文件调用关系，检查并发、取消和异常下的不变量；对成立的问题给出完整修复与确定性验证，对无法确认的问题列出缺失证据。不得预设一定存在缺陷。"
-
 const HARD_TIERS = ["efficiency", "balance", "intelligence", "fast"]
-// 有历史命中的优先条件：P6 完整上下文 × intelligence 曾选中 Astra（不能强制），排最前
-const FIRST_TASK_CASE = {
-  id: "task-correctness",
-  tier: "intelligence",
-  task: TASK_CORRECTNESS,
-}
-const TASK_CASES = [
-  { id: "task-behavior", tier: "intelligence", task: TASK_BEHAVIOR },
-  { id: "task-cancellation", tier: "balance", task: TASK_CANCELLATION },
-  { id: "task-concurrency", tier: "intelligence", task: TASK_CONCURRENCY },
-]
 
 const toSource = (snippet) => ({
   file: relative(REPO_ROOT, snippet.file).split(sep).join("/"),
@@ -71,30 +44,14 @@ const toSource = (snippet) => ({
   lineCount: snippet.text.split("\n").length,
 })
 
-const lineCountOf = (text) =>
-  text.length === 0 ? 0 : text.split("\n").length - (text.endsWith("\n") ? 1 : 0)
-
-const displayPath = (absolutePath) =>
-  relative(REPO_ROOT, absolutePath).split(sep).join("/")
-
-const mustTaskFiles = async (sourceRoot) => {
-  const testsRoot = resolve(sourceRoot, "..", "tests")
-  return Promise.all(
-    TASK_CONTEXT_FILES.map(async ({ file, inTests }) => {
-      const absolutePath = resolve(inTests ? testsRoot : sourceRoot, file)
-      let content
-      try {
-        content = await readFile(absolutePath, "utf8")
-      } catch {
-        throw new Error(`auto-variety: unable to read ${absolutePath}`)
-      }
-      return {
-        path: displayPath(absolutePath),
-        content,
-        lineCount: lineCountOf(content),
-      }
-    }),
-  )
+const mustTaskPrompts = async (sourceRoot) => {
+  try {
+    return await createSourceTaskPrompts(sourceRoot)
+  } catch (error) {
+    throw new Error(`auto-variety: unable to read ${sourceRoot}`, {
+      cause: error,
+    })
+  }
 }
 
 const mustSample = async (sourceRoot) => {
@@ -116,18 +73,16 @@ export const createVarietyCases = async ({
   sourceRoot = DEFAULT_SOURCE_ROOT,
   includeShared = true,
 } = {}) => {
-  const [hardSnippets, taskFiles] = await Promise.all([
+  const [hardSnippets, taskPrompts] = await Promise.all([
     Promise.all(HARD_TIERS.map(() => mustSample(sourceRoot))),
-    mustTaskFiles(sourceRoot),
+    mustTaskPrompts(sourceRoot),
   ])
-  const taskBody = taskFiles
-    .map(({ path, content }) => `File: ${path}\n\`\`\`typescript\n${content}\n\`\`\`\n`)
-    .join("\n")
-  const taskSources = taskFiles.map(({ path, lineCount }) => ({
-    file: path,
-    startLine: 0,
-    lineCount,
-  }))
+  if (taskPrompts.length === 0) {
+    throw new Error(
+      `auto-variety: required source task prompts are missing from ${sourceRoot}`,
+    )
+  }
+  const [correctnessTask, ...remainingTasks] = taskPrompts
   const withHash = (fields) => ({
     ...fields,
     condition: createProbeCondition({
@@ -137,13 +92,8 @@ export const createVarietyCases = async ({
     }),
     prompt_sha256: createHash("sha256").update(fields.prompt).digest("hex"),
   })
-  const taskCase = ({ id, tier, task }) =>
-    withHash({
-      id,
-      tier,
-      prompt: `${taskBody}\n${task}`,
-      sources: taskSources,
-    })
+  const taskCase = ({ id, tier, prompt, sources }) =>
+    withHash({ id, tier, prompt, sources })
 
   const cases = [
     withHash({
@@ -151,10 +101,18 @@ export const createVarietyCases = async ({
       tier: "intelligence",
       prompt: getIntelligenceProbePrompt(),
     }),
-    taskCase(FIRST_TASK_CASE),
+    taskCase(correctnessTask),
     withHash({ id: "prewarm", tier: "efficiency", prompt: PREWARM_PROMPT }),
-    withHash({ id: "target-balance", tier: "balance", prompt: TARGET_CODE_PROMPT }),
-    withHash({ id: "target-fast", tier: "fast", prompt: TARGET_CODE_PROMPT }),
+    withHash({
+      id: "target-balance",
+      tier: "balance",
+      prompt: TARGET_CODE_PROMPT,
+    }),
+    withHash({
+      id: "target-fast",
+      tier: "fast",
+      prompt: TARGET_CODE_PROMPT,
+    }),
   ]
   for (const [index, tier] of HARD_TIERS.entries()) {
     const snippet = hardSnippets[index]
@@ -162,24 +120,31 @@ export const createVarietyCases = async ({
       withHash({
         id: `hard-${tier}`,
         tier,
-        prompt: `${snippet.text}\n\n${HARD_QUESTION}`,
+        prompt: createHardPrompt(snippet),
         source: toSource(snippet),
       }),
     )
   }
-  for (const taskDef of TASK_CASES) {
-    cases.push(taskCase(taskDef))
+  for (const task of remainingTasks) {
+    cases.push(taskCase(task))
   }
   if (!includeShared) return cases
   const known = new Set(cases.map((entry) => entry.condition.id))
   for (const condition of getProbeConditions()) {
-    if (condition.source !== "auto" || known.has(condition.id)) continue
+    if (
+      condition.source !== "auto"
+      || condition.fusion === true
+      || known.has(condition.id)
+    )
+      continue
     known.add(condition.id)
-    cases.push(withHash({
-      id: `shared:${condition.id.slice(0, 12)}`,
-      tier: condition.tier,
-      prompt: condition.prompt,
-    }))
+    cases.push(
+      withHash({
+        id: `shared:${condition.id.slice(0, 12)}`,
+        tier: condition.tier,
+        prompt: condition.prompt,
+      }),
+    )
   }
   return cases
 }

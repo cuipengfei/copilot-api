@@ -221,15 +221,112 @@ describe("probe history publication", () => {
       auto("hello", "fast"),
       fusion("hello", "1"),
       fusion("hello", "2"),
+      createProbeCondition({
+        source: "auto",
+        fusion: true,
+        tier: "balance",
+        prompt: "hello",
+        expectedDiscount: 30,
+      }),
+      createProbeCondition({
+        source: "auto",
+        fusion: true,
+        tier: "balance",
+        prompt: "hello",
+        expectedDiscount: 10,
+      }),
+      createProbeCondition({
+        source: "fusion",
+        fusionMode: "hydrafusion-max",
+        planVersion: "1",
+        prompt: "hello",
+        expectedDiscount: 30,
+      }),
+      createProbeCondition({
+        source: "fusion",
+        fusionMode: "hydrafusion",
+        planVersion: "1",
+        prompt: "hello",
+        expectedDiscount: 10,
+      }),
     ]
     await Promise.all(
       conditions.map((condition) => store.record(selected(condition))),
     )
     const reopened = await open()
-    expect(reopened.conditions).toHaveLength(4)
+    expect(reopened.conditions).toEqual(conditions)
     expect(
       new Set(reopened.observations.map(({ condition }) => condition.id)).size,
-    ).toBe(4)
+    ).toBe(8)
+  })
+
+  test("rejects unsupported Standard and Max combinations on publication and reload", async () => {
+    const store = await open()
+    const standard = createProbeCondition({
+      source: "auto",
+      fusion: true,
+      tier: "balance",
+      prompt: "standard",
+      expectedDiscount: 30,
+    })
+    const max = createProbeCondition({
+      source: "fusion",
+      fusionMode: "hydrafusion-max",
+      planVersion: "1",
+      prompt: "max",
+      expectedDiscount: 30,
+    })
+    const invalidStandard = {
+      ...standard,
+      tier: "efficiency",
+    } as unknown as ProbeObservation["condition"]
+    const invalidMax = {
+      ...max,
+      planVersion: "2",
+    } as unknown as ProbeObservation["condition"]
+    for (const condition of [invalidStandard, invalidMax]) {
+      expect(await rejection(store.record(selected(condition)))).toBeInstanceOf(
+        TypeError,
+      )
+      expect(await exists(directory())).toBe(false)
+    }
+
+    const filePath = path.join(directory(), "conditions.json")
+    const persisted = JSON.stringify({
+      schemaVersion: 1,
+      conditions: [invalidMax],
+    })
+    await fs.mkdir(directory(), { recursive: true })
+    await fs.writeFile(filePath, persisted)
+    expect((await rejection(open())).message).toBe(
+      `Invalid probe history file: ${filePath}`,
+    )
+    expect(await fs.readFile(filePath, "utf8")).toBe(persisted)
+  })
+
+  test("replays legacy conditions with their original hashes and default discounts", async () => {
+    const ordinary = auto("legacy ordinary")
+    const high = createProbeCondition({
+      source: "fusion",
+      fusionMode: "hydrafusion",
+      planVersion: "1",
+      prompt: "legacy high",
+    })
+    const legacy = JSON.stringify(
+      { schemaVersion: 1, conditions: [ordinary, high] },
+      (key, value: unknown) => (key === "expectedDiscount" ? undefined : value),
+    )
+    await fs.mkdir(directory(), { recursive: true })
+    await fs.writeFile(path.join(directory(), "conditions.json"), legacy)
+
+    const reopened = await open()
+    expect(reopened.conditions.map(({ id }) => id)).toEqual([
+      ordinary.id,
+      high.id,
+    ])
+    expect(
+      reopened.conditions.map(({ expectedDiscount }) => expectedDiscount),
+    ).toEqual([10, 30])
   })
 
   test("never overwrites corrupted conditions or malformed hashes on reload", async () => {
@@ -484,6 +581,34 @@ describe("probe history publication", () => {
 })
 
 describe("historical condition ranking", () => {
+  test("separates Fusion Standard conditions by discount for Auto and Fusion ranking", () => {
+    const low = createProbeCondition({
+      source: "auto",
+      fusion: true,
+      tier: "balance",
+      prompt: "same prompt",
+      expectedDiscount: 10,
+    })
+    const high = createProbeCondition({
+      source: "auto",
+      fusion: true,
+      tier: "balance",
+      prompt: "same prompt",
+      expectedDiscount: 30,
+    })
+    const input = {
+      conditions: [low, high],
+      observations: [selected(low), selected(high)],
+      missingModels: ["wanted-a"],
+    }
+    expect(getRankedProbeConditions({ ...input, source: "auto" })).toEqual([
+      low,
+    ])
+    expect(getRankedProbeConditions({ ...input, source: "fusion" })).toEqual([
+      high,
+    ])
+  })
+
   test("interleaves missing-model history with ordinary candidates without changing wanted", async () => {
     const store = await open()
     const knownA = auto("historical wanted a")

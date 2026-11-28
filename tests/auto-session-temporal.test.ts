@@ -10,7 +10,10 @@ import type * as AutoSession from "../src/lib/auto-session"
 import type { Model } from "../src/lib/types/models"
 import {
   createProbeCondition,
+  getProbeConditions,
+  pairingSourceForProbe,
   TARGET_CODE_PROMPT,
+  type ProbeCondition,
 } from "../src/lib/auto-probe-prompts"
 import { openProbeHistory } from "../src/lib/auto-probe-history"
 
@@ -27,6 +30,7 @@ interface Timer {
 const originalTimerPromises = { ...timersPromises }
 const nextTurn = originalTimerPromises.setImmediate
 const originalFetch = globalThis.fetch
+const realDateNow = Date.now
 const originalToken = state.copilotToken
 const originalModels = state.models
 const originalDiscovery = getConfig().autoDiscovery
@@ -54,10 +58,11 @@ const nextTimer = (until = Number.POSITIVE_INFINITY): Timer | undefined => {
   return next
 }
 
-const advanceBy = async (ms: number): Promise<void> => {
+const advanceBy = async (ms: number): Promise<number> => {
   const until = now + ms
+  let fired = 0
   await nextTurn()
-  for (let fired = 0; ; fired++) {
+  for (; ; fired++) {
     const timer = nextTimer(until)
     if (timer === undefined) break
     if (fired >= 128) throw new Error("unbounded temporal discovery timers")
@@ -68,22 +73,28 @@ const advanceBy = async (ms: number): Promise<void> => {
   }
   now = until
   await nextTurn()
+  return fired
 }
 
 const finishCurrentRound = async (mod: AutoSessionModule): Promise<void> => {
+  const deadline = realDateNow() + 2_000
   let idle = false
   const pending = mod.whenProbeSchedulerIdle().then(() => {
     idle = true
   })
+  let fired = 0
   await nextTurn()
-  for (let fired = 0; !idle; fired++) {
-    if (fired >= 128) throw new Error("discovery round did not become idle")
+  while (!idle) {
+    if (realDateNow() >= deadline)
+      throw new Error("probe round did not become idle")
     const timer = nextTimer()
     if (timer === undefined || timer.at - now > 3_000) {
-      await pending
-      break
+      await nextTurn()
+    } else {
+      if (fired >= 128) throw new Error("discovery round did not become idle")
+      fired += await advanceBy(timer.at - now)
+      if (fired > 128) throw new Error("discovery round did not become idle")
     }
-    await advanceBy(timer.at - now)
   }
   await pending
 }
@@ -204,7 +215,7 @@ test.each(["auto", "fusion"] as const)(
   async (missingSource) => {
     const mod = await loadModule()
     const otherSource: Source = missingSource === "auto" ? "fusion" : "auto"
-    const calls = { auto: 0, fusion: 0 }
+    const calls = { auto: 0, fusion: 0, standard: 0 }
     let recovered = false
     const fetchMock = mock(
       (input: string | URL | Request, init?: RequestInit) => {
@@ -215,6 +226,13 @@ test.each(["auto", "fusion"] as const)(
         expect(new Headers(init?.headers).get("authorization")).toBe(
           "Bearer temporal-auth",
         )
+        if (typeof init?.body !== "string")
+          throw new Error("expected selection body")
+        const body = JSON.parse(init.body) as { fusion?: boolean }
+        if (source === "auto" && body.fusion === true) {
+          calls.standard++
+          return Promise.resolve(new Response(null, { status: 400 }))
+        }
         calls[source]++
         const model =
           source === missingSource ?
@@ -240,6 +258,7 @@ test.each(["auto", "fusion"] as const)(
     state.copilotToken = "temporal-auth"
     await mod.prewarmAutoSession({ sourceRoot })
     await finishCurrentRound(mod)
+    if (missingSource === "fusion") expect(calls.standard).toBeGreaterThan(0)
     expect(
       await mod.getAutoSessionForModel({
         model: "wanted-model",
@@ -279,6 +298,7 @@ test.each(["auto", "fusion"] as const)(
     await advanceBy(89_999)
     expect(calls[missingSource]).toBe(beforeCooldown)
     await advanceBy(1)
+    await finishCurrentRound(mod)
     expect(
       await mod.getAutoSessionForModel({
         model: "wanted-model",
@@ -297,6 +317,7 @@ test.each(["auto", "fusion"] as const)(
 test("a formerly successful condition selecting an extra model does not cover an expired wanted model", async () => {
   const mod = await loadModule()
   let phase: "initial" | "drifted" | "recovered" = "initial"
+  let standardRejections = 0
   globalThis.fetch = mock(
     (input: string | URL | Request, init?: RequestInit) => {
       const url = input instanceof Request ? input.url : String(input)
@@ -306,6 +327,13 @@ test("a formerly successful condition selecting an extra model does not cover an
       expect(new Headers(init?.headers).get("authorization")).toBe(
         "Bearer temporal-auth",
       )
+      if (typeof init?.body !== "string")
+        throw new Error("expected selection body")
+      const body = JSON.parse(init.body) as { fusion?: boolean }
+      if (source === "auto" && body.fusion === true) {
+        standardRejections++
+        return Promise.resolve(new Response(null, { status: 400 }))
+      }
       return Promise.resolve(
         selectionResponse({
           source,
@@ -323,6 +351,8 @@ test("a formerly successful condition selecting an extra model does not cover an
   ).toBe("fusion-initial")
   phase = "drifted"
   await advanceBy(601_000)
+  await finishCurrentRound(mod)
+  expect(standardRejections).toBeGreaterThan(0)
   expect(mod.isModelAutoCovered("wanted-model")).toBe(false)
   for (const source of ["auto", "fusion"] as const) {
     const otherSource: Source = source === "auto" ? "fusion" : "auto"
@@ -350,6 +380,7 @@ test("a formerly successful condition selecting an extra model does not cover an
   expect(getConfig().autoDiscovery).toEqual({ models: ["wanted-model"] })
   phase = "recovered"
   await advanceBy(90_000)
+  await finishCurrentRound(mod)
   expect(
     (
       await mod.getAutoSessionForModel({
@@ -600,43 +631,94 @@ test.each(["auto", "fusion"] as const)(
   "%s rounds stay bounded, deduplicate conditions, and advance the cooldown cursor",
   async (source) => {
     const mod = await loadModule()
+    getConfig().autoDiscovery = undefined
+    globalThis.fetch = mock(() =>
+      Promise.resolve(new Response(null, { status: 400 })),
+    ) as unknown as typeof fetch
+    await mod.prewarmAutoSession({ sourceRoot })
+    await finishCurrentRound(mod)
+    getConfig().autoDiscovery = { models: ["wanted-model"] }
     mod.resumeAutoSessionDiscoveryAfterRotation()
-    const calls: Array<{ id: string; tier?: string; planVersion?: string }> = []
+    const candidates = getProbeConditions().filter(
+      (condition) => pairingSourceForProbe(condition) === source,
+    )
+    let standardRejections = 0
+    const calls: Array<{
+      id: string
+      prompt: string
+      tier?: string
+      fusion?: true
+      planVersion?: string
+      fusionMode?: "hydrafusion" | "hydrafusion-max"
+    }> = []
     globalThis.fetch = mock(
       (input: string | URL | Request, init?: RequestInit) => {
         const url = input instanceof Request ? input.url : String(input)
         expect(
-          url.endsWith(source === "auto" ? "/auto" : "/model/fusion"),
+          source === "auto" ?
+            url.endsWith("/auto")
+          : url.endsWith("/auto") || url.endsWith("/model/fusion"),
         ).toBe(true)
+        const apiSource: Source =
+          url.endsWith("/model/fusion") ? "fusion" : "auto"
         if (typeof init?.body !== "string")
           throw new Error("expected selection body")
         const body = JSON.parse(init.body) as {
           prompt: string
-          tier: "efficiency" | "balance" | "intelligence" | "fast"
-          plan_version: "1" | "2"
+          tier?: "efficiency" | "balance" | "intelligence" | "fast"
+          plan_version?: "1" | "2"
+          fusion?: boolean
+          fusion_mode?: "hydrafusion" | "hydrafusion-max"
         }
-        const condition =
-          source === "auto" ?
-            createProbeCondition({
-              source,
+        let condition: ProbeCondition
+        if (apiSource === "auto") {
+          if (body.tier === undefined) throw new Error("missing actual tier")
+          if (body.fusion === true) {
+            if (body.tier === "efficiency")
+              throw new Error("invalid efficiency Standard request")
+            condition = createProbeCondition({
+              source: "auto",
+              tier: body.tier,
+              fusion: true,
+              prompt: body.prompt,
+            })
+          } else {
+            condition = createProbeCondition({
+              source: "auto",
               tier: body.tier,
               prompt: body.prompt,
             })
-          : createProbeCondition({
-              source,
-              planVersion: body.plan_version,
-              fusionMode: "hydrafusion",
-              prompt: body.prompt,
-            })
+          }
+        } else {
+          if (body.plan_version === undefined || body.fusion_mode === undefined)
+            throw new Error("missing actual Fusion parameters")
+          condition = createProbeCondition({
+            source: "fusion",
+            planVersion: body.plan_version,
+            fusionMode: body.fusion_mode,
+            prompt: body.prompt,
+          })
+        }
         calls.push({
           id: condition.id,
+          prompt: condition.prompt,
           ...(condition.source === "auto" ?
-            { tier: condition.tier }
-          : { planVersion: condition.planVersion }),
+            {
+              tier: condition.tier,
+              ...(condition.fusion === true ? { fusion: true as const } : {}),
+            }
+          : {
+              planVersion: condition.planVersion,
+              fusionMode: condition.fusionMode,
+            }),
         })
+        if (condition.source === "auto" && condition.fusion === true) {
+          standardRejections++
+          return Promise.resolve(new Response(null, { status: 400 }))
+        }
         return Promise.resolve(
           selectionResponse({
-            source,
+            source: apiSource,
             model: "extra-model",
             token: `${source}-extra-${calls.length}`,
           }),
@@ -681,9 +763,14 @@ test.each(["auto", "fusion"] as const)(
       waitForDiscovery: false,
     })
     await finishCurrentRound(mod)
-    const budget = source === "auto" ? 40 : 10
+    const roundCandidates = candidates
+    const budget = source === "auto" ? 40 : roundCandidates.length
     expect(calls).toHaveLength(budget)
     expect(new Set(calls.map((call) => call.id)).size).toBe(budget)
+    if (source === "fusion")
+      expect(new Set(calls.map((call) => call.id))).toEqual(
+        new Set(roundCandidates.map((condition) => condition.id)),
+      )
     if (source === "auto") {
       for (const tier of ["intelligence", "efficiency", "balance", "fast"])
         expect(calls.filter((call) => call.tier === tier)).toHaveLength(10)
@@ -694,8 +781,31 @@ test.each(["auto", "fusion"] as const)(
         "fast",
       ])
     } else {
-      expect(calls.map((call) => call.planVersion)).toEqual(
-        Array.from({ length: 10 }, (_, index) => (index % 2 === 0 ? "1" : "2")),
+      const high = calls.filter((call) => call.fusionMode === "hydrafusion")
+      const max = calls.filter((call) => call.fusionMode === "hydrafusion-max")
+      expect(high).toHaveLength(
+        roundCandidates.filter(
+          (condition) =>
+            condition.source === "fusion"
+            && condition.fusionMode === "hydrafusion",
+        ).length,
+      )
+      expect(max).toHaveLength(
+        roundCandidates.filter(
+          (condition) =>
+            condition.source === "fusion"
+            && condition.fusionMode === "hydrafusion-max",
+        ).length,
+      )
+      const standard = calls.filter((call) => call.fusion === true)
+      const standardCount = roundCandidates.filter(
+        (condition) => condition.source === "auto" && condition.fusion === true,
+      ).length
+      expect(standard).toHaveLength(standardCount)
+      expect(standardRejections).toBe(standardCount)
+      expect(max.every((call) => call.planVersion === "1")).toBe(true)
+      expect(new Set(high.map((call) => call.planVersion))).toEqual(
+        new Set(["1", "2"]),
       )
     }
     const first = calls[0].id
@@ -708,6 +818,11 @@ test.each(["auto", "fusion"] as const)(
     if (source === "auto")
       for (const tier of ["intelligence", "efficiency", "balance", "fast"])
         expect(second.filter((call) => call.tier === tier)).toHaveLength(10)
+    expect(standardRejections).toBe(
+      roundCandidates.filter(
+        (condition) => condition.source === "auto" && condition.fusion === true,
+      ).length * 2,
+    )
     expect(getConfig().autoDiscovery).toEqual({ models: ["wanted-model"] })
     expect(
       (
@@ -809,4 +924,181 @@ test("different actual prompts stay independent and rotating flights join only t
       gate.resolve(new Response(null, { status: 400 }))
     await mod.whenProbeSchedulerIdle()
   }
+})
+
+test("a refresh timer from the previous credential cannot renew or expose its pairing", async () => {
+  getConfig().autoDiscovery = { models: [] }
+  const mod = await loadModule()
+  const calls: Array<string | null> = []
+  globalThis.fetch = mock(
+    (_input: string | URL | Request, init?: RequestInit) => {
+      const authorization = new Headers(init?.headers).get("authorization")
+      calls.push(authorization)
+      return Promise.resolve(
+        selectionResponse({
+          source: "auto",
+          model: "wanted-model",
+          token: `selected-${authorization}`,
+          lifetime: 600,
+        }),
+      )
+    },
+  ) as unknown as typeof fetch
+  expect(await mod.runProbePoint("balance", "easy", "renewable task")).toBe(
+    "wanted-model",
+  )
+  state.copilotToken = "temporal-auth-b"
+  await advanceBy(300_000)
+  expect(calls).toEqual(["Bearer temporal-auth"])
+  expect(
+    await mod.getAutoSessionForModel({
+      model: "wanted-model",
+      endpoint: "/responses",
+      waitForDiscovery: false,
+    }),
+  ).toBeUndefined()
+  mod.resumeAutoSessionDiscoveryAfterRotation()
+  expect(await mod.runProbePoint("balance", "easy", "renewable task")).toBe(
+    "wanted-model",
+  )
+  expect(calls).toEqual(["Bearer temporal-auth", "Bearer temporal-auth-b"])
+  expect(
+    await mod.getAutoSessionForModel({
+      model: "wanted-model",
+      endpoint: "/responses",
+    }),
+  ).toEqual({
+    sessionToken: "selected-Bearer temporal-auth-b",
+    source: "auto",
+    expectedDiscount: 10,
+  })
+})
+
+test.each([
+  { status: 499, retries: false },
+  { status: 599, retries: true },
+])(
+  "HTTP $status preserves the client/server retry boundary",
+  async ({ status, retries }) => {
+    getConfig().autoDiscovery = { models: [] }
+    const mod = await loadModule()
+    spyOn(Math, "random").mockReturnValue(0)
+    let calls = 0
+    globalThis.fetch = mock(() => {
+      calls += 1
+      return Promise.resolve(
+        calls === 1 ?
+          new Response(null, { status })
+        : selectionResponse({
+            source: "auto",
+            model: "wanted-model",
+            token: "http-recovered",
+          }),
+      )
+    }) as unknown as typeof fetch
+    const pending = mod.runProbePoint(
+      "balance",
+      "easy",
+      "HTTP boundary task",
+      false,
+      2,
+    )
+    await advanceBy(999)
+    expect(calls).toBe(1)
+    await advanceBy(1)
+    expect(await pending).toBe(retries ? "wanted-model" : undefined)
+    expect(calls).toBe(retries ? 2 : 1)
+    expect(
+      await mod.getAutoSessionForModel({
+        model: "wanted-model",
+        endpoint: "/responses",
+        waitForDiscovery: false,
+      }),
+    ).toEqual(
+      retries ?
+        {
+          sessionToken: "http-recovered",
+          source: "auto",
+          expectedDiscount: 10,
+        }
+      : undefined,
+    )
+  },
+)
+
+test("Fusion Retry-After delays the next condition without delaying an Auto consumer", async () => {
+  const mod = await loadModule()
+  const retryAt = now + 10_000
+  const calls: Array<number> = []
+  globalThis.fetch = mock(
+    (input: string | URL | Request, init?: RequestInit) => {
+      const url = input instanceof Request ? input.url : String(input)
+      if (typeof init?.body !== "string")
+        throw new Error("expected selection parameters")
+      const body = JSON.parse(init.body) as { fusion?: boolean }
+      const apiSource: Source =
+        url.endsWith("/model/fusion") ? "fusion" : "auto"
+      if (apiSource === "fusion" || body.fusion === true) {
+        calls.push(now)
+        if (now < retryAt)
+          return Promise.resolve(
+            new Response(null, {
+              status: 429,
+              headers: { "retry-after": "10" },
+            }),
+          )
+        return Promise.resolve(
+          selectionResponse({
+            source: apiSource,
+            model: "wanted-model",
+            token: "fusion-recovered",
+          }),
+        )
+      }
+      return Promise.resolve(
+        selectionResponse({
+          source: "auto",
+          model: "wanted-model",
+          token: "auto-available",
+        }),
+      )
+    },
+  ) as unknown as typeof fetch
+  await mod.prewarmAutoSession({ sourceRoot })
+  await nextTurn()
+  const initialCalls = calls.length
+  expect(initialCalls).toBeGreaterThan(0)
+  expect(
+    await mod.getAutoSessionForModel({
+      model: "wanted-model",
+      endpoint: "/responses",
+    }),
+  ).toEqual({
+    sessionToken: "auto-available",
+    source: "auto",
+    expectedDiscount: 10,
+  })
+  await advanceBy(9_999)
+  expect(calls).toHaveLength(initialCalls)
+  expect(
+    await mod.getAutoSessionForModel({
+      model: "wanted-model",
+      endpoint: "/responses",
+      excludedSources: new Set(["auto"]),
+      waitForDiscovery: false,
+    }),
+  ).toBeUndefined()
+  await advanceBy(1)
+  await finishCurrentRound(mod)
+  expect(calls.slice(initialCalls)).toEqual([retryAt])
+  expect(
+    await mod.getAutoSessionForModel({
+      model: "wanted-model",
+      endpoint: "/responses",
+    }),
+  ).toEqual({
+    sessionToken: "fusion-recovered",
+    source: "fusion",
+    expectedDiscount: 30,
+  })
 })

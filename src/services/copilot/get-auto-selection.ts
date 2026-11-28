@@ -15,6 +15,11 @@ export interface AutoSelectedModel {
   supported_endpoints?: Array<string>
 }
 
+export interface AutoSelectionOptions {
+  tier: AutoSelectionTier
+  fusion?: true
+}
+
 export interface AutoSelectionResponse {
   selected_model: AutoSelectedModel
   session_token: string
@@ -25,7 +30,7 @@ export interface AutoSelectionResponse {
 
 export const getAutoSelection = async (
   prompt: string,
-  tier: AutoSelectionTier,
+  { tier, fusion }: AutoSelectionOptions,
 ): Promise<AutoSelectionResponse> => {
   const headers = {
     ...copilotModelsHeaders(state),
@@ -37,7 +42,13 @@ export const getAutoSelection = async (
   const response = await fetch(`${copilotBaseUrl(state)}/auto`, {
     method: "POST",
     headers,
-    body: JSON.stringify({ prompt, tier }),
+    body: JSON.stringify({
+      prompt,
+      tier,
+      ...(fusion === true ?
+        { has_image: false, fusion: true, hydra_rl_multi_turn: {} }
+      : {}),
+    }),
     signal: AbortSignal.timeout(15_000),
   })
 

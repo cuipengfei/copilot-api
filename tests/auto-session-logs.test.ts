@@ -64,24 +64,39 @@ beforeEach(async () => {
   )) as typeof AutoSessionModule
   queue = []
 
-  const fetchMock = mock((input: string | URL | Request) => {
-    const url = new URL(input instanceof Request ? input.url : String(input))
-    if (url.pathname === "/model/fusion") {
+  const fetchMock = mock(
+    (input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(input instanceof Request ? input.url : String(input))
+      if (url.pathname === "/model/fusion") {
+        return Promise.resolve(
+          Response.json(
+            { error: { code: "model_pool_not_eligible" } },
+            { status: 403 },
+          ),
+        )
+      }
+      if (url.pathname !== "/auto") {
+        throw new Error("unexpected logging fixture endpoint")
+      }
+      if (typeof init?.body !== "string")
+        throw new Error("expected string request body")
+      const body = JSON.parse(init.body) as {
+        fusion?: boolean
+      }
+      if (body.fusion === true) {
+        return Promise.resolve(
+          Response.json(
+            { error: { code: "model_pool_not_eligible" } },
+            { status: 403 },
+          ),
+        )
+      }
+      const payload = queue.shift()
       return Promise.resolve(
-        Response.json(
-          { error: { code: "model_pool_not_eligible" } },
-          { status: 403 },
-        ),
+        payload ? Response.json(payload) : new Response(null, { status: 400 }),
       )
-    }
-    if (url.pathname !== "/auto") {
-      throw new Error("unexpected logging fixture endpoint")
-    }
-    const payload = queue.shift()
-    return Promise.resolve(
-      payload ? Response.json(payload) : new Response(null, { status: 400 }),
-    )
-  })
+    },
+  )
 
   globalThis.fetch = fetchMock as unknown as typeof fetch
 })
@@ -111,7 +126,7 @@ describe("auto-session logging", () => {
     queue.push(selection("extra-model", "SESSION_SENSITIVE_SENTINEL"))
 
     await sessions.prewarmAutoSession()
-    await sessions.whenProbeSchedulerIdle()
+    sessions.stopProbeScheduler()
 
     const lines = messages(infoSpy)
     expect(
@@ -415,7 +430,9 @@ describe("auto-session logging", () => {
       ).toBe("TIMER_NEW_PRIVATE")
       expect(messages(infoSpy).join("\n")).not.toContain("PRIVATE")
     } finally {
+      sessions.stopProbeScheduler()
       gate.resolve(new Response(null, { status: 400 }))
+      await sessions.whenProbeSchedulerIdle()
     }
   })
 

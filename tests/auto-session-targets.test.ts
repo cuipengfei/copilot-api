@@ -1,3 +1,6 @@
+import { mkdtemp, rm } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { afterEach, beforeEach, expect, mock, spyOn, test } from "bun:test"
 import {
   createProbeCondition,
@@ -172,18 +175,23 @@ test("an empty wanted list does not scan the model catalog and reports both actu
       ),
     )
   }) as unknown as typeof fetch
-  await mod.prewarmAutoSession()
-  await mod.whenProbeSchedulerIdle()
-  expect(fusionCalls).toBe(4)
-  expect(getConfig().autoDiscovery).toBe(configured)
-  const lines = info.mock.calls.map((call) => String(call[0]))
-  expect(lines.some((line) => line.includes("wanted=[]"))).toBe(true)
-  const result = lines.findLast((line) => line.includes("discovery result"))
-  expect(result).toContain('obtained=["wanted-model"]')
-  expect(result).toContain('fusion_obtained=["wanted-model"]')
-  expect(result).toContain('auto_obtained=["wanted-model"]')
-  expect(result).not.toContain("catalog-only-model")
-  expect(mod.isModelAutoCovered("catalog-only-model")).toBe(false)
+  const sourceRoot = await mkdtemp(join(tmpdir(), "auto-target-static-"))
+  try {
+    await mod.prewarmAutoSession({ sourceRoot })
+    await mod.whenProbeSchedulerIdle()
+    expect(fusionCalls).toBe(4)
+    expect(getConfig().autoDiscovery).toBe(configured)
+    const lines = info.mock.calls.map((call) => String(call[0]))
+    expect(lines.some((line) => line.includes("wanted=[]"))).toBe(true)
+    const result = lines.findLast((line) => line.includes("discovery result"))
+    expect(result).toContain('obtained=["wanted-model"]')
+    expect(result).toContain('fusion_obtained=["wanted-model"]')
+    expect(result).toContain('auto_obtained=["wanted-model"]')
+    expect(result).not.toContain("catalog-only-model")
+    expect(mod.isModelAutoCovered("catalog-only-model")).toBe(false)
+  } finally {
+    await rm(sourceRoot, { recursive: true, force: true })
+  }
 })
 
 test("an Auto-covered wanted model still obtains Fusion and logs the upgrade without changing the union", async () => {
@@ -228,9 +236,10 @@ test("an Auto-covered wanted model still obtains Fusion and logs the upgrade wit
       ),
     )
   }) as unknown as typeof fetch
+  const sourceRoot = await mkdtemp(join(tmpdir(), "auto-target-static-"))
   try {
     // This small real budget exercises startup's platform-timer race, not a guessed settle delay.
-    await mod.prewarmAutoSession({ startupBudgetMs: 20 })
+    await mod.prewarmAutoSession({ startupBudgetMs: 20, sourceRoot })
     await autoSeen.promise
     expect(autoCalls).toBeGreaterThan(0)
     expect(fusionCalls).toBe(4)
@@ -283,6 +292,7 @@ test("an Auto-covered wanted model still obtains Fusion and logs the upgrade wit
     mod.stopProbeScheduler()
     fusion.resolve()
     await mod.whenProbeSchedulerIdle()
+    await rm(sourceRoot, { recursive: true, force: true })
   }
 })
 
@@ -402,4 +412,84 @@ test("v1 registers all eligible distinct step models even when its first step ca
   }
   expect(mod.isModelAutoCovered("unknown-catalog-model")).toBe(false)
   expect(getConfig().autoDiscovery).toBe(configured)
+})
+
+test("registers verified Standard and Max conditions in their measured discount slots", async () => {
+  const mod = await loadModule()
+  const expiresAt = Math.floor(Date.now() / 1000) + 3600
+  for (const [model, discount] of [
+    ["wanted-model", 30],
+    ["other-model", 10],
+  ] as const) {
+    mod.registerAutoSelection(
+      {
+        selected_model: { id: model, supported_endpoints: ["/responses"] },
+        session_token: `standard-${discount}`,
+        expires_at: expiresAt,
+      },
+      createProbeCondition({
+        source: "auto",
+        tier: "balance",
+        prompt: "verified Standard",
+        fusion: true,
+        expectedDiscount: discount,
+      }),
+    )
+  }
+  expect(
+    await mod.getAutoSessionForModel({
+      model: "wanted-model",
+      endpoint: "/responses",
+    }),
+  ).toEqual({
+    sessionToken: "standard-30",
+    source: "fusion",
+    expectedDiscount: 30,
+  })
+  expect(
+    await mod.getAutoSessionForModel({
+      model: "other-model",
+      endpoint: "/responses",
+    }),
+  ).toEqual({
+    sessionToken: "standard-10",
+    source: "auto",
+    expectedDiscount: 10,
+  })
+  mod.registerFusionSelection(
+    {
+      planVersion: "1",
+      fusionPattern: "solo",
+      steps: [{ modelId: "other-model" }],
+      sessionToken: "max-token",
+      expiresAt,
+    },
+    createProbeCondition({
+      source: "fusion",
+      planVersion: "1",
+      fusionMode: "hydrafusion-max",
+      prompt: "verified Max",
+    }),
+  )
+  expect(
+    await mod.getAutoSessionForModel({
+      model: "other-model",
+      endpoint: "/responses",
+    }),
+  ).toEqual({
+    sessionToken: "max-token",
+    source: "fusion",
+    expectedDiscount: 30,
+  })
+  expect(
+    await mod.getAutoSessionForModel({
+      model: "other-model",
+      endpoint: "/responses",
+      excludedSources: new Set(["fusion"]),
+    }),
+  ).toEqual({
+    sessionToken: "standard-10",
+    source: "auto",
+    expectedDiscount: 10,
+  })
 })

@@ -303,6 +303,8 @@ beforeEach(() => {
 })
 
 afterEach(async () => {
+  getConfig().autoDiscovery = undefined
+  invalidateAutoSession()
   await whenProbeSchedulerIdle()
   globalThis.fetch = originalFetch
   Object.assign(state, originalState)

@@ -21,7 +21,6 @@ import { resolveInitiatorWithSmartAgent } from "~/lib/smart-agent"
 import { state } from "~/lib/state"
 import { attachAutoSessionToken } from "~/services/copilot/auto-session-retry"
 import {
-  sendCopilotHttpRequest,
   sendCopilotRequest,
   type CopilotHttpRequestOptions,
 } from "~/services/copilot/request"
@@ -276,19 +275,29 @@ export const buildEnhancedPayload = (
   }
 }
 
-export const buildMessagesHeaders = async (
+const resolveMessagesInitiator = (
   payload: AnthropicMessagesPayload,
-  options: CreateMessagesOptions,
-): Promise<Record<string, string>> => {
-  const enableVision = hasImageContent(payload)
+  explicitInitiator: CreateMessagesOptions["initiator"],
+) => {
   const lastMessage = payload.messages.at(-1)
   const isInitiateRequest =
     lastMessage?.role === "user"
     && (typeof lastMessage.content === "string"
       || lastMessage.content.some((block) => block.type !== "tool_result"))
   const defaultInitiator =
-    options.initiator ?? (isInitiateRequest ? "user" : "agent")
-  const { initiator } = await resolveInitiatorWithSmartAgent(defaultInitiator)
+    explicitInitiator ?? (isInitiateRequest ? "user" : "agent")
+  return resolveInitiatorWithSmartAgent(defaultInitiator)
+}
+
+export const buildMessagesHeaders = async (
+  payload: AnthropicMessagesPayload,
+  options: CreateMessagesOptions,
+): Promise<Record<string, string>> => {
+  const enableVision = hasImageContent(payload)
+  const { initiator } = await resolveMessagesInitiator(
+    payload,
+    options.initiator,
+  )
   const headers = copilotHeaders(state, options.requestId, enableVision)
   // Claude proxy identity comes from the native Claude request context only;
   // metadata or a legacy subagent marker never trigger it.
@@ -356,6 +365,32 @@ export interface SendWithSignatureRetryOptions {
   clientSignal?: AbortSignal
 }
 
+const buildEffortRetryPayload = (
+  enhancedPayload: EnhancedMessagesPayload,
+  errorBody: unknown,
+) => {
+  const supported = parseSupportedEfforts(errorBody)
+  const currentEffort = enhancedPayload.output_config?.effort
+  const fallbackEffort =
+    supported.find((v) => v !== currentEffort) ?? supported[0]
+  if (fallbackEffort && enhancedPayload.output_config) {
+    consola.warn(
+      `invalid_reasoning_effort (current=${currentEffort ?? "<unset>"}), retrying with effort=${fallbackEffort}`,
+    )
+    return {
+      ...enhancedPayload,
+      output_config: {
+        ...enhancedPayload.output_config,
+        effort: fallbackEffort,
+      },
+    }
+  }
+  consola.warn(
+    "invalid_reasoning_effort detected but no usable supported values parsed from backend",
+  )
+  return undefined
+}
+
 /**
  * Send request to native /v1/messages and handle thinking block error retry.
  */
@@ -385,22 +420,9 @@ export const sendWithSignatureRetry = async (
     .catch(() => null)
 
   if (response.status === 400 && isInvalidReasoningEffortError(errorBody)) {
-    const supported = parseSupportedEfforts(errorBody)
-    const currentEffort = enhancedPayload.output_config?.effort
-    const fallbackEffort =
-      supported.find((v) => v !== currentEffort) ?? supported[0]
-    if (fallbackEffort && enhancedPayload.output_config) {
-      consola.warn(
-        `invalid_reasoning_effort (current=${currentEffort ?? "<unset>"}), retrying with effort=${fallbackEffort}`,
-      )
-      const retryPayload = {
-        ...enhancedPayload,
-        output_config: {
-          ...enhancedPayload.output_config,
-          effort: fallbackEffort,
-        },
-      }
-      const retryResponse = await sendCopilotHttpRequest(url, {
+    const retryPayload = buildEffortRetryPayload(enhancedPayload, errorBody)
+    if (retryPayload) {
+      const retryResponse = await sendCopilotRequest(url, {
         ...requestOptions,
         payload: retryPayload,
       })
@@ -416,9 +438,6 @@ export const sendWithSignatureRetry = async (
       }
       return retryResponse
     }
-    consola.warn(
-      "invalid_reasoning_effort detected but no usable supported values parsed from backend",
-    )
   }
 
   if (response.status === 400 && isThinkingBlockError(errorBody)) {
@@ -426,7 +445,7 @@ export const sendWithSignatureRetry = async (
       "Thinking block error detected, retrying with thinking blocks stripped",
     )
     const strippedPayload = stripThinkingBlocks(enhancedPayload)
-    const retryResponse = await sendCopilotHttpRequest(url, {
+    const retryResponse = await sendCopilotRequest(url, {
       ...requestOptions,
       payload: strippedPayload,
     })

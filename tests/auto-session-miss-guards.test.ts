@@ -62,20 +62,26 @@ test("waitForDiscovery false returns a cold miss immediately but leaves real bac
   const response = Promise.withResolvers<Response>()
   const started = Promise.withResolvers<void>()
   let autoCalls = 0
-  globalThis.fetch = mock((input: string | URL | Request) => {
-    const url = input instanceof Request ? input.url : String(input)
-    if (url.endsWith("/model/fusion"))
-      return Promise.resolve(
-        new Response(
-          JSON.stringify({ error: { code: "model_pool_not_eligible" } }),
-          { status: 403 },
-        ),
-      )
-    if (!url.endsWith("/auto")) throw new Error("unexpected selection endpoint")
-    autoCalls++
-    started.resolve()
-    return response.promise
-  }) as unknown as typeof fetch
+  globalThis.fetch = mock(
+    (input: string | URL | Request, init?: RequestInit) => {
+      const url = input instanceof Request ? input.url : String(input)
+      if (url.endsWith("/model/fusion"))
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({ error: { code: "model_pool_not_eligible" } }),
+            { status: 403 },
+          ),
+        )
+      if (!url.endsWith("/auto"))
+        throw new Error("unexpected selection endpoint")
+      const body = JSON.parse(init?.body as string) as { fusion?: boolean }
+      if (body.fusion === true)
+        return Promise.resolve(new Response(null, { status: 400 }))
+      autoCalls++
+      started.resolve()
+      return response.promise
+    },
+  ) as unknown as typeof fetch
   try {
     mod.resumeAutoSessionDiscoveryAfterRotation()
     expect(
@@ -101,7 +107,6 @@ test("waitForDiscovery false returns a cold miss immediately but leaves real bac
         }),
       ),
     )
-    await mod.whenProbeSchedulerIdle()
     expect(
       (
         await mod.getAutoSessionForModel({
@@ -110,7 +115,13 @@ test("waitForDiscovery false returns a cold miss immediately but leaves real bac
         })
       )?.sessionToken,
     ).toBe("background-auto")
+    config.autoDiscovery = { models: [] }
+    mod.invalidateAutoSession()
+    mod.stopProbeScheduler()
+    await mod.whenProbeSchedulerIdle()
   } finally {
+    config.autoDiscovery = { models: [] }
+    mod.invalidateAutoSession()
     mod.stopProbeScheduler()
     response.resolve(new Response(null, { status: 400 }))
     await mod.whenProbeSchedulerIdle()

@@ -102,7 +102,12 @@ const server = Bun.serve({
         { status: 403 },
       )
     }
-    if (recorded.path === "/auto") return new Response(null, { status: 400 })
+    if (recorded.path === "/auto") {
+      // Standard has its own permission path; High/Max rejections do not stop it.
+      return new Response(null, {
+        status: requestJsonBody(recorded).fusion === true ? 403 : 400,
+      })
+    }
 
     return new Response("not found", { status: 404 })
   },
@@ -250,6 +255,9 @@ beforeEach(async () => {
 })
 
 afterEach(async () => {
+  // Clear targets and renewal work before joining the still-live scheduler.
+  getConfig().autoDiscovery = undefined
+  invalidateAutoSession()
   await whenProbeSchedulerIdle()
   globalThis.fetch = originalFetch
   getConfig().autoDiscovery = originalAutoDiscovery
@@ -553,18 +561,26 @@ describe("loopback discount rejection chain", () => {
               {
                 headers: {
                   "content-type": "text/event-stream",
+                  [QUOTA_HEADER]: QUOTA_VALUE,
                   [CUSTOM_HEADER]: CUSTOM_VALUE,
                 },
               },
             )
           : Response.json(result, {
-              headers: { [CUSTOM_HEADER]: CUSTOM_VALUE },
+              headers: {
+                [QUOTA_HEADER]: QUOTA_VALUE,
+                [CUSTOM_HEADER]: CUSTOM_VALUE,
+              },
             })
       }
 
       const response = await postResponses(textPayload({ stream }))
       expect(response.status).toBe(200)
       expect(response.headers.get(CUSTOM_HEADER)).toBe(CUSTOM_VALUE)
+      expect(response.headers.get(QUOTA_HEADER)).toBe(QUOTA_VALUE)
+      expect(response.headers.get("content-type")).toContain(
+        stream ? "text/event-stream" : "application/json",
+      )
       if (stream) {
         const completed: Array<ServerSentEventMessage> = []
         for await (const event of sseEvents(response)) completed.push(event)
@@ -573,11 +589,23 @@ describe("loopback discount rejection chain", () => {
         ])
         const parsed = JSON.parse(completed[0].data ?? "{}") as {
           response: ResponsesResult
+          copilot_usage: { total_nano_aiu: number }
         }
         expect(parsed.response.model).toBe(MODEL)
+        expect(parsed.response.id).toBe("resp_local_http")
+        expect(parsed.response.status).toBe("completed")
+        expect(parsed.response.usage).toMatchObject({
+          input_tokens: 4,
+          output_tokens: 2,
+          total_tokens: 6,
+        })
+        expect(parsed.copilot_usage.total_nano_aiu).toBe(2700)
       } else {
         expect(await response.json()).toMatchObject({
           model: MODEL,
+          id: "resp_local_http",
+          status: "completed",
+          usage: { input_tokens: 4, output_tokens: 2, total_tokens: 6 },
           copilot_usage: { total_nano_aiu: 2700 },
         })
       }
@@ -592,6 +620,8 @@ describe("loopback discount rejection chain", () => {
       expect(requests[2].headers["copilot-session-token"]).toBeUndefined()
       for (const request of requests) {
         expect(requestJsonBody(request).model).toBe(MODEL)
+        expect(requestJsonBody(request).stream).toBe(stream)
+        expect(request.body).toBe(requests[0].body)
         expect(requestJsonBody(request).input).toEqual(
           requestJsonBody(requests[0]).input,
         )
@@ -616,6 +646,10 @@ describe("loopback discount rejection chain", () => {
       expect(page.total).toBe(1)
       expect(page.items[0]).toMatchObject({
         model: MODEL,
+        endpoint: "responses",
+        session_id: SESSION_ID,
+        input_tokens: 4,
+        output_tokens: 2,
         total_tokens: 6,
         total_nano_aiu: 2700,
       })
